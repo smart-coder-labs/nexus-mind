@@ -215,7 +215,9 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         )
         .route(
             "/v1/factory/intake/sources/:id",
-            axum::routing::put(factory::update_intake_source).delete(factory::delete_intake_source),
+            axum::routing::put(factory::update_intake_source)
+                .patch(factory::set_intake_source_enabled)
+                .delete(factory::delete_intake_source),
         )
         .route("/v1/factory/intake/items", get(factory::list_intake_items))
         .route("/v1/factory/watchdog", get(factory::get_watchdog).put(factory::put_watchdog))

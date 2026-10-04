@@ -1442,6 +1442,10 @@ export class NexusMindClient {
     return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) })
   }
 
+  setFactoryIntakeSourceEnabled(id: string, enabled: boolean): Promise<FactoryIntakeSource> {
+    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) })
+  }
+
   deleteFactoryIntakeSource(id: string): Promise<void> {
     return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }

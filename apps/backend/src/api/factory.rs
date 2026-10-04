@@ -523,14 +523,22 @@ fn intake_write(
     if !PRIVACY_CLASSES.contains(&privacy_class) {
         return Err(invalid("unknown privacy_class"));
     }
-    crate::factory::intake::parse_source_config(kind, &input.config)
+    let config = crate::factory::intake::parse_source_config(kind, &input.config)
         .map_err(|code| error(StatusCode::UNPROCESSABLE_ENTITY, &code, "invalid source config"))?;
+    let sentry_host = match &config {
+        crate::factory::intake::SourceConfig::Sentry { base_url, .. } => {
+            crate::factory::intake::sentry_base_host(base_url)
+        }
+        crate::factory::intake::SourceConfig::Slack { .. } => None,
+    };
     use crate::db::factory_intake::ReferenceError;
     match crate::db::factory_intake::check_source_references(
         conn,
         org_id,
         &input.resolver_definition_id,
         &input.connector_id,
+        kind,
+        sentry_host.as_deref(),
     )
     .map_err(internal)?
     {
@@ -546,7 +554,7 @@ fn intake_write(
             return Err(error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid_connector",
-                "connector_id must be a secret connector of this organization",
+                "connector_id must be a secret connector created for this kind of intake (and, for Sentry, this host)",
             ))
         }
     }
@@ -622,6 +630,31 @@ pub async fn update_intake_source(
     let write = intake_write(&conn, &auth.org_id, &existing.kind, &input)?;
     if !crate::db::factory_intake::update_source(&conn, &auth.org_id, &id, &write).map_err(internal)? {
         return Err(source_name_taken());
+    }
+    crate::db::factory_intake::get_source(&conn, &auth.org_id, &id)
+        .map_err(internal)?
+        .map(Json)
+        .ok_or_else(source_not_found)
+}
+
+#[derive(serde::Deserialize)]
+pub struct IntakeSourceEnabled {
+    pub enabled: bool,
+}
+
+/// `PATCH /v1/factory/intake/sources/:id {enabled}`: pause or resume without
+/// re-validating, so a source whose token or agent broke can still be paused.
+pub async fn set_intake_source_enabled(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    AppJson(input): AppJson<IntakeSourceEnabled>,
+) -> ApiResult<Json<crate::db::factory_intake::IntakeSourceRow>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    if !crate::db::factory_intake::set_source_enabled(&conn, &auth.org_id, &id, input.enabled).map_err(internal)? {
+        return Err(source_not_found());
     }
     crate::db::factory_intake::get_source(&conn, &auth.org_id, &id)
         .map_err(internal)?

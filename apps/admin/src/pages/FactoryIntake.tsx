@@ -126,6 +126,8 @@ export default function FactoryIntake() {
   const permissions = session?.user.permissions ?? []
   const canRead = permissions.includes('factory_policy:read')
   const canWrite = permissions.includes('factory_policy:write')
+  // Storing a new token creates a connector, which needs its own permission.
+  const canAddToken = permissions.includes('autonomous_agent:manage_connectors')
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -137,7 +139,15 @@ export default function FactoryIntake() {
   const agents = useQuery({ queryKey: ['autonomous-agents'], queryFn: () => client.listAutonomousAgents(), enabled: canWrite })
 
   const resolvers = (agents.data ?? []).filter(agent => agent.template_key === 'github_issue_resolver' && agent.status !== 'archived')
-  const secrets = (connectors.data ?? []).filter(connector => connector.kind === 'target_secret' && connector.health !== 'revoked')
+  // Only tokens stored for this kind of intake (and, for Sentry, this host) are accepted.
+  const sentryHost = (url: string) => { try { return new URL(url).hostname.toLowerCase() } catch { return '' } }
+  const secretsFor = (current: Draft) =>
+    (connectors.data ?? []).filter(connector =>
+      connector.kind === 'target_secret' &&
+      connector.health !== 'revoked' &&
+      connector.metadata.purpose === 'factory_intake' &&
+      connector.metadata.source_kind === current.kind &&
+      (current.kind !== 'sentry' || connector.metadata.sentry_host === sentryHost(current.baseUrl)))
   const hooks = (connectors.data ?? []).filter(connector => connector.kind === 'slack' && connector.health !== 'revoked')
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['factory-intake-sources'] })
@@ -145,14 +155,18 @@ export default function FactoryIntake() {
     mutationFn: async (current: Draft) => {
       let connectorId = current.connector
       if (connectorId === NEW_TOKEN) {
+        const metadata: Record<string, unknown> = { purpose: 'factory_intake', source_kind: current.kind }
+        if (current.kind === 'sentry') metadata.sentry_host = sentryHost(current.baseUrl)
         const connector = await client.putAutonomousAgentConnector({
           kind: 'target_secret',
           name: `intake: ${current.name.trim()}`,
           secret: current.newToken.trim(),
-          metadata: { purpose: 'factory_intake', source_kind: current.kind },
+          metadata,
           scopes: ['target:use'],
         })
         connectorId = connector.id
+        // A retry after a failed save reuses this connector instead of making another.
+        setDraft(latest => (latest ? { ...latest, connector: connector.id, newToken: '' } : latest))
         queryClient.invalidateQueries({ queryKey: ['autonomous-connectors'] })
       }
       const input = sourceInput(current, connectorId)
@@ -164,8 +178,7 @@ export default function FactoryIntake() {
     },
   })
   const toggle = useMutation({
-    mutationFn: (source: FactoryIntakeSource) =>
-      client.updateFactoryIntakeSource(source.id, { ...sourceInput(draftFrom(source), source.connector_id), enabled: !source.enabled }),
+    mutationFn: (source: FactoryIntakeSource) => client.setFactoryIntakeSourceEnabled(source.id, !source.enabled),
     onSuccess: refresh,
   })
   const remove = useMutation({ mutationFn: (id: string) => client.deleteFactoryIntakeSource(id), onSuccess: refresh })
@@ -182,7 +195,7 @@ export default function FactoryIntake() {
   }
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft(current => (current ? { ...current, [key]: value } : current))
-  const needsToken = draft?.connector === NEW_TOKEN && !draft.newToken.trim()
+  const needsToken = draft?.connector === NEW_TOKEN && (!canAddToken || !draft.newToken.trim())
   const incomplete =
     !draft ||
     !draft.name.trim() ||
@@ -205,7 +218,7 @@ export default function FactoryIntake() {
           </p>
         </div>
         {canWrite && !draft && (
-          <Button size="sm" onClick={() => setDraft({ ...EMPTY, connector: secrets[0]?.id ?? NEW_TOKEN, resolver: resolvers[0]?.id ?? '' })}>
+          <Button size="sm" onClick={() => setDraft({ ...EMPTY, connector: secretsFor(EMPTY)[0]?.id ?? NEW_TOKEN, resolver: resolvers[0]?.id ?? '' })}>
             Add source
           </Button>
         )}
@@ -231,6 +244,9 @@ export default function FactoryIntake() {
               <select id="intake-resolver" className={SELECT_CLASS} value={draft.resolver} onChange={event => set('resolver', event.target.value)}>
                 <option value="">Choose an agent</option>
                 {resolvers.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                {draft.resolver && !resolvers.some(agent => agent.id === draft.resolver) && (
+                  <option value={draft.resolver}>Unavailable agent (choose another)</option>
+                )}
               </select>
             </label>
             <label className="block text-sm text-text-secondary" htmlFor="intake-project">
@@ -293,18 +309,26 @@ export default function FactoryIntake() {
             <label className="block text-sm text-text-secondary" htmlFor="intake-token">
               Token
               <select id="intake-token" className={SELECT_CLASS} value={draft.connector} onChange={event => set('connector', event.target.value)}>
-                <option value={NEW_TOKEN}>Paste a new token</option>
-                {secrets.map((connector: AutonomousAgentConnector) => <option key={connector.id} value={connector.id}>{connector.name}</option>)}
+                {canAddToken && <option value={NEW_TOKEN}>Paste a new token</option>}
+                {!canAddToken && draft.connector === NEW_TOKEN && <option value={NEW_TOKEN}>Choose a stored token</option>}
+                {secretsFor(draft).map((connector: AutonomousAgentConnector) => <option key={connector.id} value={connector.id}>{connector.name}</option>)}
+                {draft.connector !== NEW_TOKEN && !secretsFor(draft).some(connector => connector.id === draft.connector) && (
+                  <option value={draft.connector}>Unavailable token (paste or choose another)</option>
+                )}
               </select>
             </label>
-            {draft.connector === NEW_TOKEN && (
+            {draft.connector === NEW_TOKEN && canAddToken && (
               <label className="block text-sm text-text-secondary" htmlFor="intake-new-token">
                 {draft.kind === 'slack' ? 'Slack bot token (xoxb-…)' : 'Sentry auth token'}
                 <Input id="intake-new-token" inputSize="sm" type="password" autoComplete="off" value={draft.newToken} onChange={event => set('newToken', event.target.value)} />
               </label>
             )}
           </div>
-          <p className="text-xs text-text-tertiary">Tokens are stored encrypted and are never shown again.</p>
+          <p className="text-xs text-text-tertiary">
+            {canAddToken
+              ? 'Tokens are stored encrypted and are never shown again. A Sentry token only works for the Sentry URL it was stored for.'
+              : 'Adding a token needs the permission to manage connectors; you can choose a token stored for this kind of source.'}
+          </p>
 
           {save.isError && <p role="alert" className="text-xs text-text-primary">The source was not saved: {message(save.error)}.</p>}
           <div className="flex gap-2">

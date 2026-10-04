@@ -108,13 +108,18 @@ pub enum ReferenceError {
     Connector,
 }
 
-/// The resolver must be this org's `github_issue_resolver`, and the token
-/// connector this org's `target_secret`.
+/// The resolver must be this org's `github_issue_resolver`. The token must be
+/// a secret connector created for this kind of intake
+/// (`metadata.purpose = factory_intake`, `metadata.source_kind = kind`) and, for
+/// Sentry, for this host (`metadata.sentry_host`), so a source can never send
+/// another secret of the org (or a Sentry token) to a host of its choosing.
 pub fn check_source_references(
     conn: &Connection,
     org_id: &str,
     resolver_definition_id: &str,
     connector_id: &str,
+    kind: &str,
+    sentry_host: Option<&str>,
 ) -> Result<std::result::Result<(), ReferenceError>> {
     let resolver: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions
@@ -125,13 +130,50 @@ pub fn check_source_references(
     if !resolver {
         return Ok(Err(ReferenceError::Resolver));
     }
-    let connector: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_connectors
-          WHERE id=?1 AND org_id=?2 AND kind='target_secret' AND health!='revoked')",
-        params![connector_id, org_id],
+    let metadata: Option<String> = conn
+        .query_row(
+            "SELECT metadata_json FROM autonomous_agent_connectors
+              WHERE id=?1 AND org_id=?2 AND kind='target_secret' AND health!='revoked'",
+            params![connector_id, org_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let metadata: serde_json::Value = metadata
+        .and_then(|m| serde_json::from_str(&m).ok())
+        .unwrap_or_default();
+    Ok(if intake_connector_matches(&metadata, kind, sentry_host) {
+        Ok(())
+    } else {
+        Err(ReferenceError::Connector)
+    })
+}
+
+/// Whether a connector's metadata binds it to this intake kind (and Sentry host).
+pub fn intake_connector_matches(metadata: &serde_json::Value, kind: &str, sentry_host: Option<&str>) -> bool {
+    let field = |name: &str| metadata.get(name).and_then(|v| v.as_str());
+    field("purpose") == Some("factory_intake")
+        && field("source_kind") == Some(kind)
+        && (kind != "sentry" || (sentry_host.is_some() && field("sentry_host") == sentry_host))
+}
+
+/// Whether the resolver is enabled with a valid revision, so a run can start.
+pub fn resolver_ready(conn: &Connection, org_id: &str, resolver_definition_id: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions d
+           JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
+          WHERE d.id=?1 AND d.org_id=?2 AND d.status='enabled' AND r.validation_status='valid')",
+        params![resolver_definition_id, org_id],
         |row| row.get(0),
-    )?;
-    Ok(if connector { Ok(()) } else { Err(ReferenceError::Connector) })
+    )?)
+}
+
+/// Pauses or resumes a source without re-validating it, so a broken source
+/// can always be paused.
+pub fn set_source_enabled(conn: &Connection, org_id: &str, id: &str, enabled: bool) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE factory_intake_sources SET enabled=?3,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",
+        params![org_id, id, enabled as i64],
+    )? > 0)
 }
 
 /// Creates a source; `Ok(None)` when the name is taken.
@@ -241,6 +283,16 @@ pub fn item_exists(conn: &Connection, org_id: &str, task_id: &str) -> Result<boo
     )?)
 }
 
+/// Whether this source already produced an item for this source reference
+/// (whatever its target), so changing a source's resolver never re-ingests.
+pub fn source_item_exists(conn: &Connection, org_id: &str, source_id: &str, source_ref: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM factory_intake_items WHERE org_id=?1 AND source_id=?2 AND source_ref=?3)",
+        params![org_id, source_id, source_ref],
+        |row| row.get(0),
+    )?)
+}
+
 /// Automatic starts recorded today (UTC).
 pub fn auto_starts_today(conn: &Connection, org_id: &str) -> Result<i64> {
     Ok(conn.query_row(
@@ -321,15 +373,17 @@ pub fn list_items(conn: &Connection, org_id: &str, limit: i64) -> Result<Vec<Int
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// A backlog factory task for an intake item, labelled `factory` and its class.
-pub fn create_intake_task(
+/// Creates the backlog factory task (labelled `factory`, its class, and
+/// `untrusted` for untrusted text) and the item, still undecided, in one
+/// transaction: a failure later never makes the next poll create it again.
+pub fn begin_item(
     conn: &Connection,
     org_id: &str,
     created_by: &str,
     project: &str,
     title: &str,
     description: &str,
-    task_class: &str,
+    item: &IntakeItem,
 ) -> Result<String> {
     let tx = conn.unchecked_transaction()?;
     let task = crate::db::queries::create_task(
@@ -348,11 +402,36 @@ pub fn create_intake_task(
         },
     )?;
     crate::db::queries::add_task_label(&tx, &task.id, crate::factory::intake::INTAKE_LABEL)?;
-    if task_class != "unknown" {
-        crate::db::queries::add_task_label(&tx, &task.id, task_class)?;
+    if item.task_class != "unknown" {
+        crate::db::queries::add_task_label(&tx, &task.id, &item.task_class)?;
     }
+    if item.origin_trust == "untrusted" {
+        crate::db::queries::add_task_label(&tx, &task.id, crate::factory::intake::UNTRUSTED_LABEL)?;
+    }
+    let item = IntakeItem { nexus_task_id: Some(task.id.clone()), ..item.clone() };
+    record_item(&tx, org_id, &item)?;
     tx.commit()?;
     Ok(task.id)
+}
+
+/// Records the start decision on an item created by [`begin_item`].
+pub fn finish_item(conn: &Connection, org_id: &str, item: &IntakeItem) -> Result<()> {
+    conn.execute(
+        "UPDATE factory_intake_items SET task_class=?3,start_decision=?4,start_reason=?5,jev_json=?6,
+                issue_number=?7,run_id=?8
+          WHERE org_id=?1 AND task_id=?2",
+        params![
+            org_id,
+            item.task_id,
+            item.task_class,
+            item.start_decision,
+            item.start_reason,
+            item.jev.as_ref().map(|v| v.to_string()),
+            item.issue_number,
+            item.run_id
+        ],
+    )?;
+    Ok(())
 }
 
 /// A started factory task leaves the digest's "not started" list.
@@ -375,6 +454,17 @@ pub fn untrusted_intake_pull(conn: &Connection, org_id: &str, repository: &str, 
             WHERE i.org_id=?1 AND i.origin_trust='untrusted' AND lower(i.repository)=lower(?2)
               AND l.kind='draft_pr' AND l.external_id=?3)",
         params![org_id, repository, number.to_string()],
+        |row| row.get(0),
+    )?)
+}
+
+/// Whether `issue_number` in `repository` was opened by the factory from
+/// untrusted intake: every resolver branch for it ends in that number.
+pub fn untrusted_intake_issue(conn: &Connection, org_id: &str, repository: &str, issue_number: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM factory_intake_items
+          WHERE org_id=?1 AND origin_trust='untrusted' AND lower(repository)=lower(?2) AND issue_number=?3)",
+        params![org_id, repository, issue_number],
         |row| row.get(0),
     )?)
 }
@@ -450,8 +540,10 @@ pub struct ActiveWatchdog {
 pub fn active_watchdogs(conn: &Connection) -> Result<Vec<ActiveWatchdog>> {
     let mut stmt = conn.prepare(
         "SELECT w.org_id,w.slack_connector_id,w.daily_hour_utc,w.seen_json,w.last_sent_at,w.last_daily_on
-           FROM factory_watchdog w JOIN organizations o ON o.id=w.org_id
-          WHERE w.enabled=1 AND w.slack_connector_id IS NOT NULL
+           FROM factory_watchdog w
+           JOIN organizations o ON o.id=w.org_id
+           JOIN autonomous_agent_connectors c ON c.id=w.slack_connector_id AND c.org_id=w.org_id
+          WHERE w.enabled=1 AND c.kind='slack' AND c.health!='revoked' 
           ORDER BY w.org_id LIMIT 200",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -540,9 +632,14 @@ mod tests {
     }
 
     fn connector(conn: &Connection, org: &str, id: &str, kind: &str) {
+        connector_with(conn, org, id, kind, serde_json::json!({}));
+    }
+
+    fn connector_with(conn: &Connection, org: &str, id: &str, kind: &str, metadata: serde_json::Value) {
         conn.execute(
-            "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,health,created_by) VALUES (?1,?2,?3,?1,'ready','user-1')",
-            params![id, org, kind],
+            "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,health,metadata_json,created_by)
+             VALUES (?1,?2,?3,?1,'ready',?4,'user-1')",
+            params![id, org, kind, metadata.to_string()],
         )
         .unwrap();
     }
@@ -565,17 +662,37 @@ mod tests {
     fn sources_check_their_references_and_come_due_once_per_window() {
         let (conn, org, user) = setup();
         let def = resolver(&conn, &org, &user);
-        connector(&conn, &org, "conn-secret", "target_secret");
+        connector_with(&conn, &org, "conn-secret", "target_secret", serde_json::json!({"purpose": "factory_intake", "source_kind": "slack"}));
+        connector_with(
+            &conn,
+            &org,
+            "conn-sentry",
+            "target_secret",
+            serde_json::json!({"purpose": "factory_intake", "source_kind": "sentry", "sentry_host": "sentry.io"}),
+        );
+        connector(&conn, &org, "conn-qa", "target_secret");
         connector(&conn, &org, "conn-hook", "slack");
-        assert_eq!(check_source_references(&conn, &org, &def, "conn-secret").unwrap(), Ok(()));
-        assert_eq!(
-            check_source_references(&conn, &org, &def, "conn-hook").unwrap(),
-            Err(ReferenceError::Connector)
-        );
-        assert_eq!(
-            check_source_references(&conn, &org, "nope", "conn-secret").unwrap(),
-            Err(ReferenceError::Resolver)
-        );
+        let check = |resolver: &str, connector: &str, kind: &str, host: Option<&str>| {
+            check_source_references(&conn, &org, resolver, connector, kind, host).unwrap()
+        };
+        assert_eq!(check(&def, "conn-secret", "slack", None), Ok(()));
+        assert_eq!(check(&def, "conn-sentry", "sentry", Some("sentry.io")), Ok(()));
+        // Another secret of the org, a token made for another kind or another
+        // host, and a webhook connector are all refused.
+        for (connector, kind, host) in [
+            ("conn-qa", "slack", None),
+            ("conn-secret", "sentry", Some("sentry.io")),
+            ("conn-sentry", "sentry", Some("evil.example.com")),
+            ("conn-sentry", "sentry", None),
+            ("conn-hook", "slack", None),
+        ] {
+            assert_eq!(check(&def, connector, kind, host), Err(ReferenceError::Connector), "{connector} {kind} {host:?}");
+        }
+        assert_eq!(check("nope", "conn-secret", "slack", None), Err(ReferenceError::Resolver));
+        assert!(resolver_ready(&conn, &org, &def).unwrap());
+        assert!(!resolver_ready(&conn, "org-2", &def).unwrap());
+        conn.execute("UPDATE autonomous_agent_definitions SET status='disabled' WHERE id=?1", params![def]).unwrap();
+        assert!(!resolver_ready(&conn, &org, &def).unwrap());
 
         let source = create_source(&conn, &org, &user, &write(&def, "conn-secret")).unwrap().unwrap();
         assert_eq!(source.repository.as_deref(), Some("acme/app"));
@@ -592,9 +709,8 @@ mod tests {
             Some("slack_error:not_in_channel")
         );
 
-        let mut paused = write(&def, "conn-secret");
-        paused.enabled = false;
-        assert!(update_source(&conn, &org, &source.id, &paused).unwrap());
+        assert!(set_source_enabled(&conn, &org, &source.id, false).unwrap());
+        assert!(!set_source_enabled(&conn, "org-2", &source.id, true).unwrap());
         conn.execute("UPDATE factory_intake_sources SET last_polled_at=NULL", []).unwrap();
         assert!(due_sources(&conn, 10).unwrap().is_empty());
         assert!(delete_source(&conn, &org, &source.id).unwrap());
@@ -604,12 +720,11 @@ mod tests {
     #[test]
     fn items_dedupe_count_starts_and_mark_untrusted_pulls() {
         let (conn, org, user) = setup();
-        let task = create_intake_task(&conn, &org, &user, "app", "Fix refunds", "untrusted text", "bugfix").unwrap();
-        let item = IntakeItem {
+        let mut item = IntakeItem {
             task_id: "t-1".into(),
             source_id: None,
             source_ref: "C0123ABCD:1.1".into(),
-            nexus_task_id: Some(task.clone()),
+            nexus_task_id: None,
             task_class: "bugfix".into(),
             origin_trust: "untrusted".into(),
             repository: "acme/app".into(),
@@ -620,9 +735,20 @@ mod tests {
             run_id: Some("run-1".into()),
             created_at: String::new(),
         };
-        record_item(&conn, &org, &item).unwrap();
-        record_item(&conn, &org, &item).unwrap();
+        item.start_decision = "backlog".into();
+        let task = begin_item(&conn, &org, &user, "app", "Fix refunds", "untrusted text", &item).unwrap();
+        let labels: Vec<String> = conn
+            .prepare("SELECT label FROM task_labels WHERE task_id=?1 ORDER BY label")
+            .unwrap()
+            .query_map(params![task], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(labels, ["bugfix", "factory", "untrusted"]);
         assert!(item_exists(&conn, &org, "t-1").unwrap());
+        assert_eq!(auto_starts_today(&conn, &org).unwrap(), 0);
+        item.start_decision = "started".into();
+        finish_item(&conn, &org, &item).unwrap();
         assert_eq!(auto_starts_today(&conn, &org).unwrap(), 1);
         assert_eq!(list_items(&conn, &org, 10).unwrap().len(), 1);
 
@@ -631,6 +757,9 @@ mod tests {
             conn.query_row("SELECT status FROM tasks WHERE id=?1", params![task], |r| r.get(0)).unwrap();
         assert_eq!(status, "in_progress");
 
+        assert!(untrusted_intake_issue(&conn, &org, "Acme/App", 12).unwrap());
+        assert!(!untrusted_intake_issue(&conn, &org, "acme/app", 13).unwrap());
+        assert!(!untrusted_intake_issue(&conn, "org-2", "acme/app", 12).unwrap());
         assert!(!untrusted_intake_pull(&conn, &org, "acme/app", 34).unwrap());
         conn.execute("PRAGMA foreign_keys=OFF", []).unwrap();
         conn.execute(

@@ -112,10 +112,15 @@ fn fixtures(path: &std::path::Path) -> String {
         [&user],
     )
     .unwrap();
-    for (id, kind) in [("conn-secret", "target_secret"), ("conn-hook", "slack")] {
+    for (id, kind, metadata) in [
+        ("conn-secret", "target_secret", r#"{"purpose":"factory_intake","source_kind":"slack"}"#),
+        ("conn-qa", "target_secret", "{}"),
+        ("conn-hook", "slack", "{}"),
+    ] {
         conn.execute(
-            "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,health,created_by) VALUES (?1,?2,?3,?1,'ready',?4)",
-            [id, &org, kind, &user],
+            "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,health,metadata_json,created_by)
+             VALUES (?1,?2,?3,?1,'ready',?4,?5)",
+            [id, &org, kind, metadata, &user],
         )
         .unwrap();
     }
@@ -157,6 +162,12 @@ async fn intake_sources_are_validated_created_updated_and_deleted() {
     bad_config["config"]["allowed_reactors"] = json!([]);
     let mut hook_as_token = slack_source();
     hook_as_token["connector_id"] = json!("conn-hook");
+    let mut other_secret = slack_source();
+    other_secret["connector_id"] = json!("conn-qa");
+    let mut slack_token_for_sentry = slack_source();
+    slack_token_for_sentry["kind"] = json!("sentry");
+    slack_token_for_sentry["config"] =
+        json!({"base_url": "https://sentry.evil.dev", "org_slug": "a", "project_slug": "b", "query": "is:unresolved"});
     let mut no_resolver = slack_source();
     no_resolver["resolver_definition_id"] = json!("nope");
     let mut bad_ref = slack_source();
@@ -165,6 +176,8 @@ async fn intake_sources_are_validated_created_updated_and_deleted() {
         (bad_kind, "validation_error"),
         (bad_config, "invalid_allowed_reactors"),
         (hook_as_token, "invalid_connector"),
+        (other_secret, "invalid_connector"),
+        (slack_token_for_sentry, "invalid_connector"),
         (no_resolver, "invalid_resolver"),
         (bad_ref, "validation_error"),
     ] {
@@ -191,6 +204,18 @@ async fn intake_sources_are_validated_created_updated_and_deleted() {
     assert_eq!(
         send(&router, &cookie, "PUT", &format!("{uri}/{id}"), Some(other_kind)).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Pausing never re-validates, so a broken source can always be paused.
+    {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        conn.execute("UPDATE autonomous_agent_connectors SET health='revoked' WHERE id='conn-secret'", []).unwrap();
+    }
+    let (status, resumed) = send(&router, &cookie, "PATCH", &format!("{uri}/{id}"), Some(json!({"enabled": true}))).await;
+    assert_eq!((status, resumed["enabled"].clone()), (StatusCode::OK, json!(true)));
+    assert_eq!(
+        send(&router, &cookie, "PATCH", &format!("{uri}/missing"), Some(json!({"enabled": false}))).await.0,
+        StatusCode::NOT_FOUND
     );
 
     let (_, list) = send(&router, &cookie, "GET", uri, None).await;

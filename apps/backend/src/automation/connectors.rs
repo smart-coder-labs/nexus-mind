@@ -87,6 +87,7 @@ pub async fn github_installation_token(
 async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
     let response = reqwest::Client::new()
         .post(format!("https://api.github.com{path}"))
+        .timeout(GITHUB_TIMEOUT)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -1085,13 +1086,15 @@ pub async fn publish_pr_review(
 
 pub async fn send_slack(webhook_url: &str, summary: &str, nexusmind_url: &str) -> Result<()> {
     validate_slack_webhook(webhook_url)?;
-    reqwest::Client::new().post(webhook_url).json(&json!({
+    // The webhook URL is the secret: errors never carry it.
+    reqwest::Client::new().post(webhook_url).timeout(std::time::Duration::from_secs(15)).json(&json!({
         "text": summary,
         "blocks":[
             {"type":"section","text":{"type":"mrkdwn","text":summary.chars().take(2500).collect::<String>()}},
             {"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"Open in NexusMind"},"url":nexusmind_url}]}
         ]
-    })).send().await?.error_for_status()?;
+    })).send().await.map_err(|e| anyhow::anyhow!("slack_send_failed: {}", e.without_url()))?
+    .error_for_status().map_err(|e| anyhow::anyhow!("slack_send_failed: {}", e.without_url()))?;
     Ok(())
 }
 

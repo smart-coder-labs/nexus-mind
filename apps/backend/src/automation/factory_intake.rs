@@ -32,8 +32,9 @@ pub const WATCHDOG_THROTTLE_MINUTES: i64 = 15;
 const SOURCES_PER_TICK: i64 = 20;
 /// New items handled per source per poll; the rest wait for the next poll.
 const ITEMS_PER_POLL: usize = 20;
-/// The intake tick runs at most this often.
+/// The intake tick runs at most this often, and never longer than its timeout.
 const TICK_SECONDS: i64 = 60;
+const TICK_TIMEOUT_SECONDS: u64 = 600;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_TICK: AtomicI64 = AtomicI64::new(0);
@@ -50,10 +51,24 @@ pub fn spawn_tick(store: SqliteStore, app_base_url: String) {
     }
     LAST_TICK.store(now, Ordering::Relaxed);
     tokio::spawn(async move {
-        poll_sources(&store).await;
-        run_watchdogs(&store, &app_base_url).await;
-        RUNNING.store(false, Ordering::Release);
+        // Released however the tick ends (finish, panic, timeout).
+        let _running = RunningGuard;
+        let tick = async {
+            poll_sources(&store).await;
+            run_watchdogs(&store, &app_base_url).await;
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(TICK_TIMEOUT_SECONDS), tick).await.is_err() {
+            tracing::warn!("Factory intake tick timed out");
+        }
     });
+}
+
+struct RunningGuard;
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        RUNNING.store(false, Ordering::Release);
+    }
 }
 
 fn class_name(class: crate::factory::contracts::TaskClass) -> String {
@@ -89,7 +104,7 @@ pub fn floor_before_model(model_available: bool, starts_today: i64, privacy: &st
     None
 }
 
-/// The class the start floor judges: the source's own, else the model's.
+/// The class recorded for an item: the source's own, else the model's.
 pub fn effective_class(spec_class: &str, model_class: &str) -> String {
     if spec_class == "unknown" {
         model_class.to_string()
@@ -98,10 +113,16 @@ pub fn effective_class(spec_class: &str, model_class: &str) -> String {
     }
 }
 
-/// Floors checked on the model's answer. `Ok(())` starts the task.
-pub fn floor_after_model(class: &str, verdict: &jev::Verdict) -> Result<(), String> {
-    if !AUTO_START_CLASSES.contains(&class) {
-        return Err(format!("class_not_auto_startable:{class}"));
+/// Floors checked on the model's answer. Both the source's class (unless it
+/// has none) and the model's must allow a start, so neither can lift the other
+/// (a Sentry "bugfix" the model reads as security stays with a person).
+/// `Ok(())` starts the task.
+pub fn floor_after_model(spec_class: &str, model_class: &str, verdict: &jev::Verdict) -> Result<(), String> {
+    let judged: &[&str] = if spec_class == "unknown" { &[model_class] } else { &[spec_class, model_class] };
+    for class in judged {
+        if !AUTO_START_CLASSES.contains(class) {
+            return Err(format!("class_not_auto_startable:{class}"));
+        }
     }
     if *verdict != jev::Verdict::Allow {
         return Err("decision_model_hold".into());
@@ -155,12 +176,23 @@ async fn poll_one(store: &SqliteStore, due: &store_intake::DueSource) -> anyhow:
     let source = &due.source;
     let repository = source.repository.clone().ok_or_else(|| anyhow::anyhow!("resolver_has_no_repository"))?;
     let config = parse_source_config(&source.kind, &source.config).map_err(|e| anyhow::anyhow!(e))?;
+    let sentry_host = match &config {
+        crate::factory::intake::SourceConfig::Sentry { base_url, .. } => crate::factory::intake::sentry_base_host(base_url),
+        crate::factory::intake::SourceConfig::Slack { .. } => None,
+    };
     let token = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        crate::db::queries::get_autonomous_agent_connector_secret(&conn, &due.org_id, &source.connector_id)?
-            .map(|(_, secret)| secret)
-            .ok_or_else(|| anyhow::anyhow!("connector_unavailable"))?
+        let (connector, secret) =
+            crate::db::queries::get_autonomous_agent_connector_secret(&conn, &due.org_id, &source.connector_id)?
+                .ok_or_else(|| anyhow::anyhow!("connector_unavailable"))?;
+        // Re-checked at use: the token goes only where its connector was made for.
+        if connector.kind != "target_secret"
+            || !store_intake::intake_connector_matches(&connector.metadata, &source.kind, sentry_host.as_deref())
+        {
+            anyhow::bail!("connector_not_for_this_source");
+        }
+        secret
     };
     let target = IntakeTarget {
         repository: repository.clone(),
@@ -177,6 +209,7 @@ async fn poll_one(store: &SqliteStore, due: &store_intake::DueSource) -> anyhow:
             let db = store.conn();
             let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
             store_intake::item_exists(&conn, &due.org_id, &spec.task_id)?
+                || store_intake::source_item_exists(&conn, &due.org_id, &source.id, &spec.source.reference)?
         };
         if known {
             continue;
@@ -189,7 +222,8 @@ async fn poll_one(store: &SqliteStore, due: &store_intake::DueSource) -> anyhow:
     Ok(())
 }
 
-/// Creates the factory task, decides whether to start it, and records both.
+/// Creates the factory task and its undecided item together, decides whether
+/// to start it, then records the decision.
 async fn handle_item(
     store: &SqliteStore,
     due: &store_intake::DueSource,
@@ -197,39 +231,39 @@ async fn handle_item(
     spec: &TaskSpec,
 ) -> anyhow::Result<()> {
     let source = &due.source;
-    let spec_class = class_name(spec.task_class);
-    let (nexus_task_id, starts_today) = {
-        let db = store.conn();
-        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        let id = store_intake::create_intake_task(
-            &conn,
-            &due.org_id,
-            &source.created_by,
-            &source.project,
-            &spec.title,
-            &spec.description,
-            &spec_class,
-        )?;
-        (id, store_intake::auto_starts_today(&conn, &due.org_id)?)
-    };
     let mut item = IntakeItem {
         task_id: spec.task_id.clone(),
         source_id: Some(source.id.clone()),
         source_ref: spec.source.reference.clone(),
-        nexus_task_id: Some(nexus_task_id.clone()),
-        task_class: spec_class.clone(),
+        nexus_task_id: None,
+        task_class: class_name(spec.task_class),
         origin_trust: match spec.origin_trust {
             OriginTrust::Trusted => "trusted".into(),
             OriginTrust::Untrusted => "untrusted".into(),
         },
         repository: repository.to_string(),
         start_decision: "backlog".into(),
-        start_reason: String::new(),
+        start_reason: "deciding".into(),
         jev: None,
         issue_number: None,
         run_id: None,
         created_at: String::new(),
     };
+    let (nexus_task_id, starts_today) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let id = store_intake::begin_item(
+            &conn,
+            &due.org_id,
+            &source.created_by,
+            &source.project,
+            &spec.title,
+            &spec.description,
+            &item,
+        )?;
+        (id, store_intake::auto_starts_today(&conn, &due.org_id)?)
+    };
+    item.nexus_task_id = Some(nexus_task_id.clone());
     let key = super::shadow::shadow_key().filter(|_| super::shadow::shadow_enabled_for(&due.org_id));
     item.start_reason = match decide_and_start(store, due, repository, spec, key, starts_today, &mut item).await {
         Ok(()) => "decision_model_allow".into(),
@@ -240,7 +274,7 @@ async fn handle_item(
     if item.start_decision == "started" {
         store_intake::mark_task_started(&conn, &due.org_id, &nexus_task_id)?;
     }
-    store_intake::record_item(&conn, &due.org_id, &item)?;
+    store_intake::finish_item(&conn, &due.org_id, &item)?;
     Ok(())
 }
 
@@ -264,9 +298,19 @@ async fn decide_and_start(
         .map_err(|_| "decision_model_error".to_string())?;
     let verdict = jev::verdict(&answer);
     item.jev = Some(json!({"answer": answer, "verdict": verdict, "latency_ms": latency_ms}));
-    let class = effective_class(&item.task_class, &answer.task_class);
-    item.task_class = class.clone();
-    floor_after_model(&class, &verdict)?;
+    let spec_class = item.task_class.clone();
+    item.task_class = effective_class(&spec_class, &answer.task_class);
+    floor_after_model(&spec_class, &answer.task_class, &verdict)?;
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| "database_lock".to_string())?;
+        // Never open an issue no run can pick up.
+        if !store_intake::resolver_ready(&conn, &due.org_id, &due.source.resolver_definition_id)
+            .map_err(|_| "database_error".to_string())?
+        {
+            return Err("resolver_not_ready".into());
+        }
+    }
 
     let token = super::worker::server_github_token().await.map_err(|_| "github_unavailable".to_string())?;
     let repo = super::connectors::get_github_repository(&token, repository)
@@ -437,11 +481,15 @@ async fn run_watchdog(
         store_intake::save_watchdog_state(&conn, &watchdog.org_id, &current, false, None)?;
         return Ok(());
     }
+    // State is saved before sending: a failed save must never repeat a message
+    // every minute (a failed send loses one message instead).
     if daily_due(now, watchdog.daily_hour_utc, watchdog.last_daily_on.as_deref()) {
+        {
+            let db = store.conn();
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+            store_intake::save_watchdog_state(&conn, &watchdog.org_id, &current, true, Some(&today))?;
+        }
         super::connectors::send_slack(&webhook, &daily_summary(&digest), url).await?;
-        let db = store.conn();
-        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        store_intake::save_watchdog_state(&conn, &watchdog.org_id, &current, true, Some(&today))?;
         return Ok(());
     }
     let lines = new_items_message(&watchdog.seen, &digest);
@@ -458,11 +506,13 @@ async fn run_watchdog(
         // Unchanged state: the new items are announced once the window ends.
         return Ok(());
     }
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        store_intake::save_watchdog_state(&conn, &watchdog.org_id, &current, true, None)?;
+    }
     let text = format!("*The factory needs a person*\n{}", lines.join("\n"));
     super::connectors::send_slack(&webhook, &text, url).await?;
-    let db = store.conn();
-    let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-    store_intake::save_watchdog_state(&conn, &watchdog.org_id, &current, true, None)?;
     Ok(())
 }
 
@@ -509,11 +559,22 @@ mod tests {
 
         assert_eq!(effective_class("unknown", "docs"), "docs");
         assert_eq!(effective_class("bugfix", "docs"), "bugfix");
-        assert_eq!(floor_after_model("docs", &jev::Verdict::Allow), Ok(()));
-        assert_eq!(floor_after_model("bugfix", &jev::Verdict::Hold), Err("decision_model_hold".into()));
-        for class in ["security", "migration", "infra", "backend", "refactor", "unknown"] {
+        // Slack items have no class of their own: the model's decides.
+        assert_eq!(floor_after_model("unknown", "docs", &jev::Verdict::Allow), Ok(()));
+        assert_eq!(floor_after_model("bugfix", "ui", &jev::Verdict::Allow), Ok(()));
+        assert_eq!(floor_after_model("bugfix", "bugfix", &jev::Verdict::Hold), Err("decision_model_hold".into()));
+        // Neither class can lift the other.
+        assert_eq!(
+            floor_after_model("bugfix", "security", &jev::Verdict::Allow),
+            Err("class_not_auto_startable:security".into())
+        );
+        assert_eq!(
+            floor_after_model("unknown", "unknown", &jev::Verdict::Allow),
+            Err("class_not_auto_startable:unknown".into())
+        );
+        for class in ["security", "migration", "infra", "backend", "refactor"] {
             assert_eq!(
-                floor_after_model(class, &jev::Verdict::Allow),
+                floor_after_model(class, "docs", &jev::Verdict::Allow),
                 Err(format!("class_not_auto_startable:{class}"))
             );
         }

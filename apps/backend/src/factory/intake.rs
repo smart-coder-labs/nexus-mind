@@ -18,6 +18,11 @@ use crate::models::types::Task;
 
 /// Only items carrying this label enter the factory.
 pub const INTAKE_LABEL: &str = "factory";
+/// Label on factory tasks whose text came from an untrusted source (Slack,
+/// Sentry). Such a task stays untrusted wherever it is picked up again.
+pub const UNTRUSTED_LABEL: &str = "untrusted";
+/// Marker in the body of a GitHub issue the factory opened from untrusted intake.
+pub const INTAKE_ISSUE_MARKER: &str = "nexusmind-factory-intake:";
 
 /// Contract limit on `TaskSpec.description`.
 const MAX_DESCRIPTION_CHARS: usize = 65_536;
@@ -175,8 +180,10 @@ pub fn github_issue_to_task_spec(
         .unwrap_or_default();
     // Anyone can open an issue on a public repository: only people GitHub itself
     // associates with the repository are trusted. A missing field is untrusted.
+    // An issue the factory opened from Slack or Sentry carries untrusted text
+    // even though the bot (a member) authored it.
     let trust = match issue.get("author_association").and_then(|v| v.as_str()) {
-        Some("OWNER" | "MEMBER" | "COLLABORATOR") => OriginTrust::Trusted,
+        Some("OWNER" | "MEMBER" | "COLLABORATOR") if !body.contains(INTAKE_ISSUE_MARKER) => OriginTrust::Trusted,
         _ => OriginTrust::Untrusted,
     };
     let reference = format!("{}#{number}", target.repository);
@@ -201,7 +208,8 @@ pub fn github_issue_to_task_spec(
     .map(Some)
 }
 
-/// NexusMind tasks are authored by authenticated org members, so they are trusted.
+/// NexusMind tasks are authored by authenticated org members, so they are trusted,
+/// unless the factory created them from untrusted intake (`untrusted` label).
 /// Only unstarted tasks (`backlog`, `todo`) enter.
 pub fn nexusmind_task_to_task_spec(
     task: &Task,
@@ -221,7 +229,11 @@ pub fn nexusmind_task_to_task_spec(
     build_spec(
         source,
         &format!("nexusmind_task:{}", task.id),
-        OriginTrust::Trusted,
+        if task.labels.iter().any(|l| l.eq_ignore_ascii_case(UNTRUSTED_LABEL)) {
+            OriginTrust::Untrusted
+        } else {
+            OriginTrust::Trusted
+        },
         target,
         &task.title,
         task.description.as_deref().unwrap_or_default(),
@@ -1053,5 +1065,15 @@ mod tests {
             assert!(parse_source_config("sentry", &bad).is_err());
         }
         assert!(parse_source_config("github", &json!({})).is_err());
+    }
+
+    #[test]
+    fn factory_issues_and_tasks_from_untrusted_intake_stay_untrusted() {
+        let mut opened = issue("MEMBER", &["factory"]);
+        opened["body"] = json!(format!("Text from Slack\n<!-- {INTAKE_ISSUE_MARKER}abc -->"));
+        let spec = github_issue_to_task_spec(&opened, &target(), now()).unwrap().unwrap();
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        let member = github_issue_to_task_spec(&issue("MEMBER", &["factory"]), &target(), now()).unwrap().unwrap();
+        assert_eq!(member.origin_trust, OriginTrust::Trusted);
     }
 }
