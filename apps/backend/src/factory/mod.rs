@@ -3,6 +3,7 @@
 pub mod contracts;
 pub mod egress;
 pub mod egress_server;
+pub mod gateway;
 pub mod intake;
 pub mod jev;
 pub mod policy_engine;

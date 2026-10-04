@@ -2652,6 +2652,49 @@ async fn publish_template_output(
     }
 }
 
+/// The model a Claude Code run uses (F3 Model Gateway, ADR c2048d9b): an
+/// explicit pin or tier on the agent, else the issue labels' task class, else
+/// the template's default; frontier runs past the org's daily cap drop to
+/// standard. The choice is recorded as a `model.selected` run event.
+fn select_run_model(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    runtime_config: &serde_json::Value,
+) -> crate::factory::gateway::Choice {
+    use crate::factory::gateway;
+    let labels: Vec<String> = runtime_config
+        .pointer("/issue/labels")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    let db = store.conn();
+    let conn = db.lock().ok();
+    let frontier_used_today = conn
+        .as_deref()
+        .and_then(|conn| gateway::frontier_runs_today(conn, &claim.org_id).ok())
+        .unwrap_or(0);
+    let choice = gateway::choose(&gateway::RunFacts {
+        template_key: &claim.template_key,
+        class: gateway::class_from_labels(&labels),
+        configured_tier: claim.config.get("model_tier").and_then(|v| v.as_str()),
+        configured_model: claim.config.get("model").and_then(|v| v.as_str()),
+        frontier_used_today,
+        frontier_cap: gateway::frontier_runs_per_day(),
+    });
+    if let Some(conn) = conn.as_deref() {
+        let _ = queries::append_autonomous_agent_event(
+            conn,
+            &claim.org_id,
+            &claim.run.id,
+            "model.selected",
+            &json!({"tier": choice.tier, "model": choice.model, "reason": choice.reason}),
+        );
+    }
+    choice
+}
+
 /// Soak window between "every gate passed" and the merge (plan D17).
 const MERGE_SOAK_SECONDS: i64 = 600;
 
@@ -3616,11 +3659,13 @@ async fn resolve_issue_worktree(
         claude.stdin(std::process::Stdio::piped());
     } else {
         restrict_claude_environment(&mut claude);
+        let model = select_run_model(&store, &claim, &runtime_config).model;
         claude.args([
             "-p", &prompt, "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns_str, "--permission-mode", "acceptEdits",
             "--allowedTools",
             "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
+            "--model", &model,
         ]);
     }
     // Register the NexusMind MCP so the resolver can actually load the tools its
@@ -4761,6 +4806,8 @@ async fn execute_claim(
         .parent()
         .unwrap_or(workdir.as_path())
         .join("screenshots");
+    // Chosen once: output-format retries keep the same model.
+    let run_model = select_run_model(store, claim, &runtime_config).model;
     let mut outcome = loop {
     let mut claude = if nexus_selected {
         Command::new(&config.nexus_worker_bin)
@@ -4781,6 +4828,7 @@ async fn execute_claim(
             "-p", &prompt, "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns, "--permission-mode", permission_mode,
             "--allowedTools", allowed_tools,
+            "--model", &run_model,
         ]);
     }
     // Grant the resolver read access to the sibling context repositories cloned
