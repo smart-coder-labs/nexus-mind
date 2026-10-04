@@ -64,6 +64,7 @@ const ONLY_CONTEXT_HIDDEN: readonly string[] = [
   '/harnesses',
   '/autonomous-agents',
   '/factory-policies',
+  '/factory-digest',
   '/api-keys',
   '/agents',
   '/policies',

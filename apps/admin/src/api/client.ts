@@ -127,6 +127,8 @@ import type {
   FactoryActionPolicy,
   FactoryBot,
   ShadowDecision,
+  FactoryDigest,
+  FactoryEconomics,
   ShadowReport,
   FactoryPolicy,
 } from '../types'
@@ -1422,6 +1424,21 @@ export class NexusMindClient {
 
   deleteFactoryPolicy(id: string): Promise<void> {
     return this.request(`/v1/factory/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  getFactoryDigest(): Promise<FactoryDigest> {
+    return this.request('/v1/factory/digest')
+  }
+
+  getFactoryEconomics(days = 30): Promise<FactoryEconomics> {
+    return this.request(`/v1/factory/economics?days=${days}`)
+  }
+
+  decideFactoryMerge(subject: string, approve: boolean, reason?: string): Promise<{ id: string }> {
+    return this.request('/v1/factory/decisions', {
+      method: 'POST',
+      body: JSON.stringify({ subject, action: 'merge', approve, ...(reason ? { reason } : {}) }),
+    })
   }
 
   getShadowReport(): Promise<ShadowReport> {

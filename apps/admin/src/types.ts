@@ -1537,6 +1537,38 @@ export interface ShadowDecision {
   created_at: string
 }
 
+/** Factory operator digest: everything waiting on a person (F3). */
+export interface FactoryHeldMerge { subject: string; reason: string; source: string; created_at: string }
+export interface FactoryBlockedRun {
+  run_id: string
+  agent: string
+  template_key: string
+  status: string
+  reason: string | null
+  finished_at: string | null
+}
+export interface FactoryWaitingTask { id: string; project: string; title: string; status: string; created_at: string }
+export interface FactoryDigest {
+  held_merges: FactoryHeldMerge[]
+  blocked_runs: FactoryBlockedRun[]
+  factory_tasks: FactoryWaitingTask[]
+  unlabeled_shadow: number
+  unlabeled_shadow_allows: number
+}
+
+export interface FactoryModelSpend { model: string | null; runs: number; cost_usd: number; input_tokens: number; output_tokens: number }
+export interface FactoryEconomics {
+  days: number
+  runs: number
+  cost_usd: number
+  by_model: FactoryModelSpend[]
+  tier_choices: [string, number][]
+  frontier_avoidance: number | null
+  proposed_changes: number
+  cost_per_proposed_change: number | null
+  accepted_changes_tracked: boolean
+}
+
 /** The per-organization identity sandboxed agents use to call NexusMind. */
 export interface FactoryBot {
   user_id: string
