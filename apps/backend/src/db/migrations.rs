@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 85;
+pub const LATEST_USER_VERSION: i32 = 86;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -98,9 +98,82 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v83(conn)?;
     run_v84(conn)?;
     run_v85(conn)?;
+    run_v86(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
+    Ok(())
+}
+
+/// Migration v86: factory F3 intake wiring and watchdog (ADR 55497338).
+/// - `factory_intake_sources`: a Slack channel or Sentry project feeding one
+///   issue-resolver agent (its repository), with the token in a connector.
+/// - `factory_intake_items`: one row per intake item ever seen (dedupe by the
+///   stable task id), with the NexusMind task, the start decision and the run.
+/// - `factory_watchdog`: per-org Slack notification of digest changes.
+///
+/// Idempotent.
+pub fn run_v86(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 86 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_intake_sources (
+             id                     TEXT PRIMARY KEY,
+             org_id                 TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             kind                   TEXT NOT NULL CHECK(kind IN ('slack','sentry')),
+             name                   TEXT NOT NULL,
+             project                TEXT NOT NULL,
+             resolver_definition_id TEXT NOT NULL REFERENCES autonomous_agent_definitions(id) ON DELETE CASCADE,
+             base_ref               TEXT NOT NULL DEFAULT 'main',
+             privacy_class          TEXT NOT NULL DEFAULT 'internal'
+                                    CHECK(privacy_class IN ('public','internal','confidential','restricted')),
+             connector_id           TEXT NOT NULL REFERENCES autonomous_agent_connectors(id) ON DELETE RESTRICT,
+             config_json            TEXT NOT NULL DEFAULT '{}',
+             enabled                INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+             last_polled_at         TEXT,
+             last_error             TEXT,
+             created_by             TEXT NOT NULL,
+             created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(org_id, name)
+         );
+         CREATE TABLE IF NOT EXISTS factory_intake_items (
+             org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             task_id        TEXT NOT NULL,
+             source_id      TEXT REFERENCES factory_intake_sources(id) ON DELETE SET NULL,
+             source_ref     TEXT NOT NULL,
+             nexus_task_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+             task_class     TEXT NOT NULL,
+             origin_trust   TEXT NOT NULL CHECK(origin_trust IN ('trusted','untrusted')),
+             repository     TEXT NOT NULL,
+             start_decision TEXT NOT NULL CHECK(start_decision IN ('started','backlog')),
+             start_reason   TEXT NOT NULL,
+             jev_json       TEXT,
+             issue_number   INTEGER,
+             run_id         TEXT,
+             created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY (org_id, task_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_intake_items_started
+             ON factory_intake_items(org_id, start_decision, created_at);
+         CREATE INDEX IF NOT EXISTS idx_factory_intake_items_run
+             ON factory_intake_items(run_id);
+         CREATE TABLE IF NOT EXISTS factory_watchdog (
+             org_id             TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+             slack_connector_id TEXT REFERENCES autonomous_agent_connectors(id) ON DELETE SET NULL,
+             enabled            INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+             daily_hour_utc     INTEGER NOT NULL DEFAULT 13 CHECK(daily_hour_utc BETWEEN 0 AND 23),
+             seen_json          TEXT NOT NULL DEFAULT '{}',
+             last_sent_at       TEXT,
+             last_daily_on      TEXT,
+             updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         PRAGMA user_version = 86;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

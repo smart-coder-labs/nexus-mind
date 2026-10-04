@@ -2758,13 +2758,46 @@ async fn merge_gates(
     if let Err(reason) = super::merge_gate::required_checks_verdict(required, &runs) {
         return Ok(Err(json!({"merged": false, "reason": reason})));
     }
-    Ok(Ok(MergeEvidence { files, runs }))
+    let head_ref = pull
+        .pointer("/head/ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok(Ok(MergeEvidence { files, runs, head_ref }))
 }
 
 /// What the merge gates read from GitHub for the reviewed head.
 struct MergeEvidence {
     files: Vec<super::merge_gate::ChangedFile>,
     runs: Vec<serde_json::Value>,
+    /// The PR's head branch, which names the issue a resolver run worked on.
+    head_ref: String,
+}
+
+/// The issue a resolver branch works on (`nexusmind/run-<run>-<issue>` or
+/// `nexusmind/wip-<run>-<issue>`), whichever run opened it.
+fn resolver_branch_issue(head_ref: &str) -> Option<i64> {
+    let rest = head_ref
+        .strip_prefix("nexusmind/run-")
+        .or_else(|| head_ref.strip_prefix("nexusmind/wip-"))?;
+    rest.rsplit_once('-')?.1.parse().ok().filter(|n: &i64| *n > 0)
+}
+
+/// An `allow` on a PR from untrusted intake becomes a policy hold, which a
+/// person may lift; any other verdict stands.
+fn hold_untrusted_origin(
+    verdict: crate::factory::contracts::ActionVerdict,
+    untrusted_origin: bool,
+) -> crate::factory::contracts::ActionVerdict {
+    use crate::factory::contracts::{ActionVerdict, Verdict, VerdictSource};
+    if untrusted_origin && verdict.verdict == Verdict::Allow {
+        return ActionVerdict {
+            verdict: Verdict::Hold,
+            reason: "opened from untrusted intake: a person decides".into(),
+            source: VerdictSource::Policy,
+        };
+    }
+    verdict
 }
 
 /// Asks the policy engine whether this gated commit may be merged, and records the
@@ -2777,6 +2810,7 @@ fn decide_merge(
     repository: &str,
     number: i64,
     reviewed_sha: &str,
+    head_ref: &str,
     files: &[super::merge_gate::ChangedFile],
     required_checks: &[String],
 ) -> anyhow::Result<crate::factory::contracts::ActionVerdict> {
@@ -2803,6 +2837,17 @@ fn decide_merge(
         &model,
         policy_engine::DEFAULT_MIN_CONFIDENCE,
     );
+    // A PR opened from untrusted intake (Slack, Sentry) is never merged without
+    // a person (ADR 55497338): an `allow` becomes a policy hold a person may lift.
+    // By the run that opened it, or by the issue its branch names (another run,
+    // e.g. a webhook one, may have opened the PR for the same issue).
+    let untrusted_origin = evaluation.verdict.verdict == Verdict::Allow
+        && (crate::db::factory_intake::untrusted_intake_pull(&conn, org_id, repository, number)?
+            || match resolver_branch_issue(head_ref) {
+                Some(issue) => crate::db::factory_intake::untrusted_intake_issue(&conn, org_id, repository, issue)?,
+                None => false,
+            });
+    let evaluated = hold_untrusted_origin(evaluation.verdict.clone(), untrusted_origin);
     // The run and its required checks travel with the decision, so a person's
     // approval of a hold can start the soak that re-runs every gate.
     let mut inputs = json!({
@@ -2810,12 +2855,13 @@ fn decide_merge(
         "changed_files": files.len(),
         "run_id": run_id,
         "required_checks": required_checks,
+        "untrusted_origin": untrusted_origin,
     });
     // A person (approve_factory_action) may only lift a HOLD the policy or the
     // decision model put on this exact head: never a policy `deny` (`never`)
     // nor a floor. Approval allows; rejection keeps it held.
-    let held_for_a_person = evaluation.verdict.verdict == Verdict::Hold
-        && matches!(evaluation.verdict.source, VerdictSource::Policy | VerdictSource::DecisionModel);
+    let held_for_a_person = evaluated.verdict == Verdict::Hold
+        && matches!(evaluated.source, VerdictSource::Policy | VerdictSource::DecisionModel);
     let human = if held_for_a_person {
         crate::db::factory_ops::latest_human_decision(&conn, org_id, &subject, "merge")?
     } else {
@@ -2830,7 +2876,7 @@ fn decide_merge(
                 source: VerdictSource::Human,
             }
         }
-        None => evaluation.verdict.clone(),
+        None => evaluated,
     };
     record_decision(
         &conn,
@@ -2915,6 +2961,7 @@ async fn auto_merge_pull(
         repository,
         number,
         reviewed_sha,
+        &evidence.head_ref,
         &files,
         &required,
     )?;
@@ -2946,7 +2993,7 @@ async fn merge_after_soak(
     soak: &crate::db::factory_queries::MergeSoak,
 ) -> anyhow::Result<serde_json::Value> {
     let token = server_gh_token().await?;
-    let files = match merge_gates(
+    let (files, head_ref) = match merge_gates(
         &token,
         &soak.repository,
         soak.pull_number,
@@ -2955,7 +3002,7 @@ async fn merge_after_soak(
     )
     .await?
     {
-        Ok(evidence) => evidence.files,
+        Ok(evidence) => (evidence.files, evidence.head_ref),
         Err(declined) => return Ok(declined),
     };
     {
@@ -2983,6 +3030,7 @@ async fn merge_after_soak(
         &soak.repository,
         soak.pull_number,
         &soak.head_sha,
+        &head_ref,
         &files,
         &soak.required_checks,
     )?;
@@ -7151,6 +7199,8 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
             retry_one_delivery(&store, &config).await;
             process_due_soaks(&store).await;
+            // F3 intake (Slack, Sentry) and the watchdog, beside the loop.
+            super::factory_intake::spawn_tick(store.clone(), config.app_base_url.clone());
             if ticks == 1 || ticks.is_multiple_of(20) {
                 super::sandboxed::gc_task_pods().await;
             }
@@ -7462,6 +7512,26 @@ async fn maybe_trigger_next_agent(
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn an_allow_on_an_untrusted_intake_pull_is_held_for_a_person() {
+        use crate::factory::contracts::{ActionVerdict, Verdict, VerdictSource};
+        let allow = ActionVerdict { verdict: Verdict::Allow, reason: "ok".into(), source: VerdictSource::DecisionModel };
+        let held = hold_untrusted_origin(allow.clone(), true);
+        assert_eq!((held.verdict, held.source), (Verdict::Hold, VerdictSource::Policy));
+        assert_eq!(hold_untrusted_origin(allow.clone(), false), allow);
+        let deny = ActionVerdict { verdict: Verdict::Deny, reason: "policy_never".into(), source: VerdictSource::Policy };
+        assert_eq!(hold_untrusted_origin(deny.clone(), true), deny);
+    }
+
+    #[test]
+    fn resolver_branches_name_their_issue() {
+        assert_eq!(resolver_branch_issue("nexusmind/run-0123456789ab-42"), Some(42));
+        assert_eq!(resolver_branch_issue("nexusmind/wip-0123456789ab-7"), Some(7));
+        assert_eq!(resolver_branch_issue("nexusmind/run-0123456789ab-finding"), None);
+        assert_eq!(resolver_branch_issue("feature/42"), None);
+        assert_eq!(resolver_branch_issue("nexusmind/run-x-0"), None);
+    }
+
     /// A person may lift a policy HOLD on a head, never a policy `never` (deny).
     #[test]
     fn a_human_approval_lifts_a_hold_but_never_a_policy_deny() {
@@ -7505,7 +7575,7 @@ mod tests {
             status: "modified".into(),
             previous_filename: None,
         }];
-        let decide = || decide_merge(&store, &org.id, "run-1", "acme/app", 7, sha, &files, &[]).unwrap();
+        let decide = || decide_merge(&store, &org.id, "run-1", "acme/app", 7, sha, "feature", &files, &[]).unwrap();
         // `manual` holds for a person; the approval lifts it.
         let lifted = decide();
         assert_eq!((lifted.verdict, lifted.source), (Verdict::Allow, VerdictSource::Human));

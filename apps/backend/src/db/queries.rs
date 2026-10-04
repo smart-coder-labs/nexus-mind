@@ -18283,6 +18283,12 @@ pub fn list_autonomous_agent_connectors(
         .map_err(Into::into)
 }
 
+/// The metadata fields that decide where a connector's secret may be sent.
+fn connector_binding(metadata: &serde_json::Value) -> [Option<String>; 3] {
+    ["purpose", "source_kind", "sentry_host"]
+        .map(|name| metadata.get(name).and_then(|v| v.as_str()).map(str::to_string))
+}
+
 pub fn put_autonomous_agent_connector(
     conn: &Connection,
     org_id: &str,
@@ -18354,6 +18360,23 @@ pub fn put_autonomous_agent_connector(
             }
         }
         _ => {}
+    }
+    // What a secret may be used for (factory intake binds it to a source kind and
+    // host) changes only together with the secret itself: otherwise relabelling
+    // an existing secret would let it be sent somewhere it was never meant to go.
+    if req.secret.is_none() {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT metadata_json FROM autonomous_agent_connectors WHERE org_id=?1 AND kind=?2 AND name=?3",
+                rusqlite::params![org_id, req.kind, req.name.trim()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let existing: serde_json::Value =
+            existing.and_then(|m| serde_json::from_str(&m).ok()).unwrap_or_default();
+        if connector_binding(&existing) != connector_binding(&req.metadata) {
+            anyhow::bail!("connector_binding_requires_new_secret");
+        }
     }
     let ciphertext = match req.secret.as_deref() {
         Some(secret) if !secret.is_empty() => Some(

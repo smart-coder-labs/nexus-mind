@@ -185,7 +185,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Add the `factory_operator` MCP profile and tools, the human digest in admin, and a watchdog that notifies only on meaningful change.
 - Add Slack (read) and Sentry intake adapters.
 - **Exit:** a measured false-low-risk rate below threshold (OD-5) before automatic routing is enabled.
-- **Status (2026-10-04): shadow, gateway tiers, operator surface and Slack/Sentry adapters built. Codex, OTel and the watchdog are open; the exit needs human labels.**
+- **Status (2026-10-04): shadow, gateway tiers, operator surface, Slack/Sentry intake with live Jev starts, and the watchdog built. Codex and OTel are open; the merge exit needs human labels.**
   - **Decided:**
     - Shadow comes first, so the measurement clock starts before the gateway exists.
     - Ground truth combines post-merge signals with a human label, and the label wins.
@@ -232,15 +232,26 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - `POST /v1/factory/tasks` creates a factory task. It is a NexusMind backlog task labelled `factory` plus its class.
     - The admin page "Needs a human" (`/factory-digest`).
     - The MCP `--profile factory_operator`.
-  - **Intake:**
-    - Slack (a top-level human message with a `:factory:` reaction) and Sentry (an unresolved error or fatal issue becomes a bugfix) adapters are built as `IntakeSource` implementations.
-    - Both are always `Untrusted`.
-    - They are not wired yet. They need credentials and a per-project intake target (repository, base ref, privacy class), which does not exist yet; GitHub intake has the same gap.
+  - **Intake (ADR 55497338, migration v86):**
+    - Slack (a top-level human message with a `:factory:` reaction from an allowed person) and Sentry (an unresolved error or fatal issue matching a query) are configured per source in the admin ("Factory intake").
+    - Each source points at an issue-resolver agent, which sets the repository.
+    - Each source's token is a connector bound to it: the binding holds the kind and, for Sentry, the host. Changing the binding requires a new secret.
+    - GitHub intake stays with the issue resolver.
+    - The worker polls every 15 min. Each new item becomes a backlog factory task, labelled `untrusted`.
+    - Jev decides **live** whether to start the task, inside floors it cannot lift:
+      - the org is allowlisted for the model;
+      - at most 5 starts per org per day;
+      - the source's class and Jev's class are both docs, tests, ui or bugfix;
+      - the data is not restricted;
+      - the repository is private;
+      - the resolver is ready.
+    - A start opens a GitHub issue and an explicit resolver run.
+    - A PR whose resolver branch names an untrusted intake issue is never merged without a person: an allow becomes a policy hold.
+    - **Watchdog:** the org's Slack webhook hears about new held merges, blocked runs and factory tasks (at most once every 15 min), plus a daily summary.
   - **Open:**
-    - The watchdog: notify on a meaningful digest change. The channel is still to be decided.
     - OTel GenAI spans: deferred, because there is no collector.
     - Codex.
-    - The intake target config and the wiring.
+    - Credentials for the first Slack and Sentry sources.
     - Human labels for OD-5.
 
 ### F4: Specialists (2–4 weeks)

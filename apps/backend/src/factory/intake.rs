@@ -18,6 +18,11 @@ use crate::models::types::Task;
 
 /// Only items carrying this label enter the factory.
 pub const INTAKE_LABEL: &str = "factory";
+/// Label on factory tasks whose text came from an untrusted source (Slack,
+/// Sentry). Such a task stays untrusted wherever it is picked up again.
+pub const UNTRUSTED_LABEL: &str = "untrusted";
+/// Marker in the body of a GitHub issue the factory opened from untrusted intake.
+pub const INTAKE_ISSUE_MARKER: &str = "nexusmind-factory-intake:";
 
 /// Contract limit on `TaskSpec.description`.
 const MAX_DESCRIPTION_CHARS: usize = 65_536;
@@ -175,8 +180,10 @@ pub fn github_issue_to_task_spec(
         .unwrap_or_default();
     // Anyone can open an issue on a public repository: only people GitHub itself
     // associates with the repository are trusted. A missing field is untrusted.
+    // An issue the factory opened from Slack or Sentry carries untrusted text
+    // even though the bot (a member) authored it.
     let trust = match issue.get("author_association").and_then(|v| v.as_str()) {
-        Some("OWNER" | "MEMBER" | "COLLABORATOR") => OriginTrust::Trusted,
+        Some("OWNER" | "MEMBER" | "COLLABORATOR") if !body.contains(INTAKE_ISSUE_MARKER) => OriginTrust::Trusted,
         _ => OriginTrust::Untrusted,
     };
     let reference = format!("{}#{number}", target.repository);
@@ -201,7 +208,8 @@ pub fn github_issue_to_task_spec(
     .map(Some)
 }
 
-/// NexusMind tasks are authored by authenticated org members, so they are trusted.
+/// NexusMind tasks are authored by authenticated org members, so they are trusted,
+/// unless the factory created them from untrusted intake (`untrusted` label).
 /// Only unstarted tasks (`backlog`, `todo`) enter.
 pub fn nexusmind_task_to_task_spec(
     task: &Task,
@@ -221,7 +229,11 @@ pub fn nexusmind_task_to_task_spec(
     build_spec(
         source,
         &format!("nexusmind_task:{}", task.id),
-        OriginTrust::Trusted,
+        if task.labels.iter().any(|l| l.eq_ignore_ascii_case(UNTRUSTED_LABEL)) {
+            OriginTrust::Untrusted
+        } else {
+            OriginTrust::Trusted
+        },
         target,
         &task.title,
         task.description.as_deref().unwrap_or_default(),
@@ -600,6 +612,69 @@ impl IntakeSource for SentryIntake {
     }
 }
 
+// ---------------------------------------------------------------- Source config (F3)
+
+/// A configured Slack or Sentry source, as stored in `factory_intake_sources`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceConfig {
+    Slack { channel_id: String, allowed_reactors: Vec<String> },
+    Sentry { base_url: String, org_slug: String, project_slug: String, query: String },
+}
+
+/// Slack user ids are uppercase alphanumerics (`U0123ABC`, `W0123ABC`).
+fn valid_slack_user(user: &str) -> bool {
+    (8..=20).contains(&user.len()) && user.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// Validates a stored source config for its kind (`slack` or `sentry`).
+pub fn parse_source_config(kind: &str, config: &Value) -> Result<SourceConfig, String> {
+    let text = |name: &str| config.get(name).and_then(|v| v.as_str()).map(str::trim).unwrap_or_default().to_string();
+    match kind {
+        "slack" => {
+            let channel_id = text("channel_id");
+            if !valid_slack_channel(&channel_id) {
+                return Err("invalid_slack_channel".into());
+            }
+            let reactors = config.get("allowed_reactors").and_then(|v| v.as_array()).ok_or("allowed_reactors_required")?;
+            let allowed_reactors: Vec<String> = reactors
+                .iter()
+                .map(|v| v.as_str().map(str::trim).unwrap_or_default().to_string())
+                .collect();
+            if allowed_reactors.is_empty() || allowed_reactors.len() > 50 || !allowed_reactors.iter().all(|u| valid_slack_user(u)) {
+                return Err("invalid_allowed_reactors".into());
+            }
+            Ok(SourceConfig::Slack { channel_id, allowed_reactors })
+        }
+        "sentry" => {
+            let base_url = text("base_url");
+            let (org_slug, project_slug, query) = (text("org_slug"), text("project_slug"), text("query"));
+            if sentry_base_host(&base_url).is_none() {
+                return Err("invalid_sentry_base_url".into());
+            }
+            if !valid_sentry_slug(&org_slug) || !valid_sentry_slug(&project_slug) {
+                return Err("invalid_sentry_slug".into());
+            }
+            if query.is_empty() || query.chars().count() > 500 {
+                return Err("sentry_query_required".into());
+            }
+            Ok(SourceConfig::Sentry { base_url, org_slug, project_slug, query })
+        }
+        _ => Err("unknown_intake_kind".into()),
+    }
+}
+
+/// The fetcher for a validated source config.
+pub fn intake_for(config: SourceConfig, token: String, target: IntakeTarget) -> Box<dyn IntakeSource> {
+    match config {
+        SourceConfig::Slack { channel_id, allowed_reactors } => {
+            Box::new(SlackIntake { token, channel_id, allowed_reactors, target })
+        }
+        SourceConfig::Sentry { base_url, org_slug, project_slug, query } => {
+            Box::new(SentryIntake { token, base_url, org_slug, project_slug, query, target })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,5 +1034,46 @@ mod tests {
         assert!(valid_sentry_slug("acme-prod"));
         assert!(!valid_sentry_slug(""));
         assert!(!valid_sentry_slug("Acme/../x"));
+    }
+
+    #[test]
+    fn source_configs_are_validated_per_kind() {
+        let slack = parse_source_config(
+            "slack",
+            &json!({"channel_id": "C0123ABCD", "allowed_reactors": ["ULEAD0001"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            slack,
+            SourceConfig::Slack { channel_id: "C0123ABCD".into(), allowed_reactors: vec!["ULEAD0001".into()] }
+        );
+        for bad in [
+            json!({"channel_id": "C0123ABCD", "allowed_reactors": []}),
+            json!({"channel_id": "C0123ABCD"}),
+            json!({"channel_id": "C0123ABCD", "allowed_reactors": ["lowercase1"]}),
+            json!({"channel_id": "x", "allowed_reactors": ["ULEAD0001"]}),
+        ] {
+            assert!(parse_source_config("slack", &bad).is_err(), "{bad}");
+        }
+        let sentry = json!({"base_url": "https://sentry.io", "org_slug": "acme", "project_slug": "web", "query": "is:unresolved"});
+        assert!(parse_source_config("sentry", &sentry).is_ok());
+        let mut no_query = sentry.clone();
+        no_query["query"] = json!("  ");
+        let mut evil = sentry.clone();
+        evil["base_url"] = json!("https://sentry.io@evil.com");
+        for bad in [no_query, evil] {
+            assert!(parse_source_config("sentry", &bad).is_err());
+        }
+        assert!(parse_source_config("github", &json!({})).is_err());
+    }
+
+    #[test]
+    fn factory_issues_and_tasks_from_untrusted_intake_stay_untrusted() {
+        let mut opened = issue("MEMBER", &["factory"]);
+        opened["body"] = json!(format!("Text from Slack\n<!-- {INTAKE_ISSUE_MARKER}abc -->"));
+        let spec = github_issue_to_task_spec(&opened, &target(), now()).unwrap().unwrap();
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        let member = github_issue_to_task_spec(&issue("MEMBER", &["factory"]), &target(), now()).unwrap().unwrap();
+        assert_eq!(member.origin_trust, OriginTrust::Trusted);
     }
 }

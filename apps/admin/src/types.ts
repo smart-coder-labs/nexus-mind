@@ -1580,3 +1580,58 @@ export interface FactoryBot {
   status: string
   key_created_at: string | null
 }
+
+/** Factory F3 intake: a Slack channel or Sentry project feeding one issue-resolver agent. */
+export type FactoryIntakeKind = 'slack' | 'sentry'
+export type FactoryPrivacyClass = 'public' | 'internal' | 'confidential' | 'restricted'
+export interface FactoryIntakeSource {
+  id: string
+  kind: FactoryIntakeKind
+  name: string
+  project: string
+  resolver_definition_id: string
+  repository: string | null
+  base_ref: string
+  privacy_class: FactoryPrivacyClass
+  connector_id: string
+  config: Record<string, unknown>
+  enabled: boolean
+  last_polled_at: string | null
+  last_error: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+export interface FactoryIntakeSourceInput {
+  kind?: FactoryIntakeKind
+  name: string
+  project: string
+  resolver_definition_id: string
+  base_ref?: string
+  privacy_class?: FactoryPrivacyClass
+  connector_id: string
+  config: Record<string, unknown>
+  enabled?: boolean
+}
+export interface FactoryIntakeItem {
+  task_id: string
+  source_id: string | null
+  source_ref: string
+  nexus_task_id: string | null
+  task_class: string
+  origin_trust: 'trusted' | 'untrusted'
+  repository: string
+  start_decision: 'started' | 'backlog'
+  start_reason: string
+  jev: Record<string, unknown> | null
+  issue_number: number | null
+  run_id: string | null
+  created_at: string
+}
+export interface FactoryWatchdog {
+  slack_connector_id: string | null
+  enabled: boolean
+  daily_hour_utc: number
+  last_sent_at: string | null
+  last_daily_on: string | null
+}

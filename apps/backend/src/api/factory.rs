@@ -478,3 +478,273 @@ pub async fn submit_factory_task(
         .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "task vanished"))?;
     Ok((StatusCode::CREATED, Json(task)))
 }
+
+// ---------------------------------------------------------------- intake (F3)
+
+#[derive(serde::Deserialize)]
+pub struct IntakeSourceRequest {
+    /// `slack` or `sentry`; only read on create (a source's kind never changes).
+    pub kind: Option<String>,
+    pub name: String,
+    pub project: String,
+    pub resolver_definition_id: String,
+    pub base_ref: Option<String>,
+    pub privacy_class: Option<String>,
+    pub connector_id: String,
+    pub config: serde_json::Value,
+    pub enabled: Option<bool>,
+}
+
+const PRIVACY_CLASSES: [&str; 4] = ["public", "internal", "confidential", "restricted"];
+
+/// Validates a source request against `kind` and this org's agents/connectors.
+fn intake_write(
+    conn: &rusqlite::Connection,
+    org_id: &str,
+    kind: &str,
+    input: &IntakeSourceRequest,
+) -> ApiResult<crate::db::factory_intake::SourceWrite> {
+    let invalid = |message: &str| error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", message);
+    let name = input.name.trim();
+    let project = input.project.trim();
+    if name.is_empty() || name.chars().count() > 100 || project.is_empty() || project.chars().count() > 200 {
+        return Err(invalid("name (1-100) and project (1-200) are required"));
+    }
+    let base_ref = input.base_ref.as_deref().map(str::trim).unwrap_or("main");
+    let base_ref_ok = !base_ref.is_empty()
+        && base_ref.len() <= 200
+        && !base_ref.starts_with('-')
+        && !base_ref.contains("..")
+        && base_ref.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b));
+    if !base_ref_ok {
+        return Err(invalid("invalid base_ref"));
+    }
+    let privacy_class = input.privacy_class.as_deref().unwrap_or("internal");
+    if !PRIVACY_CLASSES.contains(&privacy_class) {
+        return Err(invalid("unknown privacy_class"));
+    }
+    let config = crate::factory::intake::parse_source_config(kind, &input.config)
+        .map_err(|code| error(StatusCode::UNPROCESSABLE_ENTITY, &code, "invalid source config"))?;
+    let sentry_host = match &config {
+        crate::factory::intake::SourceConfig::Sentry { base_url, .. } => {
+            crate::factory::intake::sentry_base_host(base_url)
+        }
+        crate::factory::intake::SourceConfig::Slack { .. } => None,
+    };
+    use crate::db::factory_intake::ReferenceError;
+    match crate::db::factory_intake::check_source_references(
+        conn,
+        org_id,
+        &input.resolver_definition_id,
+        &input.connector_id,
+        kind,
+        sentry_host.as_deref(),
+    )
+    .map_err(internal)?
+    {
+        Ok(()) => {}
+        Err(ReferenceError::Resolver) => {
+            return Err(error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_resolver",
+                "resolver_definition_id must be an issue-resolver agent of this organization",
+            ))
+        }
+        Err(ReferenceError::Connector) => {
+            return Err(error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_connector",
+                "connector_id must be a secret connector created for this kind of intake (and, for Sentry, this host)",
+            ))
+        }
+    }
+    Ok(crate::db::factory_intake::SourceWrite {
+        kind: kind.to_string(),
+        name: name.to_string(),
+        project: project.to_string(),
+        resolver_definition_id: input.resolver_definition_id.clone(),
+        base_ref: base_ref.to_string(),
+        privacy_class: privacy_class.to_string(),
+        connector_id: input.connector_id.clone(),
+        config: input.config.clone(),
+        enabled: input.enabled.unwrap_or(true),
+    })
+}
+
+fn source_name_taken() -> (StatusCode, Json<ApiError>) {
+    error(StatusCode::CONFLICT, "name_taken", "Another intake source has this name")
+}
+
+fn source_not_found() -> (StatusCode, Json<ApiError>) {
+    error(StatusCode::NOT_FOUND, "intake_source_not_found", "Intake source not found")
+}
+
+/// `GET /v1/factory/intake/sources`
+pub async fn list_intake_sources(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<Vec<crate::db::factory_intake::IntakeSourceRow>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    Ok(Json(crate::db::factory_intake::list_sources(&conn, &auth.org_id).map_err(internal)?))
+}
+
+/// `POST /v1/factory/intake/sources`: a Slack channel or Sentry project feeding
+/// one issue-resolver agent. The token lives in a secret connector.
+pub async fn create_intake_source(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<IntakeSourceRequest>,
+) -> ApiResult<(StatusCode, Json<crate::db::factory_intake::IntakeSourceRow>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    let kind = input.kind.as_deref().unwrap_or_default();
+    if !matches!(kind, "slack" | "sentry") {
+        return Err(error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", "kind must be slack or sentry"));
+    }
+    let write = intake_write(&conn, &auth.org_id, kind, &input)?;
+    let source = crate::db::factory_intake::create_source(&conn, &auth.org_id, &auth.user_id, &write)
+        .map_err(internal)?
+        .ok_or_else(source_name_taken)?;
+    Ok((StatusCode::CREATED, Json(source)))
+}
+
+/// `PUT /v1/factory/intake/sources/:id`: replaces a source's settings.
+pub async fn update_intake_source(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    AppJson(input): AppJson<IntakeSourceRequest>,
+) -> ApiResult<Json<crate::db::factory_intake::IntakeSourceRow>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    let existing = crate::db::factory_intake::get_source(&conn, &auth.org_id, &id)
+        .map_err(internal)?
+        .ok_or_else(source_not_found)?;
+    if input.kind.as_deref().is_some_and(|kind| kind != existing.kind) {
+        return Err(error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", "a source's kind cannot change"));
+    }
+    let write = intake_write(&conn, &auth.org_id, &existing.kind, &input)?;
+    if !crate::db::factory_intake::update_source(&conn, &auth.org_id, &id, &write).map_err(internal)? {
+        return Err(source_name_taken());
+    }
+    crate::db::factory_intake::get_source(&conn, &auth.org_id, &id)
+        .map_err(internal)?
+        .map(Json)
+        .ok_or_else(source_not_found)
+}
+
+#[derive(serde::Deserialize)]
+pub struct IntakeSourceEnabled {
+    pub enabled: bool,
+}
+
+/// `PATCH /v1/factory/intake/sources/:id {enabled}`: pause or resume without
+/// re-validating, so a source whose token or agent broke can still be paused.
+pub async fn set_intake_source_enabled(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    AppJson(input): AppJson<IntakeSourceEnabled>,
+) -> ApiResult<Json<crate::db::factory_intake::IntakeSourceRow>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    if !crate::db::factory_intake::set_source_enabled(&conn, &auth.org_id, &id, input.enabled).map_err(internal)? {
+        return Err(source_not_found());
+    }
+    crate::db::factory_intake::get_source(&conn, &auth.org_id, &id)
+        .map_err(internal)?
+        .map(Json)
+        .ok_or_else(source_not_found)
+}
+
+/// `DELETE /v1/factory/intake/sources/:id`. Items already seen are kept.
+pub async fn delete_intake_source(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    if crate::db::factory_intake::delete_source(&conn, &auth.org_id, &id).map_err(internal)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(source_not_found())
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct IntakeItemsQuery {
+    pub limit: Option<i64>,
+}
+
+/// `GET /v1/factory/intake/items?limit=50`: what came in and whether the
+/// factory started it (with the decision model's answer).
+pub async fn list_intake_items(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    axum::extract::Query(query): axum::extract::Query<IntakeItemsQuery>,
+) -> ApiResult<Json<Vec<crate::db::factory_intake::IntakeItem>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    Ok(Json(crate::db::factory_intake::list_items(&conn, &auth.org_id, limit).map_err(internal)?))
+}
+
+#[derive(serde::Deserialize)]
+pub struct WatchdogRequest {
+    pub slack_connector_id: Option<String>,
+    pub enabled: bool,
+    pub daily_hour_utc: Option<i64>,
+}
+
+/// `GET /v1/factory/watchdog` (`null` until configured).
+pub async fn get_watchdog(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<Option<crate::db::factory_intake::Watchdog>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    Ok(Json(crate::db::factory_intake::get_watchdog(&conn, &auth.org_id).map_err(internal)?))
+}
+
+/// `PUT /v1/factory/watchdog`: which Slack webhook connector hears about what
+/// waits on a person, and the hour (UTC) of the daily summary.
+pub async fn put_watchdog(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<WatchdogRequest>,
+) -> ApiResult<Json<Option<crate::db::factory_intake::Watchdog>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    let hour = input.daily_hour_utc.unwrap_or(13);
+    if !(0..=23).contains(&hour) {
+        return Err(error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", "daily_hour_utc must be 0-23"));
+    }
+    if let Some(id) = input.slack_connector_id.as_deref() {
+        if !crate::db::factory_intake::is_slack_connector(&conn, &auth.org_id, id).map_err(internal)? {
+            return Err(error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_connector",
+                "slack_connector_id must be a Slack connector of this organization",
+            ));
+        }
+    }
+    crate::db::factory_intake::upsert_watchdog(
+        &conn,
+        &auth.org_id,
+        input.slack_connector_id.as_deref(),
+        input.enabled,
+        hour,
+    )
+    .map_err(internal)?;
+    Ok(Json(crate::db::factory_intake::get_watchdog(&conn, &auth.org_id).map_err(internal)?))
+}
