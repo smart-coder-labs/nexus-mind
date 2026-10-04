@@ -265,14 +265,12 @@ pub struct MergedPull<'a> {
     pub number: i64,
     pub title: &'a str,
     pub merge_sha: &'a str,
-    pub files: &'a [String],
 }
 
-/// A later commit on the base branch; `files` is loaded only for fix candidates.
+/// A later commit on the base branch.
 pub struct LaterCommit {
     pub sha: String,
     pub message: String,
-    pub files: Option<Vec<String>>,
 }
 
 /// A conventional `fix:`/`hotfix:` commit (scope and `!` allowed).
@@ -282,16 +280,25 @@ pub fn is_fix_message(message: &str) -> bool {
     (kind == "fix" || kind == "hotfix") && head.contains(':')
 }
 
+/// Titles shorter than this are too generic to identify a PR in a message
+/// ("Fix", "Update deps").
+const MIN_TITLE_MATCH: usize = 12;
+
+/// Whether `text` names this PR: `#<number>`, or its title when that is
+/// specific enough.
+fn names(pull: &MergedPull<'_>, text: &str) -> bool {
+    names_pull(text, pull.number)
+        || (pull.title.chars().count() >= MIN_TITLE_MATCH && text.contains(pull.title))
+}
+
 /// Whether `message` reverts this PR: git's own `This reverts commit <sha>`, or a
-/// `Revert` subject naming the PR title or number.
+/// `Revert` subject naming the PR.
 pub fn reverts(pull: &MergedPull<'_>, message: &str) -> bool {
     if message.contains(&format!("This reverts commit {}", pull.merge_sha)) {
         return true;
     }
     let subject = message.lines().next().unwrap_or_default();
-    subject.starts_with("Revert")
-        && ((!pull.title.is_empty() && subject.contains(pull.title))
-            || names_pull(subject, pull.number))
+    subject.starts_with("Revert") && names(pull, subject)
 }
 
 /// `#<number>` in `text`, not as the prefix of a longer number (`#42` vs `#421`).
@@ -305,25 +312,27 @@ fn names_pull(text: &str, number: i64) -> bool {
     })
 }
 
-/// The post-merge signals that mark a change as having been high risk.
-pub fn outcome_signals(pull: &MergedPull<'_>, later: &[LaterCommit], ci_failed: bool) -> Vec<String> {
+/// The post-merge signals that mark a change as having been high risk. Strict
+/// on purpose (ADR 7d6f870f, recalibrated 2026-10-04): touching the same files
+/// flagged 74% of merged PRs in active repositories, so a fix counts only when
+/// its message names the PR, and CI only for the base branch's required checks.
+/// Whatever these miss, the human label covers.
+pub fn outcome_signals(
+    pull: &MergedPull<'_>,
+    later: &[LaterCommit],
+    failed_required_checks: &[String],
+) -> Vec<String> {
     let mut signals = Vec::new();
     for commit in later.iter().filter(|c| c.sha != pull.merge_sha) {
         let short = &commit.sha[..commit.sha.len().min(12)];
         if reverts(pull, &commit.message) {
             signals.push(format!("reverted_by:{short}"));
-        } else if is_fix_message(&commit.message) {
-            let touches = commit
-                .files
-                .as_ref()
-                .is_some_and(|files| files.iter().any(|f| pull.files.contains(f)));
-            if touches {
-                signals.push(format!("follow_up_fix:{short}"));
-            }
+        } else if is_fix_message(&commit.message) && names(pull, &commit.message) {
+            signals.push(format!("follow_up_fix:{short}"));
         }
     }
-    if ci_failed {
-        signals.push("merge_commit_ci_failed".to_string());
+    for check in failed_required_checks {
+        signals.push(format!("required_check_failed:{check}"));
     }
     signals
 }
@@ -367,51 +376,38 @@ pub async fn collect_outcome(
     let window_end = merged + chrono::Duration::days(OUTCOME_WINDOW_DAYS);
     let now = chrono::Utc::now();
     let until = window_end.min(now).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let files: Vec<String> = super::connectors::list_github_pull_files(token, repository, number)
-        .await?
-        .into_iter()
-        .map(|f| f.filename)
-        .collect();
-    let mut later = Vec::new();
-    for commit in super::connectors::list_branch_commits(token, repository, base, merged_at, &until).await? {
-        let sha = commit.get("sha").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let message = commit
-            .pointer("/commit/message")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if sha.is_empty() || sha == merge_sha {
-            continue;
-        }
-        let files = if is_fix_message(&message) {
-            let detail = super::connectors::get_commit(token, repository, &sha).await?;
-            Some(
-                detail
-                    .get("files")
-                    .and_then(|v| v.as_array())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|f| f.get("filename").and_then(|v| v.as_str()).map(str::to_string))
-                    .collect(),
-            )
-        } else {
-            None
-        };
-        later.push(LaterCommit { sha, message, files });
-    }
-    // An unreadable CI is an error (the decision stays pending and is retried),
-    // never "CI did not fail".
-    let ci_failed = super::connectors::list_commit_ci_runs(token, repository, merge_sha)
-        .await?
-        .iter()
-        .any(failed);
+    let later: Vec<LaterCommit> =
+        super::connectors::list_branch_commits(token, repository, base, merged_at, &until)
+            .await?
+            .into_iter()
+            .filter_map(|commit| {
+                let sha = commit.get("sha")?.as_str()?.to_string();
+                let message = commit.pointer("/commit/message")?.as_str()?.to_string();
+                (sha != merge_sha).then_some(LaterCommit { sha, message })
+            })
+            .collect();
+    // Only checks the base branch requires: anything else may be flaky or
+    // advisory. A required check absent from the merge commit is not a failure.
+    // An unreadable list is an error (the decision stays pending), never a pass.
+    let required = super::connectors::required_status_checks(token, repository, base).await?;
+    let failed_required: Vec<String> = if required.is_empty() {
+        Vec::new()
+    } else {
+        super::connectors::list_commit_ci_runs(token, repository, merge_sha)
+            .await?
+            .iter()
+            .filter(|run| failed(run))
+            .filter_map(|run| run.get("name").and_then(|v| v.as_str()))
+            .filter(|name| required.iter().any(|r| r == name))
+            .map(str::to_string)
+            .collect()
+    };
     let summary = MergedPull {
         number,
         title: pull.get("title").and_then(|v| v.as_str()).unwrap_or_default(),
         merge_sha,
-        files: &files,
     };
-    let signals = outcome_signals(&summary, &later, ci_failed);
+    let signals = outcome_signals(&summary, &later, &failed_required);
     Ok((outcome_of(&signals, now >= window_end), signals))
 }
 
@@ -469,12 +465,8 @@ mod tests {
         assert_eq!((verdict.as_str(), outcome.as_str()), ("allow", "pending"));
     }
 
-    fn commit(sha: &str, message: &str, files: Option<&[&str]>) -> LaterCommit {
-        LaterCommit {
-            sha: sha.into(),
-            message: message.into(),
-            files: files.map(|f| f.iter().map(|x| x.to_string()).collect()),
-        }
+    fn commit(sha: &str, message: &str) -> LaterCommit {
+        LaterCommit { sha: sha.into(), message: message.into() }
     }
 
     #[test]
@@ -488,25 +480,30 @@ mod tests {
     }
 
     #[test]
-    fn reverts_follow_up_fixes_and_red_ci_mark_high_risk() {
-        let files = vec!["src/a.ts".to_string(), "src/b.ts".to_string()];
+    fn only_fixes_naming_the_pr_and_required_checks_mark_high_risk() {
         let merge = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let pull = MergedPull { number: 42, title: "Add refund button", merge_sha: merge, files: &files };
+        let pull = MergedPull { number: 42, title: "Add refund button to sale detail", merge_sha: merge };
         let later = [
-            commit("b1", &format!("Revert \"Add refund button\"\n\nThis reverts commit {merge}."), None),
-            commit("c2", "fix(refund): rounding", Some(&["src/b.ts"])),
-            commit("d3", "fix: unrelated", Some(&["src/z.ts"])),
-            commit("e4", "feat: other work", None),
-            commit(merge, "Add refund button (#42)", None),
+            commit("b1", &format!("Revert \"Add refund button to sale detail\"\n\nThis reverts commit {merge}.")),
+            commit("c2", "fix(refund): rounding broken by #42"),
+            commit("d3", "fix(refund): rounding in the same file"),
+            commit("e4", "feat: other work (#42)"),
+            commit("f5", "fix: follow-up to Add refund button to sale detail"),
+            commit(merge, "Add refund button to sale detail (#42)"),
         ];
-        let signals = outcome_signals(&pull, &later, true);
-        assert_eq!(signals, ["reverted_by:b1", "follow_up_fix:c2", "merge_commit_ci_failed"]);
+        let signals = outcome_signals(&pull, &later, &["build".to_string()]);
+        assert_eq!(
+            signals,
+            ["reverted_by:b1", "follow_up_fix:c2", "follow_up_fix:f5", "required_check_failed:build"]
+        );
         assert_eq!(outcome_of(&signals, false), "high_risk");
         assert_eq!(outcome_of(&[], false), "pending");
         assert_eq!(outcome_of(&[], true), "clean");
-        // A revert subject naming the PR number counts too.
         assert!(reverts(&pull, "Revert #42: broke checkout"));
         assert!(!reverts(&pull, "Revert #421"), "a longer number is another PR");
+        // A short title is too generic to name the PR.
+        let short = MergedPull { number: 7, title: "Fix", merge_sha: merge };
+        assert!(outcome_signals(&short, &[commit("g6", "fix: Fix typo")], &[]).is_empty());
     }
 
     #[test]

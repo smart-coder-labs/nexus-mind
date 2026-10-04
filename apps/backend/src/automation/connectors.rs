@@ -508,10 +508,53 @@ pub async fn list_branch_commits(
     anyhow::bail!("too_many_commits")
 }
 
-/// One commit with the files it changed.
-pub async fn get_commit(token: &str, repository: &str, sha: &str) -> Result<Value> {
+/// Status check names `branch` requires before merging, from repository
+/// rulesets and classic branch protection. None configured is an empty list.
+pub async fn required_status_checks(
+    token: &str,
+    repository: &str,
+    branch: &str,
+) -> Result<Vec<String>> {
     let (owner, repo) = repository_parts(repository)?;
-    github_get(token, &format!("/repos/{owner}/{repo}/commits/{sha}")).await
+    let mut required = Vec::new();
+    let rules = github_get(token, &format!("/repos/{owner}/{repo}/rules/branches/{branch}")).await?;
+    for rule in rules.as_array().into_iter().flatten() {
+        if rule.get("type").and_then(|v| v.as_str()) == Some("required_status_checks") {
+            for check in rule
+                .pointer("/parameters/required_status_checks")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(name) = check.get("context").and_then(|v| v.as_str()) {
+                    required.push(name.to_string());
+                }
+            }
+        }
+    }
+    let branch_info = github_get(token, &format!("/repos/{owner}/{repo}/branches/{branch}")).await?;
+    let protection = branch_info.pointer("/protection/required_status_checks");
+    for name in protection
+        .and_then(|p| p.get("contexts"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+    {
+        required.push(name.to_string());
+    }
+    for name in protection
+        .and_then(|p| p.get("checks"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("context").and_then(|v| v.as_str()))
+    {
+        required.push(name.to_string());
+    }
+    required.sort();
+    required.dedup();
+    Ok(required)
 }
 
 pub async fn find_github_issue_by_marker(

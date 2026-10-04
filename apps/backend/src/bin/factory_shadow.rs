@@ -4,6 +4,7 @@
 //!   factory-shadow backfill <org_id> <owner/repo> [--since YYYY-MM-DD] [--max N]
 //!   factory-shadow refresh  <org_id>
 //!   factory-shadow report   <org_id>
+//!   factory-shadow rescore  <org_id>
 //!
 //! `backfill` asks Jev about already merged PRs (their outcome is known at once
 //! when the 7-day window has passed). `refresh` settles pending decisions,
@@ -41,6 +42,25 @@ async fn main() -> anyhow::Result<()> {
     let store = SqliteStore::new(connect(&db_path)?);
     match command.as_str() {
         "report" => report(&store, org_id),
+        "rescore" => {
+            // Recompute every signal-settled outcome under the current rules
+            // (no new model calls), then settle them now rather than hourly.
+            let reset = {
+                let db = store.conn();
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+                factory_queries::reset_shadow_outcomes(&conn, org_id)?
+            };
+            eprintln!("reset {reset} outcomes");
+            let token = nexusmind::automation::worker::server_github_token().await?;
+            loop {
+                let summary = shadow::refresh_pending(&store, org_id, &token).await?;
+                println!("{}", serde_json::json!({"pass": summary}));
+                if summary.settled == 0 {
+                    break;
+                }
+            }
+            report(&store, org_id)
+        }
         "refresh" => {
             let token = nexusmind::automation::worker::server_github_token().await?;
             refresh(&store, org_id, &token).await
@@ -142,7 +162,14 @@ async fn backfill(
             Ok(()) => recorded += 1,
             Err(error) => {
                 failed += 1;
-                eprintln!("pull {number}: {error:#}");
+                let text = format!("{error:#}");
+                eprintln!("pull {number}: {text}");
+                // The GitHub token is shared with the reviewer and the merger:
+                // stop at the first rate-limit answer instead of burning it.
+                if text.contains("403") || text.contains("429") || text.contains("rate limit") {
+                    eprintln!("stopping: GitHub rate limit; rerun later (recorded pulls are skipped)");
+                    break;
+                }
             }
         }
     }
