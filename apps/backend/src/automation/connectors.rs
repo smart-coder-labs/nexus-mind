@@ -579,6 +579,42 @@ pub async fn required_status_checks(
     Ok(required)
 }
 
+/// Creates a labelled issue with exactly one POST and no unlabelled retry: a
+/// timeout may hide a created issue, which the caller finds by its marker.
+pub async fn create_github_issue_once(
+    token: &str,
+    repository: &str,
+    title: &str,
+    body: &str,
+    labels: &[String],
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    for label in labels {
+        ensure_github_label(token, owner, repo, label).await;
+    }
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/issues"),
+        json!({"title":title,"body":body,"labels":labels}),
+    )
+    .await
+}
+
+/// A recent open issue whose body carries `marker` (and only that: a matching
+/// title is not enough).
+pub async fn find_github_issue_with_marker(token: &str, repository: &str, marker: &str) -> Result<Option<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    let value = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/issues?state=open&sort=created&direction=desc&per_page=100"),
+    )
+    .await?;
+    Ok(value.as_array().into_iter().flatten().find(|issue| {
+        issue.get("pull_request").is_none()
+            && issue.get("body").and_then(|b| b.as_str()).is_some_and(|body| body.contains(marker))
+    }).cloned())
+}
+
 pub async fn find_github_issue_by_marker(
     token: &str,
     repository: &str,

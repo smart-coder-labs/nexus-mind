@@ -63,7 +63,10 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "sandbox_unsupported_executor"
         | "invalid_sandbox_allowed_hosts"
         | "too_many_sandbox_hosts" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
-        "invalid_connector_kind" | "invalid_connector" | "invalid_connector_secret" => {
+        "invalid_connector_kind"
+        | "invalid_connector"
+        | "invalid_connector_secret"
+        | "connector_binding_requires_new_secret" => {
             (StatusCode::UNPROCESSABLE_ENTITY, message.as_str())
         }
         "invalid_github_app_metadata"

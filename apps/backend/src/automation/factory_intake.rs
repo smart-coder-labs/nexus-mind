@@ -34,7 +34,10 @@ const SOURCES_PER_TICK: i64 = 20;
 const ITEMS_PER_POLL: usize = 20;
 /// The intake tick runs at most this often, and never longer than its timeout.
 const TICK_SECONDS: i64 = 60;
-const TICK_TIMEOUT_SECONDS: u64 = 600;
+/// After this, a tick starts no new source or item; the hard timeout is a last
+/// resort that should never cut an item short.
+const TICK_BUDGET_SECONDS: u64 = 480;
+const TICK_TIMEOUT_SECONDS: u64 = 1800;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_TICK: AtomicI64 = AtomicI64::new(0);
@@ -148,6 +151,7 @@ pub fn issue_body(spec: &TaskSpec, marker: &str) -> String {
 // ---------------------------------------------------------------- polling
 
 async fn poll_sources(store: &SqliteStore) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TICK_BUDGET_SECONDS);
     let due = {
         let db = store.conn();
         let Ok(conn) = db.lock() else { return };
@@ -160,7 +164,10 @@ async fn poll_sources(store: &SqliteStore) {
         }
     };
     for due in due {
-        let outcome = poll_one(store, &due).await;
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        let outcome = poll_one(store, &due, deadline).await;
         let db = store.conn();
         if let Ok(conn) = db.lock() {
             let error = outcome.err().map(|e| format!("{e:#}"));
@@ -172,7 +179,11 @@ async fn poll_sources(store: &SqliteStore) {
     }
 }
 
-async fn poll_one(store: &SqliteStore, due: &store_intake::DueSource) -> anyhow::Result<()> {
+async fn poll_one(
+    store: &SqliteStore,
+    due: &store_intake::DueSource,
+    deadline: std::time::Instant,
+) -> anyhow::Result<()> {
     let source = &due.source;
     let repository = source.repository.clone().ok_or_else(|| anyhow::anyhow!("resolver_has_no_repository"))?;
     let config = parse_source_config(&source.kind, &source.config).map_err(|e| anyhow::anyhow!(e))?;
@@ -202,7 +213,7 @@ async fn poll_one(store: &SqliteStore, due: &store_intake::DueSource) -> anyhow:
     let specs = intake_for(config, token, target).fetch().await?;
     let mut handled = 0;
     for spec in specs {
-        if handled >= ITEMS_PER_POLL {
+        if handled >= ITEMS_PER_POLL || std::time::Instant::now() >= deadline {
             break;
         }
         let known = {
@@ -271,10 +282,10 @@ async fn handle_item(
     };
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+    store_intake::finish_item(&conn, &due.org_id, &item)?;
     if item.start_decision == "started" {
         store_intake::mark_task_started(&conn, &due.org_id, &nexus_task_id)?;
     }
-    store_intake::finish_item(&conn, &due.org_id, &item)?;
     Ok(())
 }
 
@@ -319,18 +330,36 @@ async fn decide_and_start(
     if repo.get("private").and_then(|v| v.as_bool()) != Some(true) {
         return Err("repository_not_private".into());
     }
-    let marker = format!("nexusmind-factory-intake:{}", spec.task_id);
-    let issue = super::connectors::create_github_issue(
+    let marker = format!("{}{}", crate::factory::intake::INTAKE_ISSUE_MARKER, spec.task_id);
+    let created = super::connectors::create_github_issue_once(
         &token,
         repository,
         &spec.title,
         &issue_body(spec, &marker),
         &[crate::factory::intake::INTAKE_LABEL.to_string()],
     )
-    .await
-    .map_err(|_| "issue_create_failed".to_string())?;
-    let number = issue.get("number").and_then(|v| v.as_i64()).ok_or("issue_create_failed")?;
+    .await;
+    let issue = match created {
+        Ok(issue) => Some(issue),
+        // A timeout can hide an issue GitHub did create: look for its marker so
+        // it is recorded (and held) rather than orphaned.
+        Err(_) => super::connectors::find_github_issue_with_marker(&token, repository, &marker)
+            .await
+            .ok()
+            .flatten(),
+    };
+    let number = issue
+        .as_ref()
+        .and_then(|issue| issue.get("number"))
+        .and_then(|v| v.as_i64())
+        .ok_or("issue_create_failed")?;
     item.issue_number = Some(number);
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| "database_lock".to_string())?;
+        store_intake::record_issue(&conn, &due.org_id, &spec.task_id, number)
+            .map_err(|_| "database_error".to_string())?;
+    }
     let input = json!({"trigger": {
         "explicit": true,
         "kind": "github_issue",
@@ -352,6 +381,9 @@ async fn decide_and_start(
     )
     .map_err(|e| format!("run_enqueue_failed:{e}"))?
     .ok_or("resolver_not_found")?;
+    // Under the same lock as the enqueue: the run is never left unrecorded.
+    store_intake::record_run(&conn, &due.org_id, &spec.task_id, &run.id)
+        .map_err(|_| "database_error".to_string())?;
     item.run_id = Some(run.id);
     item.start_decision = "started".into();
     Ok(())

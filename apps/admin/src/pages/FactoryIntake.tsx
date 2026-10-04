@@ -159,7 +159,8 @@ export default function FactoryIntake() {
         if (current.kind === 'sentry') metadata.sentry_host = sentryHost(current.baseUrl)
         const connector = await client.putAutonomousAgentConnector({
           kind: 'target_secret',
-          name: `intake: ${current.name.trim()}`,
+          // A unique name: the connector upsert by name must never overwrite another token.
+          name: `intake: ${current.name.trim()} · ${Date.now().toString(36)}`,
           secret: current.newToken.trim(),
           metadata,
           scopes: ['target:use'],

@@ -408,18 +408,54 @@ pub fn begin_item(
     if item.origin_trust == "untrusted" {
         crate::db::queries::add_task_label(&tx, &task.id, crate::factory::intake::UNTRUSTED_LABEL)?;
     }
-    let item = IntakeItem { nexus_task_id: Some(task.id.clone()), ..item.clone() };
-    record_item(&tx, org_id, &item)?;
+    // A plain insert: a colliding item rolls the task back instead of being
+    // silently ignored.
+    tx.execute(
+        "INSERT INTO factory_intake_items
+           (org_id,task_id,source_id,source_ref,nexus_task_id,task_class,origin_trust,repository,start_decision,start_reason)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'backlog','deciding')",
+        params![
+            org_id,
+            item.task_id,
+            item.source_id,
+            item.source_ref,
+            task.id,
+            item.task_class,
+            item.origin_trust,
+            item.repository
+        ],
+    )?;
     tx.commit()?;
     Ok(task.id)
 }
 
-/// Records the start decision on an item created by [`begin_item`].
+/// Records the GitHub issue opened for an item as soon as it exists, so the
+/// merge hold knows it whatever happens next.
+pub fn record_issue(conn: &Connection, org_id: &str, task_id: &str, issue_number: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE factory_intake_items SET issue_number=?3 WHERE org_id=?1 AND task_id=?2",
+        params![org_id, task_id, issue_number],
+    )?;
+    Ok(())
+}
+
+/// Records the run started for an item, right after it is enqueued.
+pub fn record_run(conn: &Connection, org_id: &str, task_id: &str, run_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE factory_intake_items SET run_id=?3,start_decision='started' WHERE org_id=?1 AND task_id=?2",
+        params![org_id, task_id, run_id],
+    )?;
+    Ok(())
+}
+
+/// Records the start decision on an item [`begin_item`] left undecided.
+/// The issue and run already recorded are kept.
 pub fn finish_item(conn: &Connection, org_id: &str, item: &IntakeItem) -> Result<()> {
     conn.execute(
-        "UPDATE factory_intake_items SET task_class=?3,start_decision=?4,start_reason=?5,jev_json=?6,
-                issue_number=?7,run_id=?8
-          WHERE org_id=?1 AND task_id=?2",
+        "UPDATE factory_intake_items SET task_class=?3,
+                start_decision=CASE WHEN run_id IS NOT NULL THEN 'started' ELSE ?4 END,start_reason=?5,jev_json=?6,
+                issue_number=COALESCE(issue_number,?7),run_id=COALESCE(run_id,?8)
+          WHERE org_id=?1 AND task_id=?2 AND start_reason='deciding'",
         params![
             org_id,
             item.task_id,
@@ -747,8 +783,21 @@ mod tests {
         assert_eq!(labels, ["bugfix", "factory", "untrusted"]);
         assert!(item_exists(&conn, &org, "t-1").unwrap());
         assert_eq!(auto_starts_today(&conn, &org).unwrap(), 0);
-        item.start_decision = "started".into();
+        // The issue and run are recorded as they happen; a later failure keeps them.
+        record_issue(&conn, &org, "t-1", 12).unwrap();
+        record_run(&conn, &org, "t-1", "run-1").unwrap();
+        let mut failed_later = item.clone();
+        failed_later.start_decision = "backlog".into();
+        failed_later.issue_number = None;
+        failed_later.run_id = None;
+        failed_later.start_reason = "database_error".into();
+        finish_item(&conn, &org, &failed_later).unwrap();
+        let stored = &list_items(&conn, &org, 1).unwrap()[0];
+        assert_eq!((stored.start_decision.as_str(), stored.issue_number, stored.run_id.as_deref()), ("started", Some(12), Some("run-1")));
+        // Only an undecided item is finished once.
         finish_item(&conn, &org, &item).unwrap();
+        assert_eq!(list_items(&conn, &org, 1).unwrap()[0].start_reason, "database_error");
+        assert!(begin_item(&conn, &org, &user, "app", "Again", "x", &item).is_err());
         assert_eq!(auto_starts_today(&conn, &org).unwrap(), 1);
         assert_eq!(list_items(&conn, &org, 10).unwrap().len(), 1);
 
@@ -790,5 +839,23 @@ mod tests {
         assert_eq!(watchdog.last_daily_on.as_deref(), Some("2026-10-04"));
         upsert_watchdog(&conn, &org, None, true, 13).unwrap();
         assert!(active_watchdogs(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_stored_secret_cannot_be_rebound_without_a_new_secret() {
+        let (conn, org, user) = setup();
+        connector(&conn, &org, "QA login", "target_secret");
+        let request = |metadata: serde_json::Value| crate::models::types::PutAutonomousAgentConnectorRequest {
+            kind: "target_secret".into(),
+            name: "QA login".into(),
+            secret: None,
+            metadata,
+            scopes: vec!["target:use".into()],
+        };
+        let rebind = serde_json::json!({"purpose": "factory_intake", "source_kind": "sentry", "sentry_host": "evil.example"});
+        let error = crate::db::queries::put_autonomous_agent_connector(&conn, &org, &user, &request(rebind)).unwrap_err();
+        assert_eq!(error.to_string(), "connector_binding_requires_new_secret");
+        // Other metadata may still change without the secret.
+        assert!(crate::db::queries::put_autonomous_agent_connector(&conn, &org, &user, &request(serde_json::json!({"note": "x"}))).is_ok());
     }
 }
