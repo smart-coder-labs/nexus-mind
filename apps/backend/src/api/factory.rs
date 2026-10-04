@@ -163,3 +163,88 @@ pub async fn rotate_bot_key(
         Json(serde_json::json!({ "bot": bot, "api_key": api_key })),
     ))
 }
+
+// ---------------------------------------------------------------- shadow (F3)
+
+#[derive(serde::Serialize)]
+pub struct ShadowReport {
+    pub classes: Vec<factory_queries::ShadowClassReport>,
+    pub min_settled_allows: i64,
+    pub max_false_low_rate: f64,
+}
+
+/// `GET /v1/factory/shadow/report`: per-class false-low-risk rate of the
+/// decision model in shadow, against the OD-5 bar.
+pub async fn shadow_report(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<ShadowReport>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    Ok(Json(ShadowReport {
+        classes: factory_queries::shadow_report(&conn, &auth.org_id).map_err(internal)?,
+        min_settled_allows: factory_queries::OD5_MIN_SETTLED_ALLOWS,
+        max_false_low_rate: factory_queries::OD5_MAX_FALSE_LOW_RATE,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ShadowListQuery {
+    pub limit: Option<i64>,
+}
+
+/// `GET /v1/factory/shadow/decisions`: newest shadow decisions, for review.
+pub async fn list_shadow_decisions(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    axum::extract::Query(query): axum::extract::Query<ShadowListQuery>,
+) -> ApiResult<Json<Vec<factory_queries::ShadowDecisionRow>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    Ok(Json(
+        factory_queries::list_shadow_decisions(&conn, &auth.org_id, limit).map_err(internal)?,
+    ))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowLabelRequest {
+    /// `low`, `high`, or null to clear.
+    pub label: Option<String>,
+}
+
+/// `POST /v1/factory/shadow/decisions/:id/label`: a person's verdict on whether
+/// the change was actually high risk. It overrides the automatic signals.
+pub async fn label_shadow_decision(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    AppJson(input): AppJson<ShadowLabelRequest>,
+) -> ApiResult<StatusCode> {
+    if input.label.as_deref().is_some_and(|l| l != "low" && l != "high") {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            "label must be low, high or null",
+        ));
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    let found = factory_queries::label_shadow_decision(
+        &conn,
+        &auth.org_id,
+        &id,
+        input.label.as_deref(),
+        &auth.user_id,
+    )
+    .map_err(internal)?;
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(error(StatusCode::NOT_FOUND, "not_found", "Shadow decision not found"))
+    }
+}

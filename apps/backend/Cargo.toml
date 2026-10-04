@@ -29,6 +29,10 @@ name = "factory-golden-replay"
 path = "src/bin/factory_golden_replay.rs"
 
 [[bin]]
+name = "factory-shadow"
+path = "src/bin/factory_shadow.rs"
+
+[[bin]]
 name = "factory-retrieval-eval"
 path = "src/bin/factory_retrieval_eval.rs"
 

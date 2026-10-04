@@ -2621,6 +2621,29 @@ async fn publish_template_output(
                     }
                 }
             }
+            // F3 shadow (ADR 7d6f870f): the decision model's verdict on this head,
+            // recorded next to its later outcome. Detached and after the merge
+            // decision, so it can neither delay nor change the review or merge.
+            {
+                let (store, org_id, token, repository) = (
+                    store.clone(),
+                    claim.org_id.clone(),
+                    token.clone(),
+                    repository.to_string(),
+                );
+                tokio::spawn(async move {
+                    let recorded = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        super::shadow::record_merge_shadow(&store, &org_id, &token, &repository, number),
+                    )
+                    .await;
+                    match recorded {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => tracing::warn!(repository, number, "shadow decision not recorded: {error:#}"),
+                        Err(_) => tracing::warn!(repository, number, "shadow decision timed out"),
+                    }
+                });
+            }
             Ok(
                 json!({"github_review":review,"event":if request_changes{"REQUEST_CHANGES"}else{"COMMENT"},"auto_merge":auto_merge}),
             )
@@ -7017,6 +7040,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
             if ticks == 1 || ticks.is_multiple_of(240) {
                 reconcile_github_triggers(&store).await;
+                // F3 shadow: settle Jev decisions whose PRs merged or closed,
+                // beside the loop so claiming work never waits on GitHub.
+                super::shadow::spawn_refresh(store.clone());
             }
             retry_one_delivery(&store, &config).await;
             process_due_soaks(&store).await;

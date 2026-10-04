@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 83;
+pub const LATEST_USER_VERSION: i32 = 84;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -96,9 +96,61 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v81(conn)?;
     run_v82(conn)?;
     run_v83(conn)?;
+    run_v84(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
+    Ok(())
+}
+
+/// Migration v84: factory F3 shadow decisions (ADR 7d6f870f). One row per
+/// reviewed PR head: the decision model's answer and verdict, which deterministic
+/// floor would have blocked it, and the outcome used to measure the
+/// false-low-risk rate (post-merge signals and a human label). Shadow rows never
+/// drive what the factory does. Idempotent.
+pub fn run_v84(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 84 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_shadow_decisions (
+             id                TEXT PRIMARY KEY,
+             org_id            TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             provider          TEXT NOT NULL,
+             model             TEXT,
+             repository        TEXT NOT NULL,
+             pull_number       INTEGER NOT NULL,
+             head_sha          TEXT NOT NULL,
+             task_class        TEXT NOT NULL,
+             class_confidence  REAL NOT NULL,
+             risk              REAL NOT NULL,
+             risk_confidence   REAL NOT NULL,
+             needs_human       REAL,
+             verdict           TEXT NOT NULL CHECK (verdict IN ('allow','hold')),
+             floor             TEXT,
+             latency_ms        INTEGER,
+             input_tokens      INTEGER,
+             merged_at         TEXT,
+             merge_sha         TEXT,
+             outcome           TEXT NOT NULL DEFAULT 'pending'
+                               CHECK (outcome IN ('pending','clean','high_risk','not_merged',
+                                                  'superseded','unresolvable')),
+             refresh_failures  INTEGER NOT NULL DEFAULT 0,
+             outcome_signals   TEXT NOT NULL DEFAULT '[]',
+             outcome_checked_at TEXT,
+             human_label       TEXT CHECK (human_label IN ('low','high')),
+             labeled_by        TEXT,
+             labeled_at        TEXT,
+             created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, repository, pull_number, head_sha)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_shadow_outcome
+             ON factory_shadow_decisions(org_id, outcome);
+         PRAGMA user_version = 84;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

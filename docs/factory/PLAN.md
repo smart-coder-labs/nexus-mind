@@ -185,6 +185,24 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Add the `factory_operator` MCP profile and tools, the human digest in admin, and a watchdog that notifies only on meaningful change.
 - Add Slack (read) and Sentry intake adapters.
 - **Exit:** a measured false-low-risk rate below threshold (OD-5) before automatic routing is enabled.
+- **Status (2026-10-03): Jev in shadow built (ADR 7d6f870f); the Model Gateway is next.**
+  - **Decided:**
+    - Shadow comes first, so the measurement clock starts before the gateway exists.
+    - Ground truth combines post-merge signals with a human label, and the label wins.
+    - **OD-5:** at most 2% false-low over at least 50 settled `allow` decisions per class.
+    - **Allow rule:** normalized risk ≤ 0.15 with confidence ≥ 0.9, in any class.
+    - **Scope:** every repository, Kasymir included. The user accepted that PR metadata goes to TypeSafe.
+    - **OD-4/OD-6:** the gateway must support model API keys and the Claude Code / Codex CLIs on subscription.
+  - **Built:**
+    - `factory/jev.rs`, the provider. It validates answers against the questions asked.
+    - Migration v84, `factory_shadow_decisions`.
+    - A shadow verdict after every PR review, best effort. `FACTORY_JEV_SHADOW=off` disables it.
+    - Outcome signals within 7 days: a revert, a conventional fix touching the same files, or red CI on the merge commit.
+    - An hourly refresh in the worker.
+    - The `factory-shadow backfill|refresh|report` binary.
+    - `GET /v1/factory/shadow/report`, `GET /v1/factory/shadow/decisions` and `POST …/:id/label`.
+    - The admin panel on the factory policies page.
+  - **Volume:** no PR reviewer is active in production, so the measurement starts from a backfill of already-merged PRs, whose outcome is known at once.
 
 ### F4: Specialists (2–4 weeks)
 

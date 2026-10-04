@@ -1501,6 +1501,42 @@ export interface FactoryPolicy extends FactoryActionPolicy {
   updated_at: string
 }
 
+/** One task class in the decision-model shadow report (factory F3, OD-5). */
+export interface ShadowClassReport {
+  task_class: string
+  decisions: number
+  allowed: number
+  settled_allowed: number
+  false_low: number
+  false_low_rate: number | null
+  meets_od5: boolean
+}
+
+export interface ShadowReport {
+  classes: ShadowClassReport[]
+  min_settled_allows: number
+  max_false_low_rate: number
+}
+
+export type ShadowOutcome = 'pending' | 'clean' | 'high_risk' | 'not_merged' | 'superseded' | 'unresolvable'
+
+export interface ShadowDecision {
+  id: string
+  repository: string
+  pull_number: number
+  head_sha: string
+  task_class: string
+  risk: number
+  risk_confidence: number
+  verdict: 'allow' | 'hold'
+  floor: string | null
+  outcome: ShadowOutcome
+  outcome_signals: string[]
+  merged_at: string | null
+  human_label: 'low' | 'high' | null
+  created_at: string
+}
+
 /** The per-organization identity sandboxed agents use to call NexusMind. */
 export interface FactoryBot {
   user_id: string

@@ -13,6 +13,9 @@ const api = vi.hoisted(() => ({
   deleteFactoryPolicy: vi.fn(),
   getFactoryBot: vi.fn(),
   rotateFactoryBotKey: vi.fn(),
+  getShadowReport: vi.fn(),
+  listShadowDecisions: vi.fn(),
+  labelShadowDecision: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({ createClient: () => api }))
@@ -54,6 +57,8 @@ describe('FactoryPolicies', () => {
     vi.clearAllMocks()
     api.listFactoryPolicies.mockResolvedValue([])
     api.getFactoryBot.mockResolvedValue({ bot: null })
+    api.getShadowReport.mockResolvedValue({ classes: [], min_settled_allows: 50, max_false_low_rate: 0.02 })
+    api.listShadowDecisions.mockResolvedValue([])
   })
 
   it('does not infer access from the role name', () => {

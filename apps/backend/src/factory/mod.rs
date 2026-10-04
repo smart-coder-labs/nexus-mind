@@ -4,6 +4,7 @@ pub mod contracts;
 pub mod egress;
 pub mod egress_server;
 pub mod intake;
+pub mod jev;
 pub mod policy_engine;
 pub mod sandbox;
 pub mod sandbox_exec;
