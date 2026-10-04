@@ -383,6 +383,18 @@ pub fn list_pending_shadow_decisions(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Sends every settled-by-signals decision back to `pending` so its outcome is
+/// recomputed under the current signal rules. Human labels and decisions on
+/// unmerged, superseded or unresolvable heads are left alone. Returns how many.
+pub fn reset_shadow_outcomes(conn: &Connection, org_id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE factory_shadow_decisions
+         SET outcome = 'pending', outcome_signals = '[]', refresh_failures = 0
+         WHERE org_id = ?1 AND outcome IN ('clean','high_risk')",
+        [org_id],
+    )?)
+}
+
 /// Failed refreshes after which a decision is given up as `unresolvable` (a
 /// deleted repository, a token without access, a PR too large to read).
 pub const SHADOW_MAX_REFRESH_FAILURES: i64 = 24;
