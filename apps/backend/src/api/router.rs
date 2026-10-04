@@ -205,6 +205,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(factory::list_policies).put(factory::put_policy),
         )
         .route("/v1/factory/policies/:id", delete(factory::delete_policy))
+        .route("/v1/factory/digest", get(factory::human_digest))
+        .route("/v1/factory/economics", get(factory::economics))
+        .route("/v1/factory/decisions", post(factory::record_human_decision))
+        .route("/v1/factory/tasks", post(factory::submit_factory_task))
         .route("/v1/factory/shadow/report", get(factory::shadow_report))
         .route("/v1/factory/shadow/decisions", get(factory::list_shadow_decisions))
         .route(

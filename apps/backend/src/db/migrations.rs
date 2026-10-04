@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 84;
+pub const LATEST_USER_VERSION: i32 = 85;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -97,9 +97,25 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v82(conn)?;
     run_v83(conn)?;
     run_v84(conn)?;
+    run_v85(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
+    Ok(())
+}
+
+/// Migration v85: index for org-wide event queries by kind and time (the
+/// frontier cap and economics read `model.selected` events). Idempotent.
+pub fn run_v85(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 85 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_autonomous_agent_events_org_kind_time
+             ON autonomous_agent_events(org_id, kind, created_at);
+         PRAGMA user_version = 85;",
+    )?;
     Ok(())
 }
 

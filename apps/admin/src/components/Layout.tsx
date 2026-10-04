@@ -31,6 +31,7 @@ import {
   FileStack,
   Building2,
   BarChart3,
+  Inbox,
   ShieldCheck,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -172,6 +173,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true, requiredPermission: 'code:read' },
       { label: 'Harnesses',   href: '/harnesses',   icon: Boxes,         adminOnly: true, requiredPermission: 'harness:read' },
       { label: 'Automation',  href: '/autonomous-agents', icon: Bot,      adminOnly: true, requiredPermission: 'autonomous_agent:read' },
+      { label: 'Needs a human', href: '/factory-digest', icon: Inbox, adminOnly: true, requiredPermission: 'factory_policy:read' },
       { label: 'Factory policies', href: '/factory-policies', icon: ShieldCheck, adminOnly: true, requiredPermission: 'factory_policy:read' },
     ],
   },

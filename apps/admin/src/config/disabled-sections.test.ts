@@ -8,7 +8,7 @@ const ONLY_CONTEXT_KEPT = [
   '/clients', '/projects', '/code', '/users', '/roles', '/settings',
 ]
 const ONLY_CONTEXT_HIDDEN = [
-  '/usage', '/collections', '/sessions', '/tasks', '/sdd', '/harnesses', '/autonomous-agents', '/factory-policies',
+  '/usage', '/collections', '/sessions', '/tasks', '/sdd', '/harnesses', '/autonomous-agents', '/factory-policies', '/factory-digest',
   '/api-keys', '/agents', '/policies', '/webhooks', '/audit', '/backups',
 ]
 

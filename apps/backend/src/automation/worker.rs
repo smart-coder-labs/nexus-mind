@@ -2769,16 +2769,20 @@ struct MergeEvidence {
 
 /// Asks the policy engine whether this gated commit may be merged, and records the
 /// decision (plan §4). The gates already ran, so no floor applies here.
+#[allow(clippy::too_many_arguments)]
 fn decide_merge(
     store: &SqliteStore,
     org_id: &str,
+    run_id: &str,
     repository: &str,
     number: i64,
     reviewed_sha: &str,
     files: &[super::merge_gate::ChangedFile],
+    required_checks: &[String],
 ) -> anyhow::Result<crate::factory::contracts::ActionVerdict> {
     use crate::db::factory_queries::{list_factory_policies, record_decision, DecisionRecord};
-    use crate::factory::{contracts::Action, policy_engine};
+    use crate::factory::contracts::{Action, ActionVerdict, Verdict, VerdictSource};
+    use crate::factory::policy_engine;
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     let policies: Vec<_> = list_factory_policies(&conn, org_id)?
@@ -2791,6 +2795,7 @@ fn decide_merge(
         task_class: Some(task_class),
         ..Default::default()
     };
+    let subject = format!("{repository}#{number}@{reviewed_sha}");
     let model = merge_decision_model();
     let evaluation = policy_engine::evaluate(
         &input,
@@ -2798,21 +2803,50 @@ fn decide_merge(
         &model,
         policy_engine::DEFAULT_MIN_CONFIDENCE,
     );
+    // The run and its required checks travel with the decision, so a person's
+    // approval of a hold can start the soak that re-runs every gate.
+    let mut inputs = json!({
+        "task_class": task_class,
+        "changed_files": files.len(),
+        "run_id": run_id,
+        "required_checks": required_checks,
+    });
+    // A person (approve_factory_action) may only lift a HOLD the policy or the
+    // decision model put on this exact head: never a policy `deny` (`never`)
+    // nor a floor. Approval allows; rejection keeps it held.
+    let held_for_a_person = evaluation.verdict.verdict == Verdict::Hold
+        && matches!(evaluation.verdict.source, VerdictSource::Policy | VerdictSource::DecisionModel);
+    let human = if held_for_a_person {
+        crate::db::factory_ops::latest_human_decision(&conn, org_id, &subject, "merge")?
+    } else {
+        None
+    };
+    let verdict = match human {
+        Some((decision_id, approved)) => {
+            inputs["human_decision_id"] = json!(decision_id);
+            ActionVerdict {
+                verdict: if approved { Verdict::Allow } else { Verdict::Hold },
+                reason: if approved { "approved by a person".into() } else { "rejected by a person".into() },
+                source: VerdictSource::Human,
+            }
+        }
+        None => evaluation.verdict.clone(),
+    };
     record_decision(
         &conn,
         org_id,
         &DecisionRecord {
-            subject: format!("{repository}#{number}@{reviewed_sha}"),
+            subject,
             action: Action::Merge,
-            verdict: evaluation.verdict.clone(),
+            verdict: verdict.clone(),
             policy_version: evaluation.policy_version,
             provider: None,
             model: None,
             confidence: None,
-            inputs: json!({"task_class": task_class, "changed_files": files.len()}),
+            inputs,
         },
     )?;
-    Ok(evaluation.verdict)
+    Ok(verdict)
 }
 
 /// Decide whether a reviewed PR may be auto-merged. Every deterministic gate runs
@@ -2874,7 +2908,16 @@ async fn auto_merge_pull(
         return Ok(json!({"merged": false, "reason": "verification_failed", "blocking": report.blocking_failures}));
     }
     let files = evidence.files;
-    let verdict = decide_merge(store, &claim.org_id, repository, number, reviewed_sha, &files)?;
+    let verdict = decide_merge(
+        store,
+        &claim.org_id,
+        &claim.run.id,
+        repository,
+        number,
+        reviewed_sha,
+        &files,
+        &required,
+    )?;
     if verdict.verdict != crate::factory::contracts::Verdict::Allow {
         return Ok(json!({"merged": false, "reason": verdict.reason, "decided_by": verdict.source}));
     }
@@ -2936,10 +2979,12 @@ async fn merge_after_soak(
     let verdict = decide_merge(
         store,
         &soak.org_id,
+        &soak.run_id,
         &soak.repository,
         soak.pull_number,
         &soak.head_sha,
         &files,
+        &soak.required_checks,
     )?;
     if verdict.verdict != crate::factory::contracts::Verdict::Allow {
         return Ok(json!({"merged": false, "reason": verdict.reason}));
@@ -7416,6 +7461,64 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+
+    /// A person may lift a policy HOLD on a head, never a policy `never` (deny).
+    #[test]
+    fn a_human_approval_lifts_a_hold_but_never_a_policy_deny() {
+        use crate::db::factory_queries::{record_decision, upsert_factory_policy, DecisionRecord};
+        use crate::factory::contracts::{
+            Action, ActionPolicy, ActionVerdict, PolicyMode, PolicyScope, SchemaV1, Verdict, VerdictSource,
+        };
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        let (org, user, _) = queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        let policy = |mode, version| ActionPolicy {
+            schema_version: SchemaV1,
+            action: Action::Merge,
+            mode,
+            scope: PolicyScope::default(),
+            allow: vec![],
+            stop: vec![],
+            version: std::num::NonZeroU32::new(version).unwrap(),
+        };
+        upsert_factory_policy(&conn, &org.id, &user.id, &policy(PolicyMode::Manual, 1)).unwrap();
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let subject = format!("acme/app#7@{sha}");
+        record_decision(
+            &conn,
+            &org.id,
+            &DecisionRecord {
+                subject: subject.clone(),
+                action: Action::Merge,
+                verdict: ActionVerdict { verdict: Verdict::Allow, reason: "ok".into(), source: VerdictSource::Human },
+                policy_version: None,
+                provider: None,
+                model: None,
+                confidence: None,
+                inputs: json!({}),
+            },
+        )
+        .unwrap();
+        let store = SqliteStore::new(conn);
+        let files = vec![super::super::merge_gate::ChangedFile {
+            filename: "docs/a.md".into(),
+            status: "modified".into(),
+            previous_filename: None,
+        }];
+        let decide = || decide_merge(&store, &org.id, "run-1", "acme/app", 7, sha, &files, &[]).unwrap();
+        // `manual` holds for a person; the approval lifts it.
+        let lifted = decide();
+        assert_eq!((lifted.verdict, lifted.source), (Verdict::Allow, VerdictSource::Human));
+        // `never` denies; the same approval cannot override it.
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            upsert_factory_policy(&conn, &org.id, &user.id, &policy(PolicyMode::Never, 2)).unwrap();
+        }
+        let denied = decide();
+        assert_eq!(denied.verdict, Verdict::Deny);
+        assert_ne!(denied.source, VerdictSource::Human);
+    }
     use super::*;
     #[test]
     fn nexus_runtime_failures_have_actionable_codes() {
