@@ -4,6 +4,7 @@
 //! Environment:
 //! - `FACTORY_PROXY_SIGNING_KEY` (required, ≥ 32 bytes): verifies run tokens.
 //! - `FACTORY_ANTHROPIC_OAUTH_TOKEN` or `FACTORY_ANTHROPIC_API_KEY`: Claude credential.
+//! - `FACTORY_OPENAI_API_KEY` (optional): OpenAI API key for the Codex CLI.
 //! - `FACTORY_NEXUSMIND_KEYS` (optional): JSON object `{"<org_id>": "<nexus-bot API key>"}`.
 //! - `FACTORY_TUNNEL_ALLOWLIST` (optional): comma-separated CONNECT hosts.
 //! - `FACTORY_PROXY_LISTEN` (default `0.0.0.0:8080`).
@@ -66,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let config = EgressConfig {
         signing_key: signing_key.into_bytes(),
         anthropic,
+        openai_api_key: env("FACTORY_OPENAI_API_KEY"),
         nexusmind_keys: match env("FACTORY_NEXUSMIND_KEYS") {
             Some(raw) => serde_json::from_str(&raw).map_err(|_| {
                 anyhow::anyhow!("FACTORY_NEXUSMIND_KEYS must be a JSON object of org_id -> key")

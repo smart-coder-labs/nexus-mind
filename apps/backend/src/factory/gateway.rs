@@ -3,8 +3,8 @@
 //! The router maps a task class to a tier (cheap, standard, frontier) and the
 //! tier to a model of the provider that runs it. Frontier runs are capped per
 //! org and day (OD-4); past the cap a run drops to standard and says so. The
-//! Claude Code CLI is the first provider (subscription, already authenticated
-//! in the sandbox through the egress proxy); the Codex CLI follows.
+//! Claude Code CLI runs on the subscription; the Codex CLI on an OpenAI API key.
+//! Both reach their provider only through the egress proxy.
 
 use crate::factory::contracts::TaskClass;
 use serde::Serialize;
@@ -102,6 +102,35 @@ pub fn claude_model(tier: Tier) -> &'static str {
     }
 }
 
+/// Which CLI runs the agent, and so which models a tier maps to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Provider {
+    #[default]
+    Claude,
+    Codex,
+}
+
+/// The Codex model for a tier: `FACTORY_CODEX_MODEL_<TIER>` or the default.
+pub fn codex_model(tier: Tier) -> String {
+    let (variable, default) = match tier {
+        Tier::Cheap => ("FACTORY_CODEX_MODEL_CHEAP", "gpt-6-luna"),
+        Tier::Standard => ("FACTORY_CODEX_MODEL_STANDARD", "gpt-6.1-sol"),
+        Tier::Frontier => ("FACTORY_CODEX_MODEL_FRONTIER", "gpt-6-astra"),
+    };
+    std::env::var(variable)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| valid_openai_model(value))
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// An OpenAI model id an agent may pin or configure: `gpt-…`, lowercase.
+fn valid_openai_model(value: &str) -> bool {
+    value.starts_with("gpt-")
+        && value.len() <= 64
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+}
+
 /// Explicit model names an agent may pin (`config.model`): Claude Code aliases
 /// or full model ids, optionally with the `[1m]` long-context suffix. Anything
 /// else is ignored, never passed to the CLI. A pin is the admin's explicit
@@ -134,13 +163,26 @@ pub struct RunFacts<'a> {
     /// Frontier runs this org already made today.
     pub frontier_used_today: i64,
     pub frontier_cap: i64,
+    pub provider: Provider,
 }
 
 /// Picks the run's model: an explicit pin, else the configured tier, else the
 /// task class's tier, else the template's. A frontier choice past the daily cap
 /// drops to standard.
 pub fn choose(facts: &RunFacts<'_>) -> Choice {
-    if let Some(model) = facts.configured_model.filter(|m| pinned_model(m)) {
+    if facts.provider == Provider::Codex {
+        if let Some(model) = facts.configured_model.filter(|m| valid_openai_model(m)) {
+            let tier = [Tier::Cheap, Tier::Frontier]
+                .into_iter()
+                .find(|tier| codex_model(*tier) == model)
+                .unwrap_or(Tier::Standard);
+            return Choice { tier, model: model.to_string(), reason: "pinned by the agent".into() };
+        }
+    }
+    if let Some(model) = facts
+        .configured_model
+        .filter(|m| facts.provider == Provider::Claude && pinned_model(m))
+    {
         let tier = match model {
             "haiku" => Tier::Cheap,
             "opus" => Tier::Frontier,
@@ -163,7 +205,11 @@ pub fn choose(facts: &RunFacts<'_>) -> Choice {
     } else {
         tier
     };
-    Choice { tier, model: claude_model(tier).to_string(), reason }
+    let model = match facts.provider {
+        Provider::Claude => claude_model(tier).to_string(),
+        Provider::Codex => codex_model(tier),
+    };
+    Choice { tier, model, reason }
 }
 
 /// Frontier choices an org made today (UTC), counted from `model.selected` run
@@ -276,5 +322,30 @@ mod tests {
         event(3, "run-a", "run.finished", "frontier", &today);
         assert_eq!(frontier_runs_today(&conn, &org.id).unwrap(), 2);
         assert_eq!(frontier_runs_today(&conn, "other-org").unwrap(), 0);
+    }
+
+    #[test]
+    fn codex_runs_map_tiers_to_openai_models_and_only_take_openai_pins() {
+        let facts = |class, model| RunFacts {
+            template_key: "github_issue_resolver",
+            class,
+            configured_model: model,
+            frontier_cap: 20,
+            provider: Provider::Codex,
+            ..Default::default()
+        };
+        assert_eq!(choose(&facts(Some(TaskClass::Docs), None)).model, "gpt-6-luna");
+        assert_eq!(choose(&facts(Some(TaskClass::Bugfix), None)).model, "gpt-6.1-sol");
+        assert_eq!(choose(&facts(Some(TaskClass::Security), None)).model, "gpt-6-astra");
+        let pinned = choose(&facts(None, Some("gpt-6-astra")));
+        assert_eq!((pinned.model.as_str(), pinned.tier), ("gpt-6-astra", Tier::Frontier));
+        // A Claude pin means nothing to Codex, and a Codex pin nothing to Claude.
+        assert_eq!(choose(&facts(None, Some("opus"))).model, "gpt-6.1-sol");
+        let claude = RunFacts { provider: Provider::Claude, ..facts(None, Some("gpt-6-astra")) };
+        assert_eq!(choose(&claude).model, "sonnet");
+        // The frontier cap applies to Codex too.
+        let capped = RunFacts { frontier_used_today: 20, ..facts(Some(TaskClass::Security), None) };
+        assert_eq!(choose(&capped).model, "gpt-6.1-sol");
+        assert!(!valid_openai_model("gpt-6 --x"));
     }
 }

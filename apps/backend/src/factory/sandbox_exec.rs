@@ -183,7 +183,7 @@ pub const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
 
 /// Writes stdin to the path in argv[1].
 const WRITE_FILE: &str =
-    "import sys\nwith open(sys.argv[1],'wb') as f: f.write(sys.stdin.buffer.read())";
+    "import os,sys\nos.makedirs(os.path.dirname(sys.argv[1]) or '.',exist_ok=True)\nwith open(sys.argv[1],'wb') as f: f.write(sys.stdin.buffer.read())";
 /// Prints `name<TAB>base64` for the image files of argv[1] (regular files only,
 /// no links), stopping at the byte budget so one exec stays under its output cap.
 const LIST_ARTIFACTS: &str = "import base64,os,sys\nd=sys.argv[1]\nleft=20971520\nif os.path.isdir(d):\n    for n in sorted(os.listdir(d))[:50]:\n        p=os.path.join(d,n)\n        if not n.lower().endswith(('.png','.jpg','.jpeg','.webp')) or os.path.islink(p) or not os.path.isfile(p):\n            continue\n        size=os.path.getsize(p)\n        if size>5242880 or size>left:\n            continue\n        left-=size\n        print(n+'\\t'+base64.b64encode(open(p,'rb').read()).decode())";

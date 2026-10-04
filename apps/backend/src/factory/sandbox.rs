@@ -93,6 +93,9 @@ pub fn task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
         ),
         ("NO_PROXY", format!("{proxy_host},localhost,127.0.0.1")),
         ("NEXUSMIND_MCP_TOOL_PROFILE", "only_context".to_string()),
+        // Codex: its config file (written per run) and a placeholder key.
+        ("CODEX_HOME", CODEX_HOME.to_string()),
+        (CODEX_KEY_ENV, "sandbox-placeholder-not-a-credential".to_string()),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_string(), value))
@@ -159,6 +162,18 @@ pub fn resolve_isolation(
     executor: &str,
     default: Isolation,
 ) -> anyhow::Result<Isolation> {
+    // Codex runs only in a task pod: its OpenAI key exists only in the proxy.
+    if executor == "codex" {
+        if !crate::automation::codex::CODEX_TEMPLATES.contains(&template_key) {
+            anyhow::bail!("codex_unsupported_template")
+        }
+        return match config.get("isolation") {
+            None => Ok(Isolation::Sandbox),
+            Some(Value::String(value)) if value == "sandbox" => Ok(Isolation::Sandbox),
+            Some(Value::String(value)) if value == "local" => anyhow::bail!("codex_requires_sandbox"),
+            _ => anyhow::bail!("invalid_isolation"),
+        };
+    }
     let supported = executor == "claude" && SANDBOX_TEMPLATES.contains(&template_key);
     let isolation = match config.get("isolation") {
         None if supported => return Ok(default),
@@ -319,6 +334,50 @@ pub fn nexusmind_mcp() -> String {
         }
     }}})
     .to_string()
+}
+
+/// Where the Codex CLI reads its configuration in an agent pod (`CODEX_HOME`).
+pub const CODEX_HOME: &str = "/tmp/codex";
+pub const CODEX_CONFIG_PATH: &str = "/tmp/codex/config.toml";
+/// The environment variable the Codex provider reads its key from: a
+/// placeholder the proxy strips and replaces with the factory's OpenAI key.
+pub const CODEX_KEY_ENV: &str = "FACTORY_OPENAI_KEY";
+
+fn toml_string(value: &str) -> String {
+    // A TOML basic string: JSON escaping is a valid subset.
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// The Codex CLI configuration for an agent pod: every model request goes to
+/// the proxy's OpenAI route (the run token is in the URL, which is why this is
+/// a file in the pod and never an argument), over HTTP rather than websockets.
+/// With `nexusmind`, the NexusMind MCP server is registered the same way as for
+/// Claude (`nexusmind_mcp`): no secret, the proxy injects the org's bot key.
+pub fn codex_config(run_token: &str, nexusmind: bool) -> Vec<u8> {
+    let base_url = format!("http://{PROXY_AUTHORITY}/r/{run_token}/openai/v1");
+    let mut config = format!(
+        "model_provider = \"factory\"\n\
+         [model_providers.factory]\n\
+         name = \"factory\"\n\
+         base_url = {}\n\
+         env_key = \"{CODEX_KEY_ENV}\"\n\
+         wire_api = \"responses\"\n\
+         supports_websockets = false\n",
+        toml_string(&base_url)
+    );
+    if nexusmind {
+        let nexusmind_url = format!("http://{PROXY_AUTHORITY}/r/{run_token}/nexusmind");
+        config.push_str(&format!(
+            "\n[mcp_servers.nexusmind]\n\
+             command = \"nexusmind-mcp\"\n\
+             [mcp_servers.nexusmind.env]\n\
+             NEXUSMIND_API_KEY = \"sandbox-placeholder-not-a-credential\"\n\
+             NEXUSMIND_MCP_TOOL_PROFILE = \"only_context\"\n\
+             NEXUSMIND_BASE_URL = {}\n",
+            toml_string(&nexusmind_url)
+        ));
+    }
+    config.into_bytes()
 }
 
 /// A file name the pod may hand back: a plain screenshot/trace name, never a path.
@@ -837,5 +896,28 @@ mod tests {
             })
             .collect();
         assert_eq!(manifest_env, task_env(&request()));
+    }
+
+    #[test]
+    fn the_codex_config_routes_through_the_proxy_and_holds_no_secret() {
+        let config = String::from_utf8(codex_config("v2.org.run.1.sig", true)).unwrap();
+        assert!(config.contains(&format!("base_url = \"http://{PROXY_AUTHORITY}/r/v2.org.run.1.sig/openai/v1\"")), "{config}");
+        assert!(config.contains("env_key = \"FACTORY_OPENAI_KEY\""));
+        assert!(config.contains("wire_api = \"responses\""));
+        assert!(config.contains("supports_websockets = false"));
+        assert!(config.contains("[mcp_servers.nexusmind]"));
+        assert!(config.contains("sandbox-placeholder-not-a-credential"));
+        assert!(!config.contains("sk-"));
+        let plain = String::from_utf8(codex_config("t", false)).unwrap();
+        assert!(!plain.contains("mcp_servers"));
+    }
+
+    #[test]
+    fn codex_runs_only_sandboxed_and_only_for_code_templates() {
+        let resolve = |config: Value, template: &str| resolve_isolation(&config, template, "codex", Isolation::Local);
+        assert_eq!(resolve(json!({}), "github_issue_resolver").unwrap(), Isolation::Sandbox);
+        assert_eq!(resolve(json!({"isolation": "sandbox"}), "github_pr_reviewer").unwrap(), Isolation::Sandbox);
+        assert_eq!(resolve(json!({"isolation": "local"}), "github_issue_resolver").unwrap_err().to_string(), "codex_requires_sandbox");
+        assert_eq!(resolve(json!({}), "qa").unwrap_err().to_string(), "codex_unsupported_template");
     }
 }

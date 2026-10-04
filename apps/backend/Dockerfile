@@ -26,6 +26,9 @@ RUN cargo build --release --locked
 FROM debian:bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.235
+# Codex CLI for the `codex` executor (factory F3). It runs only in task pods,
+# with its OpenAI key injected by the egress proxy.
+ARG CODEX_VERSION=0.160.0
 ARG OPENSHELL_VERSION=v0.1.2
 
 # Client only. The OpenShell gateway is a separate service with its own
@@ -60,8 +63,9 @@ RUN apt-get update \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm config set prefix /usr/local \
-    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
     && claude --version \
+    && codex --version \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 

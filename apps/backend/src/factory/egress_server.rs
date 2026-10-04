@@ -35,6 +35,8 @@ pub enum AnthropicAuth {
 pub struct EgressConfig {
     pub signing_key: Vec<u8>,
     pub anthropic: Option<AnthropicAuth>,
+    /// OpenAI API key for the Codex CLI; `None` fails the OpenAI route closed.
+    pub openai_api_key: Option<String>,
     /// NexusMind bot API key per organization (`org_id → key`). A run whose org
     /// has no key fails closed.
     pub nexusmind_keys: std::collections::HashMap<String, String>,
@@ -265,6 +267,10 @@ async fn reverse(
         }
         (Upstream::Nexusmind, _, Some(token)) => {
             injected.push(("authorization".into(), format!("Bearer {token}")));
+        }
+        (Upstream::Openai, _, _) if config.openai_api_key.is_some() => {
+            let key = config.openai_api_key.as_deref().unwrap_or_default();
+            injected.push(("authorization".into(), format!("Bearer {key}")));
         }
         (Upstream::GithubPackages, _, _) => match config.github_packages_tokens.get(&run.org_id) {
             Some(auth) => {

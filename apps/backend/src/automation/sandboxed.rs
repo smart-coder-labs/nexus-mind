@@ -563,6 +563,18 @@ pub(crate) async fn run_claude_sandboxed(
         run.retry.to_string(),
         agent_life,
     );
+    // Codex reads its provider (the proxy route, with this run's token) and MCP
+    // servers from a config file in the pod, never from its arguments.
+    let codex = argv.first().is_some_and(|program| program == "codex");
+    if codex {
+        if run.qa.is_some() {
+            anyhow::bail!("codex_unsupported_template")
+        }
+        agent_job.files.push((
+            crate::factory::sandbox::CODEX_CONFIG_PATH.to_string(),
+            crate::factory::sandbox::codex_config(&run_token, run.writes.is_some()),
+        ));
+    }
     if run.qa.is_some() {
         // The browser reaches the targets through the proxy with the run token,
         // which goes into a file in the pod, never into the exec request.
@@ -577,10 +589,12 @@ pub(crate) async fn run_claude_sandboxed(
     // Checkpoint diffs from the executor are forwarded in order; the forwarder
     // ends (its channel closes with the job) before the final diff is sent.
     let forwarder = run.writes.as_ref().map(|sink| {
-        argv.extend([
-            "--mcp-config".to_string(),
-            crate::factory::sandbox::nexusmind_mcp(),
-        ]);
+        if !codex {
+            argv.extend([
+                "--mcp-config".to_string(),
+                crate::factory::sandbox::nexusmind_mcp(),
+            ]);
+        }
         agent_job.collect_diff = true;
         let (inner, mut received) = tokio::sync::mpsc::unbounded_channel();
         agent_job.checkpoints = Some(crate::factory::sandbox_exec::Checkpoints {

@@ -11,6 +11,11 @@
 #     --from-literal=FACTORY_PROXY_SIGNING_KEY=<same value as the worker's> \
 #     --from-literal=FACTORY_ANTHROPIC_OAUTH_TOKEN=<claude setup-token> \
 #     --from-literal=FACTORY_NEXUSMIND_KEYS='{"<org_id>":"<nexus-bot key>"}'
+# Codex executor (F3): add the OpenAI API key to the same secret, then restart the
+# proxy (the key is read at start):
+#   kubectl -n nexusmind-egress patch secret factory-egress-proxy --type merge \
+#     -p '{"stringData":{"FACTORY_OPENAI_API_KEY":"<openai api key>"}}'
+#   kubectl -n nexusmind-egress rollout restart deploy/factory-egress-proxy
 # The worker gets FACTORY_PROXY_SIGNING_KEY through nexusmind-env.
 # Image pull secret, copied from the main namespace into both namespaces:
 #   kubectl get secret ghcr-pull -n nexusmind -o json | jq '.metadata={name:"ghcr-pull",namespace:"nexusmind-sandbox"}' | kubectl apply -f -

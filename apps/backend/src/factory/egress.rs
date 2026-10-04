@@ -14,6 +14,8 @@ pub enum Upstream {
     Nexusmind,
     /// Private npm packages (GitHub Packages), read-only, with the org's token.
     GithubPackages,
+    /// OpenAI Responses API, for the Codex CLI, with the factory's API key.
+    Openai,
 }
 
 impl Upstream {
@@ -22,6 +24,7 @@ impl Upstream {
             Upstream::Anthropic => "api.anthropic.com",
             Upstream::Nexusmind => "api.nexusmind.smartcoderlabs.com",
             Upstream::GithubPackages => "npm.pkg.github.com",
+            Upstream::Openai => "api.openai.com",
         }
     }
 }
@@ -254,6 +257,8 @@ pub fn github_packages_scope(path_and_query: &str) -> Option<String> {
 
 /// Exact paths the Anthropic route may reach.
 const ANTHROPIC_PATHS: &[&str] = &["/v1/messages", "/v1/messages/count_tokens"];
+/// Exact paths the OpenAI route may reach: the Responses API Codex uses.
+const OPENAI_PATHS: &[&str] = &["/v1/responses", "/v1/responses/compact"];
 
 pub fn decide(
     key: &[u8],
@@ -316,6 +321,7 @@ pub fn decide(
         "anthropic" => Upstream::Anthropic,
         "nexusmind" => Upstream::Nexusmind,
         "ghpkg" => Upstream::GithubPackages,
+        "openai" => Upstream::Openai,
         _ => return deny("unknown_route", Some(&run)),
     };
     // Code under test holds a registry-only token: it may install packages
@@ -339,6 +345,15 @@ pub fn decide(
     let path = path_and_query.split('?').next().unwrap_or("");
     if upstream == Upstream::Anthropic && !ANTHROPIC_PATHS.contains(&path) {
         return deny("path_not_allowed", Some(&run));
+    }
+    // The OpenAI key is account-wide too: inference only, and only by POST.
+    if upstream == Upstream::Openai {
+        if !OPENAI_PATHS.contains(&path) {
+            return deny("path_not_allowed", Some(&run));
+        }
+        if !method.eq_ignore_ascii_case("POST") {
+            return deny("method_not_allowed", Some(&run));
+        }
     }
     Decision::Reverse {
         run,
@@ -365,9 +380,12 @@ fn basic_run_token(header: &str) -> Option<String> {
 /// Request headers to forward upstream: credentials and hop-by-hop headers are
 /// always removed, so a sandbox can never choose its own identity.
 pub fn scrub_request_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
-    const DROP: [&str; 11] = [
+    const DROP: [&str; 13] = [
         "authorization",
         "x-api-key",
+        // OpenAI billing scope: the factory's key decides it, never the sandbox.
+        "openai-organization",
+        "openai-project",
         "cookie",
         "proxy-authorization",
         "host",
@@ -953,5 +971,36 @@ mod tests {
                 ("content-type".to_string(), "application/json".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn the_openai_route_only_posts_to_the_responses_api() {
+        let key = b"0123456789abcdef0123456789abcdef";
+        let token = sign_run_token(key, "org-1", "run-1", 2_000_000_000).unwrap();
+        let route = |method: &str, path: &str| decide(key, method, &format!("/r/{token}/openai{path}"), None, &[], 1_000);
+        match route("POST", "/v1/responses") {
+            Decision::Reverse { upstream, path_and_query, .. } => {
+                assert_eq!((upstream, path_and_query.as_str()), (Upstream::Openai, "/v1/responses"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(route("POST", "/v1/responses/compact"), Decision::Reverse { .. }));
+        for (method, path, reason) in [
+            ("GET", "/v1/responses", "method_not_allowed"),
+            ("POST", "/v1/files", "path_not_allowed"),
+            ("POST", "/v1/organization/admin_api_keys", "path_not_allowed"),
+            ("POST", "/v1/responses/../files", "path_not_allowed"),
+        ] {
+            match route(method, path) {
+                Decision::Deny { reason: got, .. } => assert_eq!(got, reason, "{method} {path}"),
+                other => panic!("{method} {path}: {other:?}"),
+            }
+        }
+        // Code under test never reaches it.
+        let registry = sign_run_token(key, "org-1", &registry_only_run_id("run-1"), 2_000_000_000).unwrap();
+        assert!(matches!(
+            decide(key, "POST", &format!("/r/{registry}/openai/v1/responses"), None, &[], 1_000),
+            Decision::Deny { reason: "token_scope", .. }
+        ));
     }
 }

@@ -48,6 +48,7 @@ async fn proxy_with_options(
     let config = EgressConfig {
         signing_key: KEY.to_vec(),
         anthropic: Some(AnthropicAuth::OAuth("real-oauth-token".into())),
+        openai_api_key: Some("sk-real-openai-key".into()),
         nexusmind_keys: nexusmind
             .map(|key| {
                 [("org-1".to_string(), key.to_string())]
@@ -110,6 +111,36 @@ async fn injects_the_credential_and_strips_the_sandbox_one() {
     );
     let beta = headers["anthropic-beta"].to_str().unwrap();
     assert!(beta.contains("prompt-caching-2024-07-31") && beta.contains("oauth-2025-04-20"));
+}
+
+#[tokio::test]
+async fn the_openai_route_injects_the_api_key_and_strips_the_placeholder() {
+    let (upstream, seen) = fake_upstream().await;
+    let base = proxy(&upstream, None).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base}/r/{}/openai/v1/responses", run_token()))
+        .header("authorization", "Bearer sandbox-placeholder-not-a-credential")
+        .header("openai-organization", "org-chosen-by-sandbox")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let denied = client
+        .post(format!("{base}/r/{}/openai/v1/files", run_token()))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+
+    let seen = seen.0.lock().unwrap();
+    assert_eq!(seen.len(), 1, "only the allowed request reaches upstream");
+    let (uri, headers) = &seen[0];
+    assert_eq!(uri, "/v1/responses");
+    assert_eq!(headers["authorization"], "Bearer sk-real-openai-key");
+    assert!(headers.get("openai-organization").is_none(), "the sandbox never picks the billed org");
 }
 
 #[tokio::test]
