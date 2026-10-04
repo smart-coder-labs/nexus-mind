@@ -2717,7 +2717,7 @@ fn select_run_model(
         provider,
     });
     // A Codex run without a price never starts: it must not use up a frontier slot.
-    let runs = provider != gateway::Provider::Codex || super::codex::priced(&choice.model);
+    let runs = provider != gateway::Provider::Codex || super::codex::start_check(&choice.model).is_ok();
     if let Some(conn) = conn.as_deref().filter(|_| runs) {
         let _ = queries::append_autonomous_agent_event(
             conn,
@@ -3783,8 +3783,8 @@ async fn resolve_issue_worktree(
         return (number, "blocked_policy".into(), json!({"code":"codex_requires_sandbox"}));
     }
     let codex_model = codex_selected.then(|| select_run_model(&store, &claim, &runtime_config).model);
-    if codex_model.as_deref().is_some_and(|model| !super::codex::priced(model)) {
-        return (number, "blocked_policy".into(), json!({"code":"codex_price_unknown"}));
+    if let Some(Err(code)) = codex_model.as_deref().map(super::codex::start_check) {
+        return (number, "blocked_policy".into(), json!({"code":code}));
     }
     if codex_model.is_some() {
         // Nothing to prepare locally: the pod runs `codex_invocation`.
@@ -4969,8 +4969,8 @@ async fn execute_claim(
     // executor takes no model, so none is selected (or recorded) for it.
     let run_model = (!nexus_selected).then(|| select_run_model(store, claim, &runtime_config).model);
     let codex_model = if codex_selected { run_model.as_deref() } else { None };
-    if codex_model.is_some_and(|model| !super::codex::priced(model)) {
-        return ("blocked_policy".into(), json!({"code":"codex_price_unknown"}));
+    if let Some(Err(code)) = codex_model.map(super::codex::start_check) {
+        return ("blocked_policy".into(), json!({"code":code}));
     }
     let mut outcome = loop {
     let mut claude = if nexus_selected {

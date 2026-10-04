@@ -550,7 +550,15 @@ pub(crate) async fn run_claude_sandboxed(
     // Codex has a shell, so its token is scoped to what it needs (OpenAI and
     // NexusMind) and its pod carries no Claude route.
     let token_run_id = if codex {
-        crate::factory::egress::codex_run_id(run.run_id)
+        // The token carries the tier of the model the worker chose: the proxy
+        // lets the run use that model and no other.
+        let model = argv
+            .windows(2)
+            .find(|pair| pair[0] == "-m")
+            .map(|pair| pair[1].as_str())
+            .unwrap_or_default();
+        let tier = super::codex::model_tier(model).ok_or_else(|| anyhow::anyhow!("codex_model_not_in_tiers"))?;
+        crate::factory::egress::codex_run_id(run.run_id, tier)
     } else {
         run.run_id.to_string()
     };

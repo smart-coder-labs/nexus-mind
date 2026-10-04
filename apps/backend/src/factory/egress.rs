@@ -233,14 +233,23 @@ pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunTok
 /// ends with it).
 pub const REGISTRY_ONLY_SUFFIX: &str = "-registry";
 
-/// Suffix of a Codex agent's token. Codex has a shell, so its token reaches
-/// only what Codex needs (OpenAI, and NexusMind for context); a Claude agent's
-/// token never reaches OpenAI.
-pub const CODEX_SUFFIX: &str = "-codex";
+/// Marks a Codex agent's token, followed by its model tier (`c`heap,
+/// `s`tandard, `f`rontier). Codex has a shell, so its token reaches only what
+/// Codex needs (OpenAI, and NexusMind for context) and only with the model the
+/// worker chose for the run; a Claude agent's token never reaches OpenAI.
+pub const CODEX_MARKER: &str = "-codex-";
 
-/// The run id of the Codex agent token for `run_id`.
-pub fn codex_run_id(run_id: &str) -> String {
-    format!("{run_id}{CODEX_SUFFIX}")
+/// The run id of the Codex agent token for `run_id` at `tier` (0 cheap,
+/// 1 standard, 2 frontier).
+pub fn codex_run_id(run_id: &str, tier: usize) -> String {
+    let tier = ['c', 's', 'f'].get(tier).copied().unwrap_or('s');
+    format!("{run_id}{CODEX_MARKER}{tier}")
+}
+
+/// The model tier a Codex token is bound to; `None` for any other token.
+pub fn codex_tier(run_id: &str) -> Option<usize> {
+    let (_, tier) = run_id.rsplit_once(CODEX_MARKER)?;
+    ["c", "s", "f"].iter().position(|t| *t == tier)
 }
 
 /// The run id of the registry-only token for `run_id`.
@@ -295,7 +304,7 @@ pub fn decide(
         };
         // A Codex agent has a shell: no tunnel at all, since registries accept
         // uploads inside the TLS stream the proxy cannot see.
-        if run.run_id.ends_with(CODEX_SUFFIX) {
+        if codex_tier(&run.run_id).is_some() {
             return deny("token_scope", Some(&run));
         }
         let Some((host, port)) = target.rsplit_once(':') else {
@@ -344,7 +353,7 @@ pub fn decide(
     if run.run_id.ends_with(REGISTRY_ONLY_SUFFIX) && upstream != Upstream::GithubPackages {
         return deny("token_scope", Some(&run));
     }
-    let codex_token = run.run_id.ends_with(CODEX_SUFFIX);
+    let codex_token = codex_tier(&run.run_id).is_some();
     let in_scope = match upstream {
         Upstream::Openai => codex_token,
         Upstream::Nexusmind => true,
@@ -424,6 +433,12 @@ const OPENAI_REQUEST_FIELDS: &[&str] = &[
 /// fetch must be a `data:` URL, and no stored file is referenced.
 fn inline_only(value: &serde_json::Value) -> bool {
     match value {
+        // An item reference points at a stored item in the OpenAI account.
+        serde_json::Value::Object(map)
+            if map.get("type").and_then(|t| t.as_str()) == Some("item_reference") =>
+        {
+            false
+        }
         serde_json::Value::Object(map) => map.iter().all(|(key, value)| match key.as_str() {
             "image_url" | "file_url" | "url" => match value {
                 serde_json::Value::String(url) => url.starts_with("data:"),
@@ -442,14 +457,32 @@ fn inline_only(value: &serde_json::Value) -> bool {
 /// object with known fields, a model the factory allows, only local tools and
 /// inline content (nothing OpenAI would fetch or look up), bounded output, the
 /// default service tier, and never stored by OpenAI.
-pub fn openai_request_body(body: &[u8], allowed_models: &[String]) -> Result<Vec<u8>, &'static str> {
+/// JSON structure tokens a Codex body may hold before it is parsed: a parsed
+/// value costs tens of bytes per element, so this bounds the proxy's memory.
+const MAX_OPENAI_STRUCTURE: usize = 1_000_000;
+
+/// What the proxy checks a Codex request against.
+pub struct OpenaiRequestScope<'a> {
+    /// The one model this run may use (its token's tier).
+    pub model: &'a str,
+    /// The run's organization: prompt caches never span organizations.
+    pub org_id: &'a str,
+    /// `/v1/responses` takes generation limits; compaction does not.
+    pub generation: bool,
+}
+
+pub fn openai_request_body(body: &[u8], scope: &OpenaiRequestScope<'_>) -> Result<Vec<u8>, &'static str> {
+    let structure = body.iter().filter(|b| matches!(b, b',' | b'[' | b'{')).count();
+    if structure > MAX_OPENAI_STRUCTURE {
+        return Err("body_too_complex");
+    }
     let mut request: serde_json::Value = serde_json::from_slice(body).map_err(|_| "body_not_json")?;
     let object = request.as_object_mut().ok_or("body_not_object")?;
     if object.keys().any(|key| !OPENAI_REQUEST_FIELDS.contains(&key.as_str())) {
         return Err("field_not_allowed");
     }
     let model = object.get("model").and_then(|m| m.as_str()).ok_or("model_missing")?;
-    if !allowed_models.iter().any(|allowed| allowed == model) {
+    if model != scope.model {
         return Err("model_not_allowed");
     }
     if !object.get("input").is_none_or(inline_only) {
@@ -477,11 +510,20 @@ pub fn openai_request_body(body: &[u8], allowed_models: &[String]) -> Result<Vec
         }
     }
     object.remove("service_tier");
-    let output = object
-        .get("max_output_tokens")
-        .and_then(|v| v.as_u64())
-        .map_or(MAX_OPENAI_OUTPUT_TOKENS, |asked| asked.min(MAX_OPENAI_OUTPUT_TOKENS));
-    object.insert("max_output_tokens".into(), output.into());
+    if scope.generation {
+        let output = object
+            .get("max_output_tokens")
+            .and_then(|v| v.as_u64())
+            .map_or(MAX_OPENAI_OUTPUT_TOKENS, |asked| asked.min(MAX_OPENAI_OUTPUT_TOKENS));
+        object.insert("max_output_tokens".into(), output.into());
+    }
+    // One shared OpenAI account: a cache key the sandbox chose must not let it
+    // probe another organization's cached prompts.
+    if let Some(key) = object.get("prompt_cache_key").and_then(|k| k.as_str()) {
+        use sha2::{Digest, Sha256};
+        let scoped = hex::encode(Sha256::digest(format!("{}\n{key}", scope.org_id).as_bytes()));
+        object.insert("prompt_cache_key".into(), scoped[..32].to_string().into());
+    }
     object.insert("store".into(), serde_json::Value::Bool(false));
     serde_json::to_vec(&request).map_err(|_| "body_not_json")
 }
@@ -1100,7 +1142,7 @@ mod tests {
     #[test]
     fn the_openai_route_only_posts_to_the_responses_api() {
         let key = b"0123456789abcdef0123456789abcdef";
-        let token = sign_run_token(key, "org-1", &codex_run_id("run-1"), 2_000_000_000).unwrap();
+        let token = sign_run_token(key, "org-1", &codex_run_id("run-1", 1), 2_000_000_000).unwrap();
         let route = |method: &str, path: &str| decide(key, method, &format!("/r/{token}/openai{path}"), None, &[], 1_000);
         match route("POST", "/v1/responses") {
             Decision::Reverse { upstream, path_and_query, .. } => {
@@ -1144,8 +1186,8 @@ mod tests {
 
     #[test]
     fn openai_bodies_keep_only_local_tools_and_are_never_stored() {
-        let models = vec!["gpt-6.1-sol".to_string()];
-        let body = |value: serde_json::Value| openai_request_body(value.to_string().as_bytes(), &models);
+        let scope = OpenaiRequestScope { model: "gpt-6.1-sol", org_id: "org-1", generation: true };
+        let body = |value: serde_json::Value| openai_request_body(value.to_string().as_bytes(), &scope);
         let ok = body(serde_json::json!({
             "model": "gpt-6.1-sol", "store": true, "service_tier": "priority", "max_output_tokens": 999_999,
             "tool_choice": "auto",
@@ -1184,6 +1226,24 @@ mod tests {
         ] {
             assert_eq!(body(request).unwrap_err(), reason);
         }
-        assert_eq!(openai_request_body(b"not json", &models).unwrap_err(), "body_not_json");
+        assert_eq!(openai_request_body(b"not json", &scope).unwrap_err(), "body_not_json");
+        // Another tier's model, a stored-item reference, and an absurdly nested body.
+        assert_eq!(body(serde_json::json!({"model": "gpt-6-astra"})).unwrap_err(), "model_not_allowed");
+        assert_eq!(
+            body(serde_json::json!({"model": "gpt-6.1-sol", "input": [{"type": "item_reference", "id": "msg_1"}]})).unwrap_err(),
+            "remote_content_not_allowed"
+        );
+        let nested = format!("{{\"model\":\"gpt-6.1-sol\",\"input\":[{}]}}", vec!["0"; 1_000_001].join(","));
+        assert_eq!(openai_request_body(nested.as_bytes(), &scope).unwrap_err(), "body_too_complex");
+        // Prompt caches are scoped to the organization; compaction gets no output cap.
+        let cached = |org_id| {
+            let scope = OpenaiRequestScope { model: "gpt-6.1-sol", org_id, generation: false };
+            let out = openai_request_body(br#"{"model":"gpt-6.1-sol","prompt_cache_key":"k"}"#, &scope).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&out).unwrap()
+        };
+        assert_ne!(cached("org-1")["prompt_cache_key"], cached("org-2")["prompt_cache_key"]);
+        assert!(cached("org-1").get("max_output_tokens").is_none());
+        assert_eq!(codex_tier(&codex_run_id("run-1", 2)), Some(2));
+        assert_eq!(codex_tier("run-1"), None);
     }
 }

@@ -39,6 +39,28 @@ pub fn codex_invocation(model: &str, prompt: &str) -> (Vec<String>, Option<Vec<u
     (argv, Some(prompt.as_bytes().to_vec()))
 }
 
+/// The tier (0 cheap, 1 standard, 2 frontier) whose configured Codex model is
+/// `model`. The proxy only accepts a run's own tier model, so a pin to any
+/// other model cannot run.
+pub fn model_tier(model: &str) -> Option<usize> {
+    use crate::factory::gateway::{codex_model, Tier};
+    [Tier::Cheap, Tier::Standard, Tier::Frontier]
+        .iter()
+        .position(|tier| codex_model(*tier) == model)
+}
+
+/// Whether a Codex run may start with `model`: it must be one of the tier models
+/// (the proxy accepts no other) and have a price (its cost must be cappable).
+pub fn start_check(model: &str) -> Result<(), &'static str> {
+    if model_tier(model).is_none() {
+        return Err("codex_model_not_in_tiers");
+    }
+    if !priced(model) {
+        return Err("codex_price_unknown");
+    }
+    Ok(())
+}
+
 /// Whether a model has a price. Codex bills a real API key, so a run whose cost
 /// could not be measured (and so not capped) never starts.
 pub fn priced(model: &str) -> bool {
@@ -158,7 +180,16 @@ fn parse_with_prices(stdout: &[u8], model: &str, prices: Option<[f64; 3]>) -> an
 /// A tenant-visible code for a Codex failure message.
 pub fn codex_failure_code(message: &str) -> &'static str {
     let message = message.to_ascii_lowercase();
-    if message.contains("401") || message.contains("unauthorized") || message.contains("api key") {
+    // The egress proxy's own refusals first: they carry status codes too.
+    if message.contains("egress request cap reached") {
+        "codex_request_cap_reached"
+    } else if message.contains("model not allowed") {
+        "codex_model_not_allowed"
+    } else if message.contains("egress busy") {
+        "codex_proxy_busy"
+    } else if message.contains("egress denied") {
+        "codex_request_refused"
+    } else if message.contains("401") || message.contains("unauthorized") || message.contains("api key") {
         "codex_auth_required"
     } else if message.contains("503") || message.contains("upstream not configured") {
         "codex_key_not_configured"
@@ -228,6 +259,11 @@ mod tests {
 "#;
         assert_eq!(parse_with_prices(recovered, "m", None).unwrap().0["result"], "done");
         assert_eq!(codex_failure_code("429 Too Many Requests"), "codex_rate_limited");
+        assert_eq!(codex_failure_code("unexpected status 429: egress request cap reached"), "codex_request_cap_reached");
+        assert_eq!(codex_failure_code("unexpected status 503: egress busy"), "codex_proxy_busy");
+        assert_eq!(codex_failure_code("unexpected status 403: egress denied: model not allowed"), "codex_model_not_allowed");
+        assert_eq!(model_tier("gpt-6-astra"), Some(2));
+        assert_eq!(model_tier("gpt-6-pro"), None);
     }
 
     #[test]

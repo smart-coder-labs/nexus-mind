@@ -49,7 +49,7 @@ async fn proxy_with_options(
         signing_key: KEY.to_vec(),
         anthropic: Some(AnthropicAuth::OAuth("real-oauth-token".into())),
         openai_api_key: Some("sk-real-openai-key".into()),
-        openai_models: vec!["m".into()],
+        openai_models: ["cheap".into(), "m".into(), "frontier".into()],
         nexusmind_keys: nexusmind
             .map(|key| {
                 [("org-1".to_string(), key.to_string())]
@@ -61,6 +61,7 @@ async fn proxy_with_options(
         tunnel_allowlist: vec!["registry.npmjs.org".into(), "127.0.0.1".into()],
         upstream_override: Some(upstream.to_string()),
         openai_requests: Default::default(),
+        openai_buffering: Default::default(),
         max_in_flight,
         allow_private_upstreams,
         github_packages_tokens: [(
@@ -81,7 +82,7 @@ async fn proxy_with_options(
 
 fn codex_token() -> String {
     let expires = chrono::Utc::now().timestamp() + 300;
-    sign_run_token(KEY, "org-1", &nexusmind::factory::egress::codex_run_id("run-42"), expires).unwrap()
+    sign_run_token(KEY, "org-1", &nexusmind::factory::egress::codex_run_id("run-42", 1), expires).unwrap()
 }
 
 fn run_token() -> String {
@@ -148,6 +149,8 @@ async fn the_openai_route_injects_the_api_key_and_strips_the_placeholder() {
     );
     assert_eq!(post("/v1/responses", run_token(), "{}").await.unwrap().status(), 403);
     assert_eq!(post("/v1/responses", codex_token(), r#"{"model":"gpt-6-pro"}"#).await.unwrap().status(), 403);
+    // A standard-tier token cannot ask for the frontier model.
+    assert_eq!(post("/v1/responses", codex_token(), r#"{"model":"frontier"}"#).await.unwrap().status(), 403);
 
     let seen = seen.0.lock().unwrap();
     assert_eq!(seen.len(), 1, "only the allowed request reaches upstream");
