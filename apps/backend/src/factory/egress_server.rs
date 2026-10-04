@@ -21,7 +21,7 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 
-use super::egress::{decide, scrub_request_headers, Decision, Upstream};
+use super::egress::{decide, openai_request_body, scrub_request_headers, Decision, Upstream, MAX_OPENAI_REQUESTS_PER_RUN};
 
 /// Largest request body forwarded upstream. Model requests are JSON well below this.
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
@@ -51,6 +51,22 @@ pub struct EgressConfig {
     pub github_packages_tokens: std::collections::HashMap<String, GithubPackagesAuth>,
     /// Tests only: let tunnels reach private addresses. The binary never sets it.
     pub allow_private_upstreams: bool,
+    /// OpenAI requests seen per run (Codex spend bound), in this proxy's memory.
+    pub openai_requests: std::sync::Mutex<std::collections::HashMap<String, u32>>,
+}
+
+/// Counts one OpenAI request for `run_id`; `false` past the per-run cap.
+fn count_openai_request(config: &EgressConfig, run_id: &str) -> bool {
+    let Ok(mut counts) = config.openai_requests.lock() else {
+        return false;
+    };
+    // Entries outlive their (short-lived) runs: bound the map, not the runs.
+    if counts.len() > 10_000 && !counts.contains_key(run_id) {
+        counts.clear();
+    }
+    let count = counts.entry(run_id.to_string()).or_insert(0);
+    *count += 1;
+    *count <= MAX_OPENAI_REQUESTS_PER_RUN
 }
 
 /// A classic PAT (GitHub Packages for npm accepts no other kind) can read every
@@ -345,9 +361,33 @@ async fn reverse(
     }
     headers.extend(injected);
 
-    // Streamed, never buffered: 64 in-flight requests must fit the proxy's memory.
-    let mut forwarded = 0usize;
-    let body =
+    let body = if upstream == Upstream::Openai {
+        // Codex requests are read whole and checked: only local tools, never
+        // stored, at most MAX_OPENAI_REQUESTS_PER_RUN per run.
+        if !count_openai_request(config, run_id) {
+            tracing::warn!(target: "factory_egress", run_id, ?upstream, "openai request cap reached");
+            return text(StatusCode::TOO_MANY_REQUESTS, "egress request cap reached\n");
+        }
+        let collected = match http_body_util::Limited::new(request.into_body(), MAX_REQUEST_BYTES)
+            .collect()
+            .await
+        {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n"),
+        };
+        match openai_request_body(&collected) {
+            Ok(filtered) => {
+                headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-length"));
+                reqwest::Body::from(filtered)
+            }
+            Err(reason) => {
+                tracing::warn!(target: "factory_egress", run_id, ?upstream, reason, "openai body refused");
+                return text(StatusCode::FORBIDDEN, "egress denied\n");
+            }
+        }
+    } else {
+        // Streamed, never buffered: 64 in-flight requests must fit the proxy's memory.
+        let mut forwarded = 0usize;
         reqwest::Body::wrap_stream(request.into_body().into_data_stream().map(move |chunk| {
             let chunk = chunk.map_err(std::io::Error::other)?;
             forwarded += chunk.len();
@@ -355,7 +395,8 @@ async fn reverse(
                 return Err(std::io::Error::other("request too large"));
             }
             Ok::<_, std::io::Error>(chunk)
-        }));
+        }))
+    };
     let mut outbound = client.request(method.clone(), format!("{base}{path_and_query}"));
     for (name, value) in &headers {
         outbound = outbound.header(name, value);

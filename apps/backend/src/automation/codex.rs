@@ -5,8 +5,10 @@
 //! telemetry treat both executors alike.
 //!
 //! Prices (`FACTORY_OPENAI_PRICES`, JSON `{"<model>": [input, cached_input,
-//! output]}` in USD per million tokens) are optional: without one, a run's cost
-//! is unknown (`None`), never zero.
+//! output]}` in USD per million tokens) are required: a Codex run whose model
+//! has no price does not start, because its cost could not be capped. Codex has
+//! no turn limit: a run is bounded by its wall time, its cost cap and the
+//! proxy's per-run request cap.
 
 use serde_json::{json, Value};
 
@@ -35,6 +37,12 @@ pub fn codex_invocation(model: &str, prompt: &str) -> (Vec<String>, Option<Vec<u
     .map(|part| part.to_string())
     .collect();
     (argv, Some(prompt.as_bytes().to_vec()))
+}
+
+/// Whether a model has a price. Codex bills a real API key, so a run whose cost
+/// could not be measured (and so not capped) never starts.
+pub fn priced(model: &str) -> bool {
+    price(model).is_some()
 }
 
 /// USD per million tokens: input, cached input, output.
@@ -66,7 +74,7 @@ fn parse_with_prices(stdout: &[u8], model: &str, prices: Option<[f64; 3]>) -> an
     }
     let text = super::worker::sanitize_output(stdout, MAX_STREAM_BYTES);
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
-    let (mut input, mut cached, mut output, mut turns) = (0i64, 0i64, 0i64, 0i64);
+    let (mut input, mut cached, mut output, mut completed) = (0i64, 0i64, 0i64, 0i64);
     let mut last_message: Option<String> = None;
     let mut failure: Option<String> = None;
     let mut lines = 0usize;
@@ -92,25 +100,33 @@ fn parse_with_prices(stdout: &[u8], model: &str, prices: Option<[f64; 3]>) -> an
                 }
             }
             "turn.completed" => {
-                turns += 1;
+                completed += 1;
                 let usage = |name: &str| event.pointer(&format!("/usage/{name}")).and_then(Value::as_i64).unwrap_or(0);
                 input += usage("input_tokens");
                 cached += usage("cached_input_tokens");
                 output += usage("output_tokens");
             }
-            "turn.failed" | "error" => {
-                failure = event
-                    .pointer("/error/message")
-                    .or_else(|| event.get("message"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+            // A bare `error` can be a transient reconnect; a failed turn is final.
+            "turn.failed" => {
+                failure = Some(
+                    event
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("turn failed")
+                        .to_string(),
+                );
             }
             _ => {}
         }
     }
     let stream = json!({"format": "codex-jsonl", "events": counts, "line_count": lines});
-    let Some(message) = last_message else {
-        anyhow::bail!(failure.as_deref().map_or("codex_result_missing", codex_failure_code));
+    // A turn that failed (rate limit, auth, context) ends the run as a failure
+    // even if the model said something before; so does a run with no finished turn.
+    if let Some(failure) = failure.as_deref() {
+        anyhow::bail!(codex_failure_code(failure));
+    }
+    let Some(message) = last_message.filter(|_| completed > 0) else {
+        anyhow::bail!("codex_result_missing");
     };
     let cost = usage_cost(prices, input, cached, output);
     let mut result = json!({
@@ -118,11 +134,12 @@ fn parse_with_prices(stdout: &[u8], model: &str, prices: Option<[f64; 3]>) -> an
         "subtype": "success",
         "executor": "codex",
         "result": message,
-        "num_turns": turns,
-        // Claude's convention: input excludes cache reads.
+        // Claude's convention: input excludes cache reads. Codex has no cache
+        // writes to report and no comparable turn count, so none is given.
         "usage": {
             "input_tokens": (input - cached).max(0),
             "cache_read_input_tokens": cached,
+            "cache_creation_input_tokens": 0,
             "output_tokens": output,
         },
         "modelUsage": {model: {"costUSD": cost.unwrap_or(0.0)}},
@@ -167,7 +184,7 @@ mod tests {
         assert_eq!(result["usage"]["input_tokens"], 19355 - 7936);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 7936);
         assert_eq!(result["usage"]["output_tokens"], 120);
-        assert_eq!(result["num_turns"], 1);
+        assert_eq!(result["usage"]["cache_creation_input_tokens"], 0);
         let expected = ((19355.0 - 7936.0) * 2.0 + 7936.0 * 0.5 + 120.0 * 8.0) / 1e6;
         assert!((result["total_cost_usd"].as_f64().unwrap() - expected).abs() < 1e-12);
         assert_eq!(stream["events"]["item.completed"], 3);
@@ -194,6 +211,17 @@ mod tests {
         let unconfigured = br#"{"type":"turn.failed","error":{"message":"unexpected status 503 Service Unavailable: upstream not configured"}}"#;
         assert_eq!(parse_with_prices(unconfigured, "m", None).unwrap_err().to_string(), "codex_key_not_configured");
         assert_eq!(parse_with_prices(b"Reading additional input from stdin...\n", "m", None).unwrap_err().to_string(), "codex_result_missing");
+        // A preamble before a failed turn is not a result.
+        let preamble_then_429 = br#"{"type":"item.completed","item":{"type":"agent_message","text":"I'll look at the code."}}
+{"type":"turn.failed","error":{"message":"unexpected status 429 Too Many Requests"}}
+"#;
+        assert_eq!(parse_with_prices(preamble_then_429, "m", None).unwrap_err().to_string(), "codex_rate_limited");
+        // A transient error followed by a finished turn is a success.
+        let recovered = br#"{"type":"error","message":"stream disconnected, retrying"}
+{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
+"#;
+        assert_eq!(parse_with_prices(recovered, "m", None).unwrap().0["result"], "done");
         assert_eq!(codex_failure_code("429 Too Many Requests"), "codex_rate_limited");
     }
 

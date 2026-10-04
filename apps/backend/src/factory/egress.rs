@@ -233,6 +233,16 @@ pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunTok
 /// ends with it).
 pub const REGISTRY_ONLY_SUFFIX: &str = "-registry";
 
+/// Suffix of a Codex agent's token. Codex has a shell, so its token reaches
+/// only what Codex needs (OpenAI, and NexusMind for context); a Claude agent's
+/// token never reaches OpenAI.
+pub const CODEX_SUFFIX: &str = "-codex";
+
+/// The run id of the Codex agent token for `run_id`.
+pub fn codex_run_id(run_id: &str) -> String {
+    format!("{run_id}{CODEX_SUFFIX}")
+}
+
 /// The run id of the registry-only token for `run_id`.
 pub fn registry_only_run_id(run_id: &str) -> String {
     format!("{run_id}{REGISTRY_ONLY_SUFFIX}")
@@ -329,6 +339,15 @@ pub fn decide(
     if run.run_id.ends_with(REGISTRY_ONLY_SUFFIX) && upstream != Upstream::GithubPackages {
         return deny("token_scope", Some(&run));
     }
+    let codex_token = run.run_id.ends_with(CODEX_SUFFIX);
+    let in_scope = match upstream {
+        Upstream::Openai => codex_token,
+        Upstream::Nexusmind => true,
+        Upstream::Anthropic | Upstream::GithubPackages => !codex_token,
+    };
+    if !in_scope {
+        return deny("token_scope", Some(&run));
+    }
     if upstream == Upstream::GithubPackages
         && !(method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
     {
@@ -360,6 +379,37 @@ pub fn decide(
         upstream,
         path_and_query,
     }
+}
+
+/// Tool types a Codex request may declare: tools Codex runs itself, in the pod.
+/// Hosted tools (web search, remote MCP, file search, code interpreter…) would
+/// let the model reach the internet from a pod whose egress is otherwise shut.
+const OPENAI_LOCAL_TOOLS: &[&str] = &["function", "custom", "local_shell"];
+
+/// Requests one Codex run may send through the proxy.
+pub const MAX_OPENAI_REQUESTS_PER_RUN: u32 = 1_000;
+
+/// The body forwarded to OpenAI's Responses API, or why it is refused: a JSON
+/// object, only local tools, never a background job, and never stored by OpenAI.
+pub fn openai_request_body(body: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut request: serde_json::Value = serde_json::from_slice(body).map_err(|_| "body_not_json")?;
+    let object = request.as_object_mut().ok_or("body_not_object")?;
+    if let Some(tools) = object.get("tools") {
+        let tools = tools.as_array().ok_or("tools_not_array")?;
+        let local = tools.iter().all(|tool| {
+            tool.get("type")
+                .and_then(|kind| kind.as_str())
+                .is_some_and(|kind| OPENAI_LOCAL_TOOLS.contains(&kind))
+        });
+        if !local {
+            return Err("hosted_tool_not_allowed");
+        }
+    }
+    if object.get("background").and_then(|v| v.as_bool()) == Some(true) {
+        return Err("background_not_allowed");
+    }
+    object.insert("store".into(), serde_json::Value::Bool(false));
+    serde_json::to_vec(&request).map_err(|_| "body_not_json")
 }
 
 /// The token from `Proxy-Authorization: Basic base64("run:<token>")`.
@@ -976,7 +1026,7 @@ mod tests {
     #[test]
     fn the_openai_route_only_posts_to_the_responses_api() {
         let key = b"0123456789abcdef0123456789abcdef";
-        let token = sign_run_token(key, "org-1", "run-1", 2_000_000_000).unwrap();
+        let token = sign_run_token(key, "org-1", &codex_run_id("run-1"), 2_000_000_000).unwrap();
         let route = |method: &str, path: &str| decide(key, method, &format!("/r/{token}/openai{path}"), None, &[], 1_000);
         match route("POST", "/v1/responses") {
             Decision::Reverse { upstream, path_and_query, .. } => {
@@ -996,11 +1046,38 @@ mod tests {
                 other => panic!("{method} {path}: {other:?}"),
             }
         }
+        // A Codex token reaches NexusMind but never Claude or the registry; a
+        // Claude token never reaches OpenAI.
+        let scope = |token: &str, route: &str| decide(key, "POST", &format!("/r/{token}/{route}"), None, &[], 1_000);
+        assert!(matches!(scope(&token, "nexusmind/v1/context"), Decision::Reverse { .. }));
+        assert!(matches!(scope(&token, "anthropic/v1/messages"), Decision::Deny { reason: "token_scope", .. }));
+        let claude = sign_run_token(key, "org-1", "run-1", 2_000_000_000).unwrap();
+        assert!(matches!(scope(&claude, "openai/v1/responses"), Decision::Deny { reason: "token_scope", .. }));
+        assert!(matches!(scope(&claude, "anthropic/v1/messages"), Decision::Reverse { .. }));
         // Code under test never reaches it.
         let registry = sign_run_token(key, "org-1", &registry_only_run_id("run-1"), 2_000_000_000).unwrap();
         assert!(matches!(
             decide(key, "POST", &format!("/r/{registry}/openai/v1/responses"), None, &[], 1_000),
             Decision::Deny { reason: "token_scope", .. }
         ));
+    }
+
+    #[test]
+    fn openai_bodies_keep_only_local_tools_and_are_never_stored() {
+        let body = |value: serde_json::Value| openai_request_body(value.to_string().as_bytes());
+        let ok = body(serde_json::json!({"model": "m", "store": true, "tools": [{"type": "function", "name": "shell"}, {"type": "custom", "name": "apply_patch"}]})).unwrap();
+        let ok: serde_json::Value = serde_json::from_slice(&ok).unwrap();
+        assert_eq!(ok["store"], false);
+        assert!(body(serde_json::json!({"model": "m"})).is_ok());
+        for (request, reason) in [
+            (serde_json::json!({"tools": [{"type": "web_search"}]}), "hosted_tool_not_allowed"),
+            (serde_json::json!({"tools": [{"type": "function"}, {"type": "mcp", "server_url": "https://evil.example"}]}), "hosted_tool_not_allowed"),
+            (serde_json::json!({"tools": [{"name": "untyped"}]}), "hosted_tool_not_allowed"),
+            (serde_json::json!({"background": true}), "background_not_allowed"),
+            (serde_json::json!(["not", "an", "object"]), "body_not_object"),
+        ] {
+            assert_eq!(body(request).unwrap_err(), reason);
+        }
+        assert_eq!(openai_request_body(b"not json").unwrap_err(), "body_not_json");
     }
 }

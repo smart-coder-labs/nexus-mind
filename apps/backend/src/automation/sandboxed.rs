@@ -546,7 +546,15 @@ pub(crate) async fn run_claude_sandboxed(
     let prepared = prepare(&run).await?;
     let agent_life = agent_lifetime(run.wall_time);
     let hosts: &[String] = run.qa.as_ref().map_or(&[], |qa| qa.hosts);
-    let run_token = prepared.token(run.org_id, run.run_id, agent_life, hosts)?;
+    let codex = argv.first().is_some_and(|program| program == "codex");
+    // Codex has a shell, so its token is scoped to what it needs (OpenAI and
+    // NexusMind) and its pod carries no Claude route.
+    let token_run_id = if codex {
+        crate::factory::egress::codex_run_id(run.run_id)
+    } else {
+        run.run_id.to_string()
+    };
+    let run_token = prepared.token(run.org_id, &token_run_id, agent_life, hosts)?;
     // Everything a transcript or error could echo that is still live: redact it.
     let secrets: Vec<String> = run
         .secret_values
@@ -555,17 +563,17 @@ pub(crate) async fn run_claude_sandboxed(
         .chain([run_token.clone()])
         .collect();
 
-    // 1. The agent, in a pod that runs no repository code.
+    // 1. The agent. Claude's pod runs no repository code; Codex's can (it has a
+    // shell), which its narrower token and environment account for.
     let mut agent_job = prepared.job(
         &run,
-        PodProfile::Agent,
+        if codex { PodProfile::CodexAgent } else { PodProfile::Agent },
         &run_token,
         run.retry.to_string(),
         agent_life,
     );
     // Codex reads its provider (the proxy route, with this run's token) and MCP
     // servers from a config file in the pod, never from its arguments.
-    let codex = argv.first().is_some_and(|program| program == "codex");
     if codex {
         if run.qa.is_some() {
             anyhow::bail!("codex_unsupported_template")

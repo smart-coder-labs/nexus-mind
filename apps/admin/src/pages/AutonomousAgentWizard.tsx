@@ -699,7 +699,14 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   return (
     <div className="space-y-5">
       <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers.">
-        <NativeSelect value={state.executor} onChange={value => set('executor', value as FormState['executor'])}>
+        <NativeSelect
+          value={state.executor}
+          onChange={value => {
+            set('executor', value as FormState['executor'])
+            // Codex never runs in the worker: drop a local choice instead of leaving an invalid form.
+            if (value === 'codex' && state.isolation === 'local') set('isolation', 'default')
+          }}
+        >
           <option value="claude">Claude pure</option>
           <option value="nexus">Nexus harness (OpenShell)</option>
           {(codexSupported(template) || state.executor === 'codex') && (

@@ -102,6 +102,15 @@ pub fn task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
     .collect()
 }
 
+/// A Codex agent's environment: the agent's, without any Claude route or
+/// credential placeholder (its token could not use them anyway).
+pub fn codex_task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
+    task_env(request)
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with("ANTHROPIC_") && !name.starts_with("CLAUDE_CODE_"))
+        .collect()
+}
+
 /// What a pod runs, which decides what its environment may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PodProfile {
@@ -110,6 +119,8 @@ pub enum PodProfile {
     /// Repository code (tests, builds): only a registry-only token. Any process in
     /// a pod can read PID 1's environment, so untrusted code never shares a pod
     /// with a token that reaches a credentialed upstream.
+    /// The Codex agent: a shell, so a token scoped to OpenAI and NexusMind only.
+    CodexAgent,
     Commands,
 }
 
@@ -397,6 +408,7 @@ pub fn valid_artifact_name(name: &str) -> bool {
 pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
     let env = match request.profile {
         PodProfile::Agent => task_env(request),
+        PodProfile::CodexAgent => codex_task_env(request),
         PodProfile::Commands => verification_env(&request.run_token),
     };
     let env: Vec<Value> = env
@@ -919,5 +931,25 @@ mod tests {
         assert_eq!(resolve(json!({"isolation": "sandbox"}), "github_pr_reviewer").unwrap(), Isolation::Sandbox);
         assert_eq!(resolve(json!({"isolation": "local"}), "github_issue_resolver").unwrap_err().to_string(), "codex_requires_sandbox");
         assert_eq!(resolve(json!({}), "qa").unwrap_err().to_string(), "codex_unsupported_template");
+    }
+
+    #[test]
+    fn a_codex_pod_has_no_claude_route() {
+        let mut request = TaskPodRequest {
+            org_id: "o".into(),
+            run_id: "r".into(),
+            pod_suffix: "a".into(),
+            profile: PodProfile::CodexAgent,
+            slot: "main".into(),
+            image: "img".into(),
+            run_token: "tok".into(),
+            wall_time_secs: 60,
+        };
+        let env = codex_task_env(&request);
+        assert!(env.iter().all(|(name, _)| !name.starts_with("ANTHROPIC_") && !name.starts_with("CLAUDE_CODE_")));
+        assert!(env.iter().any(|(name, _)| name == "CODEX_HOME"));
+        assert!(env.iter().any(|(name, _)| name == "NEXUSMIND_BASE_URL"));
+        request.profile = PodProfile::Agent;
+        assert!(task_env(&request).iter().any(|(name, _)| name == "ANTHROPIC_BASE_URL"));
     }
 }

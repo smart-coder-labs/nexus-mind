@@ -84,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
             None => Default::default(),
         },
         upstream_override: None,
+        openai_requests: Default::default(),
         allow_private_upstreams: false,
         max_in_flight: env("FACTORY_PROXY_MAX_IN_FLIGHT")
             .and_then(|value| value.parse().ok())

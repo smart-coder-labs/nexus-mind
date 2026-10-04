@@ -59,6 +59,7 @@ async fn proxy_with_options(
         // 127.0.0.1:443 has no listener locally: an allow-listed but unreachable host.
         tunnel_allowlist: vec!["registry.npmjs.org".into(), "127.0.0.1".into()],
         upstream_override: Some(upstream.to_string()),
+        openai_requests: Default::default(),
         max_in_flight,
         allow_private_upstreams,
         github_packages_tokens: [(
@@ -75,6 +76,11 @@ async fn proxy_with_options(
     let address = listener.local_addr().unwrap();
     tokio::spawn(serve(listener, Arc::new(config)));
     format!("http://{address}")
+}
+
+fn codex_token() -> String {
+    let expires = chrono::Utc::now().timestamp() + 300;
+    sign_run_token(KEY, "org-1", &nexusmind::factory::egress::codex_run_id("run-42"), expires).unwrap()
 }
 
 fn run_token() -> String {
@@ -119,26 +125,35 @@ async fn the_openai_route_injects_the_api_key_and_strips_the_placeholder() {
     let base = proxy(&upstream, None).await;
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{base}/r/{}/openai/v1/responses", run_token()))
+        .post(format!("{base}/r/{}/openai/v1/responses", codex_token()))
         .header("authorization", "Bearer sandbox-placeholder-not-a-credential")
         .header("openai-organization", "org-chosen-by-sandbox")
-        .body("{}")
+        .body(r#"{"model":"m","store":true,"tools":[{"type":"function","name":"shell"}]}"#)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let denied = client
-        .post(format!("{base}/r/{}/openai/v1/files", run_token()))
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), 403);
+    let post = |path: &'static str, token: String, body: &'static str| {
+        client.post(format!("{base}/r/{token}/openai{path}")).body(body).send()
+    };
+    // Another path, a hosted tool, and a Claude agent's token are all refused.
+    assert_eq!(post("/v1/files", codex_token(), "{}").await.unwrap().status(), 403);
+    assert_eq!(
+        post("/v1/responses", codex_token(), r#"{"tools":[{"type":"mcp","server_url":"https://evil.example"}]}"#)
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(post("/v1/responses", run_token(), "{}").await.unwrap().status(), 403);
 
     let seen = seen.0.lock().unwrap();
     assert_eq!(seen.len(), 1, "only the allowed request reaches upstream");
     let (uri, headers) = &seen[0];
     assert_eq!(uri, "/v1/responses");
+    // The body was rewritten (store forced off): its length is the new one.
+    let length: usize = headers["content-length"].to_str().unwrap().parse().unwrap();
+    assert_eq!(length, br#"{"model":"m","store":false,"tools":[{"name":"shell","type":"function"}]}"#.len());
     assert_eq!(headers["authorization"], "Bearer sk-real-openai-key");
     assert!(headers.get("openai-organization").is_none(), "the sandbox never picks the billed org");
 }

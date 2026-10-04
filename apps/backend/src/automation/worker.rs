@@ -85,6 +85,12 @@ fn parse_claude_event_stream(
     ))
 }
 
+/// Whether a run's reported cost is over its `max_cost_usd` budget (25 USD by default).
+fn over_cost_cap(claim: &queries::ClaimedAutonomousRun, result: &serde_json::Value) -> bool {
+    let max_cost = claim.run.budget.get("max_cost_usd").and_then(|v| v.as_f64()).unwrap_or(25.0);
+    result.get("total_cost_usd").and_then(|v| v.as_f64()).is_some_and(|cost| cost > max_cost)
+}
+
 /// The executor's event stream as a Claude-shaped `result` event: Codex's JSONL
 /// is translated (`codex_model` is the model it ran with), Claude's is read as is.
 fn parse_agent_events(
@@ -3769,10 +3775,13 @@ async fn resolve_issue_worktree(
     let max_turns_str = max_turns.to_string();
     // Codex runs only in the sandbox (enforced by its isolation): its model is
     // chosen here and its invocation built when the pod runs.
-    let codex_model = (queries::autonomous_executor(&claim.config).ok() == Some("codex"))
-        .then(|| select_run_model(&store, &claim, &runtime_config).model);
-    if codex_model.is_some() && !sandboxed {
+    let codex_selected = queries::autonomous_executor(&claim.config).ok() == Some("codex");
+    if codex_selected && !sandboxed {
         return (number, "blocked_policy".into(), json!({"code":"codex_requires_sandbox"}));
+    }
+    let codex_model = codex_selected.then(|| select_run_model(&store, &claim, &runtime_config).model);
+    if codex_model.as_deref().is_some_and(|model| !super::codex::priced(model)) {
+        return (number, "blocked_policy".into(), json!({"code":"codex_price_unknown"}));
     }
     if codex_model.is_some() {
         // Nothing to prepare locally: the pod runs `codex_invocation`.
@@ -3920,6 +3929,10 @@ async fn resolve_issue_worktree(
             Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
             Ok(Ok(output)) if output.status.success() => {
                 match parse_agent_events(codex_model.as_deref(), &output.stdout) {
+                    // Codex bills an API key: its cost cap holds here too.
+                    Ok((value, stream)) if codex_model.is_some() && over_cost_cap(&claim, &value) => {
+                        ("budget_exhausted".into(), json!({"code":"cost_limit_exceeded","result":value,"stream":stream}))
+                    }
                     Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed","result":value,"stream":stream})),
                     Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string()})),
                 }
@@ -4950,6 +4963,9 @@ async fn execute_claim(
     // executor takes no model, so none is selected (or recorded) for it.
     let run_model = (!nexus_selected).then(|| select_run_model(store, claim, &runtime_config).model);
     let codex_model = if codex_selected { run_model.as_deref() } else { None };
+    if codex_model.is_some_and(|model| !super::codex::priced(model)) {
+        return ("blocked_policy".into(), json!({"code":"codex_price_unknown"}));
+    }
     let mut outcome = loop {
     let mut claude = if nexus_selected {
         Command::new(&config.nexus_worker_bin)
