@@ -103,11 +103,17 @@ pub fn task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
 }
 
 /// A Codex agent's environment: the agent's, without any Claude route or
-/// credential placeholder (its token could not use them anyway).
+/// credential placeholder and without the registry proxy (its token could use
+/// none of them: a shell must not reach registries that accept uploads).
 pub fn codex_task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
     task_env(request)
         .into_iter()
-        .filter(|(name, _)| !name.starts_with("ANTHROPIC_") && !name.starts_with("CLAUDE_CODE_"))
+        .filter(|(name, _)| {
+            !name.starts_with("ANTHROPIC_")
+                && !name.starts_with("CLAUDE_CODE_")
+                && name != "HTTPS_PROXY"
+                && name != "NO_PROXY"
+        })
         .collect()
 }
 
@@ -116,11 +122,12 @@ pub fn codex_task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
 pub enum PodProfile {
     /// The agent: proxy routes to Claude and NexusMind with the full run token.
     Agent,
+    /// The Codex agent: it has a shell, so its token reaches only OpenAI and
+    /// NexusMind, opens no tunnel, and its environment holds no other route.
+    CodexAgent,
     /// Repository code (tests, builds): only a registry-only token. Any process in
     /// a pod can read PID 1's environment, so untrusted code never shares a pod
     /// with a token that reaches a credentialed upstream.
-    /// The Codex agent: a shell, so a token scoped to OpenAI and NexusMind only.
-    CodexAgent,
     Commands,
 }
 
@@ -947,6 +954,7 @@ mod tests {
         };
         let env = codex_task_env(&request);
         assert!(env.iter().all(|(name, _)| !name.starts_with("ANTHROPIC_") && !name.starts_with("CLAUDE_CODE_")));
+        assert!(env.iter().all(|(name, _)| name != "HTTPS_PROXY"));
         assert!(env.iter().any(|(name, _)| name == "CODEX_HOME"));
         assert!(env.iter().any(|(name, _)| name == "NEXUSMIND_BASE_URL"));
         request.profile = PodProfile::Agent;

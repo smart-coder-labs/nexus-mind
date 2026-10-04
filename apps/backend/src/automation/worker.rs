@@ -2702,6 +2702,11 @@ fn select_run_model(
             i64::MAX
         }
     };
+    let provider = if queries::autonomous_executor(&claim.config).ok() == Some("codex") {
+        gateway::Provider::Codex
+    } else {
+        gateway::Provider::Claude
+    };
     let choice = gateway::choose(&gateway::RunFacts {
         template_key: &claim.template_key,
         class: gateway::class_from_labels(&labels),
@@ -2709,13 +2714,11 @@ fn select_run_model(
         configured_model: claim.config.get("model").and_then(|v| v.as_str()),
         frontier_used_today,
         frontier_cap: gateway::frontier_runs_per_day(),
-        provider: if queries::autonomous_executor(&claim.config).ok() == Some("codex") {
-            gateway::Provider::Codex
-        } else {
-            gateway::Provider::Claude
-        },
+        provider,
     });
-    if let Some(conn) = conn.as_deref() {
+    // A Codex run without a price never starts: it must not use up a frontier slot.
+    let runs = provider != gateway::Provider::Codex || super::codex::priced(&choice.model);
+    if let Some(conn) = conn.as_deref().filter(|_| runs) {
         let _ = queries::append_autonomous_agent_event(
             conn,
             &claim.org_id,
@@ -3938,6 +3941,9 @@ async fn resolve_issue_worktree(
                 }
             }
             Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model.as_deref(), &output.stdout) {
+                Ok((value, stream)) if over_cost_cap(&claim, &value) => {
+                    ("budget_exhausted".into(), json!({"code":"cost_limit_exceeded","result":value,"stream":stream}))
+                }
                 Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed_nonzero_exit","result":value,"stream":stream})),
                 Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string(),"exit_code":output.status.code()})),
             },
@@ -5127,6 +5133,10 @@ async fn execute_claim(
             json!({"code":nexus_failure_code(&output.stderr),"exit_code":output.status.code(),"context_manifest":manifest.clone()}),
         ),
         Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model, &output.stdout) {
+            Ok((value, stream)) if over_cost_cap(claim, &value) => (
+                "budget_exhausted".into(),
+                json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest.clone()}),
+            ),
             Ok((value, stream)) => (
                 "succeeded".into(),
                 json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest.clone()}),

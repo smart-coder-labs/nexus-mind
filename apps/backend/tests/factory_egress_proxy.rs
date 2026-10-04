@@ -49,6 +49,7 @@ async fn proxy_with_options(
         signing_key: KEY.to_vec(),
         anthropic: Some(AnthropicAuth::OAuth("real-oauth-token".into())),
         openai_api_key: Some("sk-real-openai-key".into()),
+        openai_models: vec!["m".into()],
         nexusmind_keys: nexusmind
             .map(|key| {
                 [("org-1".to_string(), key.to_string())]
@@ -146,6 +147,7 @@ async fn the_openai_route_injects_the_api_key_and_strips_the_placeholder() {
         403
     );
     assert_eq!(post("/v1/responses", run_token(), "{}").await.unwrap().status(), 403);
+    assert_eq!(post("/v1/responses", codex_token(), r#"{"model":"gpt-6-pro"}"#).await.unwrap().status(), 403);
 
     let seen = seen.0.lock().unwrap();
     assert_eq!(seen.len(), 1, "only the allowed request reaches upstream");
@@ -153,7 +155,7 @@ async fn the_openai_route_injects_the_api_key_and_strips_the_placeholder() {
     assert_eq!(uri, "/v1/responses");
     // The body was rewritten (store forced off): its length is the new one.
     let length: usize = headers["content-length"].to_str().unwrap().parse().unwrap();
-    assert_eq!(length, br#"{"model":"m","store":false,"tools":[{"name":"shell","type":"function"}]}"#.len());
+    assert_eq!(length, br#"{"max_output_tokens":64000,"model":"m","store":false,"tools":[{"name":"shell","type":"function"}]}"#.len());
     assert_eq!(headers["authorization"], "Bearer sk-real-openai-key");
     assert!(headers.get("openai-organization").is_none(), "the sandbox never picks the billed org");
 }

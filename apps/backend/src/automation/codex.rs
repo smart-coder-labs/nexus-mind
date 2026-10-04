@@ -77,6 +77,7 @@ fn parse_with_prices(stdout: &[u8], model: &str, prices: Option<[f64; 3]>) -> an
     let (mut input, mut cached, mut output, mut completed) = (0i64, 0i64, 0i64, 0i64);
     let mut last_message: Option<String> = None;
     let mut failure: Option<String> = None;
+    let mut last_error: Option<String> = None;
     let mut lines = 0usize;
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         lines += 1;
@@ -107,6 +108,9 @@ fn parse_with_prices(stdout: &[u8], model: &str, prices: Option<[f64; 3]>) -> an
                 output += usage("output_tokens");
             }
             // A bare `error` can be a transient reconnect; a failed turn is final.
+            "error" => {
+                last_error = event.get("message").and_then(Value::as_str).map(str::to_string);
+            }
             "turn.failed" => {
                 failure = Some(
                     event
@@ -126,7 +130,8 @@ fn parse_with_prices(stdout: &[u8], model: &str, prices: Option<[f64; 3]>) -> an
         anyhow::bail!(codex_failure_code(failure));
     }
     let Some(message) = last_message.filter(|_| completed > 0) else {
-        anyhow::bail!("codex_result_missing");
+        // No finished turn: the last error, if any, says why.
+        anyhow::bail!(last_error.as_deref().map_or("codex_result_missing", codex_failure_code));
     };
     let cost = usage_cost(prices, input, cached, output);
     let mut result = json!({

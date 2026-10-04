@@ -21,7 +21,14 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 
-use super::egress::{decide, openai_request_body, scrub_request_headers, Decision, Upstream, MAX_OPENAI_REQUESTS_PER_RUN};
+use super::egress::{
+    decide, openai_request_body, scrub_request_headers, Decision, Upstream, MAX_OPENAI_REQUESTS_PER_RUN,
+    MAX_OPENAI_REQUEST_BYTES,
+};
+
+/// Codex requests are buffered to be checked; this bounds the memory they take
+/// together, so one run cannot exhaust the proxy every org shares.
+static OPENAI_BUFFERS: Semaphore = Semaphore::const_new(8);
 
 /// Largest request body forwarded upstream. Model requests are JSON well below this.
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
@@ -37,6 +44,8 @@ pub struct EgressConfig {
     pub anthropic: Option<AnthropicAuth>,
     /// OpenAI API key for the Codex CLI; `None` fails the OpenAI route closed.
     pub openai_api_key: Option<String>,
+    /// The only models a Codex request may name (the factory's tier models).
+    pub openai_models: Vec<String>,
     /// NexusMind bot API key per organization (`org_id → key`). A run whose org
     /// has no key fails closed.
     pub nexusmind_keys: std::collections::HashMap<String, String>,
@@ -368,14 +377,17 @@ async fn reverse(
             tracing::warn!(target: "factory_egress", run_id, ?upstream, "openai request cap reached");
             return text(StatusCode::TOO_MANY_REQUESTS, "egress request cap reached\n");
         }
-        let collected = match http_body_util::Limited::new(request.into_body(), MAX_REQUEST_BYTES)
+        let Ok(_buffer) = OPENAI_BUFFERS.try_acquire() else {
+            return text(StatusCode::SERVICE_UNAVAILABLE, "proxy busy\n");
+        };
+        let collected = match http_body_util::Limited::new(request.into_body(), MAX_OPENAI_REQUEST_BYTES)
             .collect()
             .await
         {
             Ok(collected) => collected.to_bytes(),
             Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n"),
         };
-        match openai_request_body(&collected) {
+        match openai_request_body(&collected, &config.openai_models) {
             Ok(filtered) => {
                 headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-length"));
                 reqwest::Body::from(filtered)

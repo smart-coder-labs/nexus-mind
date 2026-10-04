@@ -5,6 +5,9 @@
 //! - `FACTORY_PROXY_SIGNING_KEY` (required, ≥ 32 bytes): verifies run tokens.
 //! - `FACTORY_ANTHROPIC_OAUTH_TOKEN` or `FACTORY_ANTHROPIC_API_KEY`: Claude credential.
 //! - `FACTORY_OPENAI_API_KEY` (optional): OpenAI API key for the Codex CLI.
+//! - `FACTORY_OPENAI_MODELS` (optional): comma-separated models Codex may use;
+//!   defaults to the factory's tier models. Keep in step with the worker's
+//!   `FACTORY_CODEX_MODEL_*`.
 //! - `FACTORY_NEXUSMIND_KEYS` (optional): JSON object `{"<org_id>": "<nexus-bot API key>"}`.
 //! - `FACTORY_TUNNEL_ALLOWLIST` (optional): comma-separated CONNECT hosts.
 //! - `FACTORY_PROXY_LISTEN` (default `0.0.0.0:8080`).
@@ -68,6 +71,11 @@ async fn main() -> anyhow::Result<()> {
         signing_key: signing_key.into_bytes(),
         anthropic,
         openai_api_key: env("FACTORY_OPENAI_API_KEY"),
+        openai_models: env("FACTORY_OPENAI_MODELS")
+            .map(|list| list.split(',').map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).collect())
+            .unwrap_or_else(|| {
+                ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"].iter().map(|m| m.to_string()).collect()
+            }),
         nexusmind_keys: match env("FACTORY_NEXUSMIND_KEYS") {
             Some(raw) => serde_json::from_str(&raw).map_err(|_| {
                 anyhow::anyhow!("FACTORY_NEXUSMIND_KEYS must be a JSON object of org_id -> key")

