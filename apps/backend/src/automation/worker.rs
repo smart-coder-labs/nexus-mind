@@ -2671,10 +2671,19 @@ fn select_run_model(
         .collect();
     let db = store.conn();
     let conn = db.lock().ok();
-    let frontier_used_today = conn
-        .as_deref()
-        .and_then(|conn| gateway::frontier_runs_today(conn, &claim.org_id).ok())
-        .unwrap_or(0);
+    // Count and record under the same lock, so concurrent sessions see each
+    // other. An unreadable count fails closed: no frontier past an unknown cap.
+    let frontier_used_today = match conn.as_deref().map(|conn| gateway::frontier_runs_today(conn, &claim.org_id)) {
+        Some(Ok(count)) => count,
+        Some(Err(error)) => {
+            tracing::warn!(run_id = %claim.run.id, "frontier count unreadable, capping: {error:#}");
+            i64::MAX
+        }
+        None => {
+            tracing::warn!(run_id = %claim.run.id, "database lock unavailable, capping frontier");
+            i64::MAX
+        }
+    };
     let choice = gateway::choose(&gateway::RunFacts {
         template_key: &claim.template_key,
         class: gateway::class_from_labels(&labels),
@@ -4806,8 +4815,9 @@ async fn execute_claim(
         .parent()
         .unwrap_or(workdir.as_path())
         .join("screenshots");
-    // Chosen once: output-format retries keep the same model.
-    let run_model = select_run_model(store, claim, &runtime_config).model;
+    // Chosen once: output-format retries keep the same model. The nexus
+    // executor takes no model, so none is selected (or recorded) for it.
+    let run_model = (!nexus_selected).then(|| select_run_model(store, claim, &runtime_config).model);
     let mut outcome = loop {
     let mut claude = if nexus_selected {
         Command::new(&config.nexus_worker_bin)
@@ -4828,8 +4838,10 @@ async fn execute_claim(
             "-p", &prompt, "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns, "--permission-mode", permission_mode,
             "--allowedTools", allowed_tools,
-            "--model", &run_model,
         ]);
+        if let Some(model) = run_model.as_deref() {
+            claude.args(["--model", model]);
+        }
     }
     // Grant the resolver read access to the sibling context repositories cloned
     // above. Without --add-dir, Claude Code refuses reads outside the cwd tree.

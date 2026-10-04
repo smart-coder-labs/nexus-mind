@@ -53,38 +53,41 @@ pub fn tier_for_class(class: TaskClass) -> Tier {
     }
 }
 
-/// A task class read from issue labels (`security`, `docs`, `ci`, …), if any
-/// label says. The most sensitive class wins.
+/// A task class read from issue labels, if any label names one. Labels are
+/// split into words (`area/ci`, `type: docs`), so `dependencies` is not `ci`
+/// and `docker` is not `doc`. The most sensitive class wins, and a cheap class
+/// (tests, docs) only when no other class is named: `bug` + `tests` is a fix.
 pub fn class_from_labels(labels: &[String]) -> Option<TaskClass> {
-    let has = |needles: &[&str]| {
-        labels.iter().any(|label| {
-            let label = label.to_ascii_lowercase();
-            needles.iter().any(|needle| label.contains(needle))
+    let words: Vec<String> = labels
+        .iter()
+        .flat_map(|label| {
+            label
+                .to_ascii_lowercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
         })
-    };
-    if has(&["security", "auth", "vulnerab"]) {
-        Some(TaskClass::Security)
-    } else if has(&["migration", "database", "schema"]) {
-        Some(TaskClass::Migration)
-    } else if has(&["infra", "ci", "deploy", "devops"]) {
-        Some(TaskClass::Infra)
-    } else if has(&["test"]) {
-        Some(TaskClass::Tests)
-    } else if has(&["doc"]) {
-        Some(TaskClass::Docs)
-    } else if has(&["ui", "design", "frontend", "a11y"]) {
-        Some(TaskClass::Ui)
-    } else if has(&["bug"]) {
-        Some(TaskClass::Bugfix)
-    } else {
-        None
-    }
+        .collect();
+    let has = |names: &[&str]| words.iter().any(|w| names.contains(&w.as_str()));
+    const ORDER: [(TaskClass, &[&str]); 7] = [
+        (TaskClass::Security, &["security", "auth", "authentication", "authorization", "vulnerability", "cve", "secrets"]),
+        (TaskClass::Migration, &["migration", "migrations", "database", "db", "schema"]),
+        (TaskClass::Infra, &["infra", "infrastructure", "ci", "cd", "deploy", "deployment", "devops", "docker", "k8s", "kubernetes"]),
+        (TaskClass::Ui, &["ui", "ux", "design", "frontend", "a11y", "accessibility", "css"]),
+        (TaskClass::Bugfix, &["bug", "bugfix", "regression"]),
+        (TaskClass::Tests, &["test", "tests", "testing", "e2e"]),
+        (TaskClass::Docs, &["doc", "docs", "documentation", "readme"]),
+    ];
+    ORDER.iter().find(|(_, names)| has(names)).map(|(class, _)| *class)
 }
 
 /// The tier of a template when its run has no task class.
+/// The PR reviewer and the judge decide what is merged and accepted, so they
+/// stay at the frontier (owner decision, 2026-10-04).
 pub fn template_tier(template_key: &str) -> Tier {
     match template_key {
-        "security_scan" | "security_dast" => Tier::Frontier,
+        "github_pr_reviewer" | "judge" | "security_scan" | "security_dast" => Tier::Frontier,
         "content_manager" | "lead_generation" => Tier::Cheap,
         _ => Tier::Standard,
     }
@@ -100,12 +103,15 @@ pub fn claude_model(tier: Tier) -> &'static str {
 }
 
 /// Explicit model names an agent may pin (`config.model`): Claude Code aliases
-/// or full model ids. Anything else is ignored, never passed to the CLI.
+/// or full model ids, optionally with the `[1m]` long-context suffix. Anything
+/// else is ignored, never passed to the CLI. A pin is the admin's explicit
+/// choice and is not subject to the frontier cap.
 fn pinned_model(value: &str) -> bool {
-    matches!(value, "haiku" | "sonnet" | "opus")
-        || (value.starts_with("claude-")
-            && value.len() <= 64
-            && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.'))
+    let base = value.strip_suffix("[1m]").unwrap_or(value);
+    matches!(base, "haiku" | "sonnet" | "opus")
+        || (base.starts_with("claude-")
+            && base.len() <= 64
+            && base.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.'))
 }
 
 /// The model a run uses and why.
@@ -160,13 +166,14 @@ pub fn choose(facts: &RunFacts<'_>) -> Choice {
     Choice { tier, model: claude_model(tier).to_string(), reason }
 }
 
-/// Frontier runs an org made today, from the run metrics (model names carry
-/// the family). Runs still in flight are not counted, so the cap can be
-/// overshot by the runs that start together.
+/// Frontier choices an org made today (UTC), counted from `model.selected` run
+/// events: every session of a fan-out run, runs still in flight and runs that
+/// failed all count, unlike the one metrics row per finished run.
 pub fn frontier_runs_today(conn: &rusqlite::Connection, org_id: &str) -> anyhow::Result<i64> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FROM factory_run_metrics
-         WHERE org_id = ?1 AND date(created_at) = date('now') AND model LIKE '%opus%'",
+        "SELECT COUNT(*) FROM autonomous_agent_events
+         WHERE org_id = ?1 AND kind = 'model.selected' AND created_at >= date('now')
+           AND json_extract(payload_json, '$.tier') = 'frontier'",
         [org_id],
         |r| r.get(0),
     )?)
@@ -196,6 +203,16 @@ mod tests {
         assert_eq!(class_from_labels(&labels(&["Documentation"])), Some(TaskClass::Docs));
         assert_eq!(class_from_labels(&labels(&["bug", "ui"])), Some(TaskClass::Ui));
         assert_eq!(class_from_labels(&labels(&["good first issue"])), None);
+        // Words, not substrings.
+        for noise in ["dependencies", "decision", "latest", "author", "build", "debug", "guide"] {
+            assert_eq!(class_from_labels(&labels(&[noise])), None, "{noise}");
+        }
+        assert_eq!(class_from_labels(&labels(&["docker"])), Some(TaskClass::Infra));
+        assert_eq!(class_from_labels(&labels(&["area/ci"])), Some(TaskClass::Infra));
+        assert_eq!(class_from_labels(&labels(&["type: docs"])), Some(TaskClass::Docs));
+        // A cheap class only when nothing else is named.
+        assert_eq!(class_from_labels(&labels(&["bug", "tests"])), Some(TaskClass::Bugfix));
+        assert_eq!(class_from_labels(&labels(&["documentation", "bug"])), Some(TaskClass::Bugfix));
     }
 
     #[test]
@@ -213,6 +230,10 @@ mod tests {
         assert_eq!(choose(&f).model, "opus");
         let template_only = RunFacts { template_key: "security_scan", frontier_cap: 20, ..Default::default() };
         assert_eq!(choose(&template_only).tier, Tier::Frontier);
+        let reviewer = RunFacts { template_key: "github_pr_reviewer", frontier_cap: 20, ..Default::default() };
+        assert_eq!(choose(&reviewer).model, "opus");
+        f.configured_model = Some("opus[1m]");
+        assert_eq!(choose(&f).model, "opus[1m]");
     }
 
     #[test]
@@ -225,5 +246,35 @@ mod tests {
         assert!(choice.reason.contains("frontier cap of 20"), "{}", choice.reason);
         f.frontier_used_today = 19;
         assert_eq!(choose(&f).model, "opus");
+    }
+
+    #[test]
+    fn todays_frontier_choices_are_counted_from_run_events() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        let (org, _, _) =
+            crate::db::queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        let event = |seq: i64, run: &str, kind: &str, tier: &str, at: &str| {
+            conn.execute(
+                "INSERT INTO autonomous_agent_events (id, org_id, run_id, sequence, kind, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(), org.id, run, seq, kind,
+                    serde_json::json!({"tier": tier}).to_string(), at
+                ],
+            )
+            .unwrap();
+        };
+        let now = "datetime('now')";
+        let today = conn.query_row(&format!("SELECT {now}"), [], |r| r.get::<_, String>(0)).unwrap();
+        // One fan-out run with two frontier sessions, and one standard session.
+        event(1, "run-a", "model.selected", "frontier", &today);
+        event(2, "run-a", "model.selected", "frontier", &today);
+        event(1, "run-b", "model.selected", "standard", &today);
+        event(1, "run-c", "model.selected", "frontier", "2020-01-01 00:00:00");
+        event(3, "run-a", "run.finished", "frontier", &today);
+        assert_eq!(frontier_runs_today(&conn, &org.id).unwrap(), 2);
+        assert_eq!(frontier_runs_today(&conn, "other-org").unwrap(), 0);
     }
 }
