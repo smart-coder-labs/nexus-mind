@@ -2791,6 +2791,19 @@ fn decide_merge(
         task_class: Some(task_class),
         ..Default::default()
     };
+    let subject = format!("{repository}#{number}@{reviewed_sha}");
+    // A person's verdict on this exact head (approve_factory_action) decides,
+    // within the gates that already passed: approval allows, rejection holds.
+    if let Some(approved) =
+        crate::db::factory_ops::latest_human_verdict(&conn, org_id, &subject, "merge")?
+    {
+        use crate::factory::contracts::{ActionVerdict, Verdict, VerdictSource};
+        return Ok(ActionVerdict {
+            verdict: if approved { Verdict::Allow } else { Verdict::Hold },
+            reason: if approved { "approved by a person".into() } else { "rejected by a person".into() },
+            source: VerdictSource::Human,
+        });
+    }
     let model = merge_decision_model();
     let evaluation = policy_engine::evaluate(
         &input,
@@ -2802,7 +2815,7 @@ fn decide_merge(
         &conn,
         org_id,
         &DecisionRecord {
-            subject: format!("{repository}#{number}@{reviewed_sha}"),
+            subject,
             action: Action::Merge,
             verdict: evaluation.verdict.clone(),
             policy_version: evaluation.policy_version,
