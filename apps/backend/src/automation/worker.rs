@@ -2767,6 +2767,23 @@ struct MergeEvidence {
     runs: Vec<serde_json::Value>,
 }
 
+/// An `allow` on a PR from untrusted intake becomes a policy hold, which a
+/// person may lift; any other verdict stands.
+fn hold_untrusted_origin(
+    verdict: crate::factory::contracts::ActionVerdict,
+    untrusted_origin: bool,
+) -> crate::factory::contracts::ActionVerdict {
+    use crate::factory::contracts::{ActionVerdict, Verdict, VerdictSource};
+    if untrusted_origin && verdict.verdict == Verdict::Allow {
+        return ActionVerdict {
+            verdict: Verdict::Hold,
+            reason: "opened from untrusted intake: a person decides".into(),
+            source: VerdictSource::Policy,
+        };
+    }
+    verdict
+}
+
 /// Asks the policy engine whether this gated commit may be merged, and records the
 /// decision (plan §4). The gates already ran, so no floor applies here.
 #[allow(clippy::too_many_arguments)]
@@ -2803,6 +2820,11 @@ fn decide_merge(
         &model,
         policy_engine::DEFAULT_MIN_CONFIDENCE,
     );
+    // A PR opened from untrusted intake (Slack, Sentry) is never merged without
+    // a person (ADR 55497338): an `allow` becomes a policy hold a person may lift.
+    let untrusted_origin = evaluation.verdict.verdict == Verdict::Allow
+        && crate::db::factory_intake::untrusted_intake_pull(&conn, org_id, repository, number)?;
+    let evaluated = hold_untrusted_origin(evaluation.verdict.clone(), untrusted_origin);
     // The run and its required checks travel with the decision, so a person's
     // approval of a hold can start the soak that re-runs every gate.
     let mut inputs = json!({
@@ -2810,12 +2832,13 @@ fn decide_merge(
         "changed_files": files.len(),
         "run_id": run_id,
         "required_checks": required_checks,
+        "untrusted_origin": untrusted_origin,
     });
     // A person (approve_factory_action) may only lift a HOLD the policy or the
     // decision model put on this exact head: never a policy `deny` (`never`)
     // nor a floor. Approval allows; rejection keeps it held.
-    let held_for_a_person = evaluation.verdict.verdict == Verdict::Hold
-        && matches!(evaluation.verdict.source, VerdictSource::Policy | VerdictSource::DecisionModel);
+    let held_for_a_person = evaluated.verdict == Verdict::Hold
+        && matches!(evaluated.source, VerdictSource::Policy | VerdictSource::DecisionModel);
     let human = if held_for_a_person {
         crate::db::factory_ops::latest_human_decision(&conn, org_id, &subject, "merge")?
     } else {
@@ -2830,7 +2853,7 @@ fn decide_merge(
                 source: VerdictSource::Human,
             }
         }
-        None => evaluation.verdict.clone(),
+        None => evaluated,
     };
     record_decision(
         &conn,
@@ -7151,6 +7174,8 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
             retry_one_delivery(&store, &config).await;
             process_due_soaks(&store).await;
+            // F3 intake (Slack, Sentry) and the watchdog, beside the loop.
+            super::factory_intake::spawn_tick(store.clone(), config.app_base_url.clone());
             if ticks == 1 || ticks.is_multiple_of(20) {
                 super::sandboxed::gc_task_pods().await;
             }
@@ -7461,6 +7486,17 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_allow_on_an_untrusted_intake_pull_is_held_for_a_person() {
+        use crate::factory::contracts::{ActionVerdict, Verdict, VerdictSource};
+        let allow = ActionVerdict { verdict: Verdict::Allow, reason: "ok".into(), source: VerdictSource::DecisionModel };
+        let held = hold_untrusted_origin(allow.clone(), true);
+        assert_eq!((held.verdict, held.source), (Verdict::Hold, VerdictSource::Policy));
+        assert_eq!(hold_untrusted_origin(allow.clone(), false), allow);
+        let deny = ActionVerdict { verdict: Verdict::Deny, reason: "policy_never".into(), source: VerdictSource::Policy };
+        assert_eq!(hold_untrusted_origin(deny.clone(), true), deny);
+    }
 
     /// A person may lift a policy HOLD on a head, never a policy `never` (deny).
     #[test]

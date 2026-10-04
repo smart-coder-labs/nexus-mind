@@ -275,6 +275,12 @@ pub async fn get_github_issue(token: &str, repository: &str, number: i64) -> Res
     github_get(token, &format!("/repos/{owner}/{repo}/issues/{number}")).await
 }
 
+/// The repository itself (`private`, `visibility`, `default_branch`, …).
+pub async fn get_github_repository(token: &str, repository: &str) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_get(token, &format!("/repos/{owner}/{repo}")).await
+}
+
 pub async fn get_github_pull(token: &str, repository: &str, number: i64) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(token, &format!("/repos/{owner}/{repo}/pulls/{number}")).await

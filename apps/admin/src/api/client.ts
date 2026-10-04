@@ -129,6 +129,10 @@ import type {
   ShadowDecision,
   FactoryDigest,
   FactoryEconomics,
+  FactoryIntakeItem,
+  FactoryIntakeSource,
+  FactoryIntakeSourceInput,
+  FactoryWatchdog,
   ShadowReport,
   FactoryPolicy,
 } from '../types'
@@ -1424,6 +1428,34 @@ export class NexusMindClient {
 
   deleteFactoryPolicy(id: string): Promise<void> {
     return this.request(`/v1/factory/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  listFactoryIntakeSources(): Promise<FactoryIntakeSource[]> {
+    return this.request('/v1/factory/intake/sources')
+  }
+
+  createFactoryIntakeSource(input: FactoryIntakeSourceInput): Promise<FactoryIntakeSource> {
+    return this.request('/v1/factory/intake/sources', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  updateFactoryIntakeSource(id: string, input: FactoryIntakeSourceInput): Promise<FactoryIntakeSource> {
+    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) })
+  }
+
+  deleteFactoryIntakeSource(id: string): Promise<void> {
+    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  listFactoryIntakeItems(limit = 50): Promise<FactoryIntakeItem[]> {
+    return this.request(`/v1/factory/intake/items?limit=${limit}`)
+  }
+
+  getFactoryWatchdog(): Promise<FactoryWatchdog | null> {
+    return this.request('/v1/factory/watchdog')
+  }
+
+  putFactoryWatchdog(input: { slack_connector_id: string | null; enabled: boolean; daily_hour_utc: number }): Promise<FactoryWatchdog | null> {
+    return this.request('/v1/factory/watchdog', { method: 'PUT', body: JSON.stringify(input) })
   }
 
   getFactoryDigest(): Promise<FactoryDigest> {

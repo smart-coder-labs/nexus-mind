@@ -1,5 +1,6 @@
 pub mod connection;
 pub mod doc_queries;
+pub mod factory_intake;
 pub mod factory_ops;
 pub mod factory_queries;
 pub mod migrations;
