@@ -203,6 +203,12 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - `GET /v1/factory/shadow/report`, `GET /v1/factory/shadow/decisions` and `POST …/:id/label`.
     - The admin panel on the factory policies page.
   - **Volume:** no PR reviewer is active in production, so the measurement starts from a backfill of already-merged PRs, whose outcome is known at once.
+  - **First results (2026-10-04, 153 merged PRs: 63 nexus-mind, 90 kasymir-app-ui).**
+    - Jev allows 5 (3%): 4 clean, 1 pending.
+    - Jev holds 148: 121 clean, 27 pending.
+    - There are 0 high-risk outcomes.
+  - **Signals recalibrated (#295, #296).** The first signal set ("any fix touching the same files", "any failing check") flagged 74% of merged PRs. Signals are now strict: a revert, a fix naming the PR, or a failed *required* check. Neither repository requires checks today.
+  - **Reading.** With no positive cases, the false-low rate cannot be validated yet. Human labels in the admin are the missing ground truth. Jev is very conservative (every settled hold was clean), so automating anything beyond docs will need a threshold recalibrated against those labels.
 
 ### F4: Specialists (2–4 weeks)
 
