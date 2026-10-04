@@ -185,7 +185,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Add the `factory_operator` MCP profile and tools, the human digest in admin, and a watchdog that notifies only on meaningful change.
 - Add Slack (read) and Sentry intake adapters.
 - **Exit:** a measured false-low-risk rate below threshold (OD-5) before automatic routing is enabled.
-- **Status (2026-10-03): Jev in shadow built (ADR 7d6f870f); the Model Gateway is next.**
+- **Status (2026-10-04): shadow, gateway tiers, operator surface and Slack/Sentry adapters built. Codex, OTel and the watchdog are open; the exit needs human labels.**
   - **Decided:**
     - Shadow comes first, so the measurement clock starts before the gateway exists.
     - Ground truth combines post-merge signals with a human label, and the label wins.
@@ -209,6 +209,39 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - There are 0 high-risk outcomes.
   - **Signals recalibrated (#295, #296).** The first signal set ("any fix touching the same files", "any failing check") flagged 74% of merged PRs. Signals are now strict: a revert, a fix naming the PR, or a failed *required* check. Neither repository requires checks today.
   - **Reading.** With no positive cases, the false-low rate cannot be validated yet. Human labels in the admin are the missing ground truth. Jev is very conservative (every settled hold was clean), so automating anything beyond docs will need a threshold recalibrated against those labels.
+  - **Model Gateway (#297):**
+    - Each run gets a model (`--model`), picked in this order: pin, then tier, then label class, then the template default.
+    - Reviewer, judge and security templates run on Opus.
+    - Frontier calls are capped at 20 per day, counted from `model.selected` events.
+    - Claude Code runs on the subscription token.
+    - **Codex is postponed.** A ChatGPT subscription rotates refresh tokens, and OpenAI recommends API keys for automation.
+  - **Operator surface (#298, nexusmind-mcp#19):**
+    - `GET /v1/factory/digest` lists:
+      - merges held for a person (latest head per PR);
+      - approved merges in soak;
+      - runs that stopped short (only for readers of autonomous runs);
+      - unstarted factory tasks;
+      - unlabelled shadow decisions.
+    - `POST /v1/factory/decisions`: a person approves or rejects one held merge.
+      - The policy is evaluated first, so a person lifts only a policy or decision-model *hold*, never a deny.
+      - Approval starts the 600 s soak, and `merge_after_soak` re-runs every gate.
+    - `GET /v1/factory/economics` reports:
+      - cost by model and by tier;
+      - frontier avoidance, as distinct runs;
+      - cost per proposed change. Accepted changes are not tracked yet.
+    - `POST /v1/factory/tasks` creates a factory task. It is a NexusMind backlog task labelled `factory` plus its class.
+    - The admin page "Needs a human" (`/factory-digest`).
+    - The MCP `--profile factory_operator`.
+  - **Intake:**
+    - Slack (a top-level human message with a `:factory:` reaction) and Sentry (an unresolved error or fatal issue becomes a bugfix) adapters are built as `IntakeSource` implementations.
+    - Both are always `Untrusted`.
+    - They are not wired yet. They need credentials and a per-project intake target (repository, base ref, privacy class), which does not exist yet; GitHub intake has the same gap.
+  - **Open:**
+    - The watchdog: notify on a meaningful digest change. The channel is still to be decided.
+    - OTel GenAI spans: deferred, because there is no collector.
+    - Codex.
+    - The intake target config and the wiring.
+    - Human labels for OD-5.
 
 ### F4: Specialists (2–4 weeks)
 
