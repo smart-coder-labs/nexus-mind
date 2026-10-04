@@ -261,8 +261,18 @@ pub async fn human_digest(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    // Runs are shown only to those who may read agent runs; tasks follow the
+    // project visibility of the task list.
+    let include_runs =
+        crate::api::helpers::require_permission(&conn, &auth, None, "autonomous_agent:read").is_ok();
+    let viewer = (!auth.role.is_super_user()).then_some(auth.user_id.as_str());
     Ok(Json(
-        crate::db::factory_ops::human_digest(&conn, &auth.org_id).map_err(internal)?,
+        crate::db::factory_ops::human_digest(
+            &conn,
+            &auth.org_id,
+            &crate::db::factory_ops::DigestScope { viewer, include_runs },
+        )
+        .map_err(internal)?,
     ))
 }
 
@@ -298,10 +308,12 @@ pub struct HumanDecisionRequest {
     pub reason: Option<String>,
 }
 
-/// `POST /v1/factory/decisions`: a person approves or rejects one action on one
-/// exact head (D12). The worker's merge decision uses it the next time that head
-/// is evaluated, after every deterministic gate has passed again; it never
-/// merges anything by itself.
+/// `POST /v1/factory/decisions`: a person approves or rejects one merge on one
+/// exact head (D12). Only a head the policy or the decision model held can be
+/// approved (never a policy `never` or a floor). Approval starts the soak: when
+/// it elapses the worker re-runs every gate, the verification report and the
+/// publish authority, and merges only if all still pass. Rejection cancels any
+/// pending soak for the pull request.
 pub async fn record_human_decision(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -327,9 +339,49 @@ pub async fn record_human_decision(
         .chars()
         .take(500)
         .collect();
+    let (repository, pull_number, head_sha) = crate::db::factory_ops::parse_merge_subject(&input.subject)
+        .ok_or_else(|| error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", "invalid subject"))?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    let held = crate::db::factory_ops::held_for_a_person(&conn, &auth.org_id, &input.subject).map_err(internal)?;
+    let soak_target = match (&held, input.approve) {
+        (None, true) => {
+            return Err(error(
+                StatusCode::CONFLICT,
+                "nothing_held",
+                "This head is not held for a person: only a merge the policy or the decision model held can be approved",
+            ))
+        }
+        (Some((None, _)), true) => {
+            return Err(error(
+                StatusCode::CONFLICT,
+                "hold_predates_approval",
+                "This hold was recorded before approvals could re-run the merge; re-run the review to hold it again",
+            ))
+        }
+        (Some((Some(run_id), required)), true) => Some((run_id.clone(), required.clone())),
+        _ => None,
+    };
+    // Soak first, decision second: a soak without an approval re-runs the gates
+    // and stays held, so a failure between the two steps merges nothing.
+    let merges_after = match &soak_target {
+        Some((run_id, required)) => Some(
+            factory_queries::start_merge_soak(
+                &conn,
+                &auth.org_id,
+                run_id,
+                &repository,
+                pull_number,
+                &head_sha,
+                required,
+                crate::db::factory_ops::APPROVAL_SOAK_SECONDS,
+            )
+            .map_err(internal)?
+            .due_at,
+        ),
+        None => None,
+    };
     let id = factory_queries::record_decision(
         &conn,
         &auth.org_id,
@@ -349,7 +401,10 @@ pub async fn record_human_decision(
         },
     )
     .map_err(internal)?;
-    Ok((StatusCode::CREATED, Json(serde_json::json!({"id": id}))))
+    if !input.approve {
+        factory_queries::cancel_merge_soak(&conn, &auth.org_id, &repository, pull_number).map_err(internal)?;
+    }
+    Ok((StatusCode::CREATED, Json(serde_json::json!({"id": id, "merges_after": merges_after}))))
 }
 
 #[derive(serde::Deserialize)]
@@ -375,7 +430,8 @@ pub async fn submit_factory_task(
     AppJson(input): AppJson<FactoryTaskRequest>,
 ) -> ApiResult<(StatusCode, Json<crate::models::types::Task>)> {
     let title = input.title.trim();
-    if title.is_empty() || title.chars().count() > 300 || input.project.trim().is_empty() {
+    let project = input.project.trim();
+    if title.is_empty() || title.chars().count() > 300 || project.is_empty() || project.chars().count() > 200 {
         return Err(error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "validation_error",
@@ -394,14 +450,14 @@ pub async fn submit_factory_task(
     };
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
-    crate::api::helpers::require_permission(&conn, &auth, Some(&input.project), "task:write")?;
+    crate::api::helpers::require_permission(&conn, &auth, Some(project), "task:write")?;
     let tx = conn.unchecked_transaction().map_err(|e| internal(e.into()))?;
     let task = crate::db::queries::create_task(
         &tx,
         &auth.org_id,
         &auth.user_id,
         &crate::models::types::CreateTaskRequest {
-            project: input.project.clone(),
+            project: project.to_string(),
             title: title.to_string(),
             description: input.description.clone(),
             status: Some("backlog".into()),

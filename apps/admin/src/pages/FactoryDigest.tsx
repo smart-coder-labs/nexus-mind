@@ -24,8 +24,9 @@ function when(value: string | null): string {
 
 /**
  * Needs a human (factory F3): what the factory cannot finish without a person.
- * Held merges are decided here one at a time; a decision applies to that exact
- * head and still goes through every gate before anything merges.
+ * Held merges are decided here one at a time. Approving one starts its soak:
+ * when it ends the factory re-runs every check on that exact commit and merges
+ * only if they all still pass. Rejecting cancels any pending soak.
  */
 export default function FactoryDigest() {
   const { session } = useAuth()
@@ -54,8 +55,10 @@ export default function FactoryDigest() {
   }
 
   const data = digest.data
+  const blocked = data?.blocked_runs ?? []
   const nothingWaiting =
-    data && !data.held_merges.length && !data.blocked_runs.length && !data.factory_tasks.length && !data.unlabeled_shadow
+    data && !data.held_merges.length && !data.approved_merges.length && !blocked.length && !data.factory_tasks.length && !data.unlabeled_shadow
+  const failedSubject = decide.isError ? decide.variables?.subject : undefined
 
   return (
     <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-6">
@@ -64,8 +67,8 @@ export default function FactoryDigest() {
           <Inbox className="h-5 w-5" />Needs a human
         </h1>
         <p className="mt-1 max-w-2xl text-sm text-text-tertiary">
-          What the software factory cannot finish on its own. A merge decision applies to the exact commit shown and
-          still passes every check before anything merges.
+          What the software factory cannot finish on its own. Approving a merge applies to the exact commit shown: after a
+          short wait the factory re-runs every check and merges only if they all still pass.
         </p>
       </header>
 
@@ -99,15 +102,36 @@ export default function FactoryDigest() {
               )
             })}
           </ul>
-          {decide.isError && <p role="alert" className="text-xs text-text-primary">The decision was not saved. Try again.</p>}
+          {failedSubject && (
+            <p role="alert" className="text-xs text-text-primary">
+              The decision on {failedSubject.split('@')[0]} was not saved: {(decide.error as { message?: string })?.message ?? 'unknown error'}.
+            </p>
+          )}
         </section>
       )}
 
-      {data && data.blocked_runs.length > 0 && (
+      {data && data.approved_merges.length > 0 && (
+        <section aria-labelledby="approved-title" className="rounded-xl border border-border-primary p-4 space-y-2">
+          <h2 id="approved-title" className="text-sm font-semibold text-text-primary">Approved merges</h2>
+          <ul className="m-0 p-0 list-none divide-y divide-border-primary">
+            {data.approved_merges.map(merge => (
+              <li key={merge.subject} className="py-2 flex flex-wrap items-center gap-x-3 text-xs">
+                <span className="font-mono text-text-primary">{merge.subject.split('@')[0]}</span>
+                <code className="text-text-tertiary">{merge.subject.split('@')[1]?.slice(0, 12)}</code>
+                <span className="ml-auto text-text-secondary">
+                  {merge.merges_after ? `Re-checks and merges after ${when(merge.merges_after)}` : 'Checked: merged or declined'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {blocked.length > 0 && (
         <section aria-labelledby="blocked-title" className="rounded-xl border border-border-primary p-4 space-y-2">
           <h2 id="blocked-title" className="text-sm font-semibold text-text-primary">Runs that stopped short (last 7 days)</h2>
           <ul className="m-0 p-0 list-none divide-y divide-border-primary">
-            {data.blocked_runs.map(run => (
+            {blocked.map(run => (
               <li key={run.run_id} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                 <Link to="/autonomous-agents" className="text-text-primary hover:underline">{run.agent}</Link>
                 <span className="rounded border border-border-primary px-1.5 py-0.5 font-mono">{run.status}</span>
@@ -144,6 +168,7 @@ export default function FactoryDigest() {
         </section>
       )}
 
+      {economics.isError && <p role="alert" className="text-sm text-text-primary">Could not load the economics.</p>}
       {economics.data && <EconomicsCard data={economics.data} />}
     </div>
   )

@@ -53,7 +53,7 @@ pub fn stable_task_id(source_ref: &str) -> String {
 /// Task class from labels. When labels conflict the most sensitive class wins, so
 /// a `security` + `docs` item is never treated as docs.
 pub fn classify_task(labels: &[String]) -> TaskClass {
-    const BY_SENSITIVITY: [(TaskClass, &[&str]); 8] = [
+    const BY_SENSITIVITY: [(TaskClass, &[&str]); 9] = [
         (TaskClass::Security, &["security", "vulnerability", "auth"]),
         (TaskClass::Migration, &["migration", "database", "db"]),
         (
@@ -63,6 +63,7 @@ pub fn classify_task(labels: &[String]) -> TaskClass {
         (TaskClass::Bugfix, &["bug", "bugfix", "defect"]),
         (TaskClass::Backend, &["backend", "api", "server"]),
         (TaskClass::Ui, &["ui", "frontend", "design"]),
+        (TaskClass::Refactor, &["refactor", "refactoring"]),
         (TaskClass::Tests, &["tests", "test", "testing", "qa"]),
         (TaskClass::Docs, &["docs", "documentation", "doc"]),
     ];

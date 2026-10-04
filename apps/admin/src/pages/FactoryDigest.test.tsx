@@ -21,6 +21,7 @@ vi.mock('../auth/AuthContext', () => ({
 const SUBJECT = 'acme/app#7@0123456789abcdef0123456789abcdef01234567'
 const digest: Digest = {
   held_merges: [{ subject: SUBJECT, reason: 'decision_model_not_configured', source: 'policy', created_at: '2026-10-04 01:00:00' }],
+  approved_merges: [{ subject: 'acme/app#9@' + 'a'.repeat(40), approved_at: '2026-10-04 01:00:00', merges_after: '2026-10-04 01:10:00' }],
   blocked_runs: [{ run_id: 'r1', agent: 'Kasymir resolver', template_key: 'github_issue_resolver', status: 'blocked_policy', reason: 'judge_targets_required', finished_at: '2026-10-03T20:00:00Z' }],
   factory_tasks: [{ id: 't1', project: 'app', title: 'Document the refund flow', status: 'backlog', created_at: '2026-10-03' }],
   unlabeled_shadow: 120,
@@ -53,7 +54,7 @@ describe('FactoryDigest', () => {
     vi.clearAllMocks()
     api.getFactoryDigest.mockResolvedValue(digest)
     api.getFactoryEconomics.mockResolvedValue(economics)
-    api.decideFactoryMerge.mockResolvedValue({ id: 'd1' })
+    api.decideFactoryMerge.mockResolvedValue({ id: 'd1', merges_after: '2026-10-04 01:10:00' })
   })
 
   it('lists held merges, blocked runs, waiting tasks and labels to give', async () => {
@@ -64,6 +65,22 @@ describe('FactoryDigest', () => {
     expect(screen.getByText('judge_targets_required')).toBeInTheDocument()
     expect(screen.getByText('Document the refund flow')).toBeInTheDocument()
     expect(screen.getByText(/120 shadow decisions have no human label/)).toBeInTheDocument()
+    const approved = screen.getByRole('region', { name: /approved merges/i })
+    expect(within(approved).getByText(/re-checks and merges after 2026-10-04 01:10/i)).toBeInTheDocument()
+  })
+
+  it('hides blocked runs from viewers who may not read them', async () => {
+    api.getFactoryDigest.mockResolvedValue({ ...digest, blocked_runs: null })
+    renderPage(['factory_policy:read'])
+    await screen.findByRole('region', { name: /merges held for a person/i })
+    expect(screen.queryByText('judge_targets_required')).not.toBeInTheDocument()
+  })
+
+  it('names the merge whose decision failed', async () => {
+    api.decideFactoryMerge.mockRejectedValue(new Error('This head is not held for a person'))
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    await userEvent.click(await screen.findByRole('button', { name: `Reject merging ${SUBJECT}` }))
+    expect(await screen.findByText(/the decision on acme\/app#7 was not saved: this head is not held/i)).toBeInTheDocument()
   })
 
   it('lets a person with write access approve one merge', async () => {
@@ -80,8 +97,8 @@ describe('FactoryDigest', () => {
     expect(within(card).getByText(/not measured yet/i)).toBeInTheDocument()
   })
 
-  it('says when nothing waits and explains the missing permission', async () => {
-    api.getFactoryDigest.mockResolvedValue({ held_merges: [], blocked_runs: [], factory_tasks: [], unlabeled_shadow: 0, unlabeled_shadow_allows: 0 })
+  it('says when nothing waits', async () => {
+    api.getFactoryDigest.mockResolvedValue({ held_merges: [], approved_merges: [], blocked_runs: [], factory_tasks: [], unlabeled_shadow: 0, unlabeled_shadow_allows: 0 })
     renderPage(['factory_policy:read'])
     expect(await screen.findByText(/nothing is waiting on a person/i)).toBeInTheDocument()
   })

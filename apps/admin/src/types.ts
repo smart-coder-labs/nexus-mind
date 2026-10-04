@@ -1548,9 +1548,12 @@ export interface FactoryBlockedRun {
   finished_at: string | null
 }
 export interface FactoryWaitingTask { id: string; project: string; title: string; status: string; created_at: string }
+export interface FactoryApprovedMerge { subject: string; approved_at: string; merges_after: string | null }
 export interface FactoryDigest {
   held_merges: FactoryHeldMerge[]
-  blocked_runs: FactoryBlockedRun[]
+  approved_merges: FactoryApprovedMerge[]
+  /** null when the viewer may not read agent runs. */
+  blocked_runs: FactoryBlockedRun[] | null
   factory_tasks: FactoryWaitingTask[]
   unlabeled_shadow: number
   unlabeled_shadow_allows: number

@@ -1434,7 +1434,7 @@ export class NexusMindClient {
     return this.request(`/v1/factory/economics?days=${days}`)
   }
 
-  decideFactoryMerge(subject: string, approve: boolean, reason?: string): Promise<{ id: string }> {
+  decideFactoryMerge(subject: string, approve: boolean, reason?: string): Promise<{ id: string; merges_after: string | null }> {
     return this.request('/v1/factory/decisions', {
       method: 'POST',
       body: JSON.stringify({ subject, action: 'merge', approve, ...(reason ? { reason } : {}) }),

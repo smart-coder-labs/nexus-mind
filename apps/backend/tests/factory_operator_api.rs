@@ -136,14 +136,40 @@ async fn digest_and_economics_need_the_factory_permission() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+fn hold(path: &std::path::Path, subject: &str) -> String {
+    let conn = connection::connect(path.to_str().unwrap()).unwrap();
+    let org_id: String = conn.query_row("SELECT org_id FROM users WHERE email = ?1", [EMAIL], |r| r.get(0)).unwrap();
+    use nexusmind::factory::contracts::{Action, ActionVerdict, Verdict, VerdictSource};
+    nexusmind::db::factory_queries::record_decision(
+        &conn,
+        &org_id,
+        &nexusmind::db::factory_queries::DecisionRecord {
+            subject: subject.into(),
+            action: Action::Merge,
+            verdict: ActionVerdict { verdict: Verdict::Hold, reason: "decision_model_not_configured".into(), source: VerdictSource::Policy },
+            policy_version: Some(1),
+            provider: None,
+            model: None,
+            confidence: None,
+            inputs: json!({"run_id": "run-1", "required_checks": ["build"]}),
+        },
+    )
+    .unwrap();
+    org_id
+}
+
 #[tokio::test]
-async fn a_person_decides_one_merge_and_the_digest_reflects_it() {
+async fn approving_a_held_merge_starts_its_soak_and_rejecting_cancels_it() {
     let (router, path) = app("super_user");
     let cookie = login(&router).await;
-    let (status, body) = get(&router, &cookie, "/v1/factory/digest").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["held_merges"], json!([]));
-    assert_eq!(body["unlabeled_shadow"], 0);
+    // Nothing held: nothing to approve.
+    let (status, body) = post(&router, &cookie, "/v1/factory/decisions", json!({"subject": SUBJECT, "action": "merge", "approve": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "nothing_held");
+
+    let org_id = hold(&path, SUBJECT);
+    let (_, digest) = get(&router, &cookie, "/v1/factory/digest").await;
+    assert_eq!(digest["held_merges"][0]["subject"], SUBJECT);
 
     for bad in [
         json!({"subject": "acme/app#7@abc", "action": "merge", "approve": true}),
@@ -154,9 +180,20 @@ async fn a_person_decides_one_merge_and_the_digest_reflects_it() {
     }
     let (status, body) = post(&router, &cookie, "/v1/factory/decisions", json!({"subject": SUBJECT, "action": "merge", "approve": true, "reason": "checked the diff"})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["merges_after"].is_string(), "{body}");
     let conn = connection::connect(path.to_str().unwrap()).unwrap();
-    let org_id: String = conn.query_row("SELECT org_id FROM users WHERE email = ?1", [EMAIL], |r| r.get(0)).unwrap();
-    assert_eq!(nexusmind::db::factory_ops::latest_human_verdict(&conn, &org_id, SUBJECT, "merge").unwrap(), Some(true));
+    let soaks: i64 = conn.query_row("SELECT COUNT(*) FROM factory_merge_soaks WHERE org_id = ?1 AND pull_number = 7", [&org_id], |r| r.get(0)).unwrap();
+    assert_eq!(soaks, 1);
+    let (_, digest) = get(&router, &cookie, "/v1/factory/digest").await;
+    assert_eq!(digest["held_merges"], json!([]));
+    assert_eq!(digest["approved_merges"][0]["subject"], SUBJECT);
+    assert!(digest["approved_merges"][0]["merges_after"].is_string());
+
+    // Rejecting cancels the pending soak.
+    let (status, _) = post(&router, &cookie, "/v1/factory/decisions", json!({"subject": SUBJECT, "action": "merge", "approve": false})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let soaks: i64 = conn.query_row("SELECT COUNT(*) FROM factory_merge_soaks WHERE org_id = ?1", [&org_id], |r| r.get(0)).unwrap();
+    assert_eq!(soaks, 0);
 
     let (status, body) = get(&router, &cookie, "/v1/factory/economics?days=7").await;
     assert_eq!(status, StatusCode::OK, "{body}");
