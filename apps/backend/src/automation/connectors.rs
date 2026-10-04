@@ -122,6 +122,14 @@ async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
         .await?)
 }
 
+/// The HTTP status behind a failed GitHub call, if it got that far.
+fn http_status(error: &anyhow::Error) -> Option<u16> {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .and_then(|e| e.status())
+        .map(|s| s.as_u16())
+}
+
 /// No GitHub read may hang the worker: callers run on the tick loop.
 const GITHUB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -517,7 +525,14 @@ pub async fn required_status_checks(
 ) -> Result<Vec<String>> {
     let (owner, repo) = repository_parts(repository)?;
     let mut required = Vec::new();
-    let rules = github_get(token, &format!("/repos/{owner}/{repo}/rules/branches/{branch}")).await?;
+    // Private repositories on plans without rulesets answer 403 ("Upgrade to
+    // GitHub Pro"), and 404 means none: both mean no ruleset requires a check.
+    // A rate-limited 403 cannot hide here: the branch read below fails too.
+    let rules = match github_get(token, &format!("/repos/{owner}/{repo}/rules/branches/{branch}")).await {
+        Ok(rules) => rules,
+        Err(error) if http_status(&error).is_some_and(|s| s == 403 || s == 404) => Value::Array(Vec::new()),
+        Err(error) => return Err(error),
+    };
     for rule in rules.as_array().into_iter().flatten() {
         if rule.get("type").and_then(|v| v.as_str()) == Some("required_status_checks") {
             for check in rule
