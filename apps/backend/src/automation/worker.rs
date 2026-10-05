@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::{process::Command, time::timeout};
 
-fn sanitize_output(value: &[u8], limit: usize) -> String {
+pub(crate) fn sanitize_output(value: &[u8], limit: usize) -> String {
     let text = String::from_utf8_lossy(&value[..value.len().min(limit)]).to_string();
     let patterns = [
         r"gh[pousr]_[A-Za-z0-9_]{20,}",
@@ -83,6 +83,24 @@ fn parse_claude_event_stream(
         result,
         json!({"format":"stream-json","events":event_counts,"line_count":lines}),
     ))
+}
+
+/// Whether a run's reported cost is over its `max_cost_usd` budget (25 USD by default).
+fn over_cost_cap(claim: &queries::ClaimedAutonomousRun, result: &serde_json::Value) -> bool {
+    let max_cost = claim.run.budget.get("max_cost_usd").and_then(|v| v.as_f64()).unwrap_or(25.0);
+    result.get("total_cost_usd").and_then(|v| v.as_f64()).is_some_and(|cost| cost > max_cost)
+}
+
+/// The executor's event stream as a Claude-shaped `result` event: Codex's JSONL
+/// is translated (`codex_model` is the model it ran with), Claude's is read as is.
+fn parse_agent_events(
+    codex_model: Option<&str>,
+    stdout: &[u8],
+) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
+    match codex_model {
+        Some(model) => super::codex::parse_codex_event_stream(stdout, model),
+        None => parse_claude_event_stream(stdout),
+    }
 }
 
 /// Spawn Claude and stream its stdout line by line, persisting each line as a
@@ -2684,6 +2702,11 @@ fn select_run_model(
             i64::MAX
         }
     };
+    let provider = if queries::autonomous_executor(&claim.config).ok() == Some("codex") {
+        gateway::Provider::Codex
+    } else {
+        gateway::Provider::Claude
+    };
     let choice = gateway::choose(&gateway::RunFacts {
         template_key: &claim.template_key,
         class: gateway::class_from_labels(&labels),
@@ -2691,8 +2714,11 @@ fn select_run_model(
         configured_model: claim.config.get("model").and_then(|v| v.as_str()),
         frontier_used_today,
         frontier_cap: gateway::frontier_runs_per_day(),
+        provider,
     });
-    if let Some(conn) = conn.as_deref() {
+    // A Codex run without a price never starts: it must not use up a frontier slot.
+    let runs = provider != gateway::Provider::Codex || super::codex::start_check(&choice.model).is_ok();
+    if let Some(conn) = conn.as_deref().filter(|_| runs) {
         let _ = queries::append_autonomous_agent_event(
             conn,
             &claim.org_id,
@@ -3750,7 +3776,19 @@ async fn resolve_issue_worktree(
     };
     let mut claude = Command::new(&worker_bin);
     let max_turns_str = max_turns.to_string();
-    if nexus_selected {
+    // Codex runs only in the sandbox (enforced by its isolation): its model is
+    // chosen here and its invocation built when the pod runs.
+    let codex_selected = queries::autonomous_executor(&claim.config).ok() == Some("codex");
+    if codex_selected && !sandboxed {
+        return (number, "blocked_policy".into(), json!({"code":"codex_requires_sandbox"}));
+    }
+    let codex_model = codex_selected.then(|| select_run_model(&store, &claim, &runtime_config).model);
+    if let Some(Err(code)) = codex_model.as_deref().map(super::codex::start_check) {
+        return (number, "blocked_policy".into(), json!({"code":code}));
+    }
+    if codex_model.is_some() {
+        // Nothing to prepare locally: the pod runs `codex_invocation`.
+    } else if nexus_selected {
         restrict_nexus_environment(&mut claude, &claim.run.definition_id);
         claude.args([
             "--repository", workdir.to_string_lossy().as_ref(), "worker-exec",
@@ -3843,7 +3881,10 @@ async fn resolve_issue_worktree(
     let invocation: std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
     > = if sandboxed {
-        let invocation = super::sandboxed::sandbox_invocation(&claude);
+        let invocation = match codex_model.as_deref() {
+            Some(model) => super::codex::codex_invocation(model, &prompt),
+            None => super::sandboxed::sandbox_invocation(&claude),
+        };
         Box::pin(super::sandboxed::run_claude_sandboxed(
             super::sandboxed::SandboxedRun {
                 store: &store,
@@ -3890,11 +3931,22 @@ async fn resolve_issue_worktree(
             Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
             Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
             Ok(Ok(output)) if output.status.success() => {
-                match parse_claude_event_stream(&output.stdout) {
+                match parse_agent_events(codex_model.as_deref(), &output.stdout) {
+                    // Codex bills an API key: its cost cap holds here too.
+                    Ok((value, stream)) if codex_model.is_some() && over_cost_cap(&claim, &value) => {
+                        ("budget_exhausted".into(), json!({"code":"cost_limit_exceeded","result":value,"stream":stream}))
+                    }
                     Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed","result":value,"stream":stream})),
                     Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string()})),
                 }
             }
+            Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model.as_deref(), &output.stdout) {
+                Ok((value, stream)) if over_cost_cap(&claim, &value) => {
+                    ("budget_exhausted".into(), json!({"code":"cost_limit_exceeded","result":value,"stream":stream}))
+                }
+                Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed_nonzero_exit","result":value,"stream":stream})),
+                Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string(),"exit_code":output.status.code()})),
+            },
             Ok(Ok(output)) if nexus_selected => (
                 "blocked_runtime".into(),
                 json!({"code":nexus_failure_code(&output.stderr),"exit_code":output.status.code()}),
@@ -4291,20 +4343,25 @@ async fn execute_claim(
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
-    let nexus_selected = match queries::autonomous_executor(&claim.config) {
-        Ok("nexus") => true,
-        Ok("claude") => false,
+    let executor = match queries::autonomous_executor(&claim.config) {
+        Ok(executor @ ("nexus" | "claude" | "codex")) => executor,
         _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),
     };
+    let nexus_selected = executor == "nexus";
+    let codex_selected = executor == "codex";
     let sandboxed = match crate::factory::sandbox::autonomous_isolation(
         &claim.config,
         &claim.template_key,
-        if nexus_selected { "nexus" } else { "claude" },
+        executor,
     ) {
         Ok(isolation) => isolation == crate::factory::sandbox::Isolation::Sandbox,
         // Never fall back to local execution when a sandbox was asked for.
         Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
     };
+    // Codex's key lives only in the egress proxy: it never runs in the worker.
+    if codex_selected && !sandboxed {
+        return ("blocked_policy".into(), json!({"code":"codex_requires_sandbox"}));
+    }
     // Verification runs only in the sandbox: repository commands never run in the
     // worker for a sandboxed template.
     let sandbox_verification = if sandboxed {
@@ -4911,6 +4968,10 @@ async fn execute_claim(
     // Chosen once: output-format retries keep the same model. The nexus
     // executor takes no model, so none is selected (or recorded) for it.
     let run_model = (!nexus_selected).then(|| select_run_model(store, claim, &runtime_config).model);
+    let codex_model = if codex_selected { run_model.as_deref() } else { None };
+    if let Some(Err(code)) = codex_model.map(super::codex::start_check) {
+        return ("blocked_policy".into(), json!({"code":code}));
+    }
     let mut outcome = loop {
     let mut claude = if nexus_selected {
         Command::new(&config.nexus_worker_bin)
@@ -4998,7 +5059,10 @@ async fn execute_claim(
     let invocation: std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
     > = if sandboxed {
-        let argv = super::sandboxed::sandbox_invocation(&claude);
+        let argv = match codex_model {
+            Some(model) => super::codex::codex_invocation(model, &prompt),
+            None => super::sandboxed::sandbox_invocation(&claude),
+        };
         Box::pin(super::sandboxed::run_claude_sandboxed(
             super::sandboxed::SandboxedRun {
                 store,
@@ -5057,7 +5121,7 @@ async fn execute_claim(
         Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
         Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
         Ok(Ok(output)) if output.status.success() => {
-            let (value,stream)=match parse_claude_event_stream(&output.stdout){
+            let (value,stream)=match parse_agent_events(codex_model, &output.stdout){
                 Ok(parsed)=>parsed,
                 Err(error)=>return ("blocked_runtime".into(),json!({"code":error.to_string()})),
             };
@@ -5068,6 +5132,17 @@ async fn execute_claim(
             "blocked_runtime".into(),
             json!({"code":nexus_failure_code(&output.stderr),"exit_code":output.status.code(),"context_manifest":manifest.clone()}),
         ),
+        Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model, &output.stdout) {
+            Ok((value, stream)) if over_cost_cap(claim, &value) => (
+                "budget_exhausted".into(),
+                json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest.clone()}),
+            ),
+            Ok((value, stream)) => (
+                "succeeded".into(),
+                json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest.clone()}),
+            ),
+            Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string(),"exit_code":output.status.code()})),
+        },
         Ok(Ok(output)) => {
             // A non-zero exit (typically hitting max-turns) can still carry a
             // final machine-readable result. Evaluate it rather than discarding

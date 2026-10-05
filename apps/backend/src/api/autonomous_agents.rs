@@ -61,6 +61,8 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "invalid_isolation"
         | "sandbox_unsupported_template"
         | "sandbox_unsupported_executor"
+        | "codex_unsupported_template"
+        | "codex_requires_sandbox"
         | "invalid_sandbox_allowed_hosts"
         | "too_many_sandbox_hosts" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
         "invalid_connector_kind"

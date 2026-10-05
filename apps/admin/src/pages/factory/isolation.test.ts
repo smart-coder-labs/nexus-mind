@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isolationConfig, isolationFromConfig, parseAllowedHosts, sandboxSupported } from './isolation'
+import { isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported } from './isolation'
 
 describe('sandboxSupported', () => {
   it('matches the templates the server can sandbox, with the Claude executor only', () => {
@@ -8,6 +8,14 @@ describe('sandboxSupported', () => {
     expect(sandboxSupported('security_dast', 'claude')).toBe(true)
     expect(sandboxSupported('lead_generation', 'claude')).toBe(false)
     expect(sandboxSupported('qa', 'nexus')).toBe(false)
+  })
+
+  it('runs Codex only in the sandbox and only for code templates', () => {
+    expect(sandboxSupported('github_issue_resolver', 'codex')).toBe(true)
+    expect(sandboxSupported('github_pr_reviewer', 'codex')).toBe(true)
+    expect(sandboxSupported('qa', 'codex')).toBe(false)
+    expect(localSupported('codex')).toBe(false)
+    expect(localSupported('claude')).toBe(true)
   })
 })
 

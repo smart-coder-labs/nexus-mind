@@ -1,3 +1,4 @@
+pub mod codex;
 pub mod connectors;
 pub mod factory_intake;
 pub mod golden_replay;

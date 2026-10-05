@@ -48,6 +48,8 @@ async fn proxy_with_options(
     let config = EgressConfig {
         signing_key: KEY.to_vec(),
         anthropic: Some(AnthropicAuth::OAuth("real-oauth-token".into())),
+        openai_api_key: Some("sk-real-openai-key".into()),
+        openai_models: ["cheap".into(), "m".into(), "frontier".into()],
         nexusmind_keys: nexusmind
             .map(|key| {
                 [("org-1".to_string(), key.to_string())]
@@ -58,6 +60,8 @@ async fn proxy_with_options(
         // 127.0.0.1:443 has no listener locally: an allow-listed but unreachable host.
         tunnel_allowlist: vec!["registry.npmjs.org".into(), "127.0.0.1".into()],
         upstream_override: Some(upstream.to_string()),
+        openai_requests: Default::default(),
+        openai_buffering: Default::default(),
         max_in_flight,
         allow_private_upstreams,
         github_packages_tokens: [(
@@ -74,6 +78,11 @@ async fn proxy_with_options(
     let address = listener.local_addr().unwrap();
     tokio::spawn(serve(listener, Arc::new(config)));
     format!("http://{address}")
+}
+
+fn codex_token() -> String {
+    let expires = chrono::Utc::now().timestamp() + 300;
+    sign_run_token(KEY, "org-1", &nexusmind::factory::egress::codex_run_id("run-42", 1), expires).unwrap()
 }
 
 fn run_token() -> String {
@@ -110,6 +119,48 @@ async fn injects_the_credential_and_strips_the_sandbox_one() {
     );
     let beta = headers["anthropic-beta"].to_str().unwrap();
     assert!(beta.contains("prompt-caching-2024-07-31") && beta.contains("oauth-2025-04-20"));
+}
+
+#[tokio::test]
+async fn the_openai_route_injects_the_api_key_and_strips_the_placeholder() {
+    let (upstream, seen) = fake_upstream().await;
+    let base = proxy(&upstream, None).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base}/r/{}/openai/v1/responses", codex_token()))
+        .header("authorization", "Bearer sandbox-placeholder-not-a-credential")
+        .header("openai-organization", "org-chosen-by-sandbox")
+        .body(r#"{"model":"m","store":true,"tools":[{"type":"function","name":"shell"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let post = |path: &'static str, token: String, body: &'static str| {
+        client.post(format!("{base}/r/{token}/openai{path}")).body(body).send()
+    };
+    // Another path, a hosted tool, and a Claude agent's token are all refused.
+    assert_eq!(post("/v1/files", codex_token(), "{}").await.unwrap().status(), 403);
+    assert_eq!(
+        post("/v1/responses", codex_token(), r#"{"tools":[{"type":"mcp","server_url":"https://evil.example"}]}"#)
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(post("/v1/responses", run_token(), "{}").await.unwrap().status(), 403);
+    assert_eq!(post("/v1/responses", codex_token(), r#"{"model":"gpt-6-pro"}"#).await.unwrap().status(), 403);
+    // A standard-tier token cannot ask for the frontier model.
+    assert_eq!(post("/v1/responses", codex_token(), r#"{"model":"frontier"}"#).await.unwrap().status(), 403);
+
+    let seen = seen.0.lock().unwrap();
+    assert_eq!(seen.len(), 1, "only the allowed request reaches upstream");
+    let (uri, headers) = &seen[0];
+    assert_eq!(uri, "/v1/responses");
+    // The body was rewritten (store forced off): its length is the new one.
+    let length: usize = headers["content-length"].to_str().unwrap().parse().unwrap();
+    assert_eq!(length, br#"{"max_output_tokens":64000,"model":"m","store":false,"tools":[{"name":"shell","type":"function"}]}"#.len());
+    assert_eq!(headers["authorization"], "Bearer sk-real-openai-key");
+    assert!(headers.get("openai-organization").is_none(), "the sandbox never picks the billed org");
 }
 
 #[tokio::test]

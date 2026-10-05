@@ -9,7 +9,7 @@ import { Input, Textarea } from '../components/ui/Input'
 import { Switch } from '../components/ui/Switch'
 import { Badge } from '../components/ui/Badge'
 import type { AutonomousAgentDetail, AutonomousAgentTemplate, AutonomousAgentTemplateKey } from '../types'
-import { isolationConfig, isolationFromConfig, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
+import { codexSupported, isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
 
 /**
  * Guided create/edit wizard for autonomous agents.
@@ -46,7 +46,7 @@ interface FormState {
   name: string
   description: string
   template: AutonomousAgentTemplateKey
-  executor: 'claude' | 'nexus'
+  executor: 'claude' | 'nexus' | 'codex'
   // execution isolation (software factory sandbox)
   isolation: IsolationChoice
   allowedHosts: string
@@ -326,7 +326,7 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     ...base,
     name: agent.name,
     description: agent.description ?? '',
-    executor: config.executor === 'nexus' ? 'nexus' : 'claude',
+    executor: config.executor === 'nexus' || config.executor === 'codex' ? config.executor : 'claude',
     ...isolationFromConfig(config),
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
@@ -540,6 +540,7 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'config':
       if ('error' in parseAllowedHosts(state.allowedHosts)) return false
       if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor)) return false
+      if (state.executor === 'codex' && (!codexSupported(state.template) || state.isolation === 'local')) return false
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
@@ -697,12 +698,25 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   }
   return (
     <div className="space-y-5">
-      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back.">
-        <NativeSelect value={state.executor} onChange={value => set('executor', value as FormState['executor'])}>
+      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers.">
+        <NativeSelect
+          value={state.executor}
+          onChange={value => {
+            set('executor', value as FormState['executor'])
+            // Codex never runs in the worker: drop a local choice instead of leaving an invalid form.
+            if (value === 'codex' && state.isolation === 'local') set('isolation', 'default')
+          }}
+        >
           <option value="claude">Claude pure</option>
           <option value="nexus">Nexus harness (OpenShell)</option>
+          {(codexSupported(template) || state.executor === 'codex') && (
+            <option value="codex" disabled={!codexSupported(template)}>Codex (OpenAI API key, sandbox only)</option>
+          )}
         </NativeSelect>
       </Field>
+      {state.executor === 'codex' && !codexSupported(template) && (
+        <p role="alert" className="text-[12px] text-text-primary">Codex runs only issue resolvers and PR reviewers. Choose another executor.</p>
+      )}
       <IsolationFields state={state} set={set} template={template} />
       {template === 'qa' && (
         <>
@@ -1086,7 +1100,9 @@ function IsolationFields({ state, set, template }: { state: FormState; set: <K e
               {supported ? 'Sandbox (isolated pod)' : 'Sandbox (unavailable here)'}
             </option>
           )}
-          <option value="local">Local worker (unsafe)</option>
+          <option value="local" disabled={!localSupported(state.executor)}>
+            {localSupported(state.executor) ? 'Local worker (unsafe)' : 'Local worker (not for Codex)'}
+          </option>
         </NativeSelect>
       </Field>
       {state.isolation === 'local' && (
@@ -1170,7 +1186,7 @@ function StepReview({ state, set, template, isEdit, budgetsError }: { state: For
         </Field>
       </div>
       <div className="rounded-[12px] border border-border-primary bg-white/[0.02] p-3 text-[12px] text-text-secondary">
-        Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : 'Claude pure'}</span>
+        Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : state.executor === 'codex' ? 'Codex (sandbox)' : 'Claude pure'}</span>
         {' · '}Isolation: <span className="font-medium text-text-primary">{state.isolation === 'sandbox' ? 'Sandbox' : state.isolation === 'local' ? 'Local worker (unsafe)' : 'Server default'}</span>
       </div>
       <Field label="Budgets (JSON)" hint="Defaults come from the template; adjust wall-time, attempts, cost, concurrency.">

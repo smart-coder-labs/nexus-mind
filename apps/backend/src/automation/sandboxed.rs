@@ -546,7 +546,23 @@ pub(crate) async fn run_claude_sandboxed(
     let prepared = prepare(&run).await?;
     let agent_life = agent_lifetime(run.wall_time);
     let hosts: &[String] = run.qa.as_ref().map_or(&[], |qa| qa.hosts);
-    let run_token = prepared.token(run.org_id, run.run_id, agent_life, hosts)?;
+    let codex = argv.first().is_some_and(|program| program == "codex");
+    // Codex has a shell, so its token is scoped to what it needs (OpenAI and
+    // NexusMind) and its pod carries no Claude route.
+    let token_run_id = if codex {
+        // The token carries the tier of the model the worker chose: the proxy
+        // lets the run use that model and no other.
+        let model = argv
+            .windows(2)
+            .find(|pair| pair[0] == "-m")
+            .map(|pair| pair[1].as_str())
+            .unwrap_or_default();
+        let tier = super::codex::model_tier(model).ok_or_else(|| anyhow::anyhow!("codex_model_not_in_tiers"))?;
+        crate::factory::egress::codex_run_id(run.run_id, tier)
+    } else {
+        run.run_id.to_string()
+    };
+    let run_token = prepared.token(run.org_id, &token_run_id, agent_life, hosts)?;
     // Everything a transcript or error could echo that is still live: redact it.
     let secrets: Vec<String> = run
         .secret_values
@@ -555,14 +571,26 @@ pub(crate) async fn run_claude_sandboxed(
         .chain([run_token.clone()])
         .collect();
 
-    // 1. The agent, in a pod that runs no repository code.
+    // 1. The agent. Claude's pod runs no repository code; Codex's can (it has a
+    // shell), which its narrower token and environment account for.
     let mut agent_job = prepared.job(
         &run,
-        PodProfile::Agent,
+        if codex { PodProfile::CodexAgent } else { PodProfile::Agent },
         &run_token,
         run.retry.to_string(),
         agent_life,
     );
+    // Codex reads its provider (the proxy route, with this run's token) and MCP
+    // servers from a config file in the pod, never from its arguments.
+    if codex {
+        if run.qa.is_some() {
+            anyhow::bail!("codex_unsupported_template")
+        }
+        agent_job.files.push((
+            crate::factory::sandbox::CODEX_CONFIG_PATH.to_string(),
+            crate::factory::sandbox::codex_config(&run_token, run.writes.is_some()),
+        ));
+    }
     if run.qa.is_some() {
         // The browser reaches the targets through the proxy with the run token,
         // which goes into a file in the pod, never into the exec request.
@@ -577,10 +605,12 @@ pub(crate) async fn run_claude_sandboxed(
     // Checkpoint diffs from the executor are forwarded in order; the forwarder
     // ends (its channel closes with the job) before the final diff is sent.
     let forwarder = run.writes.as_ref().map(|sink| {
-        argv.extend([
-            "--mcp-config".to_string(),
-            crate::factory::sandbox::nexusmind_mcp(),
-        ]);
+        if !codex {
+            argv.extend([
+                "--mcp-config".to_string(),
+                crate::factory::sandbox::nexusmind_mcp(),
+            ]);
+        }
         agent_job.collect_diff = true;
         let (inner, mut received) = tokio::sync::mpsc::unbounded_channel();
         agent_job.checkpoints = Some(crate::factory::sandbox_exec::Checkpoints {

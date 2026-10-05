@@ -27,8 +27,21 @@ const SANDBOX_TEMPLATES = [
 /** Templates that drive a browser and may need extra hosts (CDN, SSO, payments). */
 const BROWSER_TEMPLATES = ['qa', 'judge']
 
+/** Templates the Codex executor runs (`CODEX_TEMPLATES`): sandbox only. */
+export const CODEX_TEMPLATES = ['github_issue_resolver', 'github_pr_reviewer']
+
+export function codexSupported(template: string): boolean {
+  return CODEX_TEMPLATES.includes(template)
+}
+
 export function sandboxSupported(template: string, executor: string): boolean {
+  if (executor === 'codex') return codexSupported(template)
   return executor === 'claude' && SANDBOX_TEMPLATES.includes(template)
+}
+
+/** Whether the worker may run this executor locally (Codex never does: its key lives in the proxy). */
+export function localSupported(executor: string): boolean {
+  return executor !== 'codex'
 }
 
 /** Mirrors the server's rule: lowercase DNS names, at least one dot, no IPs. */

@@ -16810,7 +16810,9 @@ pub fn get_autonomous_agent_detail(
 pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
     match config.get("executor") {
         None => Ok("claude"), // revisions created before the selector remain unchanged
-        Some(serde_json::Value::String(value)) if value == "claude" || value == "nexus" => {
+        Some(serde_json::Value::String(value))
+            if value == "claude" || value == "nexus" || value == "codex" =>
+        {
             Ok(value)
         }
         _ => anyhow::bail!("invalid_executor"),
