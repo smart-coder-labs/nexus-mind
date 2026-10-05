@@ -7458,6 +7458,7 @@ fn record_run_telemetry(
     };
     let provider = match queries::autonomous_executor(&claim.config) {
         Ok("nexus") => "nexus",
+        Ok("codex") => "codex",
         Ok(_) => "claude-code",
         Err(_) => "unknown",
     };
