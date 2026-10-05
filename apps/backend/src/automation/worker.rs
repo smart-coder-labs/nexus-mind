@@ -240,6 +240,16 @@ pub(crate) fn record_transcript_line(
     }
 }
 
+/// The repository under work is untrusted: Claude Code must not load its
+/// `.claude/settings*.json` (hooks there run shell commands when the session
+/// starts, before the model acts) nor its `.mcp.json` servers. Only user
+/// settings and the MCP servers passed with `--mcp-config` apply. Verified with
+/// Claude Code 2.1.280: a project SessionStart hook runs without these flags
+/// and does not with them.
+fn ignore_repository_settings(command: &mut Command) {
+    command.args(["--setting-sources", "user", "--strict-mcp-config"]);
+}
+
 fn restrict_claude_environment(command: &mut Command) {
     let allowed = [
         "HOME",
@@ -3799,6 +3809,7 @@ async fn resolve_issue_worktree(
         claude.stdin(std::process::Stdio::piped());
     } else {
         restrict_claude_environment(&mut claude);
+        ignore_repository_settings(&mut claude);
         let model = select_run_model(&store, &claim, &runtime_config).model;
         claude.args([
             "-p", &prompt, "--output-format", "stream-json", "--verbose",
@@ -4988,6 +4999,7 @@ async fn execute_claim(
         claude.stdin(std::process::Stdio::piped());
     } else {
         restrict_claude_environment(&mut claude);
+        ignore_repository_settings(&mut claude);
         claude.args([
             "-p", &prompt, "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns, "--permission-mode", permission_mode,
@@ -7665,6 +7677,16 @@ mod tests {
         assert_ne!(denied.source, VerdictSource::Human);
     }
     use super::*;
+    #[test]
+    fn agent_claude_ignores_the_repository_settings_in_and_out_of_the_sandbox() {
+        let mut claude = Command::new("/usr/local/bin/claude");
+        ignore_repository_settings(&mut claude);
+        claude.args(["-p", "fix it"]);
+        let (argv, _) = super::super::sandboxed::sandbox_invocation(&claude);
+        assert!(argv.windows(2).any(|w| w == ["--setting-sources", "user"]), "{argv:?}");
+        assert!(argv.iter().any(|a| a == "--strict-mcp-config"), "{argv:?}");
+    }
+
     #[test]
     fn nexus_runtime_failures_have_actionable_codes() {
         assert_eq!(nexus_failure_code(b"Claude login is not ready in OpenShell"), "nexus_auth_required");
