@@ -92,6 +92,13 @@ aes-gcm = "0.10"
 tempfile = "3"
 memchr = "2"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json", "macros"] }
+# OTel GenAI spans for finished autonomous runs (factory F3), inert unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is set. 0.31 is the last line built on reqwest
+# 0.12 (0.32+ pulls a second reqwest 0.13). OTLP over HTTP/protobuf only: tonic
+# comes in for the generated message types, never its gRPC transport.
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

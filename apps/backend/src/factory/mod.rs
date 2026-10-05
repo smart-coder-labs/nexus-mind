@@ -6,6 +6,7 @@ pub mod egress_server;
 pub mod gateway;
 pub mod intake;
 pub mod jev;
+pub mod otel;
 pub mod policy_engine;
 pub mod sandbox;
 pub mod sandbox_exec;
