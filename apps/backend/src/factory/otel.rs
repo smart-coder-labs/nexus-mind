@@ -36,8 +36,8 @@ const DEFAULT_SERVICE_NAME: &str = "nexusmind-worker";
 const SCOPE: &str = "nexusmind.factory";
 
 struct Exporter {
-    // Kept so the batch thread lives as long as the process.
-    _provider: SdkTracerProvider,
+    // Kept so the batch thread lives as long as the process, and flushed on shutdown.
+    provider: SdkTracerProvider,
     tracer: SdkTracer,
 }
 
@@ -61,6 +61,18 @@ pub struct RunSpan<'a> {
     /// The result's `code`, when it has one.
     pub outcome: Option<&'a str>,
     pub metrics: &'a RunMetrics,
+    /// When the worker started running it (`started_at`), if known.
+    pub started: Option<SystemTime>,
+}
+
+/// Sends the spans still queued. Blocks up to `timeout`: call it outside the
+/// async runtime's worker threads (e.g. `spawn_blocking`) when the process stops.
+pub fn shutdown(timeout: Duration) {
+    if let Some(Some(exporter)) = EXPORTER.get() {
+        if let Err(error) = exporter.provider.shutdown_with_timeout(timeout) {
+            tracing::warn!("OTel shutdown: {error}");
+        }
+    }
 }
 
 /// Builds the exporter once, from the environment. Called when the worker
@@ -144,20 +156,23 @@ fn build_exporter(config: &ExportConfig, traces_url: Option<&str>) -> anyhow::Re
         .with_resource(resource)
         .build();
     let tracer = provider.tracer(SCOPE);
-    Ok(Exporter {
-        _provider: provider,
-        tracer,
-    })
+    Ok(Exporter { provider, tracer })
 }
 
-/// Emits the run's span on `tracer`, ending at `end`. The span starts
-/// `duration_ms` earlier when the run reported it (for a fan-out run, the sum
-/// of its sessions), else it is zero-length at `end`.
+/// Emits the run's span on `tracer`, ending at `end`. It starts when the
+/// worker started the run; without that, `duration_ms` earlier (the agent's own
+/// time), else it is zero-length at `end`. `duration_ms` is not wall time for a
+/// fan-out run (its sessions run in parallel and are summed), so it is also
+/// sent as its own attribute rather than trusted as the span's length.
 pub(crate) fn emit_run_span<T: Tracer>(tracer: &T, run: &RunSpan<'_>, end: SystemTime) {
     let start = run
-        .metrics
-        .duration_ms
-        .and_then(|ms| end.checked_sub(Duration::from_millis(ms.max(0) as u64)))
+        .started
+        .filter(|started| *started <= end)
+        .or_else(|| {
+            run.metrics
+                .duration_ms
+                .and_then(|ms| end.checked_sub(Duration::from_millis(ms.max(0) as u64)))
+        })
         .unwrap_or(end);
     let mut span = tracer
         .span_builder(span_name(run))
@@ -167,7 +182,11 @@ pub(crate) fn emit_run_span<T: Tracer>(tracer: &T, run: &RunSpan<'_>, end: Syste
         .start(tracer);
     if !matches!(run.status, "succeeded" | "partial") {
         // Only the sanitized code: an error's free text may quote the repo.
-        let code = safe_code(run.outcome.unwrap_or(run.status)).unwrap_or("other");
+        let code = run
+            .outcome
+            .and_then(safe_code)
+            .or_else(|| safe_code(run.status))
+            .unwrap_or("other");
         span.set_attribute(KeyValue::new("error.type", code.to_string()));
         span.set_status(Status::error(code.to_string()));
     }
@@ -255,6 +274,7 @@ pub(crate) fn span_attributes(run: &RunSpan<'_>) -> Vec<KeyValue> {
         int(metrics.cache_write_tokens),
     );
     push("nexusmind.num_turns", int(metrics.num_turns));
+    push("nexusmind.agent_duration_ms", int(metrics.duration_ms));
     push(
         "nexusmind.cost_usd",
         metrics.cost_usd.map(opentelemetry::Value::from),
@@ -262,14 +282,13 @@ pub(crate) fn span_attributes(run: &RunSpan<'_>) -> Vec<KeyValue> {
     attributes
 }
 
-/// A status, outcome, tier or template code: short lowercase ASCII words.
-/// Anything else (an error message, a path) is refused, not truncated.
+/// A status, outcome, tier or template code: one snake_case word. Anything
+/// else (an error message, a host, a path, a `code:detail`) is refused, not
+/// truncated: some result codes are raw error strings.
 fn safe_code(value: &str) -> Option<&str> {
     (!value.is_empty()
         && value.len() <= 64
-        && value.bytes().all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'.' | b':')
-        }))
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'))
     .then_some(value)
 }
 
@@ -327,6 +346,7 @@ mod tests {
             status: "succeeded",
             outcome: Some("completed"),
             metrics,
+            started: None,
         }
     }
 
@@ -338,11 +358,15 @@ mod tests {
     }
 
     fn capture(run: &RunSpan<'_>) -> SpanData {
+        capture_at(run, SystemTime::now())
+    }
+
+    fn capture_at(run: &RunSpan<'_>, end: SystemTime) -> SpanData {
         let capture = Capture::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(capture.clone())
             .build();
-        emit_run_span(&provider.tracer(SCOPE), run, SystemTime::now());
+        emit_run_span(&provider.tracer(SCOPE), run, end);
         let mut spans = capture.0.lock().unwrap().clone();
         assert_eq!(spans.len(), 1);
         spans.remove(0)
@@ -545,7 +569,7 @@ mod tests {
             build_exporter(&config, Some(&format!("http://{address}/v1/traces"))).unwrap();
         let metrics = metrics();
         emit_run_span(&exporter.tracer, &run(&metrics), SystemTime::now());
-        exporter._provider.force_flush().unwrap();
+        exporter.provider.force_flush().unwrap();
         let (head, body) = server.join().unwrap();
         assert_eq!(head[0], "post /v1/traces http/1.1");
         assert!(
@@ -614,7 +638,8 @@ mod tests {
             assert!(!dump.contains(leak), "{leak} leaked: {dump}");
         }
         let attributes = map(&span.attributes);
-        assert_eq!(attributes["error.type"], Value::from("other"));
+        // The unsafe outcome is dropped; the run's status still says what happened.
+        assert_eq!(attributes["error.type"], Value::from("failed"));
         assert!(!attributes.contains_key("gen_ai.request.model"));
         assert!(!attributes.contains_key("gen_ai.response.model"));
         assert!(!attributes.contains_key("nexusmind.template_key"));
@@ -644,6 +669,7 @@ mod tests {
                 "gen_ai.usage.cache_read.input_tokens",
                 "gen_ai.usage.input_tokens",
                 "gen_ai.usage.output_tokens",
+                "nexusmind.agent_duration_ms",
                 "nexusmind.cost_usd",
                 "nexusmind.executor",
                 "nexusmind.num_turns",
@@ -655,5 +681,27 @@ mod tests {
                 "nexusmind.tier",
             ]
         );
+    }
+
+    #[test]
+    fn the_span_starts_when_the_worker_started_the_run() {
+        let metrics = RunMetrics { duration_ms: Some(50 * 60 * 1000), ..RunMetrics::default() };
+        let end = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let started = end - Duration::from_secs(600);
+        // A fan-out run's summed duration (50 min) is not its wall time (10 min).
+        let span = capture_at(&RunSpan { started: Some(started), ..run(&metrics) }, end);
+        assert_eq!(span.start_time, started);
+        assert_eq!(map(&span.attributes)["nexusmind.agent_duration_ms"], Value::from(50 * 60 * 1000_i64));
+        // A start after the end (clock skew) is ignored.
+        let skewed = capture_at(&RunSpan { started: Some(end + Duration::from_secs(5)), ..run(&metrics) }, end);
+        assert_eq!(skewed.start_time, end - Duration::from_secs(50 * 60));
+    }
+
+    #[test]
+    fn codes_are_single_snake_case_words() {
+        assert_eq!(safe_code("cost_limit_exceeded"), Some("cost_limit_exceeded"));
+        for unsafe_code in ["proxy.acme-internal.corp:8443", "class_not_auto_startable:security", "a b", "Upper", ""] {
+            assert_eq!(safe_code(unsafe_code), None, "{unsafe_code}");
+        }
     }
 }

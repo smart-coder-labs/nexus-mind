@@ -7491,8 +7491,23 @@ fn record_run_telemetry(
             status,
             outcome: result.get("code").and_then(|v| v.as_str()),
             metrics: &metrics,
+            started: run_started_at(conn, &claim.org_id, &claim.run.id),
         });
     }
+}
+
+/// When the worker started running `run_id` (`started_at`, UTC), for the span.
+fn run_started_at(conn: &rusqlite::Connection, org_id: &str, run_id: &str) -> Option<std::time::SystemTime> {
+    let text: String = conn
+        .query_row(
+            "SELECT started_at FROM autonomous_agent_runs WHERE id=?1 AND org_id=?2",
+            rusqlite::params![run_id, org_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let started = chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S").ok()?;
+    let seconds = u64::try_from(started.and_utc().timestamp()).ok()?;
+    Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
 }
 
 /// If the finished run's agent has an `on_success_trigger_agent_id`, enqueue that

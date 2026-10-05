@@ -25,7 +25,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!("NexusMind autonomous worker starting on the backend host");
-    nexusmind::automation::worker::spawn_local_worker(SqliteStore::new(conn), Arc::new(config))
-        .await?;
+    let worker =
+        nexusmind::automation::worker::spawn_local_worker(SqliteStore::new(conn), Arc::new(config));
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        result = worker => { result?; }
+        _ = terminate.recv() => {
+            tracing::info!("autonomous worker stopping (SIGTERM)");
+            // Queued spans go out before the pod stops; the flush blocks, so it
+            // runs off the async workers.
+            let _ = tokio::task::spawn_blocking(|| {
+                nexusmind::factory::otel::shutdown(std::time::Duration::from_secs(5))
+            })
+            .await;
+        }
+    }
     Ok(())
 }
