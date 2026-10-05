@@ -7251,6 +7251,8 @@ async fn reconcile_github_triggers(store: &SqliteStore) {
 }
 
 pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::task::JoinHandle<()> {
+    // Run spans go to OTLP only when an endpoint is configured; otherwise inert.
+    crate::factory::otel::init_from_env();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(
             config.autonomous_agent_poll_seconds.max(5),
@@ -7432,7 +7434,8 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
 
 /// Best-effort run telemetry (plan §7 F0): cost, cache and latency of every
 /// finished run. A run without a result event is still recorded, with unknowns
-/// left NULL. Never changes the run's outcome.
+/// left NULL, and exported as an OTel GenAI span when export is on (F3). Never
+/// changes the run's outcome.
 fn record_run_telemetry(
     conn: &rusqlite::Connection,
     claim: &queries::ClaimedAutonomousRun,
@@ -7455,6 +7458,7 @@ fn record_run_telemetry(
     };
     let provider = match queries::autonomous_executor(&claim.config) {
         Ok("nexus") => "nexus",
+        Ok("codex") => "codex",
         Ok(_) => "claude-code",
         Err(_) => "unknown",
     };
@@ -7470,6 +7474,40 @@ fn record_run_telemetry(
     ) {
         tracing::warn!(run = %claim.run.id, "Could not record run telemetry: {error:#}");
     }
+    if crate::factory::otel::enabled() {
+        // A missing or unreadable choice only leaves the tier off the span.
+        let (tier, request_model) =
+            crate::db::factory_queries::latest_model_choice(conn, &claim.org_id, &claim.run.id)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+        crate::factory::otel::record_run_span(&crate::factory::otel::RunSpan {
+            run_id: &claim.run.id,
+            org_id: &claim.org_id,
+            template_key: &claim.template_key,
+            executor: queries::autonomous_executor(&claim.config).unwrap_or("unknown"),
+            tier: tier.as_deref(),
+            request_model: request_model.as_deref(),
+            status,
+            outcome: result.get("code").and_then(|v| v.as_str()),
+            metrics: &metrics,
+            started: run_started_at(conn, &claim.org_id, &claim.run.id),
+        });
+    }
+}
+
+/// When the worker started running `run_id` (`started_at`, UTC), for the span.
+fn run_started_at(conn: &rusqlite::Connection, org_id: &str, run_id: &str) -> Option<std::time::SystemTime> {
+    let text: String = conn
+        .query_row(
+            "SELECT started_at FROM autonomous_agent_runs WHERE id=?1 AND org_id=?2",
+            rusqlite::params![run_id, org_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let started = chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S").ok()?;
+    let seconds = u64::try_from(started.and_utc().timestamp()).ok()?;
+    Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
 }
 
 /// If the finished run's agent has an `on_success_trigger_agent_id`, enqueue that

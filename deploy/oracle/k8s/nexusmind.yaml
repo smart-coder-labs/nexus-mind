@@ -166,6 +166,14 @@ spec:
             # input is not published separately; 2x the short rate is assumed.
             - name: FACTORY_OPENAI_PRICES
               value: '{"gpt-6-luna":[0.20,0.02,0.75],"gpt-6.1-sol":[4.00,0.20,15.00],"gpt-6-astra":[20.00,2.00,75.00]}'
+            # OTel GenAI spans (factory F3): one `invoke_agent` span per finished run
+            # (provider, model, tokens, cost, tier, outcome; never prompt or repo
+            # text). Off until a collector exists: with no endpoint nothing is built.
+            # To enable, set here (an auth header belongs in nexusmind-env instead):
+            #   OTEL_EXPORTER_OTLP_ENDPOINT  base OTLP/HTTP URL, e.g.
+            #                                http://otel-collector:4318 (/v1/traces is appended)
+            #   OTEL_EXPORTER_OTLP_HEADERS   optional, e.g. authorization=Bearer%20<token>
+            #   OTEL_SERVICE_NAME            optional, defaults to nexusmind-worker
           volumeMounts:
             - name: data
               mountPath: /data

@@ -801,6 +801,26 @@ pub fn record_run_metrics(
     Ok(())
 }
 
+/// The router's last choice for a run — `(tier, model)` from its latest
+/// `model.selected` event — so a finished run's span can say which tier it ran
+/// at. A fan-out run chooses once per session; the last session's choice wins.
+pub fn latest_model_choice(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+) -> Result<Option<(Option<String>, Option<String>)>> {
+    Ok(conn
+        .query_row(
+            "SELECT json_extract(payload_json, '$.tier'), json_extract(payload_json, '$.model')
+             FROM autonomous_agent_events
+             WHERE org_id = ?1 AND run_id = ?2 AND kind = 'model.selected'
+             ORDER BY sequence DESC LIMIT 1",
+            params![org_id, run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
 /// The per-organization bot whose API key the sandbox egress proxy injects for
 /// NexusMind calls (decision 2026-09-30). Its permissions come from the custom
 /// role `factory-bot`, editable per org like any role.
@@ -1411,6 +1431,29 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(rows, vec![(0.5, None, 90_000)]);
+    }
+
+    #[test]
+    fn the_latest_model_choice_of_a_run_wins() {
+        let (conn, org, _) = setup();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        let event = |seq: i64, run: &str, kind: &str, payload: serde_json::Value| {
+            conn.execute(
+                "INSERT INTO autonomous_agent_events (id, org_id, run_id, sequence, kind, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![uuid::Uuid::new_v4().to_string(), org, run, seq, kind, payload.to_string()],
+            )
+            .unwrap();
+        };
+        event(1, "run-1", "model.selected", serde_json::json!({"tier": "frontier", "model": "opus"}));
+        event(2, "run-1", "model.selected", serde_json::json!({"tier": "standard", "model": "sonnet"}));
+        event(3, "run-1", "run.finished", serde_json::json!({"tier": "cheap"}));
+        assert_eq!(
+            latest_model_choice(&conn, &org, "run-1").unwrap(),
+            Some((Some("standard".into()), Some("sonnet".into())))
+        );
+        assert_eq!(latest_model_choice(&conn, &org, "run-2").unwrap(), None);
+        assert_eq!(latest_model_choice(&conn, "other-org", "run-1").unwrap(), None);
     }
 
     fn key_role(conn: &Connection, raw: &str) -> Option<String> {
