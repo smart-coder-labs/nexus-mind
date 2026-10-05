@@ -185,7 +185,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Add the `factory_operator` MCP profile and tools, the human digest in admin, and a watchdog that notifies only on meaningful change.
 - Add Slack (read) and Sentry intake adapters.
 - **Exit:** a measured false-low-risk rate below threshold (OD-5) before automatic routing is enabled.
-- **Status (2026-10-04): shadow, gateway tiers, operator surface, Slack/Sentry intake with live Jev starts, and the watchdog built. Codex and OTel are open; the merge exit needs human labels.**
+- **Status (2026-10-05): shadow, gateway tiers, operator surface, Slack/Sentry intake with live Jev starts, the watchdog and the Codex executor built. OTel is open; the merge exit needs human labels.**
   - **Decided:**
     - Shadow comes first, so the measurement clock starts before the gateway exists.
     - Ground truth combines post-merge signals with a human label, and the label wins.
@@ -214,7 +214,21 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - Reviewer, judge and security templates run on Opus.
     - Frontier calls are capped at 20 per day, counted from `model.selected` events.
     - Claude Code runs on the subscription token.
-    - **Codex is postponed.** A ChatGPT subscription rotates refresh tokens, and OpenAI recommends API keys for automation.
+    - **Codex (#302, #303, ADR 74e25f77):** runs on an OpenAI API key, never on a subscription, which rotates refresh tokens.
+      - **Scope:** the issue resolver and the PR reviewer, sandbox only.
+      - **Credentials and model:** the key exists only in the egress proxy. Each run's token carries its model tier, and the proxy accepts only that model.
+      - **What the shell can reach:** Codex has a shell in its pod, so its token reaches only `openai` and `nexusmind`, never tunnels.
+      - **Request checks:** the proxy checks every request:
+        - known fields only;
+        - only local tools and inline content;
+        - `store:false`;
+        - bounded output;
+        - per-org prompt-cache keys;
+        - at most 300 requests per run.
+      - **Cost:** a run does not start unless its model has a price (`FACTORY_OPENAI_PRICES`, long-context rates on purpose).
+      - **Residual risk:** spend is measured from the pod's own output. An OpenAI project spend limit is the backstop.
+      - **To enable:** add `FACTORY_OPENAI_API_KEY` to the proxy secret.
+    - **Repository config is untrusted (#302, #304):** agent Claude starts with `--setting-sources user --strict-mcp-config`, and `.codex/` never reaches a pod. Repo hooks and MCP servers otherwise run before the model acts; this was verified for both CLIs.
   - **Operator surface (#298, nexusmind-mcp#19):**
     - `GET /v1/factory/digest` lists:
       - merges held for a person (latest head per PR);
@@ -249,8 +263,8 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - A PR whose resolver branch names an untrusted intake issue is never merged without a person: an allow becomes a policy hold.
     - **Watchdog:** the org's Slack webhook hears about new held merges, blocked runs and factory tasks (at most once every 15 min), plus a daily summary.
   - **Open:**
-    - OTel GenAI spans: deferred, because there is no collector.
-    - Codex.
+    - OTel GenAI spans: in progress, inert until a collector exists.
+    - The OpenAI API key for Codex (and a spend limit on its project).
     - Credentials for the first Slack and Sentry sources.
     - Human labels for OD-5.
 
