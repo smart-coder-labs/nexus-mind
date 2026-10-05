@@ -158,6 +158,14 @@ spec:
             # (ADR 7d6f870f); every other tenant needs its own opt-in.
             - name: FACTORY_JEV_SHADOW_ORGS
               value: bdf4b2aa-3f52-422e-8bee-a1babbb7d337
+            # Codex executor (ADR 74e25f77): USD per 1M tokens [input, cached input,
+            # output]. A Codex run whose model has no price does not start. These
+            # are OpenAI's long-context (>272K input) standard-tier rates, checked
+            # 2026-10-05 at developers.openai.com/api/docs/pricing: the cost cap
+            # overestimates rather than letting a run overspend. Cached long-context
+            # input is not published separately; 2x the short rate is assumed.
+            - name: FACTORY_OPENAI_PRICES
+              value: '{"gpt-6-luna":[0.20,0.02,0.75],"gpt-6.1-sol":[4.00,0.20,15.00],"gpt-6-astra":[20.00,2.00,75.00]}'
           volumeMounts:
             - name: data
               mountPath: /data
