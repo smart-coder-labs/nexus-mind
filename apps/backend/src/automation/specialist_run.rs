@@ -199,7 +199,7 @@ pub(crate) async fn verify_and_review(
     }
     let diff = checkout_diff(env.workdir, &changed).await.map_err(|_| "diff_inspection_failed".to_string())?;
     let model = choose_review_model();
-    let prompt = specialists::review_prompt(spec, config, plan, &diff);
+    let prompt = specialists::review_prompt(spec, config, plan, &diff, &checks.advisories());
     let event = run_step(env, Step::Review, &prompt, &model, false, READ_ONLY_MAX_TURNS, READ_ONLY_WALL)
         .await
         .map_err(|error| error.to_string())?;

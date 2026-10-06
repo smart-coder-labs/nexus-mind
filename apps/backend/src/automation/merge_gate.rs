@@ -187,6 +187,12 @@ pub fn auto_merge_path_verdict(files: &[ChangedFile], title: &str) -> Result<(),
     if files.is_empty() {
         return Err("no_changed_files".into());
     }
+    // Prose cannot run: a documentation-only change is not risky because of
+    // what it describes (`docs/payments.md`, "docs: the egress proxy"). The
+    // never-eligible rules (agent instructions, executable docs) still apply.
+    let docs_only = files.iter().all(|file| {
+        is_doc_path(&file.filename) && file.previous_filename.as_deref().is_none_or(is_doc_path)
+    });
     for file in files {
         // Removing a test weakens verification: never automatic. Renaming one
         // out of the tests is a removal in disguise.
@@ -202,12 +208,12 @@ pub fn auto_merge_path_verdict(files: &[ChangedFile], title: &str) -> Result<(),
             if is_never_eligible(path) {
                 return Err(format!("path_not_eligible:{path}"));
             }
-            if let Some(area) = risky_path(path) {
+            if let Some(area) = risky_path(path).filter(|_| !docs_only) {
                 return Err(format!("risky_path:{area}:{path}"));
             }
         }
     }
-    if let Some(area) = risky_title(title) {
+    if let Some(area) = risky_title(title).filter(|_| !docs_only) {
         return Err(format!("risky_title:{area}"));
     }
     Ok(())
@@ -469,6 +475,16 @@ mod tests {
         assert_eq!(
             auto_merge_path_verdict(&[renamed("tests/charge_test.rs", "src/charge_helpers.rs")], ""),
             Err("path_not_eligible:tests/charge_test.rs".into())
+        );
+        // Documentation about a risky area is still only documentation...
+        assert_eq!(
+            auto_merge_path_verdict(&[file("docs/factory/egress-proxy.md", "added")], "docs: document the payments webhook"),
+            Ok(())
+        );
+        // ...unless anything else rides along.
+        assert_eq!(
+            auto_merge_path_verdict(&[file("docs/factory/egress-proxy.md", "added"), file("src/lib/x.ts", "modified")], ""),
+            Err("risky_path:external_provider:docs/factory/egress-proxy.md".into())
         );
         // Kasymir's inventory "providers" are suppliers, not external services.
         assert_eq!(auto_merge_path_verdict(&[file("src/lib/pages-table/Provider/index.tsx", "modified")], ""), Ok(()));

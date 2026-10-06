@@ -636,16 +636,27 @@ mod tests {
 
         let code = Attempt { changed: vec![file("apps/backend/src/lib.rs")], ..good_attempt(0.2) };
         assert!(deterministic_failures(&code).is_empty(), "plain product code passes the floor; the checks catch it");
-        let risky = Attempt { changed: vec![file("docs/factory/egress-proxy.md")], ..good_attempt(0.2) };
-        assert_eq!(deterministic_failures(&risky), ["merge_floor:risky_path:external_provider:docs/factory/egress-proxy.md"]);
+        let docs_about_risk = Attempt { changed: vec![file("docs/factory/egress-proxy.md")], ..good_attempt(0.2) };
+        assert!(deterministic_failures(&docs_about_risk).is_empty(), "prose about a risky area is still docs");
+        let risky = Attempt { changed: vec![file("apps/backend/src/factory/egress.rs")], ..good_attempt(0.2) };
+        assert_eq!(deterministic_failures(&risky), ["merge_floor:risky_path:external_provider:apps/backend/src/factory/egress.rs"]);
         let failing = Attempt {
             checks: Some(CheckReport {
                 passed: false,
-                checks: vec![CheckOutcome { name: "identifiers_exist", passed: false, details: vec!["docs/a.md: `nope_fn`".into()] }],
+                checks: vec![CheckOutcome { name: "links_resolve", passed: false, advisory: false, details: vec!["docs/a.md: missing.md".into()] }],
             }),
             ..good_attempt(0.2)
         };
-        assert_eq!(deterministic_failures(&failing), ["checks:identifiers_exist: docs/a.md: `nope_fn`"]);
+        assert_eq!(deterministic_failures(&failing), ["checks:links_resolve: docs/a.md: missing.md"]);
+        // An advisory finding goes to review; it is not a deterministic failure.
+        let advisory = Attempt {
+            checks: Some(CheckReport {
+                passed: true,
+                checks: vec![CheckOutcome { name: "identifiers_exist", passed: false, advisory: true, details: vec!["docs/a.md: `other_repo_fn`".into()] }],
+            }),
+            ..good_attempt(0.2)
+        };
+        assert!(deterministic_failures(&advisory).is_empty());
         let unchecked = Attempt { checks: None, ..good_attempt(0.2) };
         assert_eq!(deterministic_failures(&unchecked), ["checks_missing"]);
         let reviewed_out = Attempt { review: Some(Verdict { accept: false, reasons: vec!["wrong".into()] }), ..good_attempt(0.2) };
