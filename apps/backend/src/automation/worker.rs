@@ -47,7 +47,7 @@ fn nexus_failure_code(stderr: &[u8]) -> &'static str {
     }
 }
 
-fn parse_claude_event_stream(
+pub(crate) fn parse_claude_event_stream(
     value: &[u8],
 ) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
     // Browser-driven QA produces large streams (accessibility snapshots per
@@ -111,7 +111,7 @@ fn parse_agent_events(
 /// stderr is drained concurrently so the pipe never blocks the child. The raw
 /// stdout buffer is bounded to the same ceiling as the post-exit parser so a
 /// runaway run can't OOM the worker.
-async fn run_claude_capturing_transcript(
+pub(crate) async fn run_claude_capturing_transcript(
     command: &mut Command,
     prompt_stdin: Option<&str>,
     store: &SqliteStore,
@@ -246,11 +246,11 @@ pub(crate) fn record_transcript_line(
 /// settings and the MCP servers passed with `--mcp-config` apply. Verified with
 /// Claude Code 2.1.280: a project SessionStart hook runs without these flags
 /// and does not with them.
-fn ignore_repository_settings(command: &mut Command) {
+pub(crate) fn ignore_repository_settings(command: &mut Command) {
     command.args(["--setting-sources", "user", "--strict-mcp-config"]);
 }
 
-fn restrict_claude_environment(command: &mut Command) {
+pub(crate) fn restrict_claude_environment(command: &mut Command) {
     let allowed = [
         "HOME",
         "PATH",
@@ -349,7 +349,7 @@ pub(crate) async fn command_ok(mut command: Command) -> anyhow::Result<()> {
 /// the WIP branch when `push` is given (token, branch, base); the final diff is
 /// only applied, as the local path never pushes a finished run as WIP. Resolves
 /// with the outcome of the last application.
-fn sandbox_write_consumer(
+pub(crate) fn sandbox_write_consumer(
     workdir: PathBuf,
     push: Option<(String, String, String)>,
 ) -> (
@@ -378,7 +378,7 @@ fn sandbox_write_consumer(
 /// workspace pack and kube client before the pod exists, and after the inner
 /// deadline the last diff (up to 60 s) and the pod delete. The inner deadline
 /// must always fire first so partial work is kept.
-const SANDBOX_OUTER_MARGIN: Duration = Duration::from_secs(180);
+pub(crate) const SANDBOX_OUTER_MARGIN: Duration = Duration::from_secs(180);
 
 /// A scanner template that could not produce a report. Scanner and policy codes
 /// stay policy blocks as before; sandbox infrastructure failures are runtime
@@ -2680,6 +2680,32 @@ async fn publish_template_output(
     }
 }
 
+/// The labels of the issue a resolver run works on, as the runtime config holds them.
+fn issue_labels(runtime_config: &serde_json::Value) -> Vec<String> {
+    runtime_config
+        .pointer("/issue/labels")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
+/// The specialist (factory F4) a run uses, if any: a Claude Code issue resolver
+/// whose issue labels name a class with an enabled specialist. `None` keeps the
+/// generic resolver exactly as before.
+fn run_specialist(
+    claim: &queries::ClaimedAutonomousRun,
+    runtime_config: &serde_json::Value,
+) -> Option<&'static crate::factory::specialists::Specialist> {
+    crate::factory::specialists::select(
+        &claim.template_key,
+        queries::autonomous_executor(&claim.config).unwrap_or_default(),
+        &issue_labels(runtime_config),
+        &crate::factory::specialists::enabled_from_env(),
+    )
+}
+
 /// The model a Claude Code run uses (F3 Model Gateway, ADR c2048d9b): an
 /// explicit pin or tier on the agent, else the issue labels' task class, else
 /// the template's default; frontier runs past the org's daily cap drop to
@@ -2689,14 +2715,30 @@ fn select_run_model(
     claim: &queries::ClaimedAutonomousRun,
     runtime_config: &serde_json::Value,
 ) -> crate::factory::gateway::Choice {
+    select_model(store, claim, runtime_config, None)
+}
+
+/// The model of one step of a specialist run (F4). Each step records its own
+/// `model.selected` event (with its `step`), so every frontier step counts
+/// against the daily cap and the economics see each step's tier.
+fn select_step_model(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    runtime_config: &serde_json::Value,
+    specialist: &'static crate::factory::specialists::Specialist,
+    step: crate::factory::specialists::Step,
+) -> crate::factory::gateway::Choice {
+    select_model(store, claim, runtime_config, Some((specialist, step)))
+}
+
+fn select_model(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    runtime_config: &serde_json::Value,
+    step: Option<(&'static crate::factory::specialists::Specialist, crate::factory::specialists::Step)>,
+) -> crate::factory::gateway::Choice {
     use crate::factory::gateway;
-    let labels: Vec<String> = runtime_config
-        .pointer("/issue/labels")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str().map(str::to_string))
-        .collect();
+    let labels = issue_labels(runtime_config);
     let db = store.conn();
     let conn = db.lock().ok();
     // Count and record under the same lock, so concurrent sessions see each
@@ -2717,7 +2759,7 @@ fn select_run_model(
     } else {
         gateway::Provider::Claude
     };
-    let choice = gateway::choose(&gateway::RunFacts {
+    let facts = gateway::RunFacts {
         template_key: &claim.template_key,
         class: gateway::class_from_labels(&labels),
         configured_tier: claim.config.get("model_tier").and_then(|v| v.as_str()),
@@ -2725,17 +2767,20 @@ fn select_run_model(
         frontier_used_today,
         frontier_cap: gateway::frontier_runs_per_day(),
         provider,
-    });
+    };
+    let choice = match step {
+        Some((specialist, step)) => crate::factory::specialists::choose_step(specialist, step, &facts),
+        None => gateway::choose(&facts),
+    };
     // A Codex run without a price never starts: it must not use up a frontier slot.
     let runs = provider != gateway::Provider::Codex || super::codex::start_check(&choice.model).is_ok();
     if let Some(conn) = conn.as_deref().filter(|_| runs) {
-        let _ = queries::append_autonomous_agent_event(
-            conn,
-            &claim.org_id,
-            &claim.run.id,
-            "model.selected",
-            &json!({"tier": choice.tier, "model": choice.model, "reason": choice.reason}),
-        );
+        let mut payload = json!({"tier": choice.tier, "model": choice.model, "reason": choice.reason});
+        if let Some((specialist, step)) = step {
+            payload["specialist"] = json!(specialist.id);
+            payload["step"] = json!(step.as_str());
+        }
+        let _ = queries::append_autonomous_agent_event(conn, &claim.org_id, &claim.run.id, "model.selected", &payload);
     }
     choice
 }
@@ -3132,7 +3177,7 @@ async fn process_due_soaks(store: &SqliteStore) {
     }
 }
 
-fn fixed_prompt(
+pub(crate) fn fixed_prompt(
     template: &str,
     config: &serde_json::Value,
     max_turns: u64,
@@ -3728,6 +3773,41 @@ async fn open_partial_pr(
     Ok(json!({"partial_pull_request":pr}))
 }
 
+/// The end of a specialist run (F4): the specialist's checks and frontier
+/// review on the finished change, then its outcome folded into the resolver's.
+/// A no-op answer (an issue comment) has nothing to check or review; a failed
+/// outcome only gets the plan's cost. A stopped run stops here too.
+async fn specialist_finish(
+    env: &super::specialist_run::StepEnv<'_>,
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    runtime_config: &serde_json::Value,
+    spec: &'static crate::factory::specialists::Specialist,
+    planned: &super::specialist_run::Planned,
+    outcome: &mut (String, serde_json::Value),
+) {
+    if outcome.0 != "succeeded" || super::specialist_run::is_no_op(&outcome.1) {
+        super::specialist_run::apply(spec, planned, None, outcome);
+        return;
+    }
+    let review_model = || {
+        select_step_model(store, claim, runtime_config, spec, crate::factory::specialists::Step::Review).model
+    };
+    let finished = tokio::select! {
+        _ = run_stop_signal(store, claim) => Err("cancelled_by_operator".to_string()),
+        finished = super::specialist_run::verify_and_review(env, spec, runtime_config, &planned.plan, review_model) => finished,
+    };
+    match finished {
+        Ok(finished) => super::specialist_run::apply(spec, planned, Some(&finished), outcome),
+        Err(code) => {
+            super::specialist_run::apply(spec, planned, None, outcome);
+            let status = if code == "cancelled_by_operator" { "cancelled" } else { "blocked_runtime" };
+            let result = outcome.1.get("result").cloned();
+            *outcome = (status.into(), json!({"code": code, "result": result, "specialist": outcome.1.get("specialist")}));
+        }
+    }
+}
+
 /// Resolve ONE assigned issue inside its own git worktree: inject the target,
 /// run the bounded resolver agent, then publish through the same gates
 /// (secret-scan, diff limits, publish-authority) and open a draft PR. Returns
@@ -3785,7 +3865,7 @@ async fn resolve_issue_worktree(
             }
         }
     }
-    let prompt = match fixed_prompt("github_issue_resolver", &runtime_config, max_turns) {
+    let mut prompt = match fixed_prompt("github_issue_resolver", &runtime_config, max_turns) {
         Ok(prompt) => prompt,
         Err(error) => {
             return (number, "blocked_runtime".into(), json!({"code":error.to_string()}))
@@ -3803,6 +3883,42 @@ async fn resolve_issue_worktree(
     if let Some(Err(code)) = codex_model.as_deref().map(super::codex::start_check) {
         return (number, "blocked_policy".into(), json!({"code":code}));
     }
+    let secret_values: Vec<String> = token.iter().cloned().collect();
+    let slot = format!("issue-{number}");
+    // Specialist (F4): a frontier planning step before the resolver's own
+    // invocation, which then runs on the specialist's tier with the plan in its
+    // prompt. A resumed run keeps the generic path: a fresh plan would not match
+    // the work already on its branch.
+    let specialist = continue_branch.is_none().then(|| run_specialist(&claim, &runtime_config)).flatten();
+    let step_env = super::specialist_run::StepEnv {
+        store: &store,
+        org_id: &claim.org_id,
+        run_id: &claim.run.id,
+        attempt_id: &claim.attempt_id,
+        workdir: &workdir,
+        sandboxed,
+        claude_bin: &worker_bin,
+        secret_values: &secret_values,
+        slot: &slot,
+        seq_base,
+    };
+    let mut planned = None;
+    if let Some(spec) = specialist {
+        let model = select_step_model(&store, &claim, &runtime_config, spec, crate::factory::specialists::Step::Plan).model;
+        let result = tokio::select! {
+            _ = run_stop_signal(&store, &claim) => {
+                return (number, "cancelled".into(), json!({"code":"cancelled_by_operator"}))
+            }
+            result = super::specialist_run::plan(&step_env, spec, &runtime_config, &model) => result,
+        };
+        match result {
+            Ok(plan) => {
+                prompt = crate::factory::specialists::implementation_prompt(spec, &prompt, &plan.plan);
+                planned = Some((spec, plan));
+            }
+            Err(code) => return (number, "blocked_runtime".into(), json!({"code":code})),
+        }
+    }
     if codex_model.is_some() {
         // Nothing to prepare locally: the pod runs `codex_invocation`.
     } else if nexus_selected {
@@ -3817,7 +3933,10 @@ async fn resolve_issue_worktree(
     } else {
         restrict_claude_environment(&mut claude);
         ignore_repository_settings(&mut claude);
-        let model = select_run_model(&store, &claim, &runtime_config).model;
+        let model = match planned.as_ref() {
+            Some((spec, _)) => select_step_model(&store, &claim, &runtime_config, spec, crate::factory::specialists::Step::Implement).model,
+            None => select_run_model(&store, &claim, &runtime_config).model,
+        };
         claude.args([
             "-p", &prompt, "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns_str, "--permission-mode", "acceptEdits",
@@ -3834,7 +3953,6 @@ async fn resolve_issue_worktree(
     if !sandboxed && std::path::Path::new(&nexusmind_mcp).exists() {
         claude.args(["--mcp-config", &nexusmind_mcp]);
     }
-    let secret_values: Vec<String> = token.iter().cloned().collect();
     claude.current_dir(&workdir).kill_on_drop(true);
     let cancelled = async {
         loop {
@@ -3895,7 +4013,6 @@ async fn resolve_issue_worktree(
         (None, None)
     };
     let unused_receipts = std::sync::Mutex::new(Vec::new());
-    let slot = format!("issue-{number}");
     let invocation: std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
     > = if sandboxed {
@@ -3995,6 +4112,10 @@ async fn resolve_issue_worktree(
             context_manifest(&claim, &runtime_config),
         );
     }
+    // A specialist run that did not finish still reports its plan's cost.
+    if let Some((spec, plan)) = planned.as_ref().filter(|_| outcome.0 != "succeeded") {
+        super::specialist_run::apply(spec, plan, None, &mut outcome);
+    }
     if continue_branch.is_some() {
         // Resume mode: never open a new PR. Push the latest work onto the existing
         // WIP branch so its partial draft PR is updated in place with the progress.
@@ -4010,6 +4131,9 @@ async fn resolve_issue_worktree(
         match evaluate_structured_result("github_issue_resolver", &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
             Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+        }
+        if let Some((spec, plan)) = planned.as_ref() {
+            specialist_finish(&step_env, &store, &claim, &runtime_config, spec, plan, &mut outcome).await;
         }
         if outcome.0 == "succeeded" {
             match publish_template_output(&store, &claim, &workdir, &outcome.1).await {
@@ -4985,7 +5109,47 @@ async fn execute_claim(
         .join("screenshots");
     // Chosen once: output-format retries keep the same model. The nexus
     // executor takes no model, so none is selected (or recorded) for it.
-    let run_model = (!nexus_selected).then(|| select_run_model(store, claim, &runtime_config).model);
+    // Specialist (F4): a frontier planning step first; the resolver's own
+    // invocation below is the implementation step, on the specialist's tier and
+    // with the plan in its prompt. The resolver never re-runs on output errors,
+    // so the plan is made once.
+    let specialist = run_specialist(claim, &runtime_config);
+    let step_secrets: Vec<String> = repo_token.iter().cloned().collect();
+    let step_env = super::specialist_run::StepEnv {
+        store,
+        org_id: &claim.org_id,
+        run_id: &claim.run.id,
+        attempt_id: &claim.attempt_id,
+        workdir: &workdir,
+        sandboxed,
+        claude_bin: &config.claude_code_bin,
+        secret_values: &step_secrets,
+        slot: "main",
+        seq_base: 0,
+    };
+    let mut planned = None;
+    if let Some(spec) = specialist {
+        let model = select_step_model(store, claim, &runtime_config, spec, crate::factory::specialists::Step::Plan).model;
+        let result = tokio::select! {
+            _ = run_stop_signal(store, claim) => {
+                return ("cancelled".into(), json!({"code":"cancelled_by_operator"}))
+            }
+            result = super::specialist_run::plan(&step_env, spec, &runtime_config, &model) => result,
+        };
+        match result {
+            Ok(plan) => {
+                prompt = crate::factory::specialists::implementation_prompt(spec, &prompt, &plan.plan);
+                planned = Some((spec, plan));
+            }
+            Err(code) => return ("blocked_runtime".into(), json!({"code":code})),
+        }
+    }
+    let run_model = (!nexus_selected).then(|| match planned.as_ref() {
+        Some((spec, _)) => {
+            select_step_model(store, claim, &runtime_config, spec, crate::factory::specialists::Step::Implement).model
+        }
+        None => select_run_model(store, claim, &runtime_config).model,
+    });
     let codex_model = if codex_selected { run_model.as_deref() } else { None };
     if let Some(Err(code)) = codex_model.map(super::codex::start_check) {
         return ("blocked_policy".into(), json!({"code":code}));
@@ -5258,6 +5422,9 @@ async fn execute_claim(
         }
         break outcome;
     };
+    if let Some((spec, plan)) = planned.as_ref() {
+        specialist_finish(&step_env, store, claim, &runtime_config, spec, plan, &mut outcome).await;
+    }
     if outcome.0 == "succeeded"
         && matches!(
             claim.template_key.as_str(),
@@ -5744,7 +5911,7 @@ async fn generate_post_images(
     (images_by_index, errors)
 }
 
-fn structured_result(result: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn structured_result(result: &serde_json::Value) -> serde_json::Value {
     let inner = result
         .get("result")
         .cloned()
@@ -7722,6 +7889,66 @@ mod tests {
         assert_ne!(denied.source, VerdictSource::Human);
     }
     use super::*;
+
+    #[test]
+    fn specialist_steps_record_their_own_model_choice_and_frontier_steps_count_against_the_cap() {
+        use crate::factory::specialists::{Step, DOCS};
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        let (org, _, _) = crate::db::queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        let store = SqliteStore::new(conn);
+        let claim = queries::ClaimedAutonomousRun {
+            org_id: org.id.clone(),
+            run: crate::models::types::AutonomousAgentRun {
+                id: "run-docs".into(),
+                definition_id: "def".into(),
+                revision_id: "rev".into(),
+                trigger_kind: "manual".into(),
+                occurrence_key: "k".into(),
+                scheduled_for: None,
+                snapshot_sha: None,
+                status: "running".into(),
+                budget: json!({}),
+                started_at: None,
+                finished_at: None,
+                created_at: "2026-10-05 00:00:00".into(),
+                archived_at: None,
+            },
+            attempt_id: "attempt".into(),
+            claim_token: "token".into(),
+            template_key: "github_issue_resolver".into(),
+            config: json!({}),
+        };
+        let runtime_config = json!({"issue": {"labels": ["documentation"]}});
+        let models: Vec<String> = [Step::Plan, Step::Implement, Step::Review]
+            .into_iter()
+            .map(|step| select_step_model(&store, &claim, &runtime_config, &DOCS, step).model)
+            .collect();
+        assert_eq!(models, ["opus", "haiku", "opus"]);
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        assert_eq!(crate::factory::gateway::frontier_runs_today(&conn, &org.id).unwrap(), 2);
+        let steps: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT json_extract(payload_json,'$.step'), json_extract(payload_json,'$.specialist')
+                 FROM autonomous_agent_events WHERE run_id='run-docs' AND kind='model.selected' ORDER BY sequence",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            steps,
+            [("plan", "docs"), ("implement", "docs"), ("review", "docs")].map(|(a, b)| (a.to_string(), b.to_string()))
+        );
+        drop(conn);
+        // Without a specialist the generic choice is unchanged: docs run on haiku.
+        assert_eq!(select_run_model(&store, &claim, &runtime_config).model, "haiku");
+        assert!(run_specialist(&claim, &runtime_config).is_none(), "off unless FACTORY_SPECIALISTS names it");
+    }
+
     #[test]
     fn agent_claude_ignores_the_repository_settings_in_and_out_of_the_sandbox() {
         let mut claude = Command::new("/usr/local/bin/claude");

@@ -10,6 +10,7 @@ pub mod otel;
 pub mod policy_engine;
 pub mod sandbox;
 pub mod sandbox_exec;
+pub mod specialists;
 pub mod telemetry;
 pub mod verification;
 pub mod workspace;

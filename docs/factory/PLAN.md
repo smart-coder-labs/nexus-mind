@@ -293,6 +293,11 @@ Also in this phase:
 - Benchmark the local Qwen2.5-Coder-1.5B (llama.cpp Q4_K_M) lane against Haiku/Flash on cost per accepted change.
 - Add Gmail (label `factory`) and transcript intake (Notion, Drive/Meet, local `.txt`, admin upload), with `fix: manual`.
 - **Exit:** each specialist beats baseline on the frozen eval.
+- **Status (2026-10-06): framework and the documentation specialist built, off by default (`FACTORY_SPECIALISTS`).**
+  - **How a run works.** Opus plans read-only, Haiku implements with the plan (this is the resolver's normal invocation), the docs checks run, and then Opus reviews. The review can reject the change.
+  - **Models and the cap.** Each step is its own `--model` invocation with its own `model.selected` event, so the frontier cap counts the Opus steps.
+  - **Docs checks.** Every changed path must be documentation, links and anchors must resolve, and code identifiers the docs name must exist in the repository.
+  - **Frozen eval.** `factory-specialist-eval` compares the specialist with the baseline on a frozen set; see [specialist-eval.md](specialist-eval.md). It has not been run yet.
 
 ### F5: Controlled autonomy and learning (ongoing)
 

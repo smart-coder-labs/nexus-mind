@@ -231,7 +231,7 @@ fn is_test_path(path: &str) -> bool {
 /// Under `docs/` only prose and images count: `docs/conf.py` or a site config is
 /// executable in a docs build and must not ride along as "documentation". `.mdx`
 /// is excluded everywhere: it compiles to JS and can be a live route.
-fn is_doc_path(path: &str) -> bool {
+pub fn is_doc_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".md")
         || (lower.starts_with("docs/")
@@ -245,7 +245,7 @@ fn is_doc_path(path: &str) -> bool {
 /// Files that change build, CI, dependencies or agent behavior. Blocked wherever
 /// they live, so a `docs/` or `tests/` prefix cannot smuggle them in. Matching is
 /// case-insensitive because file systems and tools often are.
-fn is_never_eligible(path: &str) -> bool {
+pub fn is_never_eligible(path: &str) -> bool {
     let path = path.to_ascii_lowercase();
     let name = path.rsplit('/').next().unwrap_or(&path);
     // Dot-directories and dotfiles hold CI, editor, package-manager and agent
