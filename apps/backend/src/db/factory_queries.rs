@@ -507,6 +507,44 @@ pub fn list_shadow_decisions(
 
 /// Sets or clears a person's verdict on whether a change was actually high
 /// risk. Returns false when the decision is not this org's.
+/// The NexusMind project a merge decision is scoped to: the `project` the
+/// run's agent declares in its config, else the one its repository's agent
+/// targets agree on. `None` leaves a project-scoped policy unresolved (held).
+pub fn project_for_merge(conn: &Connection, org_id: &str, run_id: &str, repository: &str) -> Result<Option<String>> {
+    let declared: Option<String> = conn
+        .query_row(
+            "SELECT json_extract(r.config_json, '$.project') FROM autonomous_agent_runs ar
+               JOIN autonomous_agent_revisions r ON r.id = ar.revision_id
+              WHERE ar.id = ?1 AND ar.org_id = ?2",
+            params![run_id, org_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    match declared.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        Some(project) => Ok(Some(project)),
+        None => project_for_repository(conn, org_id, repository),
+    }
+}
+
+/// The NexusMind project a repository belongs to in this org: the project of
+/// an agent target for it (case-insensitive). `None` when no target names one,
+/// or when targets disagree (a project-scoped policy must not pick one).
+pub fn project_for_repository(conn: &Connection, org_id: &str, repository: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT p.name FROM autonomous_agent_targets t
+           JOIN projects p ON p.id = t.project_id
+          WHERE t.org_id = ?1 AND lower(t.repository) = lower(?2) AND t.project_id IS NOT NULL",
+    )?;
+    let names = stmt
+        .query_map(params![org_id, repository], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(match names.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    })
+}
+
 pub fn label_shadow_decision(
     conn: &Connection,
     org_id: &str,
@@ -1602,5 +1640,66 @@ mod tests {
             Some(created)
         );
         assert!(list_factory_policies(&conn, &org).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_repository_maps_to_its_project_only_when_targets_agree() {
+        let (conn, org, user) = setup();
+        for (id, name) in [("p-app", "app"), ("p-other", "other")] {
+            conn.execute("INSERT INTO projects (id, org_id, name) VALUES (?1, ?2, ?3)", params![id, org, name]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO autonomous_agent_definitions (id,org_id,template_key,template_version,name,status,current_revision,created_by)
+             VALUES ('def-1',?1,'github_pr_reviewer',1,'Reviewer','enabled',1,?2)",
+            params![org, user],
+        )
+        .unwrap();
+        let target = |id: &str, project: &str, repo: &str| {
+            conn.execute(
+                "INSERT INTO autonomous_agent_targets (id,org_id,definition_id,project_id,repository,kind,name)
+                 VALUES (?1,?2,'def-1',?3,?4,'repository',?1)",
+                params![id, org, project, repo],
+            )
+            .unwrap();
+        };
+        assert_eq!(project_for_repository(&conn, &org, "acme/app").unwrap(), None);
+        target("t-1", "p-app", "Acme/App");
+        assert_eq!(project_for_repository(&conn, &org, "acme/app").unwrap().as_deref(), Some("app"));
+        assert_eq!(project_for_repository(&conn, "other-org", "acme/app").unwrap(), None);
+        // Targets that disagree leave the project unresolved: a project-scoped
+        // policy then holds rather than guessing.
+        target("t-2", "p-other", "acme/app");
+        assert_eq!(project_for_repository(&conn, &org, "acme/app").unwrap(), None);
+    }
+
+    #[test]
+    fn the_agent_declared_project_scopes_a_merge() {
+        let (conn, org, user) = setup();
+        conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let revision = |id: &str, number: i64, config: &str| {
+            conn.execute(
+                "INSERT INTO autonomous_agent_revisions
+                   (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by)
+                 VALUES (?1,'def-1',?2,?3,'h','{}','{}','valid',?4)",
+                params![id, number, config, user],
+            )
+            .unwrap();
+        };
+        let run = |id: &str, revision_id: &str| {
+            conn.execute(
+                "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,budget_json)
+                 VALUES (?1,?2,'def-1',?3,?1,'manual',?1,'{}')",
+                params![id, org, revision_id],
+            )
+            .unwrap();
+        };
+        revision("rev-declared", 1, r#"{"repository":"kasymir/kasymir-app-ui","project":" kasymir "}"#);
+        revision("rev-silent", 2, r#"{"repository":"kasymir/kasymir-app-ui"}"#);
+        run("run-declared", "rev-declared");
+        run("run-silent", "rev-silent");
+        let project = |run_id| project_for_merge(&conn, &org, run_id, "kasymir/kasymir-app-ui").unwrap();
+        assert_eq!(project("run-declared").as_deref(), Some("kasymir"));
+        assert_eq!(project("run-silent"), None);
+        assert_eq!(project_for_merge(&conn, "other-org", "run-declared", "kasymir/kasymir-app-ui").unwrap(), None);
     }
 }

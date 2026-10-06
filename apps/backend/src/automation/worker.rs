@@ -2743,10 +2743,13 @@ fn select_run_model(
 /// Soak window between "every gate passed" and the merge (plan D17).
 const MERGE_SOAK_SECONDS: i64 = 600;
 
-/// The decision model consulted for `criteria` policies. Not wired until F3, so
-/// every `criteria` merge is held for a person (`decision_model_not_configured`).
+/// The decision for `criteria` merge policies: the owner's risk rubric
+/// (`merge_gate::auto_merge_path_verdict`), which every merge path runs before
+/// it reaches the policy. Reaching this point means it passed, so the
+/// rubric allows; `manual` and `never` policies, and orgs without a merge
+/// policy, are still held or denied before it is asked.
 fn merge_decision_model() -> crate::factory::policy_engine::ModelDecision {
-    crate::factory::policy_engine::ModelDecision::NotConfigured
+    crate::factory::policy_engine::ModelDecision::Allow { confidence: 1.0 }
 }
 
 /// Deterministic merge gates for one reviewed commit: head unchanged, docs/tests
@@ -2778,7 +2781,8 @@ async fn merge_gates(
             ))
         }
     };
-    if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files) {
+    let title = pull.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+    if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files, title) {
         return Ok(Err(json!({"merged": false, "reason": reason})));
     }
     // Every check-run page plus commit statuses; a partial or unreadable list declines.
@@ -2860,8 +2864,11 @@ fn decide_merge(
         .map(|stored| stored.policy)
         .collect();
     let task_class = super::merge_gate::merge_task_class(files);
+    // The repository's NexusMind project, so project-scoped policies apply.
+    let project = crate::db::factory_queries::project_for_merge(&conn, org_id, run_id, repository)?;
     let input = policy_engine::EvaluationInput {
         action: Some(Action::Merge),
+        project: project.as_deref(),
         task_class: Some(task_class),
         ..Default::default()
     };

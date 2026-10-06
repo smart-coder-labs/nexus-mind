@@ -118,7 +118,7 @@ async fn backfill(
         }
         let result: anyhow::Result<()> = async {
             let files = connectors::list_github_pull_files(token, repository, number).await?;
-            let floor = merge_gate::auto_merge_path_verdict(&files).err();
+            let floor = merge_gate::auto_merge_path_verdict(&files, &title).err();
             let paths: Vec<String> = files.into_iter().map(|f| f.filename).collect();
             let change = jev::Change { title: &title, description: &body, paths: &paths };
             let (answer, latency_ms) = jev::decide(&client, key, &change).await?;
