@@ -72,7 +72,7 @@ pub async fn record_merge_shadow(
         }
     }
     let files = super::connectors::list_github_pull_files(token, repository, number).await?;
-    let floor = super::merge_gate::auto_merge_path_verdict(&files).err();
+    let floor = super::merge_gate::auto_merge_path_verdict(&files, &title).err();
     let paths: Vec<String> = files.into_iter().map(|f| f.filename).collect();
     let client = reqwest::Client::new();
     let change = jev::Change {

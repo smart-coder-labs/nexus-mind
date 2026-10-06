@@ -43,7 +43,7 @@ The factory is not greenfield. The Rust backend already contains part of it:
 | D7 | Sandbox | **Rootless Podman/Docker plus an egress proxy allowlist.** Claude Code runs inside the container |
 | D8 | Golden tasks | Mined from accepted issues/PRs in nexusmind and kasymir |
 | D9 | Local Qwen lane | Deferred to F4, and adopted only if it wins on cost per accepted change *(assumption)* |
-| D10 | Auto-merge | Interim (F0): **docs/tests allowlist only** plus required checks; everything else opens a PR. From F3 on, Jev decides within the floors |
+| D10 | Auto-merge | F0–F2: docs/tests allowlist only. **Since 2026-10-05: risk floor** (owner rubric v1). A PR may merge without a person only if no path or title touches infra, DB migrations, payments, external providers, dependencies, security, or build/CI/agent config. It must also pass green required checks, a clean review, sandbox verification, the 600 s soak, and a `criteria` merge policy for its project. The rubric, validated against 153 labelled PRs (0 risky allowed, 61/72 low-risk allowed), is that policy's decision. Jev stays in shadow |
 | D11 | Plan location | `docs/factory/` in this repo, with one SDD change per phase in NexusMind |
 | D12 | Autonomy model | **Independent per-action policies** instead of levels A–D (see §4) |
 | D13 | Intake | One `IntakeSource` contract. Staged rollout: F0 GitHub + NexusMind tasks; F3 Slack + Sentry; F4 Gmail (label `factory` only) + transcripts (Notion, Drive/Meet, local `.txt`, manual upload in admin). Gmail and transcripts default to `fix: manual` |
