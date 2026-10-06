@@ -84,15 +84,32 @@ describe('FactoryPolicies', () => {
     expect(screen.queryByRole('button', { name: /new policy/i })).not.toBeInTheDocument()
   })
 
+  it('lists every action, including those without a policy, and keeps the safety floors visible', async () => {
+    api.listFactoryPolicies.mockResolvedValue([{ ...docsMerge, id: 'p2', action: 'fix', scope: {}, mode: 'after_fix' }])
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    const fix = await screen.findByRole('listitem', { name: 'fix' })
+    expect(within(fix).getByRole('listitem', { current: 'step' })).toHaveTextContent(/gated/i)
+    const deploy = screen.getByRole('listitem', { name: 'deploy' })
+    expect(within(deploy).getByText(/no policy — waits for a person/i)).toBeInTheDocument()
+    expect(within(deploy).getByRole('button', { name: 'Add a policy for deploy' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Always a person' })).toHaveTextContent(/payments/i)
+  })
+
+  it('starts a policy for the action whose row was used', async () => {
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a policy for deploy' }))
+    expect(screen.getByLabelText('Action')).toHaveValue('deploy')
+  })
+
   it('creates a new policy at version 1', async () => {
     api.putFactoryPolicy.mockResolvedValue({ ...docsMerge, version: 1 })
     renderPage(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: /new policy/i }))
     await userEvent.selectOptions(screen.getByLabelText('Action'), 'merge')
-    await userEvent.selectOptions(screen.getByLabelText('Mode'), 'criteria')
+    await userEvent.click(screen.getByRole('radio', { name: /the decision model decides/i }))
     await userEvent.selectOptions(screen.getByLabelText('Task class'), 'docs')
-    await userEvent.type(screen.getByLabelText(/allow when/i), 'docs/tests paths only')
-    await userEvent.click(screen.getByRole('button', { name: /save policy/i }))
+    await userEvent.type(screen.getByLabelText('Allow condition 1'), 'docs/tests paths only')
+    await userEvent.click(screen.getByRole('button', { name: 'Save as v1' }))
     expect(api.putFactoryPolicy).toHaveBeenCalledWith({
       schema_version: 1,
       action: 'merge',
@@ -108,20 +125,20 @@ describe('FactoryPolicies', () => {
     api.listFactoryPolicies.mockResolvedValue([docsMerge])
     api.putFactoryPolicy.mockResolvedValue({ ...docsMerge, mode: 'manual', version: 4 })
     renderPage(['factory_policy:read', 'factory_policy:write'])
-    const row = (await screen.findByText('merge')).closest('tr')!
-    await userEvent.click(within(row).getByRole('button', { name: /edit/i }))
-    await userEvent.selectOptions(screen.getByLabelText('Mode'), 'manual')
-    await userEvent.click(screen.getByRole('button', { name: /save policy/i }))
-    expect(api.putFactoryPolicy).toHaveBeenCalledWith(expect.objectContaining({ mode: 'manual', version: 4 }))
+    const row = await screen.findByRole('listitem', { name: 'merge' })
+    await userEvent.click(within(row).getByRole('button', { name: /edit merge policy for docs/i }))
+    await userEvent.click(screen.getByRole('radio', { name: /a person decides/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save as v4' }))
+    expect(api.putFactoryPolicy).toHaveBeenCalledWith(expect.objectContaining({ mode: 'manual', version: 4, allow: ['docs/tests paths only'] }))
   })
 
   it('tells the user to reload on a version conflict', async () => {
     api.listFactoryPolicies.mockResolvedValue([docsMerge])
     api.putFactoryPolicy.mockRejectedValue(Object.assign(new Error('conflict'), { status: 409, code: 'policy_version_conflict' }))
     renderPage(['factory_policy:read', 'factory_policy:write'])
-    const row = (await screen.findByText('merge')).closest('tr')!
-    await userEvent.click(within(row).getByRole('button', { name: /edit/i }))
-    await userEvent.click(screen.getByRole('button', { name: /save policy/i }))
+    const row = await screen.findByRole('listitem', { name: 'merge' })
+    await userEvent.click(within(row).getByRole('button', { name: /edit merge policy/i }))
+    await userEvent.click(screen.getByRole('button', { name: /save as v4/i }))
     expect(await screen.findByText(/someone changed this policy/i)).toBeInTheDocument()
   })
 
@@ -130,8 +147,9 @@ describe('FactoryPolicies', () => {
     api.listFactoryPolicies.mockResolvedValue([docsMerge])
     api.deleteFactoryPolicy.mockRejectedValue(Object.assign(new Error('Insufficient permissions'), { status: 403, code: 'forbidden' }))
     renderPage(['factory_policy:read', 'factory_policy:write'])
-    const row = (await screen.findByText('merge')).closest('tr')!
-    await userEvent.click(within(row).getByRole('button', { name: /delete/i }))
+    const row = await screen.findByRole('listitem', { name: 'merge' })
+    await userEvent.click(within(row).getByRole('button', { name: /edit merge policy/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Delete merge policy' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not delete the merge policy/i)
   })
 
@@ -186,8 +204,9 @@ describe('FactoryPolicies', () => {
   it('is read-only without the write permission', async () => {
     api.listFactoryPolicies.mockResolvedValue([docsMerge])
     renderPage(['factory_policy:read'])
-    const row = (await screen.findByText('merge')).closest('tr')!
-    expect(within(row).queryByRole('button', { name: /edit/i })).not.toBeInTheDocument()
-    expect(within(row).queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
+    const row = await screen.findByRole('listitem', { name: 'merge' })
+    expect(within(row).getByText('Docs: Model decides')).toBeInTheDocument()
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add a policy/i })).not.toBeInTheDocument()
   })
 })

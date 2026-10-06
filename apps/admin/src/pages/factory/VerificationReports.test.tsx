@@ -48,10 +48,10 @@ describe('VerificationReports', () => {
   it('shows a passing report with its checks and the short head', () => {
     render(<VerificationReports reports={[stored(true)]} />)
     const section = screen.getByRole('region', { name: /verification/i })
-    expect(within(section).getByText('Passed')).toBeInTheDocument()
+    expect(within(section).getByText('All checks passed')).toBeInTheDocument()
     expect(within(section).getByText('0123456789ab')).toBeInTheDocument()
     expect(within(section).getByText('npm test')).toBeInTheDocument()
-    expect(within(section).getByText('PASS')).toBeInTheDocument()
+    expect(within(section).getByText('Passed')).toBeInTheDocument()
     // Without CI checks the report speaks for the sandbox commands only.
     expect(within(section).getByText(/sandbox commands only/i)).toBeInTheDocument()
     expect(within(section).queryByText(/eligible for merge/i)).not.toBeInTheDocument()
@@ -61,8 +61,8 @@ describe('VerificationReports', () => {
     render(<VerificationReports reports={[stored(false)]} />)
     const section = screen.getByRole('region', { name: /verification/i })
     expect(within(section).getByText('Blocked')).toBeInTheDocument()
-    expect(within(section).getByText('FAIL')).toBeInTheDocument()
-    expect(within(section).getByText('ERROR')).toBeInTheDocument()
+    expect(within(section).getByText('Failed')).toBeInTheDocument()
+    expect(within(section).getByText('Errored')).toBeInTheDocument()
     expect(within(section).getByText(/needs a human/i)).toBeInTheDocument()
     expect(within(section).getByText('CI · build')).toBeInTheDocument()
   })

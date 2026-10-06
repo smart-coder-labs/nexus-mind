@@ -1,30 +1,46 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Radio } from 'lucide-react'
+import { BellRing, GitPullRequest, Hash, Plus, Radio, Siren, Trash2, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Input } from '../components/ui/Input'
+import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
+import { cn } from '../lib/utils'
 import type {
   AutonomousAgentConnector,
+  FactoryIntakeItem,
   FactoryIntakeKind,
   FactoryIntakeSource,
   FactoryIntakeSourceInput,
   FactoryPrivacyClass,
   FactoryWatchdog,
 } from '../types'
+import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, RadioCard, SectionHeading, SELECT_CLASS, when } from './factory/govern/ui'
+import { PRIVACY_LABEL, startReason, taskClassLabel } from './factory/govern/words'
 
-const SELECT_CLASS = 'mt-1 block w-full rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none'
 const PRIVACY: FactoryPrivacyClass[] = ['internal', 'confidential', 'restricted', 'public']
 const NEW_TOKEN = '__new__'
 
-function when(value: string | null): string {
-  return value ? value.replace('T', ' ').slice(0, 16) : '—'
+const KIND_LABEL: Record<FactoryIntakeKind, string> = { slack: 'Slack channel', sentry: 'Sentry project' }
+
+function KindIcon({ kind, className }: { kind: FactoryIntakeKind | 'github'; className?: string }) {
+  const Icon = kind === 'slack' ? Hash : kind === 'sentry' ? Siren : GitPullRequest
+  return <Icon className={className ?? 'h-4 w-4'} aria-hidden="true" />
 }
 
 function message(error: unknown): string {
   return (error as { message?: string })?.message ?? 'unknown error'
+}
+
+/** Known poll failures → what to do about them. */
+function pollHint(error: string): string | null {
+  if (error.includes('not_in_channel')) return 'Invite the Slack bot to the channel.'
+  if (error.includes('invalid_auth') || error.includes('token_revoked')) return 'The token is no longer valid. Edit the source and paste a new one.'
+  if (error.includes('missing_scope')) return 'The Slack token needs the channels:history scope.'
+  return null
 }
 
 interface Draft {
@@ -185,16 +201,192 @@ export default function FactoryIntake() {
   const remove = useMutation({ mutationFn: (id: string) => client.deleteFactoryIntakeSource(id), onSuccess: refresh })
 
   if (!canRead) {
-    return (
-      <div className="p-6 md:p-8 max-w-7xl mx-auto">
-        <EmptyState
-          title="Factory intake"
-          description="You need the factory_policy:read permission to see where the factory takes work from. Ask an organization owner to grant it."
-        />
-      </div>
-    )
+    return <PermissionDenied title="Intake" permission="factory_policy:read" what="see where the factory takes work from" />
   }
 
+  const closeEditor = () => { setDraft(null); save.reset() }
+  const startNew = () => setDraft({ ...EMPTY, connector: secretsFor(EMPTY)[0]?.id ?? NEW_TOKEN, resolver: resolvers[0]?.id ?? '' })
+  const itemCount = (sourceId: string) => (items.data ?? []).filter(item => item.source_id === sourceId).length
+  const sourceName = (item: FactoryIntakeItem) => sources.data?.find(source => source.id === item.source_id)?.name
+
+  return (
+    <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-8">
+      <PageHeader
+        title="Intake"
+        subtitle="Where the factory takes work from. Every new item becomes a factory task."
+        action={canWrite && <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={startNew}>Add source</Button>}
+      />
+      <p className="-mt-4 max-w-3xl text-[12px] leading-normal text-text-tertiary">
+        The decision model may start only docs, tests, UI or bug fixes on its own, at most 5 a day, in private repositories.
+        The pull request it opens always waits for a person before merging.
+      </p>
+
+      {sources.isLoading && <CardListSkeleton count={2} height="h-36" />}
+      {sources.isError && <InlineAlert onRetry={() => sources.refetch()}>Could not load the intake sources.</InlineAlert>}
+      {sources.data && sources.data.length === 0 && (
+        <EmptyState
+          icon={<Radio />}
+          title="No intake sources yet"
+          description="GitHub issues already reach the factory through the issue resolver. Add a Slack channel or Sentry project to bring in more work."
+        />
+      )}
+      {sources.data && sources.data.length > 0 && (
+        <section aria-labelledby="sources-title" className="space-y-3">
+          <SectionHeading id="sources-title" title="Sources" />
+          <ul className="m-0 grid list-none gap-4 p-0 lg:grid-cols-2">
+            {sources.data.map(source => (
+              <li key={source.id} className={cn(PANEL_CLASS, 'flex flex-col gap-4')}>
+                <div className="flex items-start gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] border border-border-primary bg-white/[0.04] text-text-secondary">
+                    <KindIcon kind={source.kind} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{source.name}</p>
+                    <p className="text-[12px] text-text-tertiary">{KIND_LABEL[source.kind]}</p>
+                  </div>
+                  {!source.enabled ? (
+                    <Badge role="none" size="sm" variant="default">Paused</Badge>
+                  ) : source.last_error ? (
+                    <Badge role="none" size="sm" variant="error" dot>Failing</Badge>
+                  ) : (
+                    <Badge role="none" size="sm" variant="success" dot>Connected</Badge>
+                  )}
+                </div>
+                <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1.5 text-[13px]">
+                  <dt className="text-text-tertiary">Repository</dt>
+                  <dd className="min-w-0 truncate">
+                    {source.repository ? <span className="font-mono text-text-primary">{source.repository}</span> : <span className="text-text-secondary">No repository</span>}
+                  </dd>
+                  <dt className="text-text-tertiary">Tasks go to</dt>
+                  <dd className="min-w-0 truncate text-text-secondary">{source.project}</dd>
+                  <dt className="text-text-tertiary">Data privacy</dt>
+                  <dd className="text-text-secondary">{PRIVACY_LABEL[source.privacy_class]}</dd>
+                  <dt className="text-text-tertiary">Last fetch</dt>
+                  <dd className="text-text-secondary">{source.enabled ? when(source.last_polled_at) : 'Paused'}</dd>
+                  <dt className="text-text-tertiary">Brought in</dt>
+                  <dd className="tabular-nums text-text-secondary">{itemCount(source.id)} recent items</dd>
+                </dl>
+                {source.last_error && (
+                  <div role="status" className="rounded-[11px] border border-status-error/20 bg-status-error/[0.08] px-3.5 py-2.5 text-[13px]">
+                    <p className="break-words text-text-primary">Last poll failed: {source.last_error}</p>
+                    {pollHint(source.last_error) && <p className="mt-0.5 text-[12px] text-text-secondary">{pollHint(source.last_error)}</p>}
+                  </div>
+                )}
+                {canWrite && (
+                  <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border-secondary pt-4">
+                    <Button size="sm" variant="secondary" aria-label={`Edit ${source.name}`} onClick={() => setDraft(draftFrom(source))}>Edit</Button>
+                    <Button size="sm" variant="secondary" aria-label={`${source.enabled ? 'Pause' : 'Resume'} ${source.name}`} disabled={toggle.isPending} onClick={() => toggle.mutate(source)}>
+                      {source.enabled ? 'Pause' : 'Resume'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="ml-auto"
+                      aria-label={`Delete ${source.name}`}
+                      leftIcon={<Trash2 className="h-4 w-4" />}
+                      disabled={remove.isPending}
+                      onClick={() => { if (window.confirm(`Delete the intake source ${source.name}? Tasks already created stay.`)) remove.mutate(source.id) }}
+                    />
+                  </div>
+                )}
+              </li>
+            ))}
+            <li className="flex items-start gap-3 rounded-[18px] border border-dashed border-border-primary p-5">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] border border-border-primary text-text-tertiary">
+                <KindIcon kind="github" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">GitHub issues</p>
+                <p className="mt-0.5 text-[13px] text-text-secondary">Reach the factory through the issue resolver agent. No source needed.</p>
+              </div>
+            </li>
+          </ul>
+          {(toggle.isError || remove.isError) && <InlineAlert>The change was not saved: {message(toggle.error ?? remove.error)}.</InlineAlert>}
+        </section>
+      )}
+
+      {items.isError && <InlineAlert onRetry={() => items.refetch()}>Could not load what came in.</InlineAlert>}
+      {items.data && items.data.length > 0 && (
+        <section aria-labelledby="items-title" className="space-y-3">
+          <SectionHeading id="items-title" title="What came in" description="The latest 50 items and whether each started on its own." />
+          <div className="overflow-x-auto rounded-[18px] border border-border-primary">
+            <table className="w-full min-w-[44rem] text-[13px]" aria-label="Intake items">
+              <thead>
+                <tr className="border-b border-border-secondary text-left text-[12px] text-text-tertiary">
+                  <th scope="col" className="px-4 py-2.5 font-medium">When</th>
+                  <th scope="col" className="px-4 py-2.5 font-medium">From</th>
+                  <th scope="col" className="px-4 py-2.5 font-medium">Task class</th>
+                  <th scope="col" className="px-4 py-2.5 font-medium">Decision</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.data.map(item => (
+                  <tr key={item.task_id} className="border-b border-border-secondary align-top last:border-0 hover:bg-white/[0.03]">
+                    <td className="whitespace-nowrap px-4 py-2.5 text-text-tertiary">{when(item.created_at)}</td>
+                    <td className="px-4 py-2.5">
+                      {sourceName(item) && <span className="block text-text-primary">{sourceName(item)}</span>}
+                      <span className="font-mono text-[12px] text-text-tertiary">{item.source_ref}</span>
+                    </td>
+                    <td className="px-4 py-2.5 text-text-secondary">{taskClassLabel(item.task_class)}</td>
+                    <td className="px-4 py-2.5">
+                      {item.start_decision === 'started' ? (
+                        <a className={LINK_CLASS} href={`https://github.com/${item.repository}/issues/${item.issue_number}`} target="_blank" rel="noreferrer">
+                          Started as issue #{item.issue_number}
+                        </a>
+                      ) : (
+                        <div className="space-y-0.5">
+                          <span className="block text-text-primary">Waiting for a person</span>
+                          <span className="block text-[12px] text-text-secondary">{startReason(item.start_reason)}</span>
+                          <code className="block font-mono text-[11px] text-text-tertiary">{item.start_reason}</code>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      <WatchdogCard watchdog={watchdog.data ?? null} loading={watchdog.isLoading} failed={watchdog.isError} onRetry={() => watchdog.refetch()} hooks={hooks} canWrite={canWrite} />
+
+      <SourceEditor
+        draft={draft}
+        setDraft={setDraft}
+        onClose={closeEditor}
+        resolvers={resolvers}
+        secrets={draft ? secretsFor(draft) : []}
+        canAddToken={canAddToken}
+        saving={save.isPending}
+        saveError={save.isError ? `The source was not saved: ${message(save.error)}.` : ''}
+        onSave={current => save.mutate(current)}
+      />
+    </div>
+  )
+}
+
+function SourceEditor({
+  draft,
+  setDraft,
+  onClose,
+  resolvers,
+  secrets,
+  canAddToken,
+  saving,
+  saveError,
+  onSave,
+}: {
+  draft: Draft | null
+  setDraft: (update: (current: Draft | null) => Draft | null) => void
+  onClose: () => void
+  resolvers: { id: string; name: string }[]
+  secrets: AutonomousAgentConnector[]
+  canAddToken: boolean
+  saving: boolean
+  saveError: string
+  onSave: (draft: Draft) => void
+}) {
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft(current => (current ? { ...current, [key]: value } : current))
   const needsToken = draft?.connector === NEW_TOKEN && (!canAddToken || !draft.newToken.trim())
   const incomplete =
@@ -206,209 +398,136 @@ export default function FactoryIntake() {
     (draft.kind === 'slack' ? !draft.channelId.trim() || !draft.reactors.trim() : !draft.orgSlug.trim() || !draft.projectSlug.trim() || !draft.query.trim())
 
   return (
-    <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-6">
-      <header className="flex flex-wrap items-start gap-3">
-        <div className="flex-1 min-w-[16rem]">
-          <h1 className="text-xl font-semibold text-text-primary flex items-center gap-2">
-            <Radio className="h-5 w-5" />Factory intake
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-text-tertiary">
-            Slack channels and Sentry projects the factory takes work from. Every new item becomes a factory task. The
-            decision model may start it on its own only for docs, tests, UI or bug fixes, at most 5 a day, in private
-            repositories, and the pull request it opens always waits for a person before merging.
-          </p>
-        </div>
-        {canWrite && !draft && (
-          <Button size="sm" onClick={() => setDraft({ ...EMPTY, connector: secretsFor(EMPTY)[0]?.id ?? NEW_TOKEN, resolver: resolvers[0]?.id ?? '' })}>
-            Add source
-          </Button>
-        )}
-      </header>
-
+    <Modal open={draft !== null} onOpenChange={value => { if (!value) onClose() }} size="xl" position="right">
       {draft && (
-        <section aria-labelledby="source-form-title" className="rounded-xl border border-border-primary p-4 space-y-4">
-          <h2 id="source-form-title" className="text-sm font-semibold text-text-primary">{draft.id ? `Edit ${draft.name}` : 'New intake source'}</h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block text-sm text-text-secondary" htmlFor="intake-kind">
-              Source
-              <select id="intake-kind" className={SELECT_CLASS} value={draft.kind} disabled={!!draft.id} onChange={event => set('kind', event.target.value as FactoryIntakeKind)}>
-                <option value="slack">Slack channel</option>
-                <option value="sentry">Sentry project</option>
-              </select>
-            </label>
-            <label className="block text-sm text-text-secondary" htmlFor="intake-name">
-              Name
-              <Input id="intake-name" inputSize="sm" value={draft.name} placeholder="Bugs channel" onChange={event => set('name', event.target.value)} />
-            </label>
-            <label className="block text-sm text-text-secondary" htmlFor="intake-resolver">
-              Issue resolver (sets the repository)
-              <select id="intake-resolver" className={SELECT_CLASS} value={draft.resolver} onChange={event => set('resolver', event.target.value)}>
-                <option value="">Choose an agent</option>
-                {resolvers.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-                {draft.resolver && !resolvers.some(agent => agent.id === draft.resolver) && (
-                  <option value={draft.resolver}>Unavailable agent (choose another)</option>
-                )}
-              </select>
-            </label>
-            <label className="block text-sm text-text-secondary" htmlFor="intake-project">
-              NexusMind project for the tasks
-              <Input id="intake-project" inputSize="sm" value={draft.project} placeholder="app" onChange={event => set('project', event.target.value)} />
-            </label>
-            <label className="block text-sm text-text-secondary" htmlFor="intake-base">
-              Base branch
-              <Input id="intake-base" inputSize="sm" value={draft.baseRef} onChange={event => set('baseRef', event.target.value)} />
-            </label>
-            <label className="block text-sm text-text-secondary" htmlFor="intake-privacy">
-              Data privacy
-              <select id="intake-privacy" className={SELECT_CLASS} value={draft.privacy} onChange={event => set('privacy', event.target.value as FactoryPrivacyClass)}>
-                {PRIVACY.map(value => <option key={value} value={value}>{value}{value === 'restricted' ? ' (never starts on its own)' : ''}</option>)}
-              </select>
-            </label>
-          </div>
-
-          {draft.kind === 'slack' ? (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block text-sm text-text-secondary" htmlFor="intake-channel">
-                Channel ID
-                <Input id="intake-channel" inputSize="sm" value={draft.channelId} placeholder="C0123ABCD" onChange={event => set('channelId', event.target.value)} />
-              </label>
-              <label className="block text-sm text-text-secondary" htmlFor="intake-reactors">
-                Who can send a message to the factory (Slack user IDs)
-                <Input id="intake-reactors" inputSize="sm" value={draft.reactors} placeholder="U0123ABCD, U0456EFGH" onChange={event => set('reactors', event.target.value)} />
-              </label>
-              <p className="sm:col-span-2 text-xs text-text-tertiary">
-                A top-level message counts only when one of these people reacts to it with <code>:factory:</code>. The bot
-                token needs <code>channels:history</code> and must be in the channel.
-              </p>
+        <div className="flex min-h-full flex-col">
+          <ModalHeader className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <ModalTitle>{draft.id ? `Edit ${draft.name}` : 'New intake source'}</ModalTitle>
+              <ModalDescription>Slack and Sentry text is untrusted: what it starts never merges without a person.</ModalDescription>
             </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block text-sm text-text-secondary" htmlFor="intake-sentry-url">
-                Sentry URL
-                <Input id="intake-sentry-url" inputSize="sm" value={draft.baseUrl} onChange={event => set('baseUrl', event.target.value)} />
-              </label>
-              <label className="block text-sm text-text-secondary" htmlFor="intake-sentry-query">
-                Issues to take (Sentry search)
-                <Input id="intake-sentry-query" inputSize="sm" value={draft.query} onChange={event => set('query', event.target.value)} />
-              </label>
-              <label className="block text-sm text-text-secondary" htmlFor="intake-sentry-org">
-                Organization slug
-                <Input id="intake-sentry-org" inputSize="sm" value={draft.orgSlug} onChange={event => set('orgSlug', event.target.value)} />
-              </label>
-              <label className="block text-sm text-text-secondary" htmlFor="intake-sentry-project">
-                Project slug
-                <Input id="intake-sentry-project" inputSize="sm" value={draft.projectSlug} onChange={event => set('projectSlug', event.target.value)} />
-              </label>
-              <p className="sm:col-span-2 text-xs text-text-tertiary">
-                Only unresolved error or fatal issues that match the search become tasks. Narrow it (for example with a tag) so
-                a noisy project does not flood the factory.
-              </p>
-            </div>
-          )}
+            <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={onClose} />
+          </ModalHeader>
+          <ModalContent className="flex-1 space-y-6">
+            <FieldGroup title="Source">
+              <div role="radiogroup" aria-label="Kind of source" className="grid gap-2 sm:grid-cols-2">
+                {(['slack', 'sentry'] as FactoryIntakeKind[]).map(kind => (
+                  <RadioCard
+                    key={kind}
+                    name="intake-kind"
+                    value={kind}
+                    checked={draft.kind === kind}
+                    disabled={!!draft.id}
+                    onChange={value => set('kind', value as FactoryIntakeKind)}
+                    icon={<KindIcon kind={kind} className="h-4 w-4 text-text-secondary" />}
+                    title={KIND_LABEL[kind]}
+                    description={kind === 'slack' ? 'Messages someone marks for the factory.' : 'Unresolved errors that match a search.'}
+                  />
+                ))}
+              </div>
+              <Field id="intake-name" label="Name">
+                <Input id="intake-name" value={draft.name} placeholder="Bugs channel" onChange={event => set('name', event.target.value)} />
+              </Field>
+              {draft.kind === 'slack' ? (
+                <Field id="intake-channel" label="Channel ID" hint="The bot must be a member of the channel.">
+                  <Input id="intake-channel" value={draft.channelId} placeholder="C0123ABCD" onChange={event => set('channelId', event.target.value)} />
+                </Field>
+              ) : (
+                <>
+                  <Field id="intake-sentry-url" label="Sentry URL">
+                    <Input id="intake-sentry-url" value={draft.baseUrl} onChange={event => set('baseUrl', event.target.value)} />
+                  </Field>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field id="intake-sentry-org" label="Organization slug">
+                      <Input id="intake-sentry-org" value={draft.orgSlug} onChange={event => set('orgSlug', event.target.value)} />
+                    </Field>
+                    <Field id="intake-sentry-project" label="Project slug">
+                      <Input id="intake-sentry-project" value={draft.projectSlug} onChange={event => set('projectSlug', event.target.value)} />
+                    </Field>
+                  </div>
+                </>
+              )}
+            </FieldGroup>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block text-sm text-text-secondary" htmlFor="intake-token">
-              Token
-              <select id="intake-token" className={SELECT_CLASS} value={draft.connector} onChange={event => set('connector', event.target.value)}>
-                {canAddToken && <option value={NEW_TOKEN}>Paste a new token</option>}
-                {!canAddToken && draft.connector === NEW_TOKEN && <option value={NEW_TOKEN}>Choose a stored token</option>}
-                {secretsFor(draft).map((connector: AutonomousAgentConnector) => <option key={connector.id} value={connector.id}>{connector.name}</option>)}
-                {draft.connector !== NEW_TOKEN && !secretsFor(draft).some(connector => connector.id === draft.connector) && (
-                  <option value={draft.connector}>Unavailable token (paste or choose another)</option>
-                )}
-              </select>
-            </label>
-            {draft.connector === NEW_TOKEN && canAddToken && (
-              <label className="block text-sm text-text-secondary" htmlFor="intake-new-token">
-                {draft.kind === 'slack' ? 'Slack bot token (xoxb-…)' : 'Sentry auth token'}
-                <Input id="intake-new-token" inputSize="sm" type="password" autoComplete="off" value={draft.newToken} onChange={event => set('newToken', event.target.value)} />
-              </label>
-            )}
-          </div>
-          <p className="text-xs text-text-tertiary">
-            {canAddToken
-              ? 'Tokens are stored encrypted and are never shown again. A Sentry token only works for the Sentry URL it was stored for.'
-              : 'Adding a token needs the permission to manage connectors; you can choose a token stored for this kind of source.'}
-          </p>
+            <FieldGroup title="Where work lands">
+              <Field id="intake-resolver" label="Issue resolver (sets the repository)">
+                <select id="intake-resolver" className={SELECT_CLASS} value={draft.resolver} onChange={event => set('resolver', event.target.value)}>
+                  <option value="">Choose an agent</option>
+                  {resolvers.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                  {draft.resolver && !resolvers.some(agent => agent.id === draft.resolver) && (
+                    <option value={draft.resolver}>Unavailable agent (choose another)</option>
+                  )}
+                </select>
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field id="intake-project" label="NexusMind project for the tasks">
+                  <Input id="intake-project" value={draft.project} placeholder="app" onChange={event => set('project', event.target.value)} />
+                </Field>
+                <Field id="intake-base" label="Base branch">
+                  <Input id="intake-base" value={draft.baseRef} onChange={event => set('baseRef', event.target.value)} />
+                </Field>
+              </div>
+              <Field id="intake-privacy" label="Data privacy" hint="Restricted sources never start work on their own.">
+                <select id="intake-privacy" className={SELECT_CLASS} value={draft.privacy} onChange={event => set('privacy', event.target.value as FactoryPrivacyClass)}>
+                  {PRIVACY.map(value => <option key={value} value={value}>{PRIVACY_LABEL[value]}{value === 'restricted' ? ' (never starts on its own)' : ''}</option>)}
+                </select>
+              </Field>
+            </FieldGroup>
 
-          {save.isError && <p role="alert" className="text-xs text-text-primary">The source was not saved: {message(save.error)}.</p>}
-          <div className="flex gap-2">
-            <Button size="sm" disabled={incomplete || save.isPending} onClick={() => save.mutate(draft)}>{save.isPending ? 'Saving…' : 'Save source'}</Button>
-            <Button size="sm" variant="ghost" onClick={() => { setDraft(null); save.reset() }}>Cancel</Button>
-          </div>
-        </section>
+            <FieldGroup
+              title="Credentials"
+              description={
+                canAddToken
+                  ? 'Tokens are stored encrypted and are never shown again. A Sentry token only works for the Sentry URL it was stored for.'
+                  : 'Adding a token needs the permission to manage connectors; you can choose a token stored for this kind of source.'
+              }
+            >
+              <Field id="intake-token" label="Token">
+                <select id="intake-token" className={SELECT_CLASS} value={draft.connector} onChange={event => set('connector', event.target.value)}>
+                  {canAddToken && <option value={NEW_TOKEN}>Paste a new token</option>}
+                  {!canAddToken && draft.connector === NEW_TOKEN && <option value={NEW_TOKEN}>Choose a stored token</option>}
+                  {secrets.map(connector => <option key={connector.id} value={connector.id}>{connector.name}</option>)}
+                  {draft.connector !== NEW_TOKEN && !secrets.some(connector => connector.id === draft.connector) && (
+                    <option value={draft.connector}>Unavailable token (paste or choose another)</option>
+                  )}
+                </select>
+              </Field>
+              {draft.connector === NEW_TOKEN && canAddToken && (
+                <Field id="intake-new-token" label={draft.kind === 'slack' ? 'Slack bot token (xoxb-…)' : 'Sentry auth token'}>
+                  <Input id="intake-new-token" type="password" autoComplete="off" value={draft.newToken} onChange={event => set('newToken', event.target.value)} />
+                </Field>
+              )}
+            </FieldGroup>
+
+            <FieldGroup title="Filter">
+              {draft.kind === 'slack' ? (
+                <Field
+                  id="intake-reactors"
+                  label="Who can send a message to the factory (Slack user IDs)"
+                  hint={<>A top-level message counts only when one of these people reacts to it with <code className="font-mono">:factory:</code>. The bot token needs <code className="font-mono">channels:history</code>.</>}
+                >
+                  <Input id="intake-reactors" value={draft.reactors} placeholder="U0123ABCD, U0456EFGH" onChange={event => set('reactors', event.target.value)} />
+                </Field>
+              ) : (
+                <Field
+                  id="intake-sentry-query"
+                  label="Issues to take (Sentry search)"
+                  hint="Only unresolved error or fatal issues that match become tasks. Narrow it, for example with a tag, so a noisy project does not flood the factory."
+                >
+                  <Input id="intake-sentry-query" className="font-mono" value={draft.query} onChange={event => set('query', event.target.value)} />
+                </Field>
+              )}
+            </FieldGroup>
+
+            {saveError && <InlineAlert>{saveError}</InlineAlert>}
+          </ModalContent>
+          <ModalFooter className="border-t border-border-primary pt-4">
+            <Button size="sm" variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button size="sm" disabled={incomplete || saving} onClick={() => onSave(draft)}>{saving ? 'Saving…' : 'Save source'}</Button>
+          </ModalFooter>
+        </div>
       )}
-
-      {sources.isLoading && <p className="text-sm text-text-tertiary">Loading…</p>}
-      {sources.isError && <p role="alert" className="text-sm text-text-primary">Could not load the intake sources.</p>}
-      {sources.data && sources.data.length === 0 && !draft && (
-        <p className="text-sm text-text-tertiary">No intake sources yet. GitHub issues already reach the factory through the issue resolver.</p>
-      )}
-      {sources.data && sources.data.length > 0 && (
-        <section aria-labelledby="sources-title" className="rounded-xl border border-border-primary p-4 space-y-2">
-          <h2 id="sources-title" className="text-sm font-semibold text-text-primary">Sources</h2>
-          <ul className="m-0 p-0 list-none divide-y divide-border-primary">
-            {sources.data.map(source => (
-              <li key={source.id} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                <span className="font-medium text-text-primary">{source.name}</span>
-                <span className="rounded border border-border-primary px-1.5 py-0.5">{source.kind}</span>
-                <span className="font-mono text-text-secondary">{source.repository ?? 'no repository'}</span>
-                <span className="text-text-tertiary">{source.enabled ? `polled ${when(source.last_polled_at)}` : 'paused'}</span>
-                {source.last_error && <span role="status" className="text-text-primary">Last poll failed: {source.last_error}</span>}
-                {canWrite && (
-                  <span className="ml-auto flex gap-1.5">
-                    <Button size="sm" variant="ghost" aria-label={`Edit ${source.name}`} onClick={() => setDraft(draftFrom(source))}>Edit</Button>
-                    <Button size="sm" variant="secondary" aria-label={`${source.enabled ? 'Pause' : 'Resume'} ${source.name}`} disabled={toggle.isPending} onClick={() => toggle.mutate(source)}>
-                      {source.enabled ? 'Pause' : 'Resume'}
-                    </Button>
-                    <Button size="sm" variant="ghost" aria-label={`Delete ${source.name}`} disabled={remove.isPending} onClick={() => { if (window.confirm(`Delete the intake source ${source.name}? Tasks already created stay.`)) remove.mutate(source.id) }}>
-                      Delete
-                    </Button>
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-          {(toggle.isError || remove.isError) && <p role="alert" className="text-xs text-text-primary">The change was not saved: {message(toggle.error ?? remove.error)}.</p>}
-        </section>
-      )}
-
-      {items.data && items.data.length > 0 && (
-        <section aria-labelledby="items-title" className="rounded-xl border border-border-primary p-4 space-y-2">
-          <h2 id="items-title" className="text-sm font-semibold text-text-primary">What came in</h2>
-          <table className="w-full text-xs" aria-label="Intake items">
-            <thead>
-              <tr className="text-left text-text-tertiary">
-                <th className="py-1 font-medium">When</th>
-                <th className="py-1 font-medium">From</th>
-                <th className="py-1 font-medium">Class</th>
-                <th className="py-1 font-medium">Decision</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.data.map(item => (
-                <tr key={item.task_id} className="border-t border-border-primary">
-                  <td className="py-1.5 text-text-tertiary">{when(item.created_at)}</td>
-                  <td className="py-1.5 font-mono">{item.source_ref}</td>
-                  <td className="py-1.5">{item.task_class}</td>
-                  <td className="py-1.5">
-                    {item.start_decision === 'started' ? (
-                      <a className="underline" href={`https://github.com/${item.repository}/issues/${item.issue_number}`} target="_blank" rel="noreferrer">
-                        Started · issue #{item.issue_number}
-                      </a>
-                    ) : (
-                      <span className="text-text-secondary">Waiting for a person · {item.start_reason}</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-
-      <WatchdogCard watchdog={watchdog.data ?? null} loading={watchdog.isLoading} failed={watchdog.isError} hooks={hooks} canWrite={canWrite} />
-    </div>
+    </Modal>
   )
 }
 
@@ -416,12 +535,14 @@ function WatchdogCard({
   watchdog,
   loading,
   failed,
+  onRetry,
   hooks,
   canWrite,
 }: {
   watchdog: FactoryWatchdog | null
   loading: boolean
   failed: boolean
+  onRetry: () => void
   hooks: AutonomousAgentConnector[]
   canWrite: boolean
 }) {
@@ -439,36 +560,43 @@ function WatchdogCard({
   const enabled = !!watchdog?.enabled && !!watchdog.slack_connector_id
 
   return (
-    <section aria-labelledby="watchdog-title" className="rounded-xl border border-border-primary p-4 space-y-3">
-      <h2 id="watchdog-title" className="text-sm font-semibold text-text-primary">Slack notifications</h2>
-      <p className="text-xs text-text-secondary">
-        Posts to Slack when a merge is held for a person, a run stops short or a new factory task arrives (at most one
-        message every 15 minutes), plus a daily summary.
-      </p>
-      {loading && <p className="text-xs text-text-tertiary">Loading…</p>}
-      {failed && <p role="alert" className="text-xs text-text-primary">Could not load the notification settings.</p>}
-      <p className="text-xs text-text-primary">{enabled ? `On · last message ${when(watchdog?.last_sent_at ?? null)}` : 'Off'}</p>
+    <section aria-labelledby="watchdog-title" className="space-y-3 border-t border-border-primary pt-8">
+      <div className="flex flex-wrap items-start gap-3">
+        <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-text-secondary" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 id="watchdog-title" className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Slack notifications</h2>
+            {!loading && !failed && (
+              <Badge role="none" size="sm" variant={enabled ? 'success' : 'default'}>{enabled ? 'On' : 'Off'}</Badge>
+            )}
+          </div>
+          <p className="mt-1 max-w-3xl text-[13px] text-text-secondary">
+            Posts to Slack when a merge is held for a person, a run stops short or a new factory task arrives (at most one
+            message every 15 minutes), plus a daily summary.
+            {enabled && <> Last message {when(watchdog?.last_sent_at ?? null)}.</>}
+          </p>
+        </div>
+      </div>
+      {loading && <CardListSkeleton count={1} height="h-20" />}
+      {failed && <InlineAlert onRetry={onRetry}>Could not load the notification settings.</InlineAlert>}
       {canWrite && (
-        <div className="grid gap-4 sm:grid-cols-3 items-end">
-          <label className="block text-sm text-text-secondary" htmlFor="watchdog-connector">
-            Slack webhook
+        <div className={cn(PANEL_CLASS, 'grid items-end gap-4 sm:grid-cols-[minmax(0,1fr)_12rem_auto]')}>
+          <Field id="watchdog-connector" label="Slack webhook" hint={hooks.length === 0 ? 'Add a Slack webhook connector in Autonomous agents first.' : undefined}>
             <select id="watchdog-connector" className={SELECT_CLASS} value={selected} onChange={event => setConnector(event.target.value)}>
               <option value="">Choose a Slack connector</option>
               {hooks.map(hook => <option key={hook.id} value={hook.id}>{hook.name}</option>)}
             </select>
-          </label>
-          <label className="block text-sm text-text-secondary" htmlFor="watchdog-hour">
-            Daily summary hour (UTC)
-            <Input id="watchdog-hour" inputSize="sm" type="number" min={0} max={23} value={dailyHour} onChange={event => setHour(Math.min(23, Math.max(0, Number(event.target.value) || 0)))} />
-          </label>
-          <span className="flex gap-2">
+          </Field>
+          <Field id="watchdog-hour" label="Daily summary hour (UTC)">
+            <Input id="watchdog-hour" type="number" min={0} max={23} value={dailyHour} onChange={event => setHour(Math.min(23, Math.max(0, Number(event.target.value) || 0)))} />
+          </Field>
+          <div className="flex gap-2 sm:pb-0">
+            {enabled && <Button size="sm" variant="secondary" disabled={save.isPending} onClick={() => save.mutate(false)}>Turn off</Button>}
             <Button size="sm" disabled={!selected || save.isPending} onClick={() => save.mutate(true)}>{enabled ? 'Save' : 'Turn on'}</Button>
-            {enabled && <Button size="sm" variant="ghost" disabled={save.isPending} onClick={() => save.mutate(false)}>Turn off</Button>}
-          </span>
+          </div>
         </div>
       )}
-      {canWrite && hooks.length === 0 && <p className="text-xs text-text-tertiary">Add a Slack webhook connector in Autonomous agents first.</p>}
-      {save.isError && <p role="alert" className="text-xs text-text-primary">The settings were not saved: {message(save.error)}.</p>}
+      {save.isError && <InlineAlert>The settings were not saved: {message(save.error)}.</InlineAlert>}
     </section>
   )
 }

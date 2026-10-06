@@ -51,18 +51,38 @@ function setup(overrides: Partial<NexusMindClient> = {}, canWrite = true) {
 describe('ShadowRouterPanel', () => {
   it('shows each class against the OD-5 bar', async () => {
     setup()
-    const table = await screen.findByRole('table', { name: /shadow results by task class/i })
-    const docs = within(table).getByText('docs').closest('tr')!
+    const docs = await screen.findByRole('listitem', { name: 'Docs' })
     expect(within(docs).getByText('52 / 50')).toBeInTheDocument()
     expect(within(docs).getByText(/ready for automatic routing/i)).toBeInTheDocument()
-    const ui = within(table).getByText('ui').closest('tr')!
-    expect(within(ui).getByText(/collecting evidence/i)).toBeInTheDocument()
+    const ui = screen.getByRole('listitem', { name: 'UI' })
+    expect(within(ui).getByText(/over the risk limit/i)).toBeInTheDocument()
     expect(within(ui).getByText('(50%)')).toBeInTheDocument()
+    expect(within(ui).getByText('48 more needed')).toBeInTheDocument()
+    expect(screen.getByText(/1 of 2 task classes is there/i)).toBeInTheDocument()
+  })
+
+  it('says a class is collecting evidence while under the risk limit', async () => {
+    setup({
+      getShadowReport: vi.fn().mockResolvedValue({ ...report, classes: [{ ...report.classes[1], false_low: 0, false_low_rate: 0 }] }),
+    } as Partial<NexusMindClient>)
+    const ui = await screen.findByRole('listitem', { name: 'UI' })
+    expect(within(ui).getByText(/collecting evidence/i)).toBeInTheDocument()
+  })
+
+  it('filters the feed to decisions that need a label', async () => {
+    setup({
+      listShadowDecisions: vi.fn().mockResolvedValue([decision, { ...decision, id: 'd2', pull_number: 43, human_label: 'low' }]),
+    } as Partial<NexusMindClient>)
+    const table = await screen.findByRole('table', { name: /recent shadow decisions/i })
+    expect(within(table).getAllByRole('row')).toHaveLength(3)
+    await userEvent.click(screen.getByRole('button', { name: /needs a label \(1\)/i }))
+    expect(within(screen.getByRole('table', { name: /recent shadow decisions/i })).getAllByRole('row')).toHaveLength(2)
+    expect(screen.queryByRole('link', { name: 'acme/app#43' })).not.toBeInTheDocument()
   })
 
   it('lists decisions with their outcome signals and lets a person label them', async () => {
     const client = setup()
-    const list = await screen.findByRole('list', { name: /recent shadow decisions/i })
+    const list = await screen.findByRole('table', { name: /recent shadow decisions/i })
     expect(within(list).getByRole('link', { name: 'acme/app#42' })).toHaveAttribute('href', 'https://github.com/acme/app/pull/42')
     expect(within(list).getByText(/reverted by 1a2b3c, CI failed on merge/)).toBeInTheDocument()
     expect(within(list).getByText('Would allow')).toBeInTheDocument()
@@ -72,7 +92,7 @@ describe('ShadowRouterPanel', () => {
 
   it('is read-only without the write permission', async () => {
     setup({}, false)
-    await screen.findByRole('list', { name: /recent shadow decisions/i })
+    await screen.findByRole('table', { name: /recent shadow decisions/i })
     expect(screen.queryByRole('button', { name: /was risky/i })).not.toBeInTheDocument()
   })
 
@@ -86,7 +106,7 @@ describe('ShadowRouterPanel', () => {
 
   it('offers no label for decisions the report does not count', async () => {
     setup({ listShadowDecisions: vi.fn().mockResolvedValue([{ ...decision, outcome: 'superseded', outcome_signals: [] }]) } as Partial<NexusMindClient>)
-    const list = await screen.findByRole('list', { name: /recent shadow decisions/i })
+    const list = await screen.findByRole('table', { name: /recent shadow decisions/i })
     expect(within(list).getByText('Another head was merged')).toBeInTheDocument()
     expect(within(list).queryByRole('button')).not.toBeInTheDocument()
   })
