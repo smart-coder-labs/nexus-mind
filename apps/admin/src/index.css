@@ -94,6 +94,7 @@
   --color-accent-blue-active: var(--color-accent-blue-active);
   --color-accent-blue-tint: var(--color-accent-blue-tint);
   --color-accent-purple: var(--color-accent-purple);
+  --color-accent-on-dark: var(--color-accent-on-dark);
 
   /* Status */
   --color-status-success: var(--color-status-success);

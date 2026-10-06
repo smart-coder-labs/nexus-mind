@@ -105,7 +105,6 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
       <motion.span
         ref={ref}
         className={combinedClassName}
-        role="status"
         initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{
