@@ -584,7 +584,7 @@ fn missing_references(span: &str, repo: &dyn RepoView) -> Vec<String> {
     if span.contains('/') {
         return Vec::new(); // Routes and URLs: left to the reviewer.
     }
-    span.split(|c: char| matches!(c, ':' | '.' | '(' | ')' | '<' | '>' | ',' | '&' | '[' | ']' | '{' | '}' | '=' | '!' | '?'))
+    span.split([':', '.', '(', ')', '<', '>', ',', '&', '[', ']', '{', '}', '=', '!', '?'])
         .filter(|segment| identifier_like(segment))
         .filter(|segment| !repo.identifier_exists(segment))
         .map(str::to_string)
