@@ -8,6 +8,7 @@ pub mod intake;
 pub mod jev;
 pub mod otel;
 pub mod policy_engine;
+pub mod redact;
 pub mod sandbox;
 pub mod sandbox_exec;
 pub mod specialists;

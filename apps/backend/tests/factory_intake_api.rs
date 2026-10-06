@@ -116,6 +116,9 @@ fn fixtures(path: &std::path::Path) -> String {
         ("conn-secret", "target_secret", r#"{"purpose":"factory_intake","source_kind":"slack"}"#),
         ("conn-qa", "target_secret", "{}"),
         ("conn-hook", "slack", "{}"),
+        ("conn-gmail", "target_secret", r#"{"purpose":"factory_intake","source_kind":"gmail"}"#),
+        ("conn-notion", "target_secret", r#"{"purpose":"factory_intake","source_kind":"notion"}"#),
+        ("conn-drive", "target_secret", r#"{"purpose":"factory_intake","source_kind":"drive"}"#),
     ] {
         conn.execute(
             "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,health,metadata_json,created_by)
@@ -244,4 +247,130 @@ async fn the_watchdog_takes_only_a_slack_connector() {
     assert_eq!(status, StatusCode::OK, "{watchdog}");
     assert_eq!(watchdog["slack_connector_id"], "conn-hook");
     assert_eq!(watchdog["daily_hour_utc"], 12);
+}
+
+fn gmail_source() -> Value {
+    json!({
+        "kind": "gmail",
+        "name": "Gmail intake",
+        "project": "app",
+        "resolver_definition_id": "def-1",
+        "connector_id": "conn-gmail",
+        "config": {}
+    })
+}
+
+#[tokio::test]
+async fn gmail_notion_and_drive_sources_can_be_created_f4() {
+    let (router, path) = app("super_user");
+    let cookie = login(&router).await;
+    fixtures(&path);
+    let uri = "/v1/factory/intake/sources";
+
+    let (status, source) = send(&router, &cookie, "POST", uri, Some(gmail_source())).await;
+    assert_eq!(status, StatusCode::CREATED, "{source}");
+    assert_eq!(source["kind"], "gmail");
+
+    let notion = json!({
+        "kind": "notion", "name": "Notion intake", "project": "app",
+        "resolver_definition_id": "def-1", "connector_id": "conn-notion",
+        "config": {"database_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"}
+    });
+    let (status, source) = send(&router, &cookie, "POST", uri, Some(notion)).await;
+    assert_eq!(status, StatusCode::CREATED, "{source}");
+
+    let drive = json!({
+        "kind": "drive", "name": "Drive intake", "project": "app",
+        "resolver_definition_id": "def-1", "connector_id": "conn-drive",
+        "config": {"folder_id": "1A2b_3C-4d"}
+    });
+    let (status, source) = send(&router, &cookie, "POST", uri, Some(drive)).await;
+    assert_eq!(status, StatusCode::CREATED, "{source}");
+
+    // A connector bound to another intake kind is refused, same as Slack/Sentry.
+    let mut wrong_connector = gmail_source();
+    wrong_connector["connector_id"] = json!("conn-notion");
+    wrong_connector["name"] = json!("Gmail intake 2");
+    let (status, response) = send(&router, &cookie, "POST", uri, Some(wrong_connector)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+    assert_eq!(response["code"], "invalid_connector");
+
+    let mut bad_drive = gmail_source();
+    bad_drive["kind"] = json!("drive");
+    bad_drive["name"] = json!("Drive bad");
+    bad_drive["connector_id"] = json!("conn-drive");
+    bad_drive["config"] = json!({"folder_id": "has space"});
+    let (status, response) = send(&router, &cookie, "POST", uri, Some(bad_drive)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+    assert_eq!(response["code"], "invalid_drive_folder_id");
+}
+
+#[tokio::test]
+async fn transcript_upload_needs_the_factory_permission() {
+    let (router, _) = app("admin");
+    let cookie = login(&router).await;
+    let (status, _) = send(
+        &router,
+        &cookie,
+        "POST",
+        "/v1/factory/intake/transcripts",
+        Some(json!({"project": "app", "title": "Meeting", "text": "notes"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn transcript_upload_is_redacted_untrusted_and_deduped() {
+    let (router, path) = app("super_user");
+    let cookie = login(&router).await;
+    fixtures(&path);
+    let uri = "/v1/factory/intake/transcripts";
+
+    for (body, code) in [
+        (json!({"project": "", "title": "x", "text": "y"}), "validation_error"),
+        (json!({"project": "app", "title": "", "text": "y"}), "validation_error"),
+        (json!({"project": "app", "title": "x", "text": ""}), "validation_error"),
+        (
+            json!({"project": "app", "resolver_definition_id": "nope", "title": "x", "text": "y"}),
+            "invalid_resolver",
+        ),
+    ] {
+        let (status, response) = send(&router, &cookie, "POST", uri, Some(body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+        assert_eq!(response["code"], code);
+    }
+
+    let body = json!({
+        "project": "app",
+        "resolver_definition_id": "def-1",
+        "title": "Weekly sync",
+        "text": "Ana (ana@acme.test) will fix the refund bug.\n- [ ] ship the patch"
+    });
+    let (status, task) = send(&router, &cookie, "POST", uri, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{task}");
+    assert_eq!(task["title"], "Weekly sync");
+    let description = task["description"].as_str().unwrap();
+    assert!(description.contains("[EMAIL_1]"), "{description}");
+    assert!(!description.contains("ana@acme.test"), "{description}");
+    let labels: Vec<String> =
+        task["labels"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    assert!(labels.contains(&"factory".to_string()), "{labels:?}");
+    assert!(labels.contains(&"untrusted".to_string()), "{labels:?}");
+
+    // Re-uploading the exact same transcript is a duplicate, not a second task.
+    let (status, response) = send(&router, &cookie, "POST", uri, Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert_eq!(response["code"], "duplicate_transcript");
+
+    // No resolver at all: still creates a (repository-less) backlog task.
+    let (status, task) = send(
+        &router,
+        &cookie,
+        "POST",
+        uri,
+        Some(json!({"project": "app", "title": "Local notes", "text": "Plain text, no PII here."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{task}");
 }
