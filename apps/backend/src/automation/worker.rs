@@ -4130,7 +4130,11 @@ async fn resolve_issue_worktree(
     } else if outcome.0 == "succeeded" {
         match evaluate_structured_result("github_issue_resolver", &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
-            Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+            // The run still cost what its result says: keep it for telemetry.
+            Err(error) => {
+                let result = outcome.1.get("result").cloned();
+                outcome = ("blocked_policy".into(), json!({"code":error.to_string(),"result":result}));
+            }
         }
         if let Some((spec, plan)) = planned.as_ref() {
             specialist_finish(&step_env, &store, &claim, &runtime_config, spec, plan, &mut outcome).await;

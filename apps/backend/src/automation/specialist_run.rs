@@ -249,9 +249,11 @@ pub(crate) fn apply(
         let combined = specialists::combine_result_events(event, &extra);
         outcome.1["result"] = combined;
     } else if outcome.1.is_object() {
-        // No implementation result (the step failed): keep the plan's cost.
-        let events: Vec<Value> = extra.into_iter().cloned().collect();
-        outcome.1["specialist_usage"] = json!(events);
+        // No implementation result (the step failed): the plan (and review)
+        // still billed, so they become the run's result event, which is the
+        // one place telemetry and economics read cost from.
+        let (first, rest) = extra.split_first().expect("the plan event is always present");
+        outcome.1["result"] = specialists::combine_result_events(first, rest);
     }
     let summary = json!({
         "id": spec.id,
@@ -445,7 +447,8 @@ mod tests {
         let mut outcome = ("failed".to_string(), json!({"code": "claude_failed"}));
         apply(&specialists::DOCS, &planned(), None, &mut outcome);
         assert_eq!(outcome.0, "failed");
-        assert_eq!(outcome.1["specialist_usage"][0]["total_cost_usd"], 0.5);
+        // The plan's cost becomes the run's result, which telemetry reads.
+        assert_eq!(crate::factory::telemetry::run_metrics(&outcome.1).cost_usd, Some(0.5));
     }
 
     #[tokio::test]
