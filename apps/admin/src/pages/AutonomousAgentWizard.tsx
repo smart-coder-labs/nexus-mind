@@ -469,7 +469,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
   return (
     <Modal open={open} onOpenChange={value => { if (!value) onClose() }} size="xl">
       <ModalHeader>
-        <ModalTitle>{isEdit ? `Edit “${editing?.name}”` : 'Create autonomous agent'}</ModalTitle>
+        <ModalTitle>{isEdit ? `Edit “${editing?.name}”` : 'New agent'}</ModalTitle>
         <ol className="mt-4 flex items-center gap-1.5 overflow-x-auto" aria-label="Wizard steps">
           {steps.map((item, index) => {
             const Icon = item.icon
@@ -483,7 +483,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
                   disabled={index > stepIndex}
                   className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${active ? 'bg-accent-blue/15 text-accent-blue' : done ? 'text-text-secondary hover:text-text-primary' : 'text-text-tertiary'} ${index > stepIndex ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                 >
-                  <span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] ${active ? 'bg-accent-blue text-white' : done ? 'bg-status-success/20 text-status-success' : 'bg-white/[0.06]'}`}>
+                  <span className={`grid h-5 w-5 place-items-center rounded-full text-[11px] ${active ? 'bg-accent-blue text-white' : done ? 'bg-status-success/20 text-status-success' : 'bg-white/[0.06]'}`}>
                     {done ? <Check className="h-3 w-3" /> : <Icon className="h-3 w-3" />}
                   </span>
                   {item.title}
