@@ -23,6 +23,8 @@ const AutonomousAgents = lazy(() => import('./pages/AutonomousAgents'))
 const FactoryPolicies = lazy(() => import('./pages/FactoryPolicies'))
 const FactoryDigest = lazy(() => import('./pages/FactoryDigest'))
 const FactoryIntake = lazy(() => import('./pages/FactoryIntake'))
+const DecisionModel = lazy(() => import('./pages/factory/DecisionModel'))
+const FactorySettings = lazy(() => import('./pages/factory/FactorySettings'))
 const Policies    = lazy(() => import('./pages/Policies'))
 const Conventions = lazy(() => import('./pages/Conventions'))
 const Webhooks    = lazy(() => import('./pages/Webhooks'))
@@ -96,10 +98,20 @@ function AppRoutes() {
                 <Route path="/code"     element={<AdminRoute><Code /></AdminRoute>} />
                 <Route path="/api-keys" element={<MaybeDisabled href="/api-keys"><AdminRoute><ApiKeys /></AdminRoute></MaybeDisabled>} />
                 <Route path="/agents"  element={<MaybeDisabled href="/agents"><AdminRoute><Agents /></AdminRoute></MaybeDisabled>} />
-                <Route path="/autonomous-agents" element={<MaybeDisabled href="/autonomous-agents"><AutonomousAgents /></MaybeDisabled>} />
-                <Route path="/factory-digest" element={<MaybeDisabled href="/factory-digest"><FactoryDigest /></MaybeDisabled>} />
-                <Route path="/factory-intake" element={<MaybeDisabled href="/factory-intake"><FactoryIntake /></MaybeDisabled>} />
-                <Route path="/factory-policies" element={<MaybeDisabled href="/factory-policies"><FactoryPolicies /></MaybeDisabled>} />
+                <Route path="/factory"          element={<MaybeDisabled href="/factory"><AutonomousAgents section="agents" /></MaybeDisabled>} />
+                <Route path="/factory/runs"     element={<MaybeDisabled href="/factory/runs"><AutonomousAgents section="runs" /></MaybeDisabled>} />
+                <Route path="/factory/findings" element={<MaybeDisabled href="/factory/findings"><AutonomousAgents section="findings" /></MaybeDisabled>} />
+                <Route path="/factory/templates" element={<MaybeDisabled href="/factory/templates"><AutonomousAgents section="templates" /></MaybeDisabled>} />
+                <Route path="/factory/inbox"    element={<MaybeDisabled href="/factory/inbox"><FactoryDigest /></MaybeDisabled>} />
+                <Route path="/factory/intake"   element={<MaybeDisabled href="/factory/intake"><FactoryIntake /></MaybeDisabled>} />
+                <Route path="/factory/policies" element={<MaybeDisabled href="/factory/policies"><FactoryPolicies /></MaybeDisabled>} />
+                <Route path="/factory/decision-model" element={<MaybeDisabled href="/factory/decision-model"><DecisionModel /></MaybeDisabled>} />
+                <Route path="/factory/settings" element={<MaybeDisabled href="/factory/settings"><FactorySettings /></MaybeDisabled>} />
+                {/* Pre-Factory URLs, kept so bookmarks and links in old messages still land. */}
+                <Route path="/autonomous-agents" element={<Navigate to="/factory" replace />} />
+                <Route path="/factory-digest"    element={<Navigate to="/factory/inbox" replace />} />
+                <Route path="/factory-intake"    element={<Navigate to="/factory/intake" replace />} />
+                <Route path="/factory-policies"  element={<Navigate to="/factory/policies" replace />} />
                 <Route path="/policies"     element={<MaybeDisabled href="/policies"><AdminRoute><Policies /></AdminRoute></MaybeDisabled>} />
                 <Route path="/conventions" element={<AdminRoute><Conventions /></AdminRoute>} />
                 <Route path="/webhooks"    element={<MaybeDisabled href="/webhooks"><AdminRoute><Webhooks /></AdminRoute></MaybeDisabled>} />

@@ -133,7 +133,7 @@ export default function FactoryDigest() {
           <ul className="m-0 p-0 list-none divide-y divide-border-primary">
             {blocked.map(run => (
               <li key={run.run_id} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                <Link to="/autonomous-agents" className="text-text-primary hover:underline">{run.agent}</Link>
+                <Link to="/factory" className="text-text-primary hover:underline">{run.agent}</Link>
                 <span className="rounded border border-border-primary px-1.5 py-0.5 font-mono">{run.status}</span>
                 <span className="text-text-secondary">{run.reason ?? 'no reason recorded'}</span>
                 <span className="ml-auto text-text-tertiary">{when(run.finished_at)}</span>
@@ -163,7 +163,7 @@ export default function FactoryDigest() {
           <h2 id="labels-title" className="text-sm font-semibold text-text-primary">Decision model labels</h2>
           <p className="mt-1 text-xs text-text-secondary">
             {data.unlabeled_shadow} shadow decisions have no human label ({data.unlabeled_shadow_allows} of them “allow”, which
-            are the ones the routing bar counts). <Link to="/factory-policies" className="underline">Label them</Link>.
+            are the ones the routing bar counts). <Link to="/factory/decision-model" className="underline">Label them</Link>.
           </p>
         </section>
       )}

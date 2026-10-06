@@ -95,8 +95,8 @@ const PERMISSION_SECTION: Record<string, string> = {
   backup: '/backups',
   task: '/tasks',
   sdd: '/sdd',
-  autonomous_agent: '/autonomous-agents',
-  factory_policy: '/factory-policies',
+  autonomous_agent: '/factory',
+  factory_policy: '/factory/policies',
   usage: '/usage',
 }
 const isPermissionOffered = (key: string) => {

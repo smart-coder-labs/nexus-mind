@@ -34,6 +34,10 @@ import {
   Inbox,
   Radio,
   ShieldCheck,
+  PlayCircle,
+  Flag,
+  Scale,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -173,10 +177,21 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Projects',    href: '/projects',    icon: FolderGit,     adminOnly: true, requiredPermission: 'project:read' },
       { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true, requiredPermission: 'code:read' },
       { label: 'Harnesses',   href: '/harnesses',   icon: Boxes,         adminOnly: true, requiredPermission: 'harness:read' },
-      { label: 'Automation',  href: '/autonomous-agents', icon: Bot,      adminOnly: true, requiredPermission: 'autonomous_agent:read' },
-      { label: 'Needs a human', href: '/factory-digest', icon: Inbox, adminOnly: true, requiredPermission: 'factory_policy:read' },
-      { label: 'Factory intake', href: '/factory-intake', icon: Radio, adminOnly: true, requiredPermission: 'factory_policy:read' },
-      { label: 'Factory policies', href: '/factory-policies', icon: ShieldCheck, adminOnly: true, requiredPermission: 'factory_policy:read' },
+    ],
+  },
+  {
+    // The software factory: what autonomous agents do (operate) and what they
+    // may do (govern). One group so "agent" means one thing in the nav.
+    label: 'Factory',
+    items: [
+      { label: 'Agents',            href: '/factory',                icon: Bot,               adminOnly: true, requiredPermission: 'autonomous_agent:read' },
+      { label: 'Runs',              href: '/factory/runs',           icon: PlayCircle,        adminOnly: true, requiredPermission: 'autonomous_agent:read' },
+      { label: 'Findings',          href: '/factory/findings',       icon: Flag,              adminOnly: true, requiredPermission: 'autonomous_agent:read' },
+      { label: 'Needs a human',     href: '/factory/inbox',          icon: Inbox,             adminOnly: true, requiredPermission: 'factory_policy:read' },
+      { label: 'Intake',            href: '/factory/intake',         icon: Radio,             adminOnly: true, requiredPermission: 'factory_policy:read' },
+      { label: 'Autonomy policies', href: '/factory/policies',       icon: ShieldCheck,       adminOnly: true, requiredPermission: 'factory_policy:read' },
+      { label: 'Decision model',    href: '/factory/decision-model', icon: Scale,             adminOnly: true, requiredPermission: 'factory_policy:read' },
+      { label: 'Factory settings',  href: '/factory/settings',       icon: SlidersHorizontal, adminOnly: true, requiredPermission: 'autonomous_agent:read' },
     ],
   },
   {
@@ -223,10 +238,12 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
               {group.label}
             </p>
             {items.map(({ href, label, icon: Icon }) => {
+              // Section roots that have sibling routes under them match exactly,
+              // so /factory/runs does not also light up /factory.
               const isActive =
-                href === '/'
-                  ? location.pathname === '/'
-                  : location.pathname.startsWith(href)
+                href === '/' || href === '/factory'
+                  ? location.pathname === href
+                  : location.pathname === href || location.pathname.startsWith(`${href}/`)
 
               return (
                 <Link

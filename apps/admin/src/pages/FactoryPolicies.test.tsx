@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/AuthContext'
 import type { AuthSession, FactoryPolicy } from '../types'
 import FactoryPolicies from './FactoryPolicies'
+import { SandboxBotPanel } from './factory/SandboxBotPanel'
+import type { NexusMindClient } from '../api/client'
 
 const api = vi.hoisted(() => ({
   listFactoryPolicies: vi.fn(),
@@ -31,6 +33,15 @@ const docsMerge: FactoryPolicy = {
   version: 3,
   updated_by: 'u1',
   updated_at: '2026-09-29 20:00:00',
+}
+
+/** The sandbox bot moved to Factory settings; its panel is tested on its own. */
+function renderBot(permissions: string[]) {
+  return render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <SandboxBotPanel client={api as unknown as NexusMindClient} canWrite={permissions.includes('factory_policy:write')} />
+    </QueryClientProvider>,
+  )
 }
 
 function renderPage(permissions: string[]) {
@@ -134,7 +145,7 @@ describe('FactoryPolicies', () => {
   })
 
   it('shows the sandbox bot state without offering keys to readers', async () => {
-    renderPage(['factory_policy:read'])
+    renderBot(['factory_policy:read'])
     expect(await screen.findByText(/no sandbox bot yet/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /generate bot key/i })).not.toBeInTheDocument()
   })
@@ -144,7 +155,7 @@ describe('FactoryPolicies', () => {
       bot: { user_id: 'b1', role: 'factory-bot', role_permissions: ['memory:read'], status: 'active', key_created_at: '2026-09-30T12:00:00Z' },
       api_key: 'nm_secret_once',
     })
-    renderPage(['factory_policy:read', 'factory_policy:write'])
+    renderBot(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: /generate bot key/i }))
     expect(await screen.findByText('nm_secret_once')).toBeInTheDocument()
     expect(screen.getByText(/will not be shown again/i)).toBeInTheDocument()
@@ -154,7 +165,7 @@ describe('FactoryPolicies', () => {
 
   it('never offers to rotate while the bot state is unknown', async () => {
     api.getFactoryBot.mockRejectedValue(new Error('network down'))
-    renderPage(['factory_policy:read', 'factory_policy:write'])
+    renderBot(['factory_policy:read', 'factory_policy:write'])
     expect(await screen.findByText(/could not load the sandbox bot/i)).toBeInTheDocument()
     const button = screen.getByRole('button', { name: /bot key/i })
     expect(button).toBeDisabled()
@@ -166,7 +177,7 @@ describe('FactoryPolicies', () => {
     api.getFactoryBot.mockResolvedValue({
       bot: { user_id: 'b1', role: 'factory-bot', role_permissions: ['memory:read'], status: 'active', key_created_at: '2026-09-30T12:00:00Z' },
     })
-    renderPage(['factory_policy:read', 'factory_policy:write'])
+    renderBot(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: /rotate bot key/i }))
     expect(confirm).toHaveBeenCalled()
     expect(api.rotateFactoryBotKey).not.toHaveBeenCalled()

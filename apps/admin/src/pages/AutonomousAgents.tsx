@@ -466,13 +466,17 @@ function RunDetail({ run, events, transcript, verificationReports = [], runActiv
   )
 }
 
-export default function AutonomousAgents() {
+export type AutonomousAgentsSection = Tab
+
+/** One factory section per route (/factory, /factory/runs, …); `section` picks it. */
+export default function AutonomousAgents({ section = 'agents' }: { section?: AutonomousAgentsSection }) {
   const { session } = useAuth()
   const permissions = session?.user.permissions ?? []
   const can = (permission: string) => permissions.includes(permission)
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
-  const [tab, setTab] = useState<Tab>('agents')
+  const [tab, setTab] = useState<Tab>(section)
+  useEffect(() => { setTab(section) }, [section])
   const [showArchived, setShowArchived] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [editing, setEditing] = useState<AutonomousAgentDetail | null>(null)
