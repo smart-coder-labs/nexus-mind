@@ -16,7 +16,7 @@ const RISKY_PATHS: &[(&str, &str)] = &[
     ("infra", r"(^|/)(deploy|k8s|helm|terraform|infra|infrastructure|ansible)/|docker-compose|(^|/)nginx|\.tf$|\.tfvars$"),
     ("database", r"(^|/)migrations?\.rs$|(^|/)migrations/|\.sql$|schema\.prisma$|(^|/)prisma/|(^|/)alembic/"),
     ("payments", r"payment|pago|cobro|billing|invoice|factur|refund|reembols|credit.?note|nota.?credito|checkout|stripe|wompi|payu|epayco|mercadopago|coingate|paypal|numeracion|bank|banco"),
-    ("external_provider", r"webhook|integration|integracion|connector|oauth|sso|wordpress|shopify|slack|sentry|smtp|email|sendgrid|twilio|openai|anthropic|(^|/)egress|(^|/)pages/api/"),
+    ("external_provider", r"webhook|integration|integracion|connector|oauth|sso|wordpress|shopify|slack|sentry|smtp|email|sendgrid|twilio|openai|anthropic|(^|/)egress|(^|/)pages/api/|(^|/)app/(.*/)?api/"),
     ("security", r"(^|/)auth|crypto|secret|permission|rbac|(^|/)roles?[/._-]|token|session|password|sandbox|policy_engine|merge_gate"),
 ];
 
@@ -188,9 +188,15 @@ pub fn auto_merge_path_verdict(files: &[ChangedFile], title: &str) -> Result<(),
         return Err("no_changed_files".into());
     }
     for file in files {
-        // Removing a test weakens verification: never automatic.
+        // Removing a test weakens verification: never automatic. Renaming one
+        // out of the tests is a removal in disguise.
         if file.status == "removed" && is_test_path(&file.filename) {
             return Err(format!("path_not_eligible:{}", file.filename));
+        }
+        if let Some(previous) = file.previous_filename.as_deref() {
+            if is_test_path(previous) && !is_test_path(&file.filename) {
+                return Err(format!("path_not_eligible:{previous}"));
+            }
         }
         for path in file.previous_filename.iter().map(String::as_str).chain([file.filename.as_str()]) {
             if is_never_eligible(path) {
@@ -453,6 +459,16 @@ mod tests {
         assert_eq!(
             auto_merge_path_verdict(&[renamed("src/payments/charge.ts", "src/lib/charge.ts")], ""),
             Err("risky_path:payments:src/payments/charge.ts".into())
+        );
+        // Next.js App Router routes are server endpoints like Pages Router ones.
+        assert_eq!(
+            auto_merge_path_verdict(&[file("src/app/api/forward/route.ts", "added")], ""),
+            Err("risky_path:external_provider:src/app/api/forward/route.ts".into())
+        );
+        // Moving a test into product code removes it from the suite.
+        assert_eq!(
+            auto_merge_path_verdict(&[renamed("tests/charge_test.rs", "src/charge_helpers.rs")], ""),
+            Err("path_not_eligible:tests/charge_test.rs".into())
         );
         // Kasymir's inventory "providers" are suppliers, not external services.
         assert_eq!(auto_merge_path_verdict(&[file("src/lib/pages-table/Provider/index.tsx", "modified")], ""), Ok(()));
