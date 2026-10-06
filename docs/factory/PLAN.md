@@ -140,7 +140,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Implement rank fusion, a reranker and dependency expansion, then the `ContextPack` builder.
 - Add the MCP tool `get_context_pack` to `only_context`.
 - **Exit:** baseline Recall@K and MRR on retrieval golden questions.
-- **Status (2026-10-03): exit met; CodeRankEmbed pending.** F2 absorbed plan #54 (Explorer/Solver): one retrieval engine, and the ContextPack is #54's ContextPacket (ADR d005bdda). Every choice was measured with `factory-retrieval-eval` (`scripts/factory/eval_retrieval.zsh`).
+- **Status (2026-10-05): exit met; CodeRankEmbed measured and rejected (ADR e644a8c8).** F2 absorbed plan #54 (Explorer/Solver): one retrieval engine, and the ContextPack is #54's ContextPacket (ADR d005bdda). Every choice was measured with `factory-retrieval-eval` (`scripts/factory/eval_retrieval.zsh`).
   - **How it is measured.**
     - Questions come from the golden tasks: each PR title without its `type(scope):` prefix.
     - The gold set is the files the change modified. Added files are excluded.
@@ -173,7 +173,16 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - The lexical index rebuilds itself when it is out of step with `code_chunks`, both at startup and after a backup restore.
   - **SCIP is deferred** (ADR d005bdda). Only relative imports resolve to files today; aliased imports end at external nodes.
   - **Open:**
-    - CodeRankEmbed. The weak leg is the embedding model, so it is the next candidate. It has no official ONNX export, so it needs a self-export (torch) and a full re-embed.
+    - **CodeRankEmbed: rejected (2026-10-05, ADR e644a8c8).** It was exported to ONNX itself (opset 17, parity 0.9999999), MIT licence, 548 MB.
+      - On the same chunks it loses to BM25 on both repos:
+
+        | Repo | BM25 MRR | Dense MRR | Best RRF MRR | Hit@10 |
+        |---|---|---|---|---|
+        | nexus-mind | 0.631 | 0.616 | 0.605 | dense 0.85 / RRF 0.88 vs 0.96 |
+        | Kasymir | 0.512 | 0.231 | 0.465 | dense 0.60 / RRF 0.75 vs 0.80 |
+
+      - Spanish identifiers remain the dense models' weak spot. BM25 alone stays.
+      - Scripts: `scripts/factory/coderank_*`. The eval binary takes external query vectors (`--query-vectors`).
     - Questions about infra and gold files outside the index: 29 of 241 nexus-mind gold files are docs or unsupported types.
     - Production indexes were last built on 2026-08-28 and 2026-09-07. Config files and `indexed_commit` appear only after a re-index.
 
@@ -263,7 +272,9 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - A PR whose resolver branch names an untrusted intake issue is never merged without a person: an allow becomes a policy hold.
     - **Watchdog:** the org's Slack webhook hears about new held merges, blocked runs and factory tasks (at most once every 15 min), plus a daily summary.
   - **Open:**
-    - OTel GenAI spans: in progress, inert until a collector exists.
+    - **OTel GenAI spans (#306) go to a self-hosted Phoenix (#307):** one container with SQLite and auth, reachable only from the nexusmind namespace. Langfuse v3 would need Postgres, ClickHouse, Redis and S3.
+      - The worker exports once `scripts/factory/phoenix_wire_worker.sh` has run on the box. That script writes the production secret, so a person runs it.
+    - Codex: built but not in use, by owner decision (no API key).
     - The OpenAI API key for Codex (and a spend limit on its project).
     - Credentials for the first Slack and Sentry sources.
     - Human labels for OD-5.

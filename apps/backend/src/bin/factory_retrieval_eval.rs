@@ -4,7 +4,7 @@
 //! Usage:
 //!   factory-retrieval-eval --db <eval.db> --repo <snapshot> --history <git repo> \
 //!     --project <name> [--variants dense,bm25,rrf] [--no-embed] \
-//!     [--config-weight <w>] < golden.jsonl
+//!     [--config-weight <w>] [--query-vectors <file.jsonl>] < golden.jsonl
 //!
 //! The snapshot is indexed into the eval database (unchanged files are not
 //! re-processed on later runs, so an interrupted embedding pass resumes). Each
@@ -12,7 +12,12 @@
 //! prefix, with the files its change modified as the gold set
 //! (`git diff --name-status base_sha merge_sha` in the history repo). Gold files
 //! missing from the index are excluded and reported. `--no-embed` indexes without
-//! the embedding model (lexical variants only). Nothing leaves the machine.
+//! the embedding model (lexical variants only). `--query-vectors` scores the
+//! dense variants with query vectors computed elsewhere (one JSON object per
+//! line, `{"query": …, "vector": [f32…]}`) against the vectors already stored in
+//! the eval database, so a candidate embedding model can be measured without
+//! loading it here: the database must hold that model's chunk vectors. Nothing
+//! leaves the machine.
 
 use nexusmind::{
     db::{connection::connect, migrations, queries},
@@ -69,6 +74,26 @@ fn main() -> anyhow::Result<()> {
         Ok(value) => value.parse()?,
         Err(_) => lexical::CONFIG_WEIGHT,
     };
+    let query_vectors: Option<std::collections::HashMap<String, Vec<f32>>> =
+        match arg(&args, "--query-vectors") {
+            Ok(path) => {
+                #[derive(Deserialize)]
+                struct QueryVector {
+                    query: String,
+                    vector: Vec<f32>,
+                }
+                let mut map = std::collections::HashMap::new();
+                for line in std::fs::read_to_string(&path)?.lines() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let qv: QueryVector = serde_json::from_str(line)?;
+                    map.insert(qv.query, qv.vector);
+                }
+                Some(map)
+            }
+            Err(_) => None,
+        };
     let variants: Vec<String> = arg(&args, "--variants")
         .unwrap_or_else(|_| if no_embed { "bm25" } else { "dense,bm25,rrf" }.to_string())
         .split(',')
@@ -106,7 +131,9 @@ fn main() -> anyhow::Result<()> {
             }
         };
     let db = Arc::new(Mutex::new(conn));
-    let embed = if no_embed {
+    // External query vectors: the stored chunk vectors are not Nomic's, so the
+    // Nomic model must neither embed queries nor re-embed missing chunks.
+    let embed = if no_embed || query_vectors.is_some() {
         None
     } else {
         Some(Arc::new(EmbedService::init()?))
@@ -136,7 +163,7 @@ fn main() -> anyhow::Result<()> {
         [project_id],
         |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
     )?;
-    if embed.is_some() && unembedded > 0 {
+    if (embed.is_some() || query_vectors.is_some()) && unembedded > 0 {
         anyhow::bail!("{unembedded} of {chunks} chunks have no vector; rerun to resume embedding");
     }
     let indexed_files: BTreeSet<String> = {
@@ -185,12 +212,19 @@ fn main() -> anyhow::Result<()> {
         let lexical_hits =
             lexical::bm25_file_ranking_weighted(&conn, project_id, &query, config_weight)?;
         let lexical_ranking = paths(lexical_hits.clone());
-        let dense_ranking = match &embed {
-            Some(svc) => paths(retrieval::dense_file_ranking(
-                &conn,
-                project_id,
-                &query,
-                &svc.embed_query(&query)?,
+        let query_vector = match (&query_vectors, &embed) {
+            (Some(vectors), _) => Some(
+                vectors
+                    .get(&query)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no query vector for {query:?}"))?,
+            ),
+            (None, Some(svc)) => Some(svc.embed_query(&query)?),
+            (None, None) => None,
+        };
+        let dense_ranking = match &query_vector {
+            Some(vector) => paths(retrieval::dense_file_ranking(
+                &conn, project_id, &query, vector,
             )?),
             None => Vec::new(),
         };
