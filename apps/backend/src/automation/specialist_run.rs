@@ -236,16 +236,17 @@ pub(crate) async fn check_checkout(
     workdir: &Path,
     changed: &[ChangedFile],
 ) -> Result<CheckReport, String> {
-    if spec.verification == Verification::Tests {
-        // Path rules only: there is nothing to index.
-        return Ok(specialists::verify_test_paths(changed));
-    }
     let mut base = std::collections::HashMap::new();
     for file in changed.iter().filter(|file| file.status != "added") {
         let source = file.previous_filename.as_deref().unwrap_or(&file.filename);
         if let Some(content) = base_content(workdir, source).await {
             base.insert(file.filename.clone(), content);
         }
+    }
+    if spec.verification == Verification::Tests {
+        // The tests checks read only the changed files: nothing to index.
+        let view = specialists::CheckoutView::unindexed(workdir, base);
+        return Ok(specialists::verify(spec, changed, &view));
     }
     let root = workdir.to_path_buf();
     let changed = changed.to_vec();

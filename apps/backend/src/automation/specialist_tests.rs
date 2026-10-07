@@ -84,18 +84,19 @@ impl PackageManager {
     fn install(self) -> &'static [&'static str] {
         match self {
             PackageManager::Npm => &["npm", "ci", "--no-audit", "--no-fund"],
-            PackageManager::Pnpm => &["pnpm", "install", "--frozen-lockfile"],
-            PackageManager::Yarn => &["yarn", "install", "--frozen-lockfile"],
+            PackageManager::Pnpm => &["corepack", "pnpm", "install", "--frozen-lockfile"],
+            PackageManager::Yarn => &["corepack", "yarn", "install", "--frozen-lockfile"],
         }
     }
 
     /// Runs a package binary that the install put in `node_modules`. `npx --no`
-    /// never downloads one that is missing.
+    /// never downloads one that is missing. The sandbox image has no pnpm or
+    /// yarn, only corepack, which fetches them from the npm registry.
     fn exec(self) -> &'static [&'static str] {
         match self {
             PackageManager::Npm => &["npx", "--no"],
-            PackageManager::Pnpm => &["pnpm", "exec"],
-            PackageManager::Yarn => &["yarn"],
+            PackageManager::Pnpm => &["corepack", "pnpm", "exec"],
+            PackageManager::Yarn => &["corepack", "yarn"],
         }
     }
 }
@@ -159,6 +160,8 @@ pub struct TestGroup {
 
 /// Most packages one change may test: each costs an install and a run.
 const MAX_PACKAGES: usize = 3;
+/// Most mutant runs in the pod (a mutant shared by packages runs in each).
+const MAX_MUTANT_RUNS: usize = 15;
 
 /// The directory and its ancestors up to the root (`""`), nearest first.
 fn ancestors(dir: &str) -> Vec<String> {
@@ -261,7 +264,8 @@ const MUTANT_DIR: &str = "/tmp/nm-mutants";
 enum PodStep {
     Install(String),
     Tests(String),
-    Mutant(String),
+    /// One run of mutant `n` (a mutant shared by several packages runs once per package).
+    Mutant(usize, String),
     Fault(String),
 }
 
@@ -299,9 +303,9 @@ pub struct Faulted {
     pub content: String,
 }
 
-/// Builds the pod's commands. Mutants come from the targets of their own
-/// group's tests, so each one reruns exactly the tests that import its file.
-pub fn pod_plan(groups: &[TestGroup], mutants: &[(usize, Mutant)], faults: &[Faulted], originals: &[(String, String)]) -> PodPlan {
+/// Builds the pod's commands. Each mutant reruns the tests of every group
+/// whose tests import its file, and is killed if any of those runs fails.
+pub fn pod_plan(groups: &[TestGroup], mutants: &[(Vec<usize>, Mutant)], faults: &[Faulted], originals: &[(String, String)]) -> PodPlan {
     let mut plan = PodPlan { seeded: !faults.is_empty(), ..Default::default() };
     let mut installed = Vec::new();
     for group in groups {
@@ -343,16 +347,20 @@ pub fn pod_plan(groups: &[TestGroup], mutants: &[(usize, Mutant)], faults: &[Fau
     let script = RUN_MUTANT.replace("\"$MUTANT_TIMEOUT\"", &MUTANT_TIMEOUT_SECS.to_string());
     let push_faulted = |plan: &mut PodPlan, group: usize, name: String, path: &str, content: &str, step: PodStep| {
         let Some(original) = original_file(path) else { return };
-        plan.files.push((name.clone(), content.as_bytes().to_vec()));
+        if !plan.files.iter().any(|(path, _)| *path == name) {
+            plan.files.push((name.clone(), content.as_bytes().to_vec()));
+        }
         let mut argv = strings(&["sh", "-c", &script, "sh"]);
         argv.extend([marker(group), pod_path(path), name, original, pod_path(&groups[group].package_dir)]);
         argv.extend(runner_argv(&groups[group]));
         plan.commands.push(argv);
         plan.steps.push(step);
     };
-    for (n, (group, mutant)) in mutants.iter().enumerate() {
-        let name = format!("{MUTANT_DIR}/m{n}");
-        push_faulted(&mut plan, *group, name, &mutant.path, &mutant.content, PodStep::Mutant(mutant.describe()));
+    for (n, (owners, mutant)) in mutants.iter().enumerate() {
+        for group in owners {
+            let name = format!("{MUTANT_DIR}/m{n}");
+            push_faulted(&mut plan, *group, name, &mutant.path, &mutant.content, PodStep::Mutant(n, mutant.describe()));
+        }
     }
     for (n, fault) in faults.iter().enumerate() {
         match group_of(groups, &fault.path) {
@@ -369,7 +377,7 @@ pub fn pod_plan(groups: &[TestGroup], mutants: &[(usize, Mutant)], faults: &[Fau
 }
 
 /// How one mutant (or seeded fault) run ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fate {
     Killed,
     Survived,
@@ -420,7 +428,7 @@ pub fn not_runnable(reason: String) -> Vec<CheckOutcome> {
 /// change had seeded faults, `seeded_fault_caught`.
 pub fn interpret(plan: &PodPlan, runs: &[CommandRun]) -> Vec<CheckOutcome> {
     let mut failures = Vec::new();
-    let mut mutants: Vec<(String, Fate)> = Vec::new();
+    let mut mutants: Vec<(usize, String, Fate)> = Vec::new();
     let mut faults: Vec<(String, Fate)> = Vec::new();
     for (step, run) in plan.steps.iter().zip(runs) {
         match step {
@@ -430,7 +438,22 @@ pub fn interpret(plan: &PodPlan, runs: &[CommandRun]) -> Vec<CheckOutcome> {
                 Some(code) => failures.push(format!("{what} exited {code}: {}", tail(run))),
                 None => failures.push(format!("{what}: no exit status")),
             },
-            PodStep::Mutant(what) => mutants.push((what.clone(), fate(run.exit_code))),
+            PodStep::Mutant(n, what) => {
+                let this = fate(run.exit_code);
+                match mutants.iter_mut().find(|(index, _, _)| index == n) {
+                    // Several packages ran it: a suspect run taints it, any
+                    // failing run kills it, else the worse outcome stands.
+                    Some((_, _, fate)) => {
+                        *fate = match (*fate, this) {
+                            (Fate::NotRestored, _) | (_, Fate::NotRestored) => Fate::NotRestored,
+                            (Fate::Killed, _) | (_, Fate::Killed) => Fate::Killed,
+                            (Fate::Unjudged(why), _) | (_, Fate::Unjudged(why)) => Fate::Unjudged(why),
+                            _ => Fate::Survived,
+                        }
+                    }
+                    None => mutants.push((*n, what.clone(), this)),
+                }
+            }
             PodStep::Fault(what) => faults.push((what.clone(), fate(run.exit_code))),
         }
     }
@@ -443,7 +466,8 @@ pub fn interpret(plan: &PodPlan, runs: &[CommandRun]) -> Vec<CheckOutcome> {
         }
         return checks;
     }
-    let suspect = mutants.iter().chain(&faults).any(|(_, fate)| *fate == Fate::NotRestored);
+    let suspect = mutants.iter().any(|(_, _, fate)| *fate == Fate::NotRestored)
+        || faults.iter().any(|(_, fate)| *fate == Fate::NotRestored);
     let restore_note = "a mutated file could not be restored, so later results cannot be trusted";
     if mutants.is_empty() {
         // Advisory (ADR 94ced31c): nothing to flip is not the tests' fault; the
@@ -455,13 +479,13 @@ pub fn interpret(plan: &PodPlan, runs: &[CommandRun]) -> Vec<CheckOutcome> {
             vec!["no mutants: the code the changed tests import (through relative imports) has no operator to flip".into()],
         ));
     } else {
-        let killed = mutants.iter().filter(|(_, fate)| *fate == Fate::Killed).count();
+        let killed = mutants.iter().filter(|(_, _, fate)| *fate == Fate::Killed).count();
         let total = mutants.len();
         let mut details = vec![format!("killed {killed} of {total} mutants; at least 60% must be killed")];
         if suspect {
             details.push(restore_note.into());
         }
-        details.extend(mutants.iter().filter_map(|(what, fate)| match fate {
+        details.extend(mutants.iter().filter_map(|(_, what, fate)| match fate {
             Fate::Killed => None,
             Fate::Survived => Some(format!("survived: {what}")),
             Fate::Unjudged(why) => Some(format!("not judged ({why}): {what}")),
@@ -495,21 +519,35 @@ pub enum PlanError {
 /// Everything the worker decides before the pod: groups, mutants, faults.
 pub fn prepare(tree: &dyn SourceTree, tests: &[String], seeded: &[SeededFault]) -> Result<PodPlan, PlanError> {
     let groups = plan_groups(tree, tests).map_err(PlanError::NotRunnable)?;
-    // Each group's targets, so a mutant reruns only the tests that import it.
-    let mut owner: Vec<(mutation::Target, usize)> = Vec::new();
+    // Every group whose tests import a file owns it, with the imported names of
+    // all of them in scope; a mutant reruns the tests of each owner.
+    let mut owner: Vec<(mutation::Target, Vec<usize>)> = Vec::new();
     for (index, group) in groups.iter().enumerate() {
         for target in mutation::mutation_targets(tree, &group.tests) {
-            if !owner.iter().any(|(owned, _)| owned.path == target.path) {
-                owner.push((target, index));
+            match owner.iter_mut().find(|(owned, _)| owned.path == target.path) {
+                Some((owned, groups)) => {
+                    owned.names = mutation::merge_names(owned.names.take(), target.names).map(|mut names| {
+                        names.sort();
+                        names
+                    });
+                    groups.push(index);
+                }
+                None => owner.push((target, vec![index])),
             }
         }
     }
     let targets: Vec<mutation::Target> = owner.iter().map(|(target, _)| target.clone()).collect();
-    let mutants: Vec<(usize, Mutant)> = mutation::mutants(tree, &targets, mutation::MAX_MUTANTS)
+    let mut runs = 0;
+    let mutants: Vec<(Vec<usize>, Mutant)> = mutation::mutants(tree, &targets, mutation::MAX_MUTANTS)
         .into_iter()
         .map(|mutant| {
-            let group = owner.iter().find(|(target, _)| target.path == mutant.path).map_or(0, |(_, group)| *group);
-            (group, mutant)
+            let groups = owner.iter().find(|(target, _)| target.path == mutant.path).map(|(_, g)| g.clone()).unwrap_or_default();
+            (groups, mutant)
+        })
+        // Bounded pod time: a shared file costs one run per package.
+        .take_while(|(groups, _)| {
+            runs += groups.len();
+            runs <= MAX_MUTANT_RUNS
         })
         .collect();
     let mut faults = Vec::new();
@@ -620,9 +658,11 @@ pub(crate) async fn run_checks(
         slot: &slot,
         writes: None,
     };
+    // corepack must never wait on a download prompt.
+    let corepack = [("COREPACK_ENABLE_DOWNLOAD_PROMPT".to_string(), "0".to_string())];
     let spec = super::sandboxed::CommandsSpec {
         commands: &plan.commands,
-        extra_env: &[],
+        extra_env: &corepack,
         timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
         reproduce_failures: false,
         hosts: &[],
@@ -777,6 +817,33 @@ mod tests {
 
     fn by_name<'a>(checks: &'a [CheckOutcome], name: &str) -> &'a CheckOutcome {
         checks.iter().find(|c| c.name == name).unwrap()
+    }
+
+    #[test]
+    fn a_source_shared_by_packages_runs_against_each_and_merges_scopes() {
+        let both = r#"{"scripts":{"test":"vitest run"}}"#;
+        let tree = Tree::default()
+            .with("a/package.json", both)
+            .with("a/yarn.lock", "")
+            .with("b/package.json", both)
+            .with("b/pnpm-lock.yaml", "")
+            .with("shared/lib.ts", "export const one = (x) => x === 1\nexport const two = (x) => x === 2\nexport const three = (x) => x === 3\n")
+            .with("a/x.test.ts", "import { one } from '../shared/lib'\n")
+            .with("b/y.test.ts", "import { two } from '../shared/lib'\n");
+        let plan = prepare(&tree, &paths(&["a/x.test.ts", "b/y.test.ts"]), &[]).unwrap();
+        // 2 installs (corepack), 2 test runs, 2 mutants (`one`, `two`; not `three`) x 2 packages.
+        assert_eq!(plan.commands.len(), 8);
+        assert_eq!(&plan.commands[0][4..], ["/workspace/a", "corepack", "yarn", "install", "--frozen-lockfile"]);
+        assert_eq!(&plan.commands[1][4..], ["/workspace/b", "corepack", "pnpm", "install", "--frozen-lockfile"]);
+        assert_eq!(&plan.commands[3][6..9], ["corepack", "pnpm", "exec"]);
+        let mutant_files = plan.files.iter().filter(|(path, _)| path.contains("/m")).count();
+        assert_eq!(mutant_files, 2, "each mutant ships once");
+        // Mutant 0 survives in a but is killed in b: killed. Mutant 1 survives both.
+        let exits = [0, 0, 0, 0, 0, 1, 0, 0];
+        let checks = interpret(&plan, &exits.map(|code| run(Some(code))));
+        let score = by_name(&checks, "mutation_score");
+        assert_eq!(score.details[0], "killed 1 of 2 mutants; at least 60% must be killed");
+        assert_eq!(score.details.len(), 2, "{score:?}");
     }
 
     #[test]

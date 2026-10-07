@@ -134,7 +134,7 @@ pub fn relative_imports(source: &str) -> Vec<Import> {
 }
 
 /// Two imports of one module: the whole module wins, else the names add up.
-fn merge_names(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
+pub fn merge_names(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
     let (mut a, b) = (a?, b?);
     for name in b {
         if !a.contains(&name) {
@@ -267,9 +267,25 @@ fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
 }
 
-/// The last non-whitespace byte before `at`, for telling a regex from a division.
-fn previous_significant(bytes: &[u8], at: usize) -> Option<u8> {
-    bytes[..at].iter().rev().copied().find(|b| !b.is_ascii_whitespace())
+/// Keywords after which a `/` starts a regex literal, not a division
+/// (`return /x/.test(s)`).
+const REGEX_KEYWORDS: &[&str] = &[
+    "return", "typeof", "case", "instanceof", "yield", "throw", "delete", "void", "in", "of", "new", "else", "do", "await",
+];
+
+/// Whether a `/` at `at` starts a regex: at the start, after an operator or
+/// opening punctuation, or after one of [`REGEX_KEYWORDS`].
+fn starts_regex(bytes: &[u8], at: usize) -> bool {
+    let end = bytes[..at].iter().rposition(|b| !b.is_ascii_whitespace()).map_or(0, |n| n + 1);
+    match end.checked_sub(1).map(|n| bytes[n]) {
+        None => true,
+        Some(prev) if is_ident_byte(prev) => {
+            let start = bytes[..end].iter().rposition(|b| !is_ident_byte(*b)).map_or(0, |n| n + 1);
+            let member = start > 0 && bytes[start - 1] == b'.';
+            !member && REGEX_KEYWORDS.iter().any(|keyword| keyword.as_bytes() == &bytes[start..end])
+        }
+        Some(prev) => b"(,=:[!&|?{};+-*%<>~^".contains(&prev),
+    }
 }
 
 /// Skips a quoted literal starting at `start` (the quote); returns the offset
@@ -338,11 +354,7 @@ pub fn sites(path: &str, source: &str) -> Vec<Site> {
                 i = source[i + 2..].find("*/").map_or(bytes.len(), |n| i + 2 + n + 2);
             }
             b'/' => {
-                let regex = match previous_significant(bytes, i) {
-                    None => true,
-                    Some(prev) => b"(,=:[!&|?{};+-*%<>~^".contains(&prev),
-                };
-                i = if regex { skip_regex(bytes, i) } else { i + 1 };
+                i = if starts_regex(bytes, i) { skip_regex(bytes, i) } else { i + 1 };
             }
             b'=' | b'!' | b'<' | b'>' | b'&' | b'|' => {
                 let end = bytes[i..]
@@ -594,6 +606,10 @@ mod tests {
         assert_eq!(ops("a.ts", quiet), []);
         // Division is not a regex: the comparison after it still counts.
         assert_eq!(ops("a.ts", "const half = total / 2 === 1"), [("===", "!==")]);
+        assert_eq!(ops("a.ts", "const r = x.return / 2 === 1"), [("===", "!==")]);
+        // After a keyword, `/` opens a regex, whose `==` is not code.
+        assert_eq!(ops("a.ts", "function f(x) { return /==/.test(x) }"), []);
+        assert_eq!(ops("a.ts", "if (a) x = 1\nelse /a||b/.exec(s)\nconst t = typeof /x/ === 'object'"), [("===", "!==")]);
     }
 
     #[test]

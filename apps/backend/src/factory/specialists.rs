@@ -106,8 +106,8 @@ pub const TESTS: Specialist = Specialist {
     plan_tier: Tier::Frontier,
     implement_tier: Tier::Standard,
     review_tier: Tier::Frontier,
-    guidance: "TESTS SPECIALIST RULES: this is a test-writing task for JavaScript/TypeScript code. Add or change ONLY test files (`*.test.ts`, `*.test.tsx`, `*.spec.*`, or files under `__tests__/`); never edit source code, configuration, manifests (`package.json`), lockfiles, CI files, snapshots or agent instruction files (CLAUDE.md, AGENTS.md, skills, prompts), and never delete or weaken an existing test. If the code looks wrong, do not fix it: write the tests for its current behavior and say so in the summary. Use the test runner the package already uses (vitest or jest, from its `package.json`) and follow the neighbouring tests: file placement and naming, imports, helpers, setup files and assertion style. Test behavior through the public interface (exported functions, hooks, components as a user sees them), never private internals or implementation details, and avoid snapshot tests. Every test must pass on the code as it is in this checkout: read the code carefully and assert what it really returns. Prefer assertions that would FAIL if the logic were wrong: boundaries (just below, at and above each limit), every branch, error and empty-input paths, and exact values rather than truthiness. Import the code under test with relative imports. Your tests will be run, and the code they import will be deliberately broken in small ways (a flipped comparison, `&&` for `||`, `true` for `false`): good tests fail on most of those faults.",
-    review_focus: "tests that are meaningful (they would fail on a real regression of the behavior the task names), pass on the current code, follow the repository's existing test conventions and runner, change nothing but test files, and do not assert implementation details or snapshot noise",
+    guidance: "TESTS SPECIALIST RULES: this is a test-writing task for JavaScript/TypeScript code. Add or change ONLY test files (`*.test.ts`, `*.test.tsx`, `*.spec.*`, or files under `__tests__/`); never edit source code, configuration, manifests (`package.json`), lockfiles, CI files, snapshots or agent instruction files (CLAUDE.md, AGENTS.md, skills, prompts), and never delete or weaken an existing test. If the code looks wrong, do not fix it: write the tests for its current behavior and say so in the summary. Use the test runner the package already uses (vitest or jest, from its `package.json`) and follow the neighbouring tests: file placement and naming, imports, helpers, setup files and assertion style. Test behavior through the public interface (exported functions, hooks, components as a user sees them), never private internals or implementation details, and avoid snapshot tests. Every test must pass on the code as it is in this checkout: read the code carefully and assert what it really returns. Prefer assertions that would FAIL if the logic were wrong: boundaries (just below, at and above each limit), every branch, error and empty-input paths, and exact values rather than truthiness. Import the code under test with relative imports. Never read, hash or locate source files from a test (no `fs`, `readFileSync`, `__dirname`, `__filename`, `import.meta.url`, `require.resolve`): exercise the code instead. Never leave focused or skipped tests (`.only`, `.skip`, `.todo`, `fit`, `xit`, `fdescribe`, `xdescribe`). Your tests will be run, and the code they import will be deliberately broken in small ways (a flipped comparison, `&&` for `||`, `true` for `false`): good tests fail on most of those faults.",
+    review_focus: "tests that are meaningful (they would fail on a real regression of the behavior the task names), pass on the current code, follow the repository's existing test conventions and runner, change nothing but test files, and do not assert implementation details or snapshot noise; reject tests that read, hash or inspect source files instead of running the code, and focused or skipped tests",
     advisory_note: "Findings of advisory checks. `mutation_score` without mutants means the automatic fault check could not judge these tests (it found no operator to flip in the code they import): read the tests and the code, and reject if the tests would still pass with the covered logic broken.",
     verification: Verification::Tests,
 };
@@ -372,15 +372,73 @@ const SCRATCHPAD: &str = "PENDING.md";
 pub fn verify(spec: &Specialist, changed: &[ChangedFile], repo: &dyn RepoView) -> CheckReport {
     match spec.verification {
         Verification::Docs => verify_docs(changed, repo),
-        Verification::Tests => verify_test_paths(changed),
+        Verification::Tests => verify_tests(changed, repo),
     }
+}
+
+/// The tests specialist's in-worker checks: its paths, then what the changed
+/// test files contain.
+fn verify_tests(changed: &[ChangedFile], repo: &dyn RepoView) -> CheckReport {
+    let mut checks = verify_test_paths(changed).checks;
+    let mut reads_source = Vec::new();
+    let mut focused = Vec::new();
+    for file in changed.iter().filter(|f| f.status != "removed" && f.filename != SCRATCHPAD) {
+        let Some(content) = repo.read(&file.filename) else {
+            reads_source.push(format!("{}: unreadable", file.filename));
+            continue;
+        };
+        if let Some(found) = reads_source_re().find(&content) {
+            reads_source.push(format!("{}: `{}`", file.filename, found.as_str().trim()));
+        }
+        // Only lines the change added: a `.skip` already in the file is not its doing.
+        let base = repo.base(&file.filename).unwrap_or_default();
+        let old: HashSet<&str> = base.lines().collect();
+        for line in content.lines().filter(|line| !old.contains(line)) {
+            if let Some(found) = focused_re().find(line) {
+                focused.push(format!("{}: `{}`", file.filename, found.as_str().trim()));
+            }
+        }
+    }
+    let check = |name: &'static str, details: Vec<String>| CheckOutcome {
+        name,
+        passed: details.is_empty(),
+        advisory: false,
+        details: details.into_iter().take(MAX_DETAILS).collect(),
+    };
+    checks.push(check("test_reads_source", reads_source));
+    checks.push(check("no_focused_or_skipped_tests", focused));
+    CheckReport::from_checks(checks)
+}
+
+/// A test that reads (or hashes, or locates) source files can "fail" on every
+/// mutant without running the code, which would game the mutation score.
+/// Deliberately conservative: any file-system import or source-locating API in
+/// a changed test file fails the check, even where it might be harmless.
+fn reads_source_re() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?:\bfrom\s*['"](?:node:)?fs(?:/promises)?['"]|\brequire\s*\(\s*['"](?:node:)?fs(?:/promises)?['"]|\bimport\s*\(\s*['"](?:node:)?fs(?:/promises)?['"]|\breadFileSync\b|\breadFile\s*\(|\b__filename\b|\b__dirname\b|\bimport\.meta\.url\b|\brequire\.resolve\b)"#,
+        )
+        .expect("source-reading pattern")
+    })
+}
+
+/// Focused or skipped tests: a focused test silently drops every other test,
+/// a skipped one checks nothing.
+fn focused_re() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"(?:\.(?:only|skip|todo)\s*\(|\b(?:fit|xit|xtest|fdescribe|xdescribe)\s*\()")
+            .expect("focused test pattern")
+    })
 }
 
 /// The tests specialist's path rules: every changed path, on both sides of a
 /// rename, is a JavaScript/TypeScript test file the merge floor accepts; at
 /// least one test file is added or changed; no test file is removed (removing a
 /// test weakens verification).
-pub fn verify_test_paths(changed: &[ChangedFile]) -> CheckReport {
+fn verify_test_paths(changed: &[ChangedFile]) -> CheckReport {
     let changed: Vec<&ChangedFile> = changed.iter().filter(|f| f.filename != SCRATCHPAD).collect();
     let mut problems = Vec::new();
     for file in &changed {
@@ -726,6 +784,12 @@ impl CheckoutView {
         Self { root: root.to_path_buf(), files, words, base }
     }
 
+    /// A view that reads files and their base content but has no identifier
+    /// index (the tests checks only read the changed files).
+    pub fn unindexed(root: &Path, base: HashMap<String, String>) -> Self {
+        Self { root: root.to_path_buf(), files: Vec::new(), words: HashSet::new(), base }
+    }
+
     fn inside(&self, path: &str) -> Option<PathBuf> {
         let relative = resolve_relative("", path)?;
         Some(self.root.join(relative))
@@ -837,11 +901,47 @@ mod tests {
     }
 
     #[test]
+    fn tests_must_run_the_code_not_read_it_and_must_not_be_focused_or_skipped() {
+        let changed = [added("src/a.test.ts")];
+        let ok = "import { a } from './a'\nit('works', () => expect(a(1)).toBe(2))\n";
+        let report = verify(&TESTS, &changed, &FakeRepo::default().with("src/a.test.ts", ok));
+        assert!(report.passed, "{:?}", report.failures());
+        for bad in [
+            "import { readFileSync } from 'fs'",
+            "import fs from \"node:fs\"",
+            "import { readFile } from 'fs/promises'",
+            "const fs = require('fs')",
+            "const src = await import('node:fs')",
+            "const p = path.join(__dirname, 'a.ts')",
+            "new URL('./a.ts', import.meta.url)",
+            "require.resolve('./a')",
+            "await readFile(p)",
+        ] {
+            let report = verify(&TESTS, &changed, &FakeRepo::default().with("src/a.test.ts", &format!("{ok}{bad}\n")));
+            assert!(!check(&report, "test_reads_source").passed, "{bad}");
+        }
+        for bad in ["it.only('x', f)", "describe.skip('x', f)", "it.todo('x')", "fit('x', f)", "xit('x', f)", "xdescribe('x', f)", "fdescribe('x', f)", "test.only ('x', f)"] {
+            let report = verify(&TESTS, &changed, &FakeRepo::default().with("src/a.test.ts", &format!("{ok}{bad}\n")));
+            assert!(!check(&report, "no_focused_or_skipped_tests").passed, "{bad}");
+        }
+        // Words that merely contain the names are fine.
+        let fine = format!("{ok}const profit = (x) => x\nconst skipped = list.filter(onlyActive)\n");
+        assert!(verify(&TESTS, &changed, &FakeRepo::default().with("src/a.test.ts", &fine)).passed);
+        // A skip that was already in the file is not the change's doing.
+        let before = format!("{ok}it.skip('legacy', f)\n");
+        let after = format!("{before}it('new', () => expect(a(2)).toBe(3))\n");
+        let modified = ChangedFile { status: "modified".into(), ..added("src/a.test.ts") };
+        let repo = FakeRepo::default().with("src/a.test.ts", &after).based("src/a.test.ts", &before);
+        assert!(verify(&TESTS, &[modified], &repo).passed);
+    }
+
+    #[test]
     fn tests_changes_must_touch_test_files_only_and_remove_none() {
         let empty = FakeRepo::default();
-        let ok = verify(&TESTS, &[added("src/lib/a.test.ts"), added("src/__tests__/b.tsx"), added("PENDING.md")], &empty);
+        let files = FakeRepo::default().with("src/lib/a.test.ts", "").with("src/__tests__/b.tsx", "").with("src/__tests__/a.ts", "");
+        let ok = verify(&TESTS, &[added("src/lib/a.test.ts"), added("src/__tests__/b.tsx"), added("PENDING.md")], &files);
         assert!(ok.passed, "{:?}", ok.failures());
-        assert_eq!(ok.checks.len(), 1);
+        assert_eq!(ok.checks.len(), 3);
         let source = verify(&TESTS, &[added("src/lib/a.test.ts"), added("src/lib/a.ts")], &empty);
         assert_eq!(check(&source, "test_paths_only").details, ["not a test file: src/lib/a.ts"]);
         for path in ["package.json", "src/a.test.py", "tests/test_a.py", ".github/a.test.ts", "src/__snapshots__/a.test.ts.snap", "vitest.config.ts"] {
@@ -867,7 +967,7 @@ mod tests {
             status: "renamed".into(),
             previous_filename: Some("src/a.test.ts".into()),
         };
-        assert!(verify(&TESTS, &[renamed_test], &empty).passed);
+        assert!(verify(&TESTS, &[renamed_test], &files).passed);
     }
 
     fn facts<'a>() -> RunFacts<'a> {
