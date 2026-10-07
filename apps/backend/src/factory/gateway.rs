@@ -26,6 +26,14 @@ impl Tier {
             _ => None,
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Cheap => "cheap",
+            Tier::Standard => "standard",
+            Tier::Frontier => "frontier",
+        }
+    }
 }
 
 /// Frontier runs per org and day when `FACTORY_FRONTIER_RUNS_PER_DAY` is unset.
@@ -135,7 +143,7 @@ fn valid_openai_model(value: &str) -> bool {
 /// or full model ids, optionally with the `[1m]` long-context suffix. Anything
 /// else is ignored, never passed to the CLI. A pin is the admin's explicit
 /// choice and is not subject to the frontier cap.
-fn pinned_model(value: &str) -> bool {
+pub(crate) fn pinned_model(value: &str) -> bool {
     let base = value.strip_suffix("[1m]").unwrap_or(value);
     matches!(base, "haiku" | "sonnet" | "opus")
         || (base.starts_with("claude-")

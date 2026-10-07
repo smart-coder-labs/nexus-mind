@@ -15,4 +15,6 @@ pub mod scheduler;
 pub mod security_dast;
 pub mod security_scan;
 pub mod shadow;
+pub mod specialist_eval;
+pub mod specialist_run;
 pub mod worker;
