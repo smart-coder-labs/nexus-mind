@@ -434,4 +434,21 @@ mod tests {
         let text = "ana@acme.test called 300 123 4567 about cedula 12.345.678";
         assert_eq!(redact(text), redact(text));
     }
+
+    #[test]
+    fn common_real_world_formats_are_redacted() {
+        let text = "Escríbele a ana.perez+ventas@acme.co o llama al +57 300 123 4567 (o 300-123-4567). \
+                    Cédula 1.023.456.789, NIT 900.123.456-7. Tarjeta 4111 1111 1111 1111. \
+                    IBAN ES91 2100 0418 4502 0005 1332. Vive en Calle 12 # 34-56. token=ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let out = redact(text);
+        for leaked in [
+            "ana.perez", "300 123 4567", "300-123-4567", "1.023.456.789", "900.123.456",
+            "4111 1111", "ES91", "Calle 12 # 34-56", "ghp_abcdefghij",
+        ] {
+            assert!(!out.contains(leaked), "{leaked} leaked: {out}");
+        }
+        // Names and ordinary numbers stay.
+        assert!(out.contains("Escríbele"));
+        assert!(redact("Release v2.3.1 on 2026-10-05, PR #309, commit fd3fb40").contains("v2.3.1"));
+    }
 }

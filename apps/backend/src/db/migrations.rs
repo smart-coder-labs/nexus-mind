@@ -9170,6 +9170,40 @@ mod tests {
     /// — once, with a message that says what to do — instead of failing thirty
     /// unrelated tests that look like a regression.
     #[test]
+    fn v87_rebuild_keeps_intake_items_linked_to_their_source() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+        let (org, user, _) = crate::db::queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_sources (id,org_id,kind,name,project,resolver_definition_id,connector_id,created_by)
+             VALUES ('src-1',?1,'slack','bugs','app','def-1','conn-1',?2)",
+            rusqlite::params![org.id, user.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_items (org_id,task_id,source_id,source_ref,task_class,origin_trust,repository,start_decision,start_reason)
+             VALUES (?1,'t-1','src-1','C1:1.1','docs','untrusted','acme/app','backlog','deciding')",
+            rusqlite::params![org.id],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA user_version=86;").unwrap();
+        run_v87(&conn).unwrap();
+        let source: Option<String> = conn
+            .query_row("SELECT source_id FROM factory_intake_items WHERE task_id='t-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source.as_deref(), Some("src-1"), "the rebuild must not null the item's source");
+        assert_eq!(get_user_version(&conn), 87);
+        let fk_on: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk_on, 1, "foreign keys are back on");
+        conn.execute(
+            "UPDATE factory_intake_sources SET kind='gmail' WHERE id='src-1'",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn run_all_ends_on_the_latest_user_version() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
