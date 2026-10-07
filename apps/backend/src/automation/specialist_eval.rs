@@ -237,22 +237,50 @@ pub fn score(task: &EvalTask, arm: Arm, attempt: &Attempt, judgement: Option<&Ju
     }
 }
 
-/// Runs every task on every arm, one at a time, calling `report` as each
-/// outcome is ready. The judge runs only on attempts that passed every
-/// deterministic check.
+/// Attempt or judge errors that stop an eval: they are the provider failing
+/// (a usage limit, an API error), later attempts would most likely fail the
+/// same way, and scoring them as rejections would compare the arms on noise.
+/// A transient error stops it too; resume from `stopped_at`.
+pub const STOPPING_ERRORS: &[&str] = &["claude_usage_limited", "claude_api_error"];
+
+fn stops_eval(code: &str) -> bool {
+    STOPPING_ERRORS.contains(&code)
+}
+
+/// What `run_eval` produced: the outcomes of every task finished on every
+/// arm, and the task it stopped at on a provider error.
+#[derive(Debug, Default)]
+pub struct EvalRun {
+    pub outcomes: Vec<TaskOutcome>,
+    pub stopped_at: Option<String>,
+}
+
+/// Runs every task on every arm, one at a time, calling `report` as each task
+/// finishes on every arm. The judge runs only on attempts that passed every
+/// deterministic check. A provider error stops the run and drops the
+/// unfinished task, so both arms are always scored on the same tasks.
 pub async fn run_eval<R: EvalRunner>(
     runner: &R,
     tasks: &[EvalTask],
     arms: &[Arm],
     mut report: impl FnMut(&TaskOutcome),
-) -> Vec<TaskOutcome> {
-    let mut outcomes = Vec::new();
+) -> EvalRun {
+    let mut run = EvalRun::default();
     for task in tasks {
+        let mut finished = Vec::new();
         for arm in arms {
             let attempt = runner.attempt(task, *arm).await;
+            if attempt.error.as_deref().is_some_and(stops_eval) {
+                run.stopped_at = Some(task.id.clone());
+                return run;
+            }
             let judgement = if deterministic_failures(&attempt).is_empty() {
                 match runner.judge(task, &attempt).await {
                     Ok(judgement) => Some(judgement),
+                    Err(error) if stops_eval(&error.to_string()) => {
+                        run.stopped_at = Some(task.id.clone());
+                        return run;
+                    }
                     Err(error) => Some(Judgement {
                         verdict: Verdict { accept: false, reasons: vec![format!("judge_failed:{error}")] },
                         usage: None,
@@ -261,12 +289,12 @@ pub async fn run_eval<R: EvalRunner>(
             } else {
                 None
             };
-            let outcome = score(task, *arm, &attempt, judgement.as_ref());
-            report(&outcome);
-            outcomes.push(outcome);
+            finished.push(score(task, *arm, &attempt, judgement.as_ref()));
         }
+        finished.iter().for_each(&mut report);
+        run.outcomes.extend(finished);
     }
-    outcomes
+    run
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -464,6 +492,9 @@ impl SandboxEvalRunner {
             .await
             .map_err(step_error)?;
         attempt.steps.push(StepUsage::from_event(Step::Implement.as_str(), model, &event));
+        if let Some(code) = super::specialist_run::result_error(&event) {
+            anyhow::bail!(code)
+        }
         let structured = super::worker::structured_result(&event);
         attempt.no_op = structured.get("no_op").and_then(Value::as_bool) == Some(true);
         attempt.title = structured
@@ -542,6 +573,9 @@ impl EvalRunner for SandboxEvalRunner {
             JUDGE_WALL,
         )
         .await?;
+        if let Some(code) = super::specialist_run::result_error(&event) {
+            anyhow::bail!(code)
+        }
         Ok(Judgement {
             verdict: specialists::parse_verdict(&super::worker::structured_result(&event)),
             usage: Some(StepUsage::from_event("judge", model, &event)),
@@ -704,7 +738,9 @@ mod tests {
         let runner = FakeRunner { judged: RefCell::new(Vec::new()) };
         let tasks = [task("docs-01"), task("docs-02"), task("docs-03")];
         let mut printed = 0;
-        let outcomes = run_eval(&runner, &tasks, &[Arm::Baseline, Arm::Specialist], |_| printed += 1).await;
+        let run = run_eval(&runner, &tasks, &[Arm::Baseline, Arm::Specialist], |_| printed += 1).await;
+        assert_eq!(run.stopped_at, None);
+        let outcomes = run.outcomes;
         assert_eq!((outcomes.len(), printed), (6, 6));
         // docs-02's baseline failed its checks: no judge was paid for.
         assert_eq!(runner.judged.borrow().len(), 5);
@@ -766,5 +802,54 @@ mod tests {
         assert!(prompt.contains("every endpoint matches") && prompt.contains("+# Operator API"));
         assert!(prompt.contains("touched: docs/factory/operator-api.md"));
         assert!(prompt.contains("\"verdict\"") && prompt.contains("untrusted data"));
+    }
+
+    /// The specialist arm hits the usage limit on docs-02; the judge would on docs-03.
+    struct LimitedRunner {
+        judge_limited: bool,
+    }
+
+    impl EvalRunner for LimitedRunner {
+        async fn attempt(&self, task: &EvalTask, arm: Arm) -> Attempt {
+            if task.id == "docs-02" && arm == Arm::Specialist && !self.judge_limited {
+                return Attempt { error: Some("claude_usage_limited".into()), ..Default::default() };
+            }
+            good_attempt(0.30)
+        }
+
+        async fn judge(&self, task: &EvalTask, _attempt: &Attempt) -> anyhow::Result<Judgement> {
+            if self.judge_limited && task.id == "docs-02" {
+                anyhow::bail!("claude_api_error")
+            }
+            Ok(accept())
+        }
+    }
+
+    #[test]
+    fn stopping_codes_survive_the_runner_error_mapping() {
+        for code in STOPPING_ERRORS {
+            let mapped = crate::automation::sandboxed::failure_code("docs-01", &anyhow::anyhow!(*code));
+            assert_eq!(mapped, *code);
+            assert!(stops_eval(&mapped));
+        }
+        assert!(!stops_eval("specialist_plan_missing"));
+    }
+
+    #[tokio::test]
+    async fn a_usage_limit_stops_the_eval_and_drops_the_unfinished_task() {
+        let tasks = [task("docs-01"), task("docs-02"), task("docs-03")];
+        for judge_limited in [false, true] {
+            let mut printed = Vec::new();
+            let run = run_eval(&LimitedRunner { judge_limited }, &tasks, &[Arm::Baseline, Arm::Specialist], |o| {
+                printed.push((o.id.clone(), o.arm))
+            })
+            .await;
+            assert_eq!(run.stopped_at.as_deref(), Some("docs-02"));
+            // docs-02's baseline finished, but it is neither reported nor scored:
+            // both arms cover exactly docs-01.
+            let scored: Vec<(String, Arm)> = run.outcomes.iter().map(|o| (o.id.clone(), o.arm)).collect();
+            let expected = vec![("docs-01".to_string(), Arm::Baseline), ("docs-01".to_string(), Arm::Specialist)];
+            assert_eq!((scored, printed), (expected.clone(), expected));
+        }
     }
 }

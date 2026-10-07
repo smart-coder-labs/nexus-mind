@@ -63,10 +63,17 @@ async fn main() -> anyhow::Result<()> {
         max_turns,
         wall_time: std::time::Duration::from_secs(wall_time_secs),
     };
-    let outcomes = run_eval(&runner, &tasks, &arms, |outcome| {
+    let run = run_eval(&runner, &tasks, &arms, |outcome| {
         println!("{}", serde_json::to_string(outcome).unwrap_or_default())
     })
     .await;
-    println!("{}", serde_json::json!({ "summary": summarize(&outcomes) }));
-    Ok(())
+    println!(
+        "{}",
+        serde_json::json!({ "summary": summarize(&run.outcomes), "stopped_at": run.stopped_at })
+    );
+    match run.stopped_at {
+        // Resume by feeding the tasks from this id onwards.
+        Some(id) => anyhow::bail!("provider error at task {id} (usage limit or API error); the summary covers the tasks before it"),
+        None => Ok(()),
+    }
 }
