@@ -293,20 +293,21 @@ Also in this phase:
 - Benchmark the local Qwen2.5-Coder-1.5B (llama.cpp Q4_K_M) lane against Haiku/Flash on cost per accepted change.
 - Add Gmail (label `factory`) and transcript intake (Notion, Drive/Meet, local `.txt`, admin upload), with `fix: manual`.
 - **Exit:** each specialist beats baseline on the frozen eval.
-- **Status (2026-10-07): specialist framework, documentation specialist and intake built (ADRs 2dbeafe1, ac04cc9b). Tests and UI specialists are next. The local Qwen lane is dropped (D9).**
+- **Status (2026-10-07): specialist framework, documentation and tests specialists, and intake built (ADRs 2dbeafe1, ac04cc9b, 94ced31c). The UI specialist is next. The local Qwen lane is dropped (D9).**
   - **Specialists (#310): off by default (`FACTORY_SPECIALISTS`).**
     - **How a run works.** Opus plans read-only, Haiku implements with the plan (this is the resolver's normal invocation), the docs checks run, and then Opus reviews and can reject the change.
     - **Models and the cap.** Each step is its own `--model` invocation with its own `model.selected` event, so the frontier cap counts the Opus steps.
     - **Docs checks.** Every changed path must be documentation, and links and anchors must resolve. Identifiers the docs name are an *advisory* check, which the review weighs.
     - **Frozen eval.** `factory-specialist-eval` compares the specialist with the baseline; see [specialist-eval.md](specialist-eval.md). The frozen docs set (10 tasks, base fd3fb40) lives outside the repo. It has not been run yet.
+    - **Tests specialist (ADR 94ced31c): built, off by default (`FACTORY_SPECIALISTS=tests`).** JS/TS only (vitest or jest), sandboxed runs only. Opus plans and reviews, Sonnet implements. Only test files may change and none may be removed. One commands pod installs, runs the changed tests (`tests_pass`), then reruns them against up to 10 deterministic mutants of the code they import (`mutation_score`: at least 60% killed; advisory when there is nothing to mutate). The frozen tests set (8 tasks on `apps/admin`, base 3fed74e, one seeded fault each) lives outside the repo and has not been run yet.
   - **Intake:**
     - **OD-7 resolved: `factory::redact`.** Before any Gmail, Notion, Drive or transcript text becomes a task (and so before it reaches a model), emails, phone numbers, Colombian ids, Luhn-checked cards, bank accounts and IBANs, addresses, and secrets are replaced with numbered placeholders. Person names are kept.
     - **Sources.** Gmail (label `factory`), Notion (a `factory` tag or a configured database), Drive/Meet transcripts (a configured folder), local `.txt`, and admin upload (`POST /v1/factory/intake/transcripts`, `factory_policy:write`). Tokens come from connectors bound to each source kind.
     - **Fix: manual.** Gmail and all transcript sources are always untrusted and `fix: manual`: they never auto-start.
     - **Migration v87** widens the source kinds; a table rebuild with foreign keys off keeps items linked.
   - **Open:**
-    - The tests and UI specialists.
-    - Running the docs eval in the cluster.
+    - The UI specialist.
+    - Running the docs and tests evals in the cluster.
     - OAuth credentials per provider: Gmail `gmail.readonly`; Notion an internal integration token shared with the pages or database; Drive `drive.readonly` or a token scoped to the folder.
     - Admin UI for the new sources.
 
