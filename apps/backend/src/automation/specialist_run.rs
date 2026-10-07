@@ -20,7 +20,8 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 
 use crate::automation::merge_gate::ChangedFile;
-use crate::factory::specialists::{self, CheckReport, Specialist, Step, Verdict};
+use crate::automation::specialist_tests::SeededFault;
+use crate::factory::specialists::{self, CheckReport, Specialist, Step, Verdict, Verification};
 use crate::store::sqlite::SqliteStore;
 
 /// What a step needs from the run it belongs to.
@@ -182,18 +183,20 @@ impl Finished {
 /// failing change never spends a frontier call) the review step.
 /// `choose_review_model` is called only if the review runs, so its
 /// `model.selected` event and frontier slot are only used when needed.
+/// `seeded` are the frozen eval's planted faults (empty in production).
 pub(crate) async fn verify_and_review(
     env: &StepEnv<'_>,
     spec: &'static Specialist,
     config: &Value,
     plan: &str,
+    seeded: &[SeededFault],
     choose_review_model: impl FnOnce() -> String,
 ) -> Result<Finished, String> {
     let changed = checkout_changes(env.workdir).await.map_err(|_| "diff_inspection_failed".to_string())?;
     if changed.iter().all(|file| file.filename == "PENDING.md") {
         return Ok(Finished { changed, ..Default::default() });
     }
-    let checks = check_checkout(spec, env.workdir, &changed).await?;
+    let checks = run_checks(env, spec, &changed, seeded).await?;
     if !checks.passed {
         return Ok(Finished { changed, checks: Some(checks), ..Default::default() });
     }
@@ -207,13 +210,36 @@ pub(crate) async fn verify_and_review(
     Ok(Finished { changed, checks: Some(checks), review: Some(review), review_model: Some(model), review_event: Some(event) })
 }
 
-/// Runs the specialist's deterministic checks on a checkout. Indexing reads every
+/// Every deterministic check of a change: the in-worker checks, then, for a
+/// specialist whose checks run the repository's code (tests) and only when the
+/// in-worker ones pass, the execution checks in a sandbox commands pod. Both
+/// land in one report, so the review step and the eval treat them alike.
+pub(crate) async fn run_checks(
+    env: &StepEnv<'_>,
+    spec: &'static Specialist,
+    changed: &[ChangedFile],
+    seeded: &[SeededFault],
+) -> Result<CheckReport, String> {
+    let report = check_checkout(spec, env.workdir, changed).await?;
+    if !report.passed || !spec.verification.runs_repository_code() {
+        return Ok(report);
+    }
+    let mut checks = report.checks;
+    checks.extend(super::specialist_tests::run_checks(env, changed, seeded).await?);
+    Ok(CheckReport::from_checks(checks))
+}
+
+/// Runs the specialist's in-worker checks on a checkout. Indexing reads every
 /// file, so it runs on the blocking pool; nothing in the repository executes.
 pub(crate) async fn check_checkout(
     spec: &'static Specialist,
     workdir: &Path,
     changed: &[ChangedFile],
 ) -> Result<CheckReport, String> {
+    if spec.verification == Verification::Tests {
+        // Path rules only: there is nothing to index.
+        return Ok(specialists::verify_test_paths(changed));
+    }
     let mut base = std::collections::HashMap::new();
     for file in changed.iter().filter(|file| file.status != "added") {
         let source = file.previous_filename.as_deref().unwrap_or(&file.filename);

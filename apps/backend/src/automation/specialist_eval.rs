@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::merge_gate::{self, ChangedFile};
+use super::specialist_tests::SeededFault;
 use crate::factory::contracts::TaskClass;
 use crate::factory::gateway::{claude_model, Tier};
 use crate::factory::specialists::{self, CheckReport, Specialist, Step, Verdict};
@@ -44,6 +45,11 @@ pub struct EvalTask {
     /// Files the reference answer changed: a hint for the judge, never a gate.
     #[serde(default)]
     pub changed_files: Vec<String>,
+    /// Tests tasks only: faults planted in the code at `base_sha`. Each arm's
+    /// tests must pass on the code as it is and fail with each fault applied
+    /// (`seeded_fault_caught`), so a test that checks nothing is not accepted.
+    #[serde(default)]
+    pub seeded_faults: Vec<SeededFault>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,8 +94,25 @@ pub fn validate_task(task: &EvalTask) -> anyhow::Result<&'static Specialist> {
     if task.title.trim().is_empty() || task.description.trim().is_empty() {
         anyhow::bail!("task_text_missing")
     }
-    specialists::for_class(Some(task.task_class)).ok_or_else(|| anyhow::anyhow!("no_specialist_for_class"))
+    let spec =
+        specialists::for_class(Some(task.task_class)).ok_or_else(|| anyhow::anyhow!("no_specialist_for_class"))?;
+    // A tests task is judged by whether its tests catch a planted fault; other
+    // classes have none.
+    if spec.verification.runs_repository_code() {
+        if task.seeded_faults.is_empty() || task.seeded_faults.len() > MAX_SEEDED_FAULTS {
+            anyhow::bail!("seeded_faults_required")
+        }
+        for fault in &task.seeded_faults {
+            fault.validate().map_err(|code| anyhow::anyhow!(code))?;
+        }
+    } else if !task.seeded_faults.is_empty() {
+        anyhow::bail!("seeded_faults_unexpected")
+    }
+    Ok(spec)
 }
+
+/// Each seeded fault is one more test run in the checks pod.
+const MAX_SEEDED_FAULTS: usize = 3;
 
 /// Cost and tokens of one model invocation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -476,9 +499,10 @@ impl SandboxEvalRunner {
         let _ = tokio::fs::remove_file(workdir.join(SCRATCHPAD)).await;
         match plan {
             Some(plan) if !attempt.no_op => {
-                let finished = super::specialist_run::verify_and_review(&env, spec, &config, &plan, || {
-                    claude_model(spec.review_tier).to_string()
-                })
+                let finished =
+                    super::specialist_run::verify_and_review(&env, spec, &config, &plan, &task.seeded_faults, || {
+                        claude_model(spec.review_tier).to_string()
+                    })
                 .await
                 .map_err(|code| anyhow::anyhow!(code))?;
                 if let (Some(model), Some(event)) = (&finished.review_model, &finished.review_event) {
@@ -490,9 +514,11 @@ impl SandboxEvalRunner {
             }
             _ => attempt.changed = super::specialist_run::checkout_changes(&workdir).await?,
         }
+        // The baseline is held to the same checks, the tests specialist's pod
+        // (tests pass, mutants, seeded faults) included.
         if attempt.checks.is_none() && !attempt.changed.is_empty() {
             attempt.checks = Some(
-                super::specialist_run::check_checkout(spec, &workdir, &attempt.changed)
+                super::specialist_run::run_checks(&env, spec, &attempt.changed, &task.seeded_faults)
                     .await
                     .map_err(|code| anyhow::anyhow!(code))?,
             );
@@ -594,6 +620,61 @@ mod tests {
             mutate(&mut bad);
             assert_eq!(validate_task(&bad).unwrap_err().to_string(), code);
         }
+    }
+
+    fn tests_task() -> EvalTask {
+        serde_json::from_value(json!({
+            "id": "tests-01",
+            "repository": "smart-coder-labs/nexus-mind",
+            "base_sha": "fd3fb4077251d6c0f7910c92f5ebc7a59456d15e",
+            "task_class": "tests",
+            "title": "Test the range helper",
+            "description": "Add unit tests for apps/admin/src/lib/range.ts.",
+            "seeded_faults": [{"path": "apps/admin/src/lib/range.ts", "find": "n < 10", "replace": "n <= 10"}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn tests_tasks_carry_valid_seeded_faults_and_docs_tasks_none() {
+        let tests = tests_task();
+        assert_eq!(validate_task(&tests).unwrap().id, "tests");
+        assert_eq!(tests.seeded_faults[0].find, "n < 10");
+        assert_eq!(task_config(&tests)["issue"]["labels"], json!(["tests"]));
+        assert!(!task_config(&tests).to_string().contains("n <= 10"), "the fault is never shown to the agent");
+        for (mutate, code) in [
+            (Box::new(|t: &mut EvalTask| t.seeded_faults.clear()) as Box<dyn Fn(&mut EvalTask)>, "seeded_faults_required"),
+            (Box::new(|t: &mut EvalTask| t.seeded_faults = vec![t.seeded_faults[0].clone(); 4]), "seeded_faults_required"),
+            (Box::new(|t: &mut EvalTask| t.seeded_faults[0].path = "../x.ts".into()), "seeded_fault_invalid_path"),
+            (Box::new(|t: &mut EvalTask| t.seeded_faults[0].replace = "n < 10".into()), "seeded_fault_invalid_text"),
+        ] {
+            let mut bad = tests_task();
+            mutate(&mut bad);
+            assert_eq!(validate_task(&bad).unwrap_err().to_string(), code);
+        }
+        let mut docs = task("docs-01");
+        docs.seeded_faults = tests_task().seeded_faults;
+        assert_eq!(validate_task(&docs).unwrap_err().to_string(), "seeded_faults_unexpected");
+    }
+
+    #[test]
+    fn a_tests_attempt_whose_tests_miss_the_seeded_fault_is_not_accepted() {
+        let failing = Attempt {
+            changed: vec![file("apps/admin/src/lib/range.test.ts")],
+            checks: Some(CheckReport::from_checks(vec![
+                CheckOutcome { name: "test_paths_only", passed: true, advisory: false, details: vec![] },
+                CheckOutcome { name: "tests_pass", passed: true, advisory: false, details: vec![] },
+                CheckOutcome { name: "mutation_score", passed: true, advisory: false, details: vec![] },
+                CheckOutcome {
+                    name: "seeded_fault_caught",
+                    passed: false,
+                    advisory: false,
+                    details: vec!["not caught: apps/admin/src/lib/range.ts".into()],
+                },
+            ])),
+            ..good_attempt(0.2)
+        };
+        assert_eq!(deterministic_failures(&failing), ["checks:seeded_fault_caught: not caught: apps/admin/src/lib/range.ts"]);
     }
 
     fn file(path: &str) -> ChangedFile {

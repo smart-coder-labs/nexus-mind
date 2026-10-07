@@ -2693,16 +2693,19 @@ fn issue_labels(runtime_config: &serde_json::Value) -> Vec<String> {
 
 /// The specialist (factory F4) a run uses, if any: a Claude Code issue resolver
 /// whose issue labels name a class with an enabled specialist. `None` keeps the
-/// generic resolver exactly as before.
+/// generic resolver exactly as before. A specialist whose checks run the
+/// repository's code (tests) is only used on a sandboxed run.
 fn run_specialist(
     claim: &queries::ClaimedAutonomousRun,
     runtime_config: &serde_json::Value,
+    sandboxed: bool,
 ) -> Option<&'static crate::factory::specialists::Specialist> {
     crate::factory::specialists::select(
         &claim.template_key,
         queries::autonomous_executor(&claim.config).unwrap_or_default(),
         &issue_labels(runtime_config),
         &crate::factory::specialists::enabled_from_env(),
+        sandboxed,
     )
 }
 
@@ -3795,7 +3798,7 @@ async fn specialist_finish(
     };
     let finished = tokio::select! {
         _ = run_stop_signal(store, claim) => Err("cancelled_by_operator".to_string()),
-        finished = super::specialist_run::verify_and_review(env, spec, runtime_config, &planned.plan, review_model) => finished,
+        finished = super::specialist_run::verify_and_review(env, spec, runtime_config, &planned.plan, &[], review_model) => finished,
     };
     match finished {
         Ok(finished) => super::specialist_run::apply(spec, planned, Some(&finished), outcome),
@@ -3889,7 +3892,7 @@ async fn resolve_issue_worktree(
     // invocation, which then runs on the specialist's tier with the plan in its
     // prompt. A resumed run keeps the generic path: a fresh plan would not match
     // the work already on its branch.
-    let specialist = continue_branch.is_none().then(|| run_specialist(&claim, &runtime_config)).flatten();
+    let specialist = continue_branch.is_none().then(|| run_specialist(&claim, &runtime_config, sandboxed)).flatten();
     let step_env = super::specialist_run::StepEnv {
         store: &store,
         org_id: &claim.org_id,
@@ -5117,7 +5120,7 @@ async fn execute_claim(
     // invocation below is the implementation step, on the specialist's tier and
     // with the plan in its prompt. The resolver never re-runs on output errors,
     // so the plan is made once.
-    let specialist = run_specialist(claim, &runtime_config);
+    let specialist = run_specialist(claim, &runtime_config, sandboxed);
     let step_secrets: Vec<String> = repo_token.iter().cloned().collect();
     let step_env = super::specialist_run::StepEnv {
         store,
@@ -7950,7 +7953,7 @@ mod tests {
         drop(conn);
         // Without a specialist the generic choice is unchanged: docs run on haiku.
         assert_eq!(select_run_model(&store, &claim, &runtime_config).model, "haiku");
-        assert!(run_specialist(&claim, &runtime_config).is_none(), "off unless FACTORY_SPECIALISTS names it");
+        assert!(run_specialist(&claim, &runtime_config, true).is_none(), "off unless FACTORY_SPECIALISTS names it");
     }
 
     #[test]

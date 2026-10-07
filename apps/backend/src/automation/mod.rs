@@ -17,4 +17,5 @@ pub mod security_scan;
 pub mod shadow;
 pub mod specialist_eval;
 pub mod specialist_run;
+pub mod specialist_tests;
 pub mod worker;
