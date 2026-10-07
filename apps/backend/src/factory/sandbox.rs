@@ -469,7 +469,7 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
                     "capabilities": {"drop": ["ALL"]}
                 },
                 "resources": {
-                    "requests": {"cpu": "250m", "memory": "512Mi"},
+                    "requests": {"cpu": "100m", "memory": "512Mi"},
                     "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "8Gi"}
                 },
                 "volumeMounts": [
