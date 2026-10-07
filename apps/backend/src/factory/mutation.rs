@@ -81,27 +81,67 @@ pub fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
-/// Relative module specifiers a file imports at runtime (`import … from './x'`,
+/// One runtime import of a relative module.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Import {
+    pub specifier: String,
+    /// The exported names a named import (`import { a, b as c } from …`) takes;
+    /// `None` when it takes the whole module (default or namespace imports,
+    /// `require`, dynamic `import()`, side-effect imports, re-exports).
+    pub names: Option<Vec<String>>,
+}
+
+/// Relative modules a file imports at runtime (`import … from './x'`,
 /// `import './x'`, `export … from '../y'`, `require('./x')`, `import('./x')`).
 /// Type-only imports are left out: mutating a file that is only read for its
 /// types can never make a test fail.
-pub fn relative_imports(source: &str) -> Vec<String> {
+pub fn relative_imports(source: &str) -> Vec<Import> {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(
-            r#"(?m)(?:^\s*import\s+(type\s+)?(?:[^'";]*?\s+from\s+)?|^\s*export\s+(type\s+)?[^'";]*?\s+from\s+|\brequire\s*\(\s*|\bimport\s*\(\s*)['"](\.\.?/[^'"\n]+)['"]"#,
+            r#"(?m)(?:^\s*import\s+(?P<itype>type\s+)?(?:(?P<clause>[^'";]*?)\s+from\s+)?|^\s*export\s+(?P<etype>type\s+)?[^'";]*?\s+from\s+|\brequire\s*\(\s*|\bimport\s*\(\s*)['"](?P<spec>\.\.?/[^'"\n]+)['"]"#,
         )
         .expect("import pattern")
     });
-    let mut found = Vec::new();
+    let mut found: Vec<Import> = Vec::new();
     for capture in re.captures_iter(source) {
-        let type_only = capture.get(1).is_some() || capture.get(2).is_some();
-        let specifier = capture[3].to_string();
-        if !type_only && !found.contains(&specifier) {
-            found.push(specifier);
+        if capture.name("itype").is_some() || capture.name("etype").is_some() {
+            continue;
+        }
+        let names = match capture.name("clause").map(|clause| clause.as_str().trim()) {
+            Some(clause) if clause.starts_with('{') && clause.ends_with('}') => {
+                // `{ a, b as c, type T }`: the exported names, inline types dropped.
+                let names: Vec<String> = clause[1..clause.len() - 1]
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty() && !name.starts_with("type "))
+                    .map(|name| name.split_whitespace().next().unwrap_or_default().to_string())
+                    .collect();
+                if names.is_empty() {
+                    continue; // Only types.
+                }
+                Some(names)
+            }
+            _ => None,
+        };
+        let specifier = capture["spec"].to_string();
+        match found.iter_mut().find(|import| import.specifier == specifier) {
+            Some(existing) => existing.names = merge_names(existing.names.take(), names),
+            None => found.push(Import { specifier, names }),
         }
     }
     found
+}
+
+/// Two imports of one module: the whole module wins, else the names add up.
+fn merge_names(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
+    let (mut a, b) = (a?, b?);
+    for name in b {
+        if !a.contains(&name) {
+            a.push(name);
+        }
+    }
+    Some(a)
 }
 
 /// The file a relative import from `from_file` loads: the path itself, then with
@@ -121,22 +161,69 @@ pub fn resolve_import(tree: &dyn SourceTree, from_file: &str, specifier: &str) -
     candidates.into_iter().find(|candidate| tree.exists(candidate))
 }
 
+/// A file to mutate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub path: String,
+    /// The names the tests import from it, sorted; `None` when some test imports
+    /// the whole module. Mutants stay inside these names' declarations: a test
+    /// of one helper must not be scored on the rest of a large module.
+    pub names: Option<Vec<String>>,
+}
+
 /// The files to mutate: non-test JS/TS sources the given tests import directly
 /// through relative imports, never under `node_modules`. Sorted, so the mutants
 /// do not depend on the order the tests were listed in.
-pub fn mutation_targets(tree: &dyn SourceTree, tests: &[String]) -> Vec<String> {
-    let mut targets = std::collections::BTreeSet::new();
+pub fn mutation_targets(tree: &dyn SourceTree, tests: &[String]) -> Vec<Target> {
+    let mut targets: std::collections::BTreeMap<String, Option<Vec<String>>> = std::collections::BTreeMap::new();
     for test in tests {
         let Some(source) = tree.read(test) else { continue };
-        for specifier in relative_imports(&source) {
-            let Some(path) = resolve_import(tree, test, &specifier) else { continue };
+        for import in relative_imports(&source) {
+            let Some(path) = resolve_import(tree, test, &import.specifier) else { continue };
             let vendored = path.split('/').any(|segment| segment == "node_modules");
             if is_js_source(&path) && !is_js_test_file(&path) && !vendored {
-                targets.insert(path);
+                let names = match targets.remove(&path) {
+                    Some(earlier) => merge_names(earlier, import.names),
+                    None => import.names,
+                };
+                targets.insert(path, names);
             }
         }
     }
-    targets.into_iter().collect()
+    targets
+        .into_iter()
+        .map(|(path, mut names)| {
+            if let Some(names) = names.as_mut() {
+                names.sort();
+            }
+            Target { path, names }
+        })
+        .collect()
+}
+
+/// The byte ranges of the top-level declarations of `names`, each from the
+/// declaration to the next top-level statement. It relies only on top-level
+/// code starting at column 0. `None` when no name is found (a re-export, an
+/// unusual layout): the whole file is then in scope.
+pub fn declaration_spans(source: &str, names: &[String]) -> Option<Vec<(usize, usize)>> {
+    static NEXT: OnceLock<regex::Regex> = OnceLock::new();
+    let next = NEXT.get_or_init(|| {
+        regex::Regex::new(r"(?m)^(?:export|function|async|const|let|var|class|interface|type|enum|declare|import)\b")
+            .expect("declaration pattern")
+    });
+    let mut spans = Vec::new();
+    for name in names {
+        let pattern = format!(
+            r"(?m)^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*|const\s+|let\s+|var\s+|class\s+){}\b",
+            regex::escape(name)
+        );
+        let Ok(declaration) = regex::Regex::new(&pattern) else { continue };
+        if let Some(found) = declaration.find(source) {
+            let end = next.find_at(source, found.end()).map_or(source.len(), |m| m.start());
+            spans.push((found.start(), end));
+        }
+    }
+    (!spans.is_empty()).then_some(spans)
 }
 
 /// One place an operator can be flipped.
@@ -313,16 +400,19 @@ impl Mutant {
 /// Up to `cap` mutants over the targets, spread across files then lines: each
 /// file gets a share in turn (round robin) and a file's share is spaced evenly
 /// over its sites. Same files in, same mutants out.
-pub fn mutants(tree: &dyn SourceTree, targets: &[String], cap: usize) -> Vec<Mutant> {
+pub fn mutants(tree: &dyn SourceTree, targets: &[Target], cap: usize) -> Vec<Mutant> {
     let mut files: Vec<(String, String, Vec<Site>)> = Vec::new();
     let mut sorted = targets.to_vec();
-    sorted.sort();
-    sorted.dedup();
-    for path in sorted {
-        let Some(source) = tree.read(&path).filter(|s| s.len() <= MAX_TARGET_BYTES) else { continue };
-        let found = sites(&path, &source);
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    sorted.dedup_by(|a, b| a.path == b.path);
+    for target in sorted {
+        let Some(source) = tree.read(&target.path).filter(|s| s.len() <= MAX_TARGET_BYTES) else { continue };
+        let mut found = sites(&target.path, &source);
+        if let Some(spans) = target.names.as_deref().and_then(|names| declaration_spans(&source, names)) {
+            found.retain(|site| spans.iter().any(|(start, end)| (*start..*end).contains(&site.offset)));
+        }
         if !found.is_empty() {
-            files.push((path, source, found));
+            files.push((target.path, source, found));
         }
     }
     let mut quota = vec![0usize; files.len()];
@@ -408,8 +498,47 @@ mod tests {
         let source = "import { a } from './a'\nimport b from \"../b.js\"\nimport './side-effect'\n\
                       import type { T } from './types'\nexport { c } from './c'\nexport type { U } from './u'\n\
                       const d = require('./d')\nconst e = await import('./e')\nimport x from 'react'\n\
-                      import {\n  multi,\n  line,\n} from './multi'\n// import z from './commented'\nimport { a as again } from './a'\n";
-        assert_eq!(relative_imports(source), ["./a", "../b.js", "./side-effect", "./c", "./d", "./e", "./multi"]);
+                      import {\n  multi,\n  line,\n} from './multi'\n// import z from './commented'\nimport { a as again, z } from './a'\n\
+                      import { type OnlyType } from './inline-type'\nimport Def, { named } from './mixed'\n";
+        let owned: Vec<(String, Option<Vec<String>>)> =
+            relative_imports(source).into_iter().map(|import| (import.specifier, import.names)).collect();
+        let names = |list: &[&str]| Some(list.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            owned,
+            [
+                ("./a".to_string(), names(&["a", "z"])),
+                ("../b.js".into(), None),
+                ("./side-effect".into(), None),
+                ("./c".into(), None),
+                ("./d".into(), None),
+                ("./e".into(), None),
+                ("./multi".into(), names(&["multi", "line"])),
+                ("./mixed".into(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn named_imports_scope_mutants_to_their_declarations() {
+        let module = "export function parseDay(s: string) {\n  return s === '' ? null : s\n}\n\n\
+                      interface Form { a: boolean }\n\n\
+                      export default function Page() {\n  const ok = a === b && c\n  return ok\n}\n";
+        let tree = Tree::default()
+            .with("src/Page.tsx", module)
+            .with("src/one.test.ts", "import { parseDay } from './Page'\n")
+            .with("src/all.test.tsx", "import Page from './Page'\n");
+        let one = mutation_targets(&tree, &["src/one.test.ts".to_string()]);
+        assert_eq!(one, [Target { path: "src/Page.tsx".into(), names: Some(vec!["parseDay".into()]) }]);
+        let scoped = mutants(&tree, &one, MAX_MUTANTS);
+        assert_eq!(scoped.iter().map(|m| (m.line, m.from)).collect::<Vec<_>>(), [(2, "===")]);
+        // A default import (or any whole-module import) puts the file in scope.
+        let both = mutation_targets(&tree, &["src/one.test.ts".to_string(), "src/all.test.tsx".to_string()]);
+        assert_eq!(both[0].names, None);
+        assert_eq!(mutants(&tree, &both, MAX_MUTANTS).len(), 3);
+        // A name with no top-level declaration (a re-export) falls back to the file.
+        assert_eq!(declaration_spans(module, &["reexported".to_string()]), None);
+        let spans = declaration_spans(module, &["parseDay".to_string()]).unwrap();
+        assert_eq!(&module[spans[0].0..spans[0].1], "export function parseDay(s: string) {\n  return s === '' ? null : s\n}\n\n");
     }
 
     #[test]
@@ -445,7 +574,8 @@ mod tests {
             .with("src/helpers.test.ts", "")
             .with("node_modules/x/index.js", "");
         let tests = vec!["src/b.test.ts".to_string(), "src/a.test.ts".to_string()];
-        assert_eq!(mutation_targets(&tree, &tests), ["src/a.ts", "src/b.ts"]);
+        let paths: Vec<String> = mutation_targets(&tree, &tests).into_iter().map(|t| t.path).collect();
+        assert_eq!(paths, ["src/a.ts", "src/b.ts"]);
     }
 
     #[test]
@@ -483,7 +613,8 @@ mod tests {
         let a = (0..20).map(|n| format!("if (x === {n}) return true\n")).collect::<String>();
         let b = "export const ok = (n) => n > 0 && n < 10\n";
         let tree = Tree::default().with("src/a.ts", &a).with("src/b.ts", b).with("src/empty.ts", "export {}");
-        let targets = vec!["src/b.ts".to_string(), "src/a.ts".into(), "src/empty.ts".into()];
+        let whole = |path: &str| Target { path: path.into(), names: None };
+        let targets = vec![whole("src/b.ts"), whole("src/a.ts"), whole("src/empty.ts")];
         let first = mutants(&tree, &targets, MAX_MUTANTS);
         assert_eq!(first.len(), MAX_MUTANTS);
         assert_eq!(first, mutants(&tree, &targets, MAX_MUTANTS), "same input, same mutants");
@@ -496,8 +627,8 @@ mod tests {
         assert_eq!(flipped.content, "export const ok = (n) => n <= 0 && n < 10\n");
         assert_eq!(flipped.describe(), "src/b.ts:1 `>` -> `<=`");
         // Fewer sites than the cap: every site, once.
-        assert_eq!(mutants(&tree, &["src/b.ts".to_string()], MAX_MUTANTS).len(), 3);
-        assert!(mutants(&tree, &["src/empty.ts".to_string()], MAX_MUTANTS).is_empty());
+        assert_eq!(mutants(&tree, &[whole("src/b.ts")], MAX_MUTANTS).len(), 3);
+        assert!(mutants(&tree, &[whole("src/empty.ts")], MAX_MUTANTS).is_empty());
     }
 
     #[test]

@@ -496,19 +496,19 @@ pub enum PlanError {
 pub fn prepare(tree: &dyn SourceTree, tests: &[String], seeded: &[SeededFault]) -> Result<PodPlan, PlanError> {
     let groups = plan_groups(tree, tests).map_err(PlanError::NotRunnable)?;
     // Each group's targets, so a mutant reruns only the tests that import it.
-    let mut owner: Vec<(String, usize)> = Vec::new();
+    let mut owner: Vec<(mutation::Target, usize)> = Vec::new();
     for (index, group) in groups.iter().enumerate() {
         for target in mutation::mutation_targets(tree, &group.tests) {
-            if !owner.iter().any(|(path, _)| *path == target) {
+            if !owner.iter().any(|(owned, _)| owned.path == target.path) {
                 owner.push((target, index));
             }
         }
     }
-    let targets: Vec<String> = owner.iter().map(|(path, _)| path.clone()).collect();
+    let targets: Vec<mutation::Target> = owner.iter().map(|(target, _)| target.clone()).collect();
     let mutants: Vec<(usize, Mutant)> = mutation::mutants(tree, &targets, mutation::MAX_MUTANTS)
         .into_iter()
         .map(|mutant| {
-            let group = owner.iter().find(|(path, _)| *path == mutant.path).map_or(0, |(_, group)| *group);
+            let group = owner.iter().find(|(target, _)| target.path == mutant.path).map_or(0, |(_, group)| *group);
             (group, mutant)
         })
         .collect();
