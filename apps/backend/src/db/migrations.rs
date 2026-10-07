@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 86;
+pub const LATEST_USER_VERSION: i32 = 87;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -99,9 +99,61 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v84(conn)?;
     run_v85(conn)?;
     run_v86(conn)?;
+    run_v87(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
+    Ok(())
+}
+
+/// Migration v87: factory F4 intake kinds (plan D13). Adds `gmail`, `notion`
+/// and `drive` to `factory_intake_sources.kind`. SQLite can't ALTER a CHECK,
+/// so the table is rebuilt (same proven pattern as run_v70); ids are preserved
+/// so `factory_intake_items.source_id` stays valid. Idempotent.
+pub fn run_v87(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 87 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE factory_intake_sources_new (
+             id                     TEXT PRIMARY KEY,
+             org_id                 TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             kind                   TEXT NOT NULL CHECK(kind IN ('slack','sentry','gmail','notion','drive')),
+             name                   TEXT NOT NULL,
+             project                TEXT NOT NULL,
+             resolver_definition_id TEXT NOT NULL REFERENCES autonomous_agent_definitions(id) ON DELETE CASCADE,
+             base_ref               TEXT NOT NULL DEFAULT 'main',
+             privacy_class          TEXT NOT NULL DEFAULT 'internal'
+                                    CHECK(privacy_class IN ('public','internal','confidential','restricted')),
+             connector_id           TEXT NOT NULL REFERENCES autonomous_agent_connectors(id) ON DELETE RESTRICT,
+             config_json            TEXT NOT NULL DEFAULT '{}',
+             enabled                INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+             last_polled_at         TEXT,
+             last_error             TEXT,
+             created_by             TEXT NOT NULL,
+             created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(org_id, name)
+         );
+
+        INSERT INTO factory_intake_sources_new
+            (id,org_id,kind,name,project,resolver_definition_id,base_ref,privacy_class,connector_id,config_json,
+             enabled,last_polled_at,last_error,created_by,created_at,updated_at)
+        SELECT id,org_id,kind,name,project,resolver_definition_id,base_ref,privacy_class,connector_id,config_json,
+               enabled,last_polled_at,last_error,created_by,created_at,updated_at
+        FROM factory_intake_sources;
+
+        DROP TABLE factory_intake_sources;
+        ALTER TABLE factory_intake_sources_new RENAME TO factory_intake_sources;
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 87;
+        ",
+    )?;
     Ok(())
 }
 
@@ -9117,6 +9169,40 @@ mod tests {
     /// literal, so adding a migration without bumping the constant fails here
     /// — once, with a message that says what to do — instead of failing thirty
     /// unrelated tests that look like a regression.
+    #[test]
+    fn v87_rebuild_keeps_intake_items_linked_to_their_source() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+        let (org, user, _) = crate::db::queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_sources (id,org_id,kind,name,project,resolver_definition_id,connector_id,created_by)
+             VALUES ('src-1',?1,'slack','bugs','app','def-1','conn-1',?2)",
+            rusqlite::params![org.id, user.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_items (org_id,task_id,source_id,source_ref,task_class,origin_trust,repository,start_decision,start_reason)
+             VALUES (?1,'t-1','src-1','C1:1.1','docs','untrusted','acme/app','backlog','deciding')",
+            rusqlite::params![org.id],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA user_version=86;").unwrap();
+        run_v87(&conn).unwrap();
+        let source: Option<String> = conn
+            .query_row("SELECT source_id FROM factory_intake_items WHERE task_id='t-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source.as_deref(), Some("src-1"), "the rebuild must not null the item's source");
+        assert_eq!(get_user_version(&conn), 87);
+        let fk_on: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk_on, 1, "foreign keys are back on");
+        conn.execute(
+            "UPDATE factory_intake_sources SET kind='gmail' WHERE id='src-1'",
+            [],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn run_all_ends_on_the_latest_user_version() {
         let conn = in_memory_db();

@@ -529,7 +529,7 @@ fn intake_write(
         crate::factory::intake::SourceConfig::Sentry { base_url, .. } => {
             crate::factory::intake::sentry_base_host(base_url)
         }
-        crate::factory::intake::SourceConfig::Slack { .. } => None,
+        _ => None,
     };
     use crate::db::factory_intake::ReferenceError;
     match crate::db::factory_intake::check_source_references(
@@ -601,8 +601,12 @@ pub async fn create_intake_source(
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
     let kind = input.kind.as_deref().unwrap_or_default();
-    if !matches!(kind, "slack" | "sentry") {
-        return Err(error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", "kind must be slack or sentry"));
+    if !matches!(kind, "slack" | "sentry" | "gmail" | "notion" | "drive") {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            "kind must be slack, sentry, gmail, notion or drive",
+        ));
     }
     let write = intake_write(&conn, &auth.org_id, kind, &input)?;
     let source = crate::db::factory_intake::create_source(&conn, &auth.org_id, &auth.user_id, &write)
@@ -747,4 +751,117 @@ pub async fn put_watchdog(
     )
     .map_err(internal)?;
     Ok(Json(crate::db::factory_intake::get_watchdog(&conn, &auth.org_id).map_err(internal)?))
+}
+
+// ---------------------------------------------------------------- transcripts (F4)
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranscriptUploadRequest {
+    pub project: String,
+    /// The issue-resolver whose repository this transcript's task targets, if
+    /// any. `None`: the task has no code destination.
+    pub resolver_definition_id: Option<String>,
+    pub title: String,
+    pub text: String,
+}
+
+/// Admin-uploaded `.txt` text is capped well above the contract's own
+/// description limit — `transcript_text_to_task_spec` truncates the rest —
+/// so an oversized paste fails fast instead of silently losing its tail.
+const MAX_TRANSCRIPT_CHARS: usize = 200_000;
+
+fn duplicate_transcript() -> (StatusCode, Json<ApiError>) {
+    error(
+        StatusCode::CONFLICT,
+        "duplicate_transcript",
+        "This exact transcript (title and text) was already uploaded",
+    )
+}
+
+/// `POST /v1/factory/intake/transcripts`: a local `.txt` or admin-uploaded
+/// transcript (plan D13). Redacted (OD-7), then becomes a backlog factory task
+/// via the same `begin_item` path the polled sources use — source
+/// `transcript`, untrusted, `fix: manual` (it never auto-starts; see
+/// `floor_source_kind`). Uploading the exact same title and text twice is
+/// refused as a duplicate rather than creating a second task.
+pub async fn upload_transcript(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<TranscriptUploadRequest>,
+) -> ApiResult<(StatusCode, Json<crate::models::types::Task>)> {
+    let project = input.project.trim();
+    let title = input.title.trim();
+    if project.is_empty() || project.chars().count() > 200 {
+        return Err(error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", "project (1-200 chars) is required"));
+    }
+    if title.is_empty() || title.chars().count() > 512 {
+        return Err(error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", "title (1-512 chars) is required"));
+    }
+    if input.text.trim().is_empty() || input.text.chars().count() > MAX_TRANSCRIPT_CHARS {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            "text is required and must be at most 200,000 characters",
+        ));
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    let repository = match input.resolver_definition_id.as_deref() {
+        Some(id) => crate::db::factory_intake::resolver_repository(&conn, &auth.org_id, id)
+            .map_err(internal)?
+            .ok_or_else(|| {
+                error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_resolver",
+                    "resolver_definition_id must be an issue-resolver agent of this organization",
+                )
+            })?,
+        None => None,
+    };
+    let spec = crate::factory::intake::transcript_text_to_task_spec(
+        title,
+        &input.text,
+        repository.as_deref(),
+        chrono::Utc::now(),
+    )
+    .map_err(|reason| error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", reason))?;
+    let item = crate::db::factory_intake::IntakeItem {
+        task_id: spec.task_id.clone(),
+        source_id: None,
+        source_ref: spec.source.reference.clone(),
+        nexus_task_id: None,
+        task_class: crate::automation::factory_intake::class_name(spec.task_class),
+        origin_trust: "untrusted".into(),
+        repository: spec.repository.remote.clone(),
+        start_decision: "backlog".into(),
+        start_reason: "fix_manual_source".into(),
+        jev: None,
+        issue_number: None,
+        run_id: None,
+        created_at: String::new(),
+    };
+    let task_id = match crate::db::factory_intake::begin_item(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        project,
+        &spec.title,
+        &spec.description,
+        &item,
+    ) {
+        Ok(id) => id,
+        // The same redacted title and text (the task id derives from them)
+        // was already uploaded; the primary key refuses the second insert.
+        Err(e) if e.to_string().contains("UNIQUE constraint") => return Err(duplicate_transcript()),
+        Err(e) => return Err(internal(e)),
+    };
+    let mut finished = item.clone();
+    finished.nexus_task_id = Some(task_id.clone());
+    crate::db::factory_intake::finish_item(&conn, &auth.org_id, &finished).map_err(internal)?;
+    let task = crate::db::queries::get_task(&conn, &auth.org_id, &task_id)
+        .map_err(internal)?
+        .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "task vanished"))?;
+    Ok((StatusCode::CREATED, Json(task)))
 }
