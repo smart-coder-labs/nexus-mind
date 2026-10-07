@@ -136,9 +136,27 @@ pub(crate) async fn run_step(
     };
     // A non-zero exit (max turns) can still carry a final result, as for the
     // resolver; no result at all fails the step.
+    // A failed request still returns its event, so callers record its cost
+    // before checking `result_error`.
     super::worker::parse_claude_event_stream(&output.stdout)
         .map(|(event, _)| event)
         .map_err(|_| anyhow::anyhow!("specialist_{}_failed", step.as_str()))
+}
+
+/// The error code of a `result` event that reports a failed request rather
+/// than finished work: a usage limit or an API error comes back as
+/// `is_error: true` with no cost. Without this a limit reads as "no plan" or
+/// "no change", indistinguishable from a model that did nothing. Running out
+/// of turns is not an error here: its result is judged like any other. Any
+/// other failed subtype (`error_during_execution`) is an error.
+pub(crate) fn result_error(event: &Value) -> Option<&'static str> {
+    let failed = event.get("is_error").and_then(Value::as_bool) == Some(true)
+        && event.get("subtype").and_then(Value::as_str) != Some("error_max_turns");
+    if !failed {
+        return None;
+    }
+    let text = event.get("result").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
+    Some(if text.contains("limit") { "claude_usage_limited" } else { "claude_api_error" })
 }
 
 /// The planning step's outcome.
@@ -155,6 +173,9 @@ pub(crate) async fn plan(env: &StepEnv<'_>, spec: &Specialist, config: &Value, m
     let event = run_step(env, Step::Plan, &prompt, model, false, READ_ONLY_MAX_TURNS, READ_ONLY_WALL)
         .await
         .map_err(|error| error.to_string())?;
+    if let Some(code) = result_error(&event) {
+        return Err(code.to_string());
+    }
     let plan = specialists::parse_plan(&super::worker::structured_result(&event))?;
     Ok(Planned { plan, model: model.to_string(), event })
 }
@@ -203,7 +224,12 @@ pub(crate) async fn verify_and_review(
     let event = run_step(env, Step::Review, &prompt, &model, false, READ_ONLY_MAX_TURNS, READ_ONLY_WALL)
         .await
         .map_err(|error| error.to_string())?;
-    let review = specialists::parse_verdict(&super::worker::structured_result(&event));
+    // A review that failed rejects (fail closed) and keeps its event, so its cost
+    // still reaches telemetry.
+    let review = match result_error(&event) {
+        Some(code) => Verdict { accept: false, reasons: vec![code.to_string()] },
+        None => specialists::parse_verdict(&super::worker::structured_result(&event)),
+    };
     Ok(Finished { changed, checks: Some(checks), review: Some(review), review_model: Some(model), review_event: Some(event) })
 }
 
@@ -474,5 +500,17 @@ mod tests {
         assert_eq!(base_content(dir.path(), "README.md").await.as_deref(), Some("# Old\n"));
         let report = check_checkout(&specialists::DOCS, dir.path(), &changed).await.unwrap();
         assert!(report.passed, "{:?}", report.failures());
+    }
+
+    #[test]
+    fn failed_requests_become_error_codes_but_running_out_of_turns_does_not() {
+        let limited = json!({"type": "result", "subtype": "success", "is_error": true, "result": "You've hit your limit · resets 3am"});
+        assert_eq!(result_error(&limited), Some("claude_usage_limited"));
+        let api = json!({"type": "result", "subtype": "success", "is_error": true, "result": "API Error: 500"});
+        assert_eq!(result_error(&api), Some("claude_api_error"));
+        let turns = json!({"type": "result", "subtype": "error_max_turns", "is_error": true});
+        assert_eq!(result_error(&turns), None);
+        let ok = json!({"type": "result", "subtype": "success", "is_error": false, "result": "rate limit docs updated"});
+        assert_eq!(result_error(&ok), None);
     }
 }
