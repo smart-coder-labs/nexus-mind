@@ -9,7 +9,7 @@ Every task runs twice from the same `base_sha`, both times in the sandbox (task 
 | Arm | Steps | Models |
 |---|---|---|
 | `baseline` | The resolver's fixed prompt, one invocation | Standard tier (`sonnet`) |
-| `specialist` | Plan, then implement, then the specialist's checks, then review | Plan and review on the frontier tier (`opus`); the docs specialist implements on the cheap tier (`haiku`) |
+| `specialist` | Plan, then implement, then the specialist's checks, then review | Plan and review on the frontier tier (`opus`); the docs specialist implements on the cheap tier (`haiku`), the tests specialist on the standard tier (`sonnet`) |
 
 Each specialist step is a separate Claude Code invocation with its own `--model`. In production every step records its own `model.selected` event, so the daily frontier cap (`FACTORY_FRONTIER_RUNS_PER_DAY`, 20 by default) counts the plan and review steps. The eval records no events: it is not an org's production traffic, and it must not use up the org's frontier cap.
 
@@ -23,6 +23,14 @@ An attempt is accepted only if all of these hold:
    - `doc_paths_only`: every changed path is documentation (`merge_gate::is_doc_path`) and is not a never-eligible file such as `CLAUDE.md`, skills or dotfiles.
    - `links_resolve`: relative links and `#anchor`s added by the change point at files and headings that exist. External URLs are not fetched.
    - `identifiers_exist`: code names the change adds in backticks exist in the repository's non-documentation files. A name counts if it is snake_case, SCREAMING_CASE or camelCase, or if it is a file path. Plain words, flags, routes and code samples are skipped.
+
+   For tests (`apps/backend/src/automation/specialist_tests.rs`, `apps/backend/src/factory/mutation.rs`), the checks are:
+   - `test_paths_only`: every changed path, on both sides of a rename, is a JavaScript/TypeScript test file (`*.test.*`, `*.spec.*` or under `__tests__/`, with a `ts`, `tsx`, `js`, `jsx`, `mjs` or `cjs` extension) and is not never-eligible. At least one test file is added or changed, and none is removed.
+   - `tests_pass`: in one sandbox commands pod, each changed test's package (nearest `package.json`) is installed from its lockfile (`package-lock.json` with `npm ci`, `pnpm-lock.yaml` with `pnpm install --frozen-lockfile`, `yarn.lock` with `yarn install --frozen-lockfile`), and the changed tests run with the package's runner (vitest or jest, from its `test` script or dependencies). They must exit 0.
+   - `mutation_score`: the same tests rerun against up to 10 deterministic mutants of the source files they import through relative imports (one flipped `===`/`!==`, `==`/`!=`, `&&`/`||`, `true`/`false`, or a spaced `<`, `>`, `<=`, `>=`; strings, comments and regexes are skipped). With named imports, only the imported declarations are mutated. At least 60% of the mutants must make a test fail. When there is nothing to mutate, the check is advisory and the review judges the tests.
+   - `seeded_fault_caught` (eval only): the same tests rerun with each of the task's `seeded_faults` applied, and must fail on every one.
+
+   These checks run only when `test_paths_only` passes, and only in a sandbox: the worker never runs repository code, and without a sandbox the generic resolver keeps the task.
 4. On the specialist arm, the specialist's own review accepted the change.
 5. An independent Opus judge accepted it. The judge reads the checkout, the task, its acceptance criteria and the diff, and answers `{"verdict":"accept|reject","reasons":[…]}`. Anything else counts as a reject.
 
@@ -42,11 +50,18 @@ The task file is JSONL, one task per line. Eval data lives **outside the reposit
 | `acceptance_criteria` | no | A list of strings, appended to the issue body and given to the judge |
 | `merge_sha` | no | The merged reference answer, when the task was mined from a PR |
 | `changed_files` | no | The reference change's files: a hint for the judge, never a gate |
+| `seeded_faults` | tests: yes (1 to 3); others: no | `[{"path", "find", "replace"}]`: a fault planted in a source file (never a test file). `find` must occur exactly once in `path` at `base_sha`. Both arms' tests must catch every fault. The agents never see it |
 
 Example:
 
 ```json
 {"id":"docs-01","repository":"smart-coder-labs/nexus-mind","base_sha":"fd3fb4077251d6c0f7910c92f5ebc7a59456d15e","task_class":"docs","title":"Document the factory operator API","description":"Write docs/factory/operator-api.md describing …","acceptance_criteria":["every endpoint, field and error code matches apps/backend/src/api/factory.rs"]}
+```
+
+A tests task:
+
+```json
+{"id":"tests-01","repository":"smart-coder-labs/nexus-mind","base_sha":"3fed74e9c9967e78d047f068c0dc173275ba8d9d","task_class":"tests","title":"Add unit tests for the graph type-filter toggle","description":"… add vitest unit tests for `toggleNodeType` …","acceptance_criteria":["toggling the only remaining visible type restores every type"],"seeded_faults":[{"path":"apps/admin/src/pages/graph/graphChrome.ts","find":"currentSet.size === 1 && currentSet.has(type)","replace":"currentSet.size === 1 || currentSet.has(type)"}]}
 ```
 
 ## Building the frozen set
@@ -72,6 +87,8 @@ Then, for each candidate:
 
 **2. "Document this existing code" tasks at one pinned commit.** These have no reference answer. Use them when the history has too few docs-only PRs. `docs-v1` is built this way: 10 tasks at `fd3fb40`. Each criterion names the code it must match (for example "routes match `factory/egress.rs`"), so the judge can verify it.
 
+**Tests tasks** ask for tests of existing, untested behavior at one pinned commit. `tests-v1` has 8 tasks on `apps/admin` (vitest) at `3fed74e`. Each has one seeded fault that a good test of the described behavior catches: flip a condition, break a boundary or a case the acceptance criteria name. Check by hand that `find` occurs exactly once at `base_sha`; the eval fails the attempt with `seeded_fault_not_found` or `seeded_fault_ambiguous` otherwise.
+
 **Freezing.** Once the first comparison has run, the file never changes. A new task set is a new file (`docs-v2.jsonl`), and results are only compared within one file.
 
 ## Running
@@ -93,10 +110,10 @@ Tasks run one at a time, because the node has room for one task pod. Each line o
 
 The last line is the summary. For each arm it gives `tasks`, `accepted`, `acceptance_rate`, `cost_usd` and `cost_per_accepted_change`, the plan's primary metric: every attempt's cost, accepted or not, divided by the number accepted. It also gives `specialist_beats_baseline`. That is true when the specialist is accepted more often, or equally often (at least once) at a lower cost per accepted change. A cost that is unknown never wins a tie.
 
-**Budget.** A docs task costs one `sonnet` run for the baseline. For the specialist it costs two `opus` steps and one `haiku` run, and each accepted-so-far attempt adds one `opus` judge call. All of it runs on the Claude subscription.
+**Budget.** A docs task costs one `sonnet` run for the baseline. For the specialist it costs two `opus` steps and one `haiku` run, and each accepted-so-far attempt adds one `opus` judge call. A tests task's specialist arm implements on `sonnet` instead, and each arm adds one commands pod (install, tests, at most 10 mutants and the seeded faults, each command under 300 s). All of it runs on the Claude subscription.
 
 ## Turning a specialist on
 
-A specialist runs in production only when the worker's `FACTORY_SPECIALISTS` names it, as in `FACTORY_SPECIALISTS=docs`. It is off by default, so the generic resolver is unchanged until the eval shows a win. Even when it is on, a specialist applies only to Claude Code issue-resolver runs whose issue labels give its class (`gateway::class_from_labels`).
+A specialist runs in production only when the worker's `FACTORY_SPECIALISTS` names it, as in `FACTORY_SPECIALISTS=docs` or `FACTORY_SPECIALISTS=docs,tests`. It is off by default, so the generic resolver is unchanged until the eval shows a win. Even when it is on, a specialist applies only to Claude Code issue-resolver runs whose issue labels give its class (`gateway::class_from_labels`).
 
-If the docs checks fail, the run ends as `blocked_policy` with code `specialist_checks_failed`. If the review rejects the change, the code is `specialist_review_rejected`. In both cases the reasons are under `specialist` and nothing is published.
+The tests specialist also needs a sandboxed run. If the specialist's checks fail, the run ends as `blocked_policy` with code `specialist_checks_failed`. If the review rejects the change, the code is `specialist_review_rejected`. In both cases the reasons are under `specialist` and nothing is published.

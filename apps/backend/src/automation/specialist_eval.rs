@@ -402,7 +402,8 @@ pub fn judge_prompt(task: &EvalTask, diff: &str) -> String {
 
 /// The production runner: a fresh checkout of `base_sha` per attempt, every
 /// model step in a sandbox pod through the egress proxy (as the worker runs
-/// them), and the docs checks on the checkout. Frontier steps here are not
+/// them), and the specialist's checks on the checkout (the tests specialist's
+/// in their own commands pod, with the task's seeded faults). Frontier steps here are not
 /// recorded as `model.selected` events: the eval is not an org's production
 /// traffic and must not use up its daily frontier cap.
 pub struct SandboxEvalRunner {
