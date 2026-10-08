@@ -18,4 +18,5 @@ pub mod shadow;
 pub mod specialist_eval;
 pub mod specialist_run;
 pub mod specialist_tests;
+pub mod specialist_ui;
 pub mod worker;

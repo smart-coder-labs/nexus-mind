@@ -81,7 +81,7 @@ const LOCKFILES: &[(&str, PackageManager)] = &[
 ];
 
 impl PackageManager {
-    fn install(self) -> &'static [&'static str] {
+    pub(crate) fn install(self) -> &'static [&'static str] {
         match self {
             PackageManager::Npm => &["npm", "ci", "--no-audit", "--no-fund"],
             PackageManager::Pnpm => &["corepack", "pnpm", "install", "--frozen-lockfile"],
@@ -92,11 +92,20 @@ impl PackageManager {
     /// Runs a package binary that the install put in `node_modules`. `npx --no`
     /// never downloads one that is missing. The sandbox image has no pnpm or
     /// yarn, only corepack, which fetches them from the npm registry.
-    fn exec(self) -> &'static [&'static str] {
+    pub(crate) fn exec(self) -> &'static [&'static str] {
         match self {
             PackageManager::Npm => &["npx", "--no"],
             PackageManager::Pnpm => &["corepack", "pnpm", "exec"],
             PackageManager::Yarn => &["corepack", "yarn"],
+        }
+    }
+
+    /// Runs one of the package's own `package.json` scripts.
+    pub(crate) fn run_script(self) -> &'static [&'static str] {
+        match self {
+            PackageManager::Npm => &["npm", "run"],
+            PackageManager::Pnpm => &["corepack", "pnpm", "run"],
+            PackageManager::Yarn => &["corepack", "yarn", "run"],
         }
     }
 }
@@ -164,7 +173,7 @@ const MAX_PACKAGES: usize = 3;
 const MAX_MUTANT_RUNS: usize = 15;
 
 /// The directory and its ancestors up to the root (`""`), nearest first.
-fn ancestors(dir: &str) -> Vec<String> {
+pub(crate) fn ancestors(dir: &str) -> Vec<String> {
     let mut out = vec![dir.to_string()];
     let mut current = dir;
     while !current.is_empty() {
@@ -174,7 +183,7 @@ fn ancestors(dir: &str) -> Vec<String> {
     out
 }
 
-fn join(dir: &str, name: &str) -> String {
+pub(crate) fn join(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_string()
     } else {
@@ -182,8 +191,20 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
-fn read_json(tree: &dyn SourceTree, path: &str) -> Option<Value> {
+pub(crate) fn read_json(tree: &dyn SourceTree, path: &str) -> Option<Value> {
     serde_json::from_str(&tree.read(path)?).ok()
+}
+
+/// Where a package installs: the nearest directory, from the package up to the
+/// repository root, that has a lockfile (a workspace package installs from the
+/// workspace root), and the package manager that lockfile names.
+pub(crate) fn locate_install(tree: &dyn SourceTree, package_dir: &str) -> Option<(String, PackageManager)> {
+    ancestors(package_dir).into_iter().find_map(|dir| {
+        LOCKFILES
+            .iter()
+            .find(|(name, _)| tree.exists(&join(&dir, name)))
+            .map(|(_, manager)| (dir.clone(), *manager))
+    })
 }
 
 /// Groups the changed tests by package. `Err` is a reason the tests cannot be
@@ -202,14 +223,7 @@ pub fn plan_groups(tree: &dyn SourceTree, tests: &[String]) -> Result<Vec<TestGr
             group.tests.push(test);
             continue;
         }
-        let (install_dir, manager) = ancestors(&package_dir)
-            .into_iter()
-            .find_map(|dir| {
-                LOCKFILES
-                    .iter()
-                    .find(|(name, _)| tree.exists(&join(&dir, name)))
-                    .map(|(_, manager)| (dir.clone(), *manager))
-            })
+        let (install_dir, manager) = locate_install(tree, &package_dir)
             .ok_or_else(|| format!("tests_lockfile_not_found: no lockfile for {}", display_dir(&package_dir)))?;
         let runner = [&package_dir, &install_dir]
             .into_iter()
@@ -225,7 +239,7 @@ pub fn plan_groups(tree: &dyn SourceTree, tests: &[String]) -> Result<Vec<TestGr
     Ok(groups)
 }
 
-fn display_dir(dir: &str) -> &str {
+pub(crate) fn display_dir(dir: &str) -> &str {
     if dir.is_empty() {
         "the repository root"
     } else {
@@ -233,7 +247,7 @@ fn display_dir(dir: &str) -> &str {
     }
 }
 
-fn pod_path(path: &str) -> String {
+pub(crate) fn pod_path(path: &str) -> String {
     if path.is_empty() {
         WORKSPACE.to_string()
     } else {
@@ -242,7 +256,7 @@ fn pod_path(path: &str) -> String {
 }
 
 /// `cd` to the first argument, then run the rest.
-const IN_DIR: &str = r#"cd "$1" && shift && exec "$@""#;
+pub(crate) const IN_DIR: &str = r#"cd "$1" && shift && exec "$@""#;
 /// Runs the tests in a package and leaves a marker when they pass.
 const RUN_TESTS: &str = r#"marker=$1; cd "$2" || exit 96; shift 2; "$@" && : > "$marker""#;
 /// Runs the tests against one mutated file and always restores it. Exits 0 when
@@ -401,7 +415,7 @@ fn fate(exit_code: Option<i32>) -> Fate {
 }
 
 /// The end of a command's output, for a failure's details.
-fn tail(run: &CommandRun) -> String {
+pub(crate) fn tail(run: &CommandRun) -> String {
     let mut text = String::from_utf8_lossy(&run.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&run.stderr));
     let text = text.trim();

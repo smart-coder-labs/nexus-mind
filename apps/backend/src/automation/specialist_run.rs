@@ -21,6 +21,7 @@ use tokio::process::Command;
 
 use crate::automation::merge_gate::ChangedFile;
 use crate::automation::specialist_tests::SeededFault;
+use crate::automation::specialist_ui::{ReviewShots, Screenshot};
 use crate::factory::specialists::{self, CheckReport, Specialist, Step, Verdict, Verification};
 use crate::store::sqlite::SqliteStore;
 
@@ -164,6 +165,8 @@ pub(crate) fn result_error(event: &Value) -> Option<&'static str> {
 #[derive(Clone, Debug)]
 pub(crate) struct Planned {
     pub plan: String,
+    /// UI only: the app routes the plan says the change shows on.
+    pub routes: Vec<String>,
     pub model: String,
     pub event: Value,
 }
@@ -177,8 +180,10 @@ pub(crate) async fn plan(env: &StepEnv<'_>, spec: &Specialist, config: &Value, m
     if let Some(code) = result_error(&event) {
         return Err(code.to_string());
     }
-    let plan = specialists::parse_plan(&super::worker::structured_result(&event))?;
-    Ok(Planned { plan, model: model.to_string(), event })
+    let structured = super::worker::structured_result(&event);
+    let plan = specialists::parse_plan(&structured)?;
+    let routes = if spec.verification == Verification::Ui { specialists::plan_routes(&structured) } else { Vec::new() };
+    Ok(Planned { plan, routes, model: model.to_string(), event })
 }
 
 /// The deterministic checks and the review of a finished change.
@@ -191,6 +196,15 @@ pub(crate) struct Finished {
     pub review: Option<Verdict>,
     pub review_model: Option<String>,
     pub review_event: Option<Value>,
+    /// UI only: the screenshots the review saw (the eval's judge sees them too).
+    pub screenshots: Vec<Screenshot>,
+}
+
+/// Every deterministic check of a change, and (UI) its screenshots.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Checked {
+    pub report: CheckReport,
+    pub screenshots: Vec<Screenshot>,
 }
 
 impl Finished {
@@ -204,12 +218,16 @@ impl Finished {
 /// failing change never spends a frontier call) the review step.
 /// `choose_review_model` is called only if the review runs, so its
 /// `model.selected` event and frontier slot are only used when needed.
-/// `seeded` are the frozen eval's planted faults (empty in production).
+/// `seeded` are the frozen eval's planted faults (empty in production);
+/// `routes` are the app routes a UI change is screenshotted on, besides the
+/// ones its fixture file hints (the plan's, and in the eval the task's).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn verify_and_review(
     env: &StepEnv<'_>,
     spec: &'static Specialist,
     config: &Value,
     plan: &str,
+    routes: &[String],
     seeded: &[SeededFault],
     choose_review_model: impl FnOnce() -> String,
 ) -> Result<Finished, String> {
@@ -217,42 +235,63 @@ pub(crate) async fn verify_and_review(
     if changed.iter().all(|file| file.filename == "PENDING.md") {
         return Ok(Finished { changed, ..Default::default() });
     }
-    let checks = run_checks(env, spec, &changed, seeded).await?;
+    let Checked { report: checks, screenshots } = run_checks(env, spec, &changed, seeded, routes).await?;
     if !checks.passed {
-        return Ok(Finished { changed, checks: Some(checks), ..Default::default() });
+        return Ok(Finished { changed, checks: Some(checks), screenshots, ..Default::default() });
     }
+    // The change's files and diff are taken before the screenshots land in the
+    // checkout, and the screenshots leave it when `shots` drops after the step.
     let diff = checkout_diff(env.workdir, &changed).await.map_err(|_| "diff_inspection_failed".to_string())?;
+    let shots = ReviewShots::write(env.workdir, &screenshots).map_err(|_| "ui_screenshots_unwritable".to_string())?;
     let model = choose_review_model();
-    let prompt = specialists::review_prompt(spec, config, plan, &diff, &checks.advisories());
+    let prompt = specialists::review_prompt(spec, config, plan, &diff, &checks.advisories(), &shots.descriptions);
     let event = run_step(env, Step::Review, &prompt, &model, false, READ_ONLY_MAX_TURNS, READ_ONLY_WALL)
         .await
         .map_err(|error| error.to_string())?;
+    drop(shots);
     // A review that failed rejects (fail closed) and keeps its event, so its cost
     // still reaches telemetry.
     let review = match result_error(&event) {
         Some(code) => Verdict { accept: false, reasons: vec![code.to_string()] },
         None => specialists::parse_verdict(&super::worker::structured_result(&event)),
     };
-    Ok(Finished { changed, checks: Some(checks), review: Some(review), review_model: Some(model), review_event: Some(event) })
+    Ok(Finished {
+        changed,
+        checks: Some(checks),
+        review: Some(review),
+        review_model: Some(model),
+        review_event: Some(event),
+        screenshots,
+    })
 }
 
 /// Every deterministic check of a change: the in-worker checks, then, for a
-/// specialist whose checks run the repository's code (tests) and only when the
-/// in-worker ones pass, the execution checks in a sandbox commands pod. Both
-/// land in one report, so the review step and the eval treat them alike.
+/// specialist whose checks run the repository's code (tests, UI) and only when
+/// the in-worker ones pass, the execution checks in a sandbox commands pod.
+/// Both land in one report, so the review step and the eval treat them alike.
 pub(crate) async fn run_checks(
     env: &StepEnv<'_>,
     spec: &'static Specialist,
     changed: &[ChangedFile],
     seeded: &[SeededFault],
-) -> Result<CheckReport, String> {
+    routes: &[String],
+) -> Result<Checked, String> {
     let report = check_checkout(spec, env.workdir, changed).await?;
     if !report.passed || !spec.verification.runs_repository_code() {
-        return Ok(report);
+        return Ok(Checked { report, screenshots: Vec::new() });
     }
     let mut checks = report.checks;
-    checks.extend(super::specialist_tests::run_checks(env, changed, seeded).await?);
-    Ok(CheckReport::from_checks(checks))
+    let mut screenshots = Vec::new();
+    match spec.verification {
+        Verification::Tests => checks.extend(super::specialist_tests::run_checks(env, changed, seeded).await?),
+        Verification::Ui => {
+            let (ui, images) = super::specialist_ui::run_checks(env, changed, routes).await?;
+            checks.extend(ui);
+            screenshots = images;
+        }
+        Verification::Docs => {}
+    }
+    Ok(Checked { report: CheckReport::from_checks(checks), screenshots })
 }
 
 /// Runs the specialist's in-worker checks on a checkout. Indexing reads every
@@ -269,8 +308,9 @@ pub(crate) async fn check_checkout(
             base.insert(file.filename.clone(), content);
         }
     }
-    if spec.verification == Verification::Tests {
-        // The tests checks read only the changed files: nothing to index.
+    if matches!(spec.verification, Verification::Tests | Verification::Ui) {
+        // The tests and UI checks read only the changed files and their
+        // packages: nothing to index.
         let view = specialists::CheckoutView::unindexed(workdir, base);
         return Ok(specialists::verify(spec, changed, &view));
     }
@@ -314,6 +354,7 @@ pub(crate) fn apply(
         "checks": finished.and_then(|f| f.checks.clone()),
         "review": finished.and_then(|f| f.review.clone()),
         "review_model": finished.and_then(|f| f.review_model.clone()),
+        "screenshots": finished.map(|f| f.screenshots.iter().map(|s| s.file.clone()).collect::<Vec<_>>()).unwrap_or_default(),
     });
     if let Some(finished) = finished.filter(|f| !f.accepted()) {
         let code = if finished.checks.as_ref().is_some_and(|c| !c.passed) {
@@ -443,6 +484,7 @@ mod tests {
     fn planned() -> Planned {
         Planned {
             plan: "p".into(),
+            routes: Vec::new(),
             model: "opus".into(),
             event: json!({"type": "result", "result": "{\"plan\":\"p\"}", "total_cost_usd": 0.5}),
         }

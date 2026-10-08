@@ -3798,7 +3798,7 @@ async fn specialist_finish(
     };
     let finished = tokio::select! {
         _ = run_stop_signal(store, claim) => Err("cancelled_by_operator".to_string()),
-        finished = super::specialist_run::verify_and_review(env, spec, runtime_config, &planned.plan, &[], review_model) => finished,
+        finished = super::specialist_run::verify_and_review(env, spec, runtime_config, &planned.plan, &planned.routes, &[], review_model) => finished,
     };
     match finished {
         Ok(finished) => super::specialist_run::apply(spec, planned, Some(&finished), outcome),
