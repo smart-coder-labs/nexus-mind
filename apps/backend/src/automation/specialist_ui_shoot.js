@@ -190,8 +190,10 @@ async function shoot(browser, shot) {
       page.errors.push(short(error.message, 300))
       return page
     }
+    // The app answered with an error: the change may have broken the route.
+    // Only a navigation that got no response at all is "unreachable".
     if (response && response.status() >= 400) {
-      page.status = 'unreachable'
+      page.status = 'http_error'
       page.errors.push(`HTTP ${response.status()}`)
       return page
     }

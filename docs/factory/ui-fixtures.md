@@ -80,10 +80,11 @@ The images come back on the pod's stdout, one framed base64 line each. The worke
 | Install, `typecheck`, `build`, `lint` or tests fail | **Blocking** (`ui_build`, `ui_lint`, `ui_tests`) |
 | A page throws an uncaught error | **Blocking** (`ui_screenshots`) |
 | A page renders an empty body (no text, no image, no control) | **Blocking** |
+| A route answers with an HTTP error (4xx or 5xx) | **Blocking**: the change may have broken it |
 | The screenshot script fails after the fixture file exists, or Playwright is missing from the image | **Blocking**: the change cannot be shown, so it is not accepted |
 | No `build`, `lint` or `test` script | Advisory: listed as skipped |
 | No fixture file, or an invalid one (the finding names the problem) | Advisory |
 | The app is neither Vite nor Next.js | Advisory |
-| The app could not be served, a route could not be loaded, a page redirected (for example to `/login`), an image is missing or over the cap, or the time ran out | Advisory |
+| The app could not be served, a route got no response at all, a page redirected (for example to `/login`), an image is missing or over the cap, or the time ran out | Advisory |
 
 The review sees every advisory finding and judges those pages from the code instead. A blocking finding stops the change before the review.

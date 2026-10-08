@@ -715,6 +715,7 @@ fn judge_screenshots(plan: &UiPlan, run: &CommandRun, build_failed: bool) -> (Ch
             "ok" => {}
             "page_error" => blocking.push(format!("{}: uncaught error: {errors}", label(&page.name))),
             "blank" => blocking.push(format!("{}: the page rendered a blank body", label(&page.name))),
+            "http_error" => blocking.push(format!("{}: the app answered {errors}", label(&page.name))),
             _ => advisory.push(format!("{}: could not be loaded: {errors}", label(&page.name))),
         }
         if let Some(path) = page.final_path.as_deref() {
@@ -733,7 +734,7 @@ fn judge_screenshots(plan: &UiPlan, run: &CommandRun, build_failed: bool) -> (Ch
         let returned = images.iter().any(|image| image.file.starts_with(&format!("{}.", shot.name)));
         if !reported {
             advisory.push(format!("{}: not captured", label(&shot.name)));
-        } else if !returned && result.pages.iter().any(|page| page.name == shot.name && page.status != "unreachable") {
+        } else if !returned && result.pages.iter().any(|page| page.name == shot.name && !["unreachable", "http_error"].contains(&page.status.as_str())) {
             advisory.push(format!("{}: no valid image returned", label(&shot.name)));
         }
     }
@@ -1130,6 +1131,10 @@ mod tests_ui {
         assert_eq!(thrown.details[0], "/tasks (mobile, light): uncaught error: x is undefined");
         let blank = check_of(shots_run(json!({"served": true, "pages": [page("r0-mobile-light", "blank"), page("r0-desktop-light", "ok")]}), &both));
         assert!(!blank.passed && !blank.advisory);
+        // The app answering an HTTP error blocks: the change may have broken the route.
+        let errored = check_of(shots_run(json!({"served": true, "pages": [page("r0-mobile-light", "http_error"), page("r0-desktop-light", "ok")]}), &both[1..]));
+        assert!(!errored.passed && !errored.advisory, "{errored:?}");
+        assert!(errored.details.iter().all(|d| !d.contains("no valid image")), "{errored:?}");
         // The script failing is blocking; so is a fatal (no browser).
         let crashed = check_of(CommandRun { exit_code: Some(1), stderr: b"TypeError: boom".to_vec(), ..Default::default() });
         assert!(!crashed.passed && !crashed.advisory && crashed.details[0].contains("TypeError: boom"), "{crashed:?}");
