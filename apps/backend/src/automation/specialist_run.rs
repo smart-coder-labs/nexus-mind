@@ -45,6 +45,10 @@ pub(crate) struct StepEnv<'a> {
 /// holding the run.
 const READ_ONLY_WALL: Duration = Duration::from_secs(900);
 const READ_ONLY_MAX_TURNS: u64 = 40;
+/// The review reads the change and the code around it (for tests, the code
+/// under test too), so it gets more turns than the plan. The eval judge uses
+/// the same budget.
+pub(crate) const REVIEW_MAX_TURNS: u64 = 60;
 
 /// Transcript offsets of the steps within the run's range. The resolver's own
 /// invocation and its retries use `seq_base + retry * 100_000` (at most 3).
@@ -161,6 +165,20 @@ pub(crate) fn result_error(event: &Value) -> Option<&'static str> {
     Some(if text.contains("limit") { "claude_usage_limited" } else { "claude_api_error" })
 }
 
+/// The verdict in a review or judge step's result. An unreadable one rejects
+/// (fail closed) and says why: the step ran out of turns before answering, or
+/// its answer held no verdict object.
+pub(crate) fn verdict_of(event: &Value) -> Verdict {
+    if event.get("subtype").and_then(Value::as_str) == Some("error_max_turns") {
+        return Verdict { accept: false, reasons: vec!["verdict_unreadable:max_turns".into()] };
+    }
+    let mut verdict = specialists::parse_verdict(&super::worker::structured_result(event));
+    if verdict.reasons == ["verdict_unreadable"] {
+        verdict.reasons = vec!["verdict_unreadable:no_json".into()];
+    }
+    verdict
+}
+
 /// The planning step's outcome.
 #[derive(Clone, Debug)]
 pub(crate) struct Planned {
@@ -245,7 +263,7 @@ pub(crate) async fn verify_and_review(
     let shots = ReviewShots::write(env.workdir, &screenshots).map_err(|_| "ui_screenshots_unwritable".to_string())?;
     let model = choose_review_model();
     let prompt = specialists::review_prompt(spec, config, plan, &diff, &checks.advisories(), &shots.descriptions);
-    let event = run_step(env, Step::Review, &prompt, &model, false, READ_ONLY_MAX_TURNS, READ_ONLY_WALL)
+    let event = run_step(env, Step::Review, &prompt, &model, false, REVIEW_MAX_TURNS, READ_ONLY_WALL)
         .await
         .map_err(|error| error.to_string())?;
     drop(shots);
@@ -253,7 +271,7 @@ pub(crate) async fn verify_and_review(
     // still reaches telemetry.
     let review = match result_error(&event) {
         Some(code) => Verdict { accept: false, reasons: vec![code.to_string()] },
-        None => specialists::parse_verdict(&super::worker::structured_result(&event)),
+        None => verdict_of(&event),
     };
     Ok(Finished {
         changed,
@@ -581,5 +599,17 @@ mod tests {
         assert_eq!(result_error(&turns), None);
         let ok = json!({"type": "result", "subtype": "success", "is_error": false, "result": "rate limit docs updated"});
         assert_eq!(result_error(&ok), None);
+    }
+
+    #[test]
+    fn an_unreadable_verdict_says_why() {
+        let out_of_turns = json!({"type": "result", "subtype": "error_max_turns", "is_error": true});
+        assert_eq!(verdict_of(&out_of_turns).reasons, ["verdict_unreadable:max_turns"]);
+        let prose = json!({"type": "result", "subtype": "success", "result": "I looked at the change and it is fine."});
+        assert_eq!(verdict_of(&prose).reasons, ["verdict_unreadable:no_json"]);
+        let wrapped = json!({"type": "result", "subtype": "success",
+            "result": "The test uses `{}` as a fixture.\n{\"verdict\":\"reject\",\"reasons\":[\"a.test.ts:3 asserts nothing\"]}\nDone."});
+        let verdict = verdict_of(&wrapped);
+        assert!(!verdict.accept && verdict.reasons == ["a.test.ts:3 asserts nothing"], "{verdict:?}");
     }
 }
