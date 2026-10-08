@@ -714,6 +714,66 @@ mod tests {
         assert_eq!(validate_task(&docs).unwrap_err().to_string(), "seeded_faults_unexpected");
     }
 
+    fn ui_task() -> EvalTask {
+        serde_json::from_value(json!({
+            "id": "ui-01",
+            "repository": "smart-coder-labs/nexus-mind",
+            "base_sha": "fd3fb4077251d6c0f7910c92f5ebc7a59456d15e",
+            "task_class": "ui",
+            "title": "Show an empty state on the tasks board",
+            "description": "When there are no tasks, show a friendly empty state.",
+            "routes": ["/tasks"]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn ui_tasks_name_their_routes_and_carry_no_seeded_faults() {
+        let ui = ui_task();
+        assert_eq!(validate_task(&ui).unwrap().id, "ui");
+        assert_eq!(task_config(&ui)["issue"]["labels"], json!(["ui"]));
+        assert!(validate_task(&EvalTask { routes: vec![], ..ui_task() }).is_ok(), "routes are optional");
+        for (mutate, code) in [
+            (Box::new(|t: &mut EvalTask| t.routes = vec!["tasks".into()]) as Box<dyn Fn(&mut EvalTask)>, "invalid_routes"),
+            (Box::new(|t: &mut EvalTask| t.routes = vec!["/a".into(), "/b".into(), "/c".into(), "/d".into()]), "invalid_routes"),
+            (Box::new(|t: &mut EvalTask| t.seeded_faults = tests_task().seeded_faults), "seeded_faults_unexpected"),
+        ] {
+            let mut bad = ui_task();
+            mutate(&mut bad);
+            assert_eq!(validate_task(&bad).unwrap_err().to_string(), code);
+        }
+        let docs_with_routes = EvalTask { routes: vec!["/".into()], ..task("docs-01") };
+        assert_eq!(validate_task(&docs_with_routes).unwrap_err().to_string(), "invalid_routes");
+        // The judge is pointed at the screenshots, and only when there are some.
+        let shots = ["`.nm-ui-review/r0-desktop-light.png` (route `/tasks`, desktop 1280x800, light theme)".to_string()];
+        let prompt = judge_prompt(&ui, "+<EmptyState />", &shots);
+        assert!(prompt.contains("Open EACH one with the Read tool") && prompt.contains("r0-desktop-light.png"));
+        assert!(!judge_prompt(&ui, "+<EmptyState />", &[]).contains("Read tool"));
+    }
+
+    #[test]
+    fn a_ui_attempt_whose_page_breaks_is_not_accepted() {
+        let broken = Attempt {
+            changed: vec![file("apps/admin/src/pages/Tasks.tsx")],
+            checks: Some(CheckReport::from_checks(vec![
+                CheckOutcome { name: "ui_paths_only", passed: true, advisory: false, details: vec![] },
+                CheckOutcome { name: "ui_build", passed: true, advisory: false, details: vec![] },
+                CheckOutcome { name: "ui_lint", passed: false, advisory: true, details: vec!["skipped: no `lint` script".into()] },
+                CheckOutcome {
+                    name: "ui_screenshots",
+                    passed: false,
+                    advisory: false,
+                    details: vec!["/tasks (mobile, light): uncaught error: x is undefined".into()],
+                },
+            ])),
+            ..good_attempt(0.2)
+        };
+        assert_eq!(
+            deterministic_failures(&broken),
+            ["checks:ui_screenshots: /tasks (mobile, light): uncaught error: x is undefined"]
+        );
+    }
+
     #[test]
     fn a_tests_attempt_whose_tests_miss_the_seeded_fault_is_not_accepted() {
         let failing = Attempt {

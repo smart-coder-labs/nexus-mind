@@ -1135,6 +1135,93 @@ mod tests {
         assert!(verify(&TESTS, &[renamed_test], &files).passed);
     }
 
+    #[test]
+    fn the_ui_specialist_needs_a_sandbox_implements_on_sonnet_and_plans_routes() {
+        let on = labels(&["ui"]);
+        assert_eq!(select("github_issue_resolver", "claude", &labels(&["frontend"]), &on, true), Some(&UI));
+        assert_eq!(select("github_issue_resolver", "claude", &labels(&["ui"]), &on, false), None, "it builds the app: never in the worker");
+        assert_eq!(select("github_issue_resolver", "claude", &labels(&["ui"]), &labels(&["docs"]), true), None);
+        let facts = RunFacts { class: Some(TaskClass::Ui), ..facts() };
+        assert_eq!(choose_step(&UI, Step::Plan, &facts).model, "opus");
+        assert_eq!(choose_step(&UI, Step::Implement, &facts).model, "sonnet");
+        assert_eq!(choose_step(&UI, Step::Review, &facts).model, "opus");
+        assert!(plan_prompt(&UI, &json!({})).contains("\"routes\":["));
+        assert!(!plan_prompt(&DOCS, &json!({})).contains("\"routes\""), "only the UI plan names routes");
+        let structured = json!({"plan": "p", "routes": ["/tasks", "/tasks", "tasks", "//evil.example", "/a/../b", "/x y", "/memories?tab=pinned", "/b", "/c"]});
+        assert_eq!(plan_routes(&structured), ["/tasks", "/memories?tab=pinned", "/b"]);
+        assert!(plan_routes(&json!({"plan": "p"})).is_empty());
+        let shots = ["`.nm-ui-review/r0-mobile-light.png` (route `/tasks`, phone 390x844, light theme)".to_string()];
+        let review = review_prompt(&UI, &json!({}), "p", "d", &[], &shots);
+        assert!(review.contains("Open EACH one with the Read tool") && review.contains("r0-mobile-light.png"));
+        assert!(!review_prompt(&UI, &json!({}), "p", "d", &[], &[]).contains("Read tool"));
+    }
+
+    #[test]
+    fn ui_changes_stay_in_one_packages_ui_sources() {
+        let repo = FakeRepo::default()
+            .with("apps/admin/package.json", "{}")
+            .with("apps/landing/package.json", "{}")
+            .with("package.json", "{}");
+        let ok = verify(
+            &UI,
+            &[
+                added("apps/admin/src/pages/Tasks.tsx"),
+                added("apps/admin/src/pages/Tasks.test.tsx"),
+                added("apps/admin/src/index.css"),
+                added("apps/admin/src/assets/empty.svg"),
+                added("apps/admin/src/hooks/useThing.ts"),
+                added("PENDING.md"),
+            ],
+            &repo,
+        );
+        assert!(ok.passed, "{:?}", ok.failures());
+        for path in [
+            "apps/admin/package.json",
+            "apps/admin/package-lock.json",
+            "apps/admin/vite.config.ts",
+            "apps/admin/src/vite.config.ts",
+            "apps/admin/tsconfig.app.json",
+            "apps/admin/src/tsconfig.json",
+            "apps/admin/.factory/ui-fixtures.json",
+            "apps/admin/src/.factory/x.ts",
+            "apps/admin/index.html",
+            "apps/admin/public/logo.png",
+            "apps/admin/src/data.json",
+            "apps/admin/src/__snapshots__/a.tsx",
+            "apps/admin/src/skills/x.md",
+            "apps/backend/src/main.rs",
+            "libs/ui/src/Button.tsx",
+            "apps/admin/src/../../backend/src/x.ts",
+            ".github/workflows/ci.yml",
+            "CLAUDE.md",
+        ] {
+            let report = verify(&UI, &[added(path)], &repo);
+            assert!(!check(&report, "ui_paths_only").passed, "{path}");
+        }
+        // The root package's own src/ is fine.
+        assert!(verify(&UI, &[added("src/App.tsx")], &repo).passed);
+        let spread = verify(&UI, &[added("apps/admin/src/a.tsx"), added("apps/landing/src/b.tsx")], &repo);
+        assert_eq!(
+            check(&spread, "ui_paths_only").details,
+            ["changes span 2 packages (apps/admin, apps/landing); a UI change stays in one"]
+        );
+        let removed = |path: &str| ChangedFile { status: "removed".into(), ..added(path) };
+        let few = [added("apps/admin/src/a.tsx"), removed("apps/admin/src/b.tsx"), removed("apps/admin/src/c.tsx"), removed("apps/admin/src/d.svg")];
+        assert!(verify(&UI, &few, &repo).passed, "up to three deletions");
+        let many = [&few[..], &[removed("apps/admin/src/e.tsx")]].concat();
+        assert_eq!(check(&verify(&UI, &many, &repo), "ui_paths_only").details, ["removes 4 files; at most 3"]);
+        assert_eq!(
+            check(&verify(&UI, &[removed("apps/admin/src/b.tsx")], &repo), "ui_paths_only").details,
+            ["no UI file added or changed"]
+        );
+        let renamed = ChangedFile {
+            filename: "apps/admin/src/Tasks.tsx".into(),
+            status: "renamed".into(),
+            previous_filename: Some("apps/admin/vite.config.ts".into()),
+        };
+        assert!(!verify(&UI, &[renamed], &repo).passed, "both sides of a rename count");
+    }
+
     fn facts<'a>() -> RunFacts<'a> {
         RunFacts { template_key: "github_issue_resolver", class: Some(TaskClass::Docs), frontier_cap: 20, ..Default::default() }
     }
