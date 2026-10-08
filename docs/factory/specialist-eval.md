@@ -9,7 +9,7 @@ Every task runs twice from the same `base_sha`, both times in the sandbox (task 
 | Arm | Steps | Models |
 |---|---|---|
 | `baseline` | The resolver's fixed prompt, one invocation | Standard tier (`sonnet`) |
-| `specialist` | Plan, then implement, then the specialist's checks, then review | Plan and review on the frontier tier (`opus`); the docs specialist implements on the cheap tier (`haiku`), the tests specialist on the standard tier (`sonnet`) |
+| `specialist` | Plan, then implement, then the specialist's checks, then review | Plan and review on the frontier tier (`opus`); the docs specialist implements on the cheap tier (`haiku`), the tests and UI specialists on the standard tier (`sonnet`) |
 
 Each specialist step is a separate Claude Code invocation with its own `--model`. In production every step records its own `model.selected` event, so the daily frontier cap (`FACTORY_FRONTIER_RUNS_PER_DAY`, 20 by default) counts the plan and review steps. The eval records no events: it is not an org's production traffic, and it must not use up the org's frontier cap.
 
@@ -33,8 +33,17 @@ An attempt is accepted only if all of these hold:
    - `seeded_fault_caught` (eval only): the same tests rerun with each of the task's `seeded_faults` applied, and must fail on every one.
 
    These checks run only when `test_paths_only` passes, and only in a sandbox: the worker never runs repository code, and without a sandbox the generic resolver keeps the task.
+
+   For UI (`apps/backend/src/automation/specialist_ui.rs`), the checks are:
+   - `ui_paths_only`: every changed path, on both sides of a rename, is a `.tsx`, `.jsx`, `.ts`, `.css`, `.scss`, `.svg` or `.png` file under the `src/` of a package with a `package.json` (colocated tests included). Tool configuration (`vite.config.*`, `tsconfig*`, `next.config.*`, `tailwind.config.*`, ESLint configs, …), `.factory/`, snapshots and never-eligible paths fail. All changed files are in one package, at least one is added or changed, and at most 3 are removed: more is a refactor, outside the specialist's scope.
+   - `ui_build`: in one sandbox commands pod, the package installs from its lockfile (as for tests) and its `typecheck` and `build` scripts pass.
+   - `ui_lint`: its `lint` script passes.
+   - `ui_tests`: its `test` script passes (or `vitest run` / `jest` when it depends on one without a script).
+   - `ui_screenshots`: after a passing build, the build is served (`vite preview` or `next start`) and up to 3 routes are captured at 390×844 and 1280×800 with the API answered from the package's `.factory/ui-fixtures.json` ([ui-fixtures.md](ui-fixtures.md)). A page that throws an uncaught error or renders a blank body, or a screenshot script that fails, blocks. No fixture file, an unservable app or route, or a redirect is advisory.
+
+   A missing `build`, `lint` or `test` script is an advisory finding. The routes are the task's `routes` (both arms), the plan's (specialist arm) and the fixture file's `route_hints` for the changed files. The screenshots go to the specialist's review and to the judge, for both arms.
 4. On the specialist arm, the specialist's own review accepted the change.
-5. An independent Opus judge accepted it. The judge reads the checkout, the task, its acceptance criteria and the diff, and answers `{"verdict":"accept|reject","reasons":[…]}`. Anything else counts as a reject.
+5. An independent Opus judge accepted it. The judge reads the checkout, the task, its acceptance criteria and the diff (and, for UI, opens the screenshots), and answers `{"verdict":"accept|reject","reasons":[…]}`. Anything else counts as a reject.
 
 The judge runs only when steps 1 to 4 pass, so a failing change costs no judge call.
 
@@ -52,6 +61,7 @@ The task file is JSONL, one task per line. Eval data lives **outside the reposit
 | `acceptance_criteria` | no | A list of strings, appended to the issue body and given to the judge |
 | `merge_sha` | no | The merged reference answer, when the task was mined from a PR |
 | `changed_files` | no | The reference change's files: a hint for the judge, never a gate |
+| `routes` | UI: no (at most 3); others: no | App routes both arms' changes are screenshotted on, besides the fixture file's hints and the plan's routes |
 | `seeded_faults` | tests: yes (1 to 3); others: no | `[{"path", "find", "replace"}]`: a fault planted in a source file (never a test file). `find` must occur exactly once in `path` at `base_sha`. Both arms' tests must catch every fault. The agents never see it |
 
 Example:
@@ -91,6 +101,14 @@ Then, for each candidate:
 
 **Tests tasks** ask for tests of existing, untested behavior at one pinned commit. `tests-v1` has 8 tasks on `apps/admin` (vitest) at `3fed74e`. Each has one seeded fault that a good test of the described behavior catches: flip a condition, break a boundary or a case the acceptance criteria name. Check by hand that `find` occurs exactly once at `base_sha`; the eval fails the attempt with `seeded_fault_not_found` or `seeded_fault_ambiguous` otherwise.
 
+**UI tasks** ask for small changes on `apps/admin` at one pinned commit: copy, an empty state, a responsive fix, a badge or style change. `ui-v1` has 6 tasks at `3607961`. Each names the route the change shows on, and its criteria say what must be visible, so the judge can check the screenshots.
+
+A UI task:
+
+```json
+{"id":"ui-01","repository":"smart-coder-labs/nexus-mind","base_sha":"36079610cb4494c9d6e2e45a906ef68c5dda9be8","task_class":"ui","title":"Tasks: show an empty state when no task matches","description":"…","acceptance_criteria":["…"],"routes":["/tasks"]}
+```
+
 **Freezing.** Once the first comparison has run, the file never changes. A new task set is a new file (`docs-v2.jsonl`), and results are only compared within one file.
 
 ## Running
@@ -112,10 +130,10 @@ Tasks run one at a time, because the node has room for one task pod. Each line o
 
 The last line is the summary. For each arm it gives `tasks`, `accepted`, `acceptance_rate`, `cost_usd` and `cost_per_accepted_change`, the plan's primary metric: every attempt's cost, accepted or not, divided by the number accepted. It also gives `specialist_beats_baseline`. That is true when the specialist is accepted more often, or equally often (at least once) at a lower cost per accepted change. A cost that is unknown never wins a tie.
 
-**Budget.** A docs task costs one `sonnet` run for the baseline. For the specialist it costs two `opus` steps and one `haiku` run, and each accepted-so-far attempt adds one `opus` judge call. A tests task's specialist arm implements on `sonnet` instead, and each arm adds one commands pod (install, tests, at most 10 mutants and the seeded faults, each command under 300 s). All of it runs on the Claude subscription.
+**Budget.** A docs task costs one `sonnet` run for the baseline. For the specialist it costs two `opus` steps and one `haiku` run, and each accepted-so-far attempt adds one `opus` judge call. A tests task's specialist arm implements on `sonnet` instead, and each arm adds one commands pod (install, tests, at most 10 mutants and the seeded faults, each command under 300 s). A UI task's specialist arm implements on `sonnet` too, and each arm adds one commands pod (install, build, lint, tests and screenshots, each command under 300 s). All of it runs on the Claude subscription.
 
 ## Turning a specialist on
 
 A specialist runs in production only when the worker's `FACTORY_SPECIALISTS` names it, as in `FACTORY_SPECIALISTS=docs` or `FACTORY_SPECIALISTS=docs,tests`. It is off by default, so the generic resolver is unchanged until the eval shows a win. Even when it is on, a specialist applies only to Claude Code issue-resolver runs whose issue labels give its class (`gateway::class_from_labels`).
 
-The tests specialist also needs a sandboxed run. If the specialist's checks fail, the run ends as `blocked_policy` with code `specialist_checks_failed`. If the review rejects the change, the code is `specialist_review_rejected`. In both cases the reasons are under `specialist` and nothing is published.
+The tests and UI specialists also need a sandboxed run. If the specialist's checks fail, the run ends as `blocked_policy` with code `specialist_checks_failed`. If the review rejects the change, the code is `specialist_review_rejected`. In both cases the reasons are under `specialist` and nothing is published.
