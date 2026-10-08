@@ -5950,9 +5950,35 @@ fn parse_lenient_json(text: &str) -> Option<serde_json::Value> {
     }
     let start = unfenced.find('{')?;
     let end = unfenced.rfind('}')?;
-    (end > start)
+    if let Some(value) = (end > start)
         .then(|| serde_json::from_str::<serde_json::Value>(&unfenced[start..=end]).ok())
         .flatten()
+    {
+        return Some(value);
+    }
+    last_json_object(unfenced)
+}
+
+/// The last complete JSON object in prose that also holds braces elsewhere
+/// (code in backticks, a `{}` mentioned before or after the answer), which
+/// defeats the first-`{`-to-last-`}` slice. Each `{` that starts a parseable
+/// object is taken whole, then the scan resumes after it, so an object nested
+/// in an earlier one is never mistaken for the answer.
+fn last_json_object(text: &str) -> Option<serde_json::Value> {
+    let mut found = None;
+    let mut from = 0;
+    while let Some(offset) = text[from..].find('{') {
+        let start = from + offset;
+        let mut stream = serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+        match stream.next() {
+            Some(Ok(value)) if value.is_object() => {
+                found = Some(value);
+                from = start + stream.byte_offset();
+            }
+            _ => from = start + 1,
+        }
+    }
+    found
 }
 
 /// Build a QA GitHub-issue body (kasymir issue structure: Severity/Type/Module/
@@ -7817,6 +7843,21 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn lenient_json_finds_the_answer_among_prose_with_braces() {
+        use super::parse_lenient_json;
+        use serde_json::json;
+        // The plain cases keep working.
+        assert_eq!(parse_lenient_json("{\"a\":1}"), Some(json!({"a": 1})));
+        assert_eq!(parse_lenient_json("```json\n{\"a\":1}\n```"), Some(json!({"a": 1})));
+        assert_eq!(parse_lenient_json("Here: {\"a\":1} done"), Some(json!({"a": 1})));
+        // Braces in the prose around the answer: the last whole object wins, and
+        // an object nested inside it is not mistaken for the answer.
+        let text = "It returns `{}` when empty.\n{\"verdict\":\"accept\",\"meta\":{\"n\":1}}\nSee {x}.";
+        assert_eq!(parse_lenient_json(text), Some(json!({"verdict": "accept", "meta": {"n": 1}})));
+        assert_eq!(parse_lenient_json("no json {here"), None);
+    }
 
     #[test]
     fn an_allow_on_an_untrusted_intake_pull_is_held_for_a_person() {

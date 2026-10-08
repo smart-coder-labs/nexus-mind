@@ -458,7 +458,7 @@ pub struct SandboxEvalRunner {
 
 /// Read-only steps (the judge) get this budget.
 const JUDGE_WALL: Duration = Duration::from_secs(900);
-const JUDGE_MAX_TURNS: u64 = 40;
+const JUDGE_MAX_TURNS: u64 = super::specialist_run::REVIEW_MAX_TURNS;
 
 impl SandboxEvalRunner {
     async fn checkout(&self, task: &EvalTask) -> anyhow::Result<tempfile::TempDir> {
@@ -626,7 +626,7 @@ impl EvalRunner for SandboxEvalRunner {
             anyhow::bail!(code)
         }
         Ok(Judgement {
-            verdict: specialists::parse_verdict(&super::worker::structured_result(&event)),
+            verdict: super::specialist_run::verdict_of(&event),
             usage: Some(StepUsage::from_event("judge", model, &event)),
         })
     }
