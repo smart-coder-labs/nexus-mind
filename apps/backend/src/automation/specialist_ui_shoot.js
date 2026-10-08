@@ -241,7 +241,12 @@ async function main() {
   }
   if (!(await serve())) return finish(0)
   result.served = true
-  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], timeout: Math.min(60000, left()) })
+  // A pod's /dev/shm is small: Chromium crashes on large pages unless it uses /tmp.
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    timeout: Math.min(60000, left()),
+  })
   try {
     for (const shot of config.shots) {
       if (left() < 15000) {
