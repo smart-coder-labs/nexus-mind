@@ -1192,6 +1192,20 @@ mod tests_ui {
     }
 
     #[test]
+    fn the_admin_apps_fixture_file_is_valid() {
+        let fixtures = parse_fixtures(include_str!("../../../admin/.factory/ui-fixtures.json")).unwrap();
+        assert_eq!(fixtures.themes, ["light"], "the admin has one theme and no switch");
+        let boot = fixtures.fixtures.iter().find(|f| f.path == "/v1/admin/auth/me").expect("the session fixture");
+        assert_eq!(boot.json["user"]["role"], "admin", "renders as a logged-in admin");
+        let changed = paths(&["apps/admin/src/pages/Tasks.tsx", "apps/admin/src/pages/Users.tsx"]);
+        assert_eq!(select_routes(&fixtures, "apps/admin", &changed, &[]), ["/tasks", "/users"]);
+        // Fake data only: example domains, no real names.
+        let raw = include_str!("../../../admin/.factory/ui-fixtures.json");
+        let emails: Vec<&str> = raw.split('"').filter(|s| s.contains('@')).collect();
+        assert!(!emails.is_empty() && emails.iter().all(|e| e.ends_with("@example.test")), "{emails:?}");
+    }
+
+    #[test]
     fn the_server_follows_the_dependencies() {
         assert_eq!(server_of(&json!({"devDependencies": {"vite": "5"}})), Some(Server::Vite));
         assert_eq!(server_of(&json!({"dependencies": {"next": "15", "vite": "5"}})), Some(Server::Next));
