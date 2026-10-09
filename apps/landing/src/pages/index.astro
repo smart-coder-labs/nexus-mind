@@ -27,9 +27,9 @@ const nav=[['Producto','#producto'],['Cómo funciona','#como-funciona'],['Equipo
       <a class="sc-brand" href="#contenido" aria-label="NexusMind, inicio"><span class="sc-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Nexus<span>Mind</span></a>
       <nav class="sc-desktop-nav" aria-label="Navegación principal">{nav.map(([label,href])=><a href={href}>{label}</a>)}</nav>
       <div class="sc-nav-actions">
-        <a class="sc-compare" href={repository.url}>GitHub <Icon name="external"/></a>
+        <a class="sc-compare" href={repository.url} target="_blank" rel="noopener noreferrer">GitHub <Icon name="external"/></a>
         <button id="sc-theme" type="button" aria-label="Modo oscuro" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
-        <details class="sc-menu"><summary>Menú <Icon name="plus"/></summary><nav aria-label="Navegación móvil">{nav.map(([label,href])=><a href={href}>{label}</a>)}<a href={repository.url}>GitHub</a></nav></details>
+        <details class="sc-menu"><summary>Menú <Icon name="plus"/></summary><nav aria-label="Navegación móvil">{nav.map(([label,href])=><a href={href}>{label}</a>)}<a href={repository.url} target="_blank" rel="noopener noreferrer">GitHub</a></nav></details>
       </div>
     </div>
   </header>
@@ -42,7 +42,7 @@ const nav=[['Producto','#producto'],['Cómo funciona','#como-funciona'],['Equipo
         <div class="sc-hero-copy">
           <h1>Tus herramientas AI.<br/> Una memoria compartida.<br/> <strong>El control en tus manos.</strong></h1>
           <p>NexusMind conecta el contexto de tu equipo, tus agentes y tus modelos. Un control plane open source, en tu infraestructura.</p>
-          <div class="sc-actions"><a class="sc-button sc-primary" href={repository.url}>Explorar en GitHub <Icon name="external"/></a><a class="sc-text-link" href={repository.docs}>Guía de instalación <Icon name="arrow"/></a></div>
+          <div class="sc-actions"><a class="sc-button sc-primary" href={repository.url} target="_blank" rel="noopener noreferrer">Explorar en GitHub <Icon name="external"/></a><a class="sc-text-link" href={repository.docs} target="_blank" rel="noopener noreferrer">Guía de instalación <Icon name="arrow"/></a></div>
           <div class="sc-hero-note">Open source <span>·</span> Licencia MIT <span>·</span> Self-hosted</div>
         </div>
         <div class="sc-hero-visual" aria-label="Ejemplo ilustrativo de contexto compartido entre herramientas">
@@ -87,7 +87,7 @@ const nav=[['Producto','#producto'],['Cómo funciona','#como-funciona'],['Equipo
 
     <section id="equipos" class="sc-contained sc-split sc-section sc-team" data-sc-chapter>
       <div class="sc-copy" data-sc-copy><h2>La memoria de tu equipo.<br/> Bajo tu control.</h2><p>Una capa de memoria auto-alojada y auditable para cada herramienta AI que usan.</p><ul class="sc-team-list"><li><strong>Accesos individuales</strong><span>API keys por developer. Agrega, revoca y rota accesos.</span></li><li><strong>Actividad auditable</strong><span>Usuario, timestamp y metadata en cada operación.</span></li><li><strong>Administración incluida</strong><span>Explora memorias, gestiona usuarios y exporta datos.</span></li></ul></div>
-      <div class="sc-infrastructure" data-sc-visual><img src="/smartcoder/backend.webp" width="2172" height="724" loading="lazy" alt="Imagen conceptual de infraestructura propia"/><div><h3>Tu infraestructura.<br/> Tus decisiones.</h3><p>Despliega NexusMind en tu entorno y conecta las herramientas de tu equipo.</p><a class="sc-button sc-primary" href={repository.docs}>Guía de instalación <Icon name="external"/></a></div></div>
+      <div class="sc-infrastructure" data-sc-visual><img src="/smartcoder/backend.webp" width="2172" height="724" loading="lazy" alt="Imagen conceptual de infraestructura propia"/><div><h3>Tu infraestructura.<br/> Tus decisiones.</h3><p>Despliega NexusMind en tu entorno y conecta las herramientas de tu equipo.</p><a class="sc-button sc-primary" href={repository.docs} target="_blank" rel="noopener noreferrer">Guía de instalación <Icon name="external"/></a></div></div>
     </section>
 
     <section class="sc-wide sc-resources sc-section" data-sc-chapter>
@@ -97,16 +97,16 @@ const nav=[['Producto','#producto'],['Cómo funciona','#como-funciona'],['Equipo
           {word:'Código.',title:'Explora el repositorio',desc:'Conoce cómo está construido NexusMind y adáptalo a tu equipo.',href:repository.url,label:'Ver en GitHub'},
           {word:'Instala.',title:'Empieza en tu entorno',desc:'Sigue la guía para ejecutar el proyecto en tu infraestructura.',href:repository.docs,label:'Leer la documentación'},
           {word:'Contribuye.',title:'Construyamos lo que sigue',desc:'Reporta un problema, propone una mejora o revisa los pull requests.',href:repository.issues,label:'Ver issues'},
-        ].map(item=><a class="sc-resource" href={item.href} data-sc-item><div class="sc-resource-art" aria-hidden="true">{item.word}</div><h3>{item.title}</h3><p>{item.desc}</p><span class="sc-text-link">{item.label} <Icon name="arrow"/></span></a>)}
+        ].map(item=><a class="sc-resource" href={item.href} target="_blank" rel="noopener noreferrer" data-sc-item><div class="sc-resource-art" aria-hidden="true">{item.word}</div><h3>{item.title}</h3><p>{item.desc}</p><span class="sc-text-link">{item.label} <Icon name="arrow"/></span></a>)}
       </div>
     </section>
 
     <section id="codigo" class="sc-close" data-sc-chapter><div class="sc-contained sc-split">
       <div data-sc-copy><h2>El código es abierto.<br/> El control es tuyo.</h2><div class="sc-close-rule" aria-hidden="true"></div><p>Úsalo. Entiéndelo. Hazlo tuyo.</p></div>
-      <div class="sc-repository" data-sc-visual><h3>smart-coder-labs/<br/> <strong>nexus-mind</strong></h3><p>Construido con Rust.<br/> Disponible bajo licencia MIT.</p><a class="sc-button sc-primary" href={repository.url}>Ver repositorio <Icon name="external"/></a><div class="sc-repo-links"><a href={repository.pulls}>Pull requests</a><a href={repository.license}>Licencia MIT</a></div></div>
+      <div class="sc-repository" data-sc-visual><h3>smart-coder-labs/<br/> <strong>nexus-mind</strong></h3><p>Construido con Rust.<br/> Disponible bajo licencia MIT.</p><a class="sc-button sc-primary" href={repository.url} target="_blank" rel="noopener noreferrer">Ver repositorio <Icon name="external"/></a><div class="sc-repo-links"><a href={repository.pulls} target="_blank" rel="noopener noreferrer">Pull requests</a><a href={repository.license} target="_blank" rel="noopener noreferrer">Licencia MIT</a></div></div>
     </div></section>
   </main>
-  <footer class="sc-footer"><div class="sc-wide"><div class="sc-footer-top"><a class="sc-brand" href="#contenido">Nexus<span>Mind</span></a><p>Memoria compartida. Herramientas conectadas.<br/> Inteligencia bajo tu control.</p><nav aria-label="Recursos del proyecto"><a href={repository.url}>GitHub</a><a href={repository.docs}>Documentación</a><a href={repository.issues}>Issues y contribuciones</a></nav></div><div class="sc-footer-bottom"><p>© {new Date().getFullYear()} Smart Coder Labs · Cesar Ruiz · MIT</p><a href={repository.license}>Open source · Licencia MIT</a></div></div></footer>
+  <footer class="sc-footer"><div class="sc-wide"><div class="sc-footer-top"><a class="sc-brand" href="#contenido">Nexus<span>Mind</span></a><p>Memoria compartida. Herramientas conectadas.<br/> Inteligencia bajo tu control.</p><nav aria-label="Recursos del proyecto"><a href={repository.url} target="_blank" rel="noopener noreferrer">GitHub</a><a href={repository.docs} target="_blank" rel="noopener noreferrer">Documentación</a><a href={repository.issues} target="_blank" rel="noopener noreferrer">Issues y contribuciones</a></nav></div><div class="sc-footer-bottom"><p>© {new Date().getFullYear()} Smart Coder Labs · Cesar Ruiz · MIT</p><a href={repository.license} target="_blank" rel="noopener noreferrer">Open source · Licencia MIT</a></div></div></footer>
   <script>import '../scripts/smartcoder';</script>
 </body>
 </html>
