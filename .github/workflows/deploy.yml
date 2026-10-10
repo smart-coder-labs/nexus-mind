@@ -4,6 +4,14 @@ on:
   push:
     branches: [main, agent/autonomous-agents-mvp]
 
+# Deploys of one branch run one at a time, in push order. Two merges in a row
+# used to build in parallel and race on the mutable `main-arm64` tag: the older
+# image could land last and roll out without the newer commit. Queued runs are
+# superseded by the newest, which builds from its own (latest) commit.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ---------------------------------------------------------------------------
   # Backend -> oracle (Oracle Cloud Ampere A1, ARM64) k3s cluster, served behind

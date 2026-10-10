@@ -293,6 +293,23 @@ Also in this phase:
 - Benchmark the local Qwen2.5-Coder-1.5B (llama.cpp Q4_K_M) lane against Haiku/Flash on cost per accepted change.
 - Add Gmail (label `factory`) and transcript intake (Notion, Drive/Meet, local `.txt`, admin upload), with `fix: manual`.
 - **Exit:** each specialist beats baseline on the frozen eval.
+- **Status (2026-10-07): specialist framework, documentation, tests and UI specialists, and intake built (ADRs 2dbeafe1, ac04cc9b, 94ced31c, 0dfbde60). The local Qwen lane is dropped (D9).**
+  - **Specialists (#310): off by default (`FACTORY_SPECIALISTS`).**
+    - **How a run works.** Opus plans read-only, Haiku implements with the plan (this is the resolver's normal invocation), the docs checks run, and then Opus reviews and can reject the change.
+    - **Models and the cap.** Each step is its own `--model` invocation with its own `model.selected` event, so the frontier cap counts the Opus steps.
+    - **Docs checks.** Every changed path must be documentation, and links and anchors must resolve. Identifiers the docs name are an *advisory* check, which the review weighs.
+    - **Frozen eval.** `factory-specialist-eval` compares the specialist with the baseline; see [specialist-eval.md](specialist-eval.md). The frozen docs set (10 tasks, base fd3fb40) lives outside the repo. It has not been run yet.
+    - **Tests specialist (ADR 94ced31c): built, off by default (`FACTORY_SPECIALISTS=tests`).** JS/TS only (vitest or jest), sandboxed runs only. Opus plans and reviews, Sonnet implements. Only test files may change and none may be removed. One commands pod installs, runs the changed tests (`tests_pass`), then reruns them against up to 10 deterministic mutants of the code they import (`mutation_score`: at least 60% killed; advisory when there is nothing to mutate). The frozen tests set (8 tasks on `apps/admin`, base 3fed74e, one seeded fault each) lives outside the repo and has not been run yet.
+    - **UI specialist (ADR 0dfbde60): built, off by default (`FACTORY_SPECIALISTS=ui`).** Small UI changes in one frontend package (nexus-mind only; Kasymir stays advisory), sandboxed runs only. Opus plans (naming the routes the change shows on) and reviews, Sonnet implements. Only UI files under the package's `src/` may change, at most 3 deleted (`ui_paths_only`). One commands pod installs, then runs the package's `typecheck`/`build` (`ui_build`), `lint` (`ui_lint`) and tests (`ui_tests`), then serves the build and screenshots up to 3 routes at a phone and a desktop viewport (`ui_screenshots`, at most 6 images) with the API answered from the app's fixture file; see [ui-fixtures.md](ui-fixtures.md). The review opens the screenshots. A page that throws or renders blank blocks; a missing fixture file or an unservable route is advisory. The admin app has its fixture file. The frozen UI set (6 tasks on `apps/admin`, base 3607961) lives outside the repo and has not been run yet.
+  - **Intake:**
+    - **OD-7 resolved: `factory::redact`.** Before any Gmail, Notion, Drive or transcript text becomes a task (and so before it reaches a model), emails, phone numbers, Colombian ids, Luhn-checked cards, bank accounts and IBANs, addresses, and secrets are replaced with numbered placeholders. Person names are kept.
+    - **Sources.** Gmail (label `factory`), Notion (a `factory` tag or a configured database), Drive/Meet transcripts (a configured folder), local `.txt`, and admin upload (`POST /v1/factory/intake/transcripts`, `factory_policy:write`). Tokens come from connectors bound to each source kind.
+    - **Fix: manual.** Gmail and all transcript sources are always untrusted and `fix: manual`: they never auto-start.
+    - **Migration v87** widens the source kinds; a table rebuild with foreign keys off keeps items linked.
+  - **Open:**
+    - Running the docs, tests and UI evals in the cluster. The UI screenshot path (Playwright from a commands pod, images over stdout) has run only outside the cluster.
+    - OAuth credentials per provider: Gmail `gmail.readonly`; Notion an internal integration token shared with the pages or database; Drive `drive.readonly` or a token scoped to the folder.
+    - Admin UI for the new sources.
 
 ### F5: Controlled autonomy and learning (ongoing)
 
@@ -322,4 +339,4 @@ Also in this phase:
 | OD-4 | Exact model per tier, and a monthly budget cap per org | F3 |
 | OD-5 | False-low-risk threshold that enables automatic routing | F3 |
 | OD-6 | Where the Model Gateway credentials live (existing `crypto.rs` secret store vs external) | F3 |
-| OD-7 | PII redaction policy for Gmail and transcripts before they reach any model | F4 |
+| OD-7 | ~~PII redaction policy for Gmail and transcripts before they reach any model~~ Resolved in F4: `factory::redact`, applied to title and description before any `TaskSpec` is built | F4 |

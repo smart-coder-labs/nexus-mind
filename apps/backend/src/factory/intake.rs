@@ -8,12 +8,13 @@
 
 use axum::async_trait;
 use chrono::{DateTime, Utc};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::factory::contracts::{
     Contract, OriginTrust, PrivacyClass, SchemaV1, SourceKind, TaskClass, TaskRepository,
     TaskSource, TaskSpec,
 };
+use crate::factory::redact::Redactor;
 use crate::models::types::Task;
 
 /// Only items carrying this label enter the factory.
@@ -612,13 +613,598 @@ impl IntakeSource for SentryIntake {
     }
 }
 
+// ---------------------------------------------------------------- Gmail (F4)
+
+const GMAIL_API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
+/// Messages fetched per poll; the rest wait for the next one.
+const GMAIL_PAGE: usize = 50;
+
+fn gmail_decode_base64url(data: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(data)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default()
+}
+
+/// The `text/plain` body of a Gmail message payload, walking `parts` for a
+/// multipart message. Other MIME types (`text/html`, attachments) are ignored:
+/// only plain text ever reaches a model.
+fn gmail_plain_text(payload: &Value) -> String {
+    if payload.get("mimeType").and_then(|v| v.as_str()) == Some("text/plain") {
+        if let Some(data) = payload.pointer("/body/data").and_then(|v| v.as_str()) {
+            return gmail_decode_base64url(data);
+        }
+    }
+    payload
+        .get("parts")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .map(gmail_plain_text)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn gmail_header(payload: &Value, name: &str) -> String {
+    payload
+        .get("headers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .find(|header| {
+            header
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        })
+        .and_then(|header| header.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A Gmail message resource (`messages.get`, `format=full`) carrying the
+/// `factory` label, resolved to its id by the fetcher since messages name
+/// labels by id, not by name (plan D13). Its text is always untrusted, and the
+/// task it becomes is always `fix: manual` regardless of the decision model
+/// (`floor_source_kind` in `automation::factory_intake`). `Ok(None)`: not
+/// labelled. `Err`: malformed.
+pub fn gmail_message_to_task_spec(
+    message: &Value,
+    factory_label_id: &str,
+    target: &IntakeTarget,
+    now: DateTime<Utc>,
+) -> Result<Option<TaskSpec>, String> {
+    let labelled = message
+        .get("labelIds")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .any(|id| id == factory_label_id);
+    if !labelled {
+        return Ok(None);
+    }
+    let id = message.get("id").and_then(|v| v.as_str()).ok_or("gmail_id_missing")?;
+    let payload = message.get("payload").ok_or("gmail_payload_missing")?;
+    let mut redactor = Redactor::new();
+    let title = redactor.apply(&gmail_header(payload, "Subject"));
+    let description = redactor.apply(&gmail_plain_text(payload));
+    if title.trim().is_empty() {
+        return Err("gmail_subject_missing".into());
+    }
+    let reference = id.to_string();
+    let source = TaskSource { kind: SourceKind::Gmail, reference: reference.clone(), url: None };
+    build_spec(
+        source,
+        &format!("gmail:{reference}->{}", target.repository),
+        OriginTrust::Untrusted,
+        target,
+        &title,
+        &description,
+        &[],
+        now,
+    )
+    .map(Some)
+}
+
+/// Gmail messages labelled `factory` (plan D13). Reads one bounded page of
+/// matching messages per poll, fetching each in full to extract its
+/// `text/plain` body.
+pub struct GmailIntake {
+    pub token: String,
+    pub target: IntakeTarget,
+}
+
+#[async_trait]
+impl IntakeSource for GmailIntake {
+    fn kind(&self) -> SourceKind {
+        SourceKind::Gmail
+    }
+
+    async fn fetch(&self) -> anyhow::Result<Vec<TaskSpec>> {
+        let client = reqwest::Client::new();
+        let labels: Value = client
+            .get(format!("{GMAIL_API}/labels"))
+            .bearer_auth(&self.token)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let factory_label_id = labels
+            .get("labels")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .find(|label| {
+                label
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|n| n.eq_ignore_ascii_case(INTAKE_LABEL))
+            })
+            .and_then(|label| label.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("gmail_label_missing"))?
+            .to_string();
+        let query = format!("label:{INTAKE_LABEL}");
+        let max_results = GMAIL_PAGE.to_string();
+        let list: Value = client
+            .get(format!("{GMAIL_API}/messages"))
+            .bearer_auth(&self.token)
+            .query(&[("q", query.as_str()), ("maxResults", max_results.as_str())])
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let ids: Vec<String> = list
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        let now = Utc::now();
+        let mut specs = Vec::new();
+        for id in ids {
+            let message: Value = client
+                .get(format!("{GMAIL_API}/messages/{id}"))
+                .bearer_auth(&self.token)
+                .query(&[("format", "full")])
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            match gmail_message_to_task_spec(&message, &factory_label_id, &self.target, now) {
+                Ok(Some(spec)) => specs.push(spec),
+                Ok(None) => {}
+                Err(reason) => tracing::warn!(message = %id, "Skipping Gmail message in intake: {reason}"),
+            }
+        }
+        Ok(specs)
+    }
+}
+
+// ---------------------------------------------------------------- Notion (F4)
+
+const NOTION_API: &str = "https://api.notion.com/v1";
+const NOTION_VERSION: &str = "2022-06-28";
+const NOTION_PAGE: i64 = 50;
+
+/// Notion ids are UUIDs, written hyphenated or compact (32 hex characters
+/// either way).
+pub fn valid_notion_id(id: &str) -> bool {
+    let compact: String = id.chars().filter(|c| *c != '-').collect();
+    compact.len() == 32 && compact.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn normalize_notion_id(id: &str) -> String {
+    id.chars().filter(|c| *c != '-').collect::<String>().to_ascii_lowercase()
+}
+
+/// Whether a Notion page opts into the factory: it lives in the configured
+/// database, or one of its properties tags it `factory` (a `multi_select` /
+/// `select` / `status` option named `factory`, or a checkbox property named
+/// `factory` that is checked).
+pub fn notion_page_is_factory(page: &Value, configured_database_id: Option<&str>) -> bool {
+    if let Some(configured) = configured_database_id {
+        let parent_db = page.pointer("/parent/database_id").and_then(|v| v.as_str());
+        if parent_db.is_some_and(|id| normalize_notion_id(id) == normalize_notion_id(configured)) {
+            return true;
+        }
+    }
+    let Some(properties) = page.get("properties").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    properties.iter().any(|(name, property)| {
+        let kind = property.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+        match kind {
+            "multi_select" => property
+                .get("multi_select")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|o| o.get("name").and_then(|v| v.as_str()))
+                .any(|n| n.eq_ignore_ascii_case(INTAKE_LABEL)),
+            "select" => property
+                .pointer("/select/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(INTAKE_LABEL)),
+            "status" => property
+                .pointer("/status/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(INTAKE_LABEL)),
+            "checkbox" => {
+                name.eq_ignore_ascii_case(INTAKE_LABEL)
+                    && property.get("checkbox").and_then(|v| v.as_bool()) == Some(true)
+            }
+            _ => false,
+        }
+    })
+}
+
+fn notion_rich_text_plain(value: &Value) -> String {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|rt| rt.get("plain_text").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn notion_title(page: &Value) -> String {
+    page.get("properties")
+        .and_then(|v| v.as_object())
+        .into_iter()
+        .flatten()
+        .find(|(_, property)| property.get("type").and_then(|v| v.as_str()) == Some("title"))
+        .map(|(_, property)| notion_rich_text_plain(property.get("title").unwrap_or(&Value::Null)))
+        .unwrap_or_default()
+}
+
+fn notion_block_line(block: &Value) -> Option<String> {
+    let kind = block.get("type").and_then(|v| v.as_str())?;
+    let body = block.get(kind)?;
+    let text = notion_rich_text_plain(body.get("rich_text").unwrap_or(&Value::Null));
+    match kind {
+        "paragraph" | "heading_1" | "heading_2" | "heading_3" | "quote" | "code" => {
+            (!text.is_empty()).then_some(text)
+        }
+        "bulleted_list_item" | "numbered_list_item" => Some(format!("- {text}")),
+        "to_do" => {
+            let checked = body.get("checked").and_then(|v| v.as_bool()) == Some(true);
+            Some(format!("- [{}] {text}", if checked { "x" } else { " " }))
+        }
+        _ => None,
+    }
+}
+
+/// Flattens one page of Notion block children (`blocks.children`, no
+/// recursion into nested children — best effort) into plain text. A checkbox
+/// to-do becomes a markdown checklist line, so `acceptance_criteria` picks it
+/// up like any other source.
+pub fn notion_blocks_to_text(blocks: &Value) -> String {
+    blocks
+        .get("results")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(notion_block_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A Notion page (`pages.get` shape) that opts into the factory, with its
+/// block children already flattened to text by the fetcher. `Ok(None)`: not
+/// opted in. `Err`: malformed. Its task is always `fix: manual`, like Gmail.
+pub fn notion_page_to_task_spec(
+    page: &Value,
+    body_text: &str,
+    configured_database_id: Option<&str>,
+    target: &IntakeTarget,
+    now: DateTime<Utc>,
+) -> Result<Option<TaskSpec>, String> {
+    if !notion_page_is_factory(page, configured_database_id) {
+        return Ok(None);
+    }
+    let id = page.get("id").and_then(|v| v.as_str()).ok_or("notion_id_missing")?;
+    let mut redactor = Redactor::new();
+    let title = redactor.apply(&notion_title(page));
+    let description = redactor.apply(body_text);
+    if title.trim().is_empty() {
+        return Err("notion_title_missing".into());
+    }
+    let reference = id.to_string();
+    let url = page
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|u| u.starts_with("https://"));
+    let source = TaskSource { kind: SourceKind::Transcript, reference: reference.clone(), url };
+    build_spec(
+        source,
+        &format!("notion:{reference}->{}", target.repository),
+        OriginTrust::Untrusted,
+        target,
+        &title,
+        &description,
+        &[],
+        now,
+    )
+    .map(Some)
+}
+
+/// Notion pages tagged `factory`, or inside a configured database (plan D13).
+/// Reads one bounded page of matching pages per poll, fetching each page's
+/// block children (one bounded page each, no nested recursion) for its text.
+pub struct NotionIntake {
+    pub token: String,
+    pub database_id: Option<String>,
+    pub target: IntakeTarget,
+}
+
+#[async_trait]
+impl IntakeSource for NotionIntake {
+    fn kind(&self) -> SourceKind {
+        SourceKind::Transcript
+    }
+
+    async fn fetch(&self) -> anyhow::Result<Vec<TaskSpec>> {
+        if let Some(id) = &self.database_id {
+            if !valid_notion_id(id) {
+                anyhow::bail!("invalid_notion_database_id");
+            }
+        }
+        let client = reqwest::Client::new();
+        let body: Value = match &self.database_id {
+            Some(id) => client
+                .post(format!("{NOTION_API}/databases/{id}/query"))
+                .bearer_auth(&self.token)
+                .header("Notion-Version", NOTION_VERSION)
+                .json(&json!({ "page_size": NOTION_PAGE }))
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?,
+            None => client
+                .post(format!("{NOTION_API}/search"))
+                .bearer_auth(&self.token)
+                .header("Notion-Version", NOTION_VERSION)
+                .json(&json!({"filter": {"value": "page", "property": "object"}, "page_size": NOTION_PAGE}))
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?,
+        };
+        let pages = body
+            .get("results")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("notion_pages_unreadable"))?;
+        let now = Utc::now();
+        let mut specs = Vec::new();
+        for page in pages {
+            if !notion_page_is_factory(page, self.database_id.as_deref()) {
+                continue;
+            }
+            let Some(id) = page.get("id").and_then(|v| v.as_str()) else { continue };
+            let blocks: Value = client
+                .get(format!("{NOTION_API}/blocks/{id}/children"))
+                .bearer_auth(&self.token)
+                .header("Notion-Version", NOTION_VERSION)
+                .query(&[("page_size", "100")])
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let text = notion_blocks_to_text(&blocks);
+            match notion_page_to_task_spec(page, &text, self.database_id.as_deref(), &self.target, now) {
+                Ok(Some(spec)) => specs.push(spec),
+                Ok(None) => {}
+                Err(reason) => tracing::warn!(page = %id, "Skipping Notion page in intake: {reason}"),
+            }
+        }
+        Ok(specs)
+    }
+}
+
+// ---------------------------------------------------------------- Drive / Meet transcripts (F4)
+
+const DRIVE_API: &str = "https://www.googleapis.com/drive/v3";
+const DRIVE_PAGE: i64 = 50;
+
+/// Google Drive file and folder ids: URL-safe-ish alphanumerics, `-` and `_`.
+/// Also blocks a folder id crafted to break out of the Drive `q` query string.
+pub fn valid_drive_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 100 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+/// A Google Drive file (`files.list` shape) in the configured folder, with its
+/// text already exported (`files.export?mimeType=text/plain`) by the fetcher.
+/// Always untrusted, always `fix: manual`, like every other transcript.
+/// `Ok(None)`: malformed enough to have no name. `Err` is never returned here;
+/// Drive's own query already is the opt-in, so there is nothing left to reject.
+pub fn drive_transcript_to_task_spec(
+    file: &Value,
+    text: &str,
+    target: &IntakeTarget,
+    now: DateTime<Utc>,
+) -> Result<Option<TaskSpec>, String> {
+    let id = file.get("id").and_then(|v| v.as_str()).ok_or("drive_id_missing")?;
+    let mut redactor = Redactor::new();
+    let title = redactor.apply(file.get("name").and_then(|v| v.as_str()).unwrap_or_default());
+    let description = redactor.apply(text);
+    if title.trim().is_empty() {
+        return Err("drive_file_name_missing".into());
+    }
+    let reference = id.to_string();
+    let url = file
+        .get("webViewLink")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|u| u.starts_with("https://"));
+    let source = TaskSource { kind: SourceKind::Transcript, reference: reference.clone(), url };
+    build_spec(
+        source,
+        &format!("drive:{reference}->{}", target.repository),
+        OriginTrust::Untrusted,
+        target,
+        &title,
+        &description,
+        &[],
+        now,
+    )
+    .map(Some)
+}
+
+/// Google Drive "Meet transcript" docs in a configured folder (plan D13).
+/// Reads one bounded page of matching files per poll, exporting each as plain
+/// text.
+pub struct DriveIntake {
+    pub token: String,
+    pub folder_id: String,
+    pub target: IntakeTarget,
+}
+
+#[async_trait]
+impl IntakeSource for DriveIntake {
+    fn kind(&self) -> SourceKind {
+        SourceKind::Transcript
+    }
+
+    async fn fetch(&self) -> anyhow::Result<Vec<TaskSpec>> {
+        if !valid_drive_id(&self.folder_id) {
+            anyhow::bail!("invalid_drive_folder_id");
+        }
+        let client = reqwest::Client::new();
+        let query = format!(
+            "'{}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false",
+            self.folder_id
+        );
+        let page_size = DRIVE_PAGE.to_string();
+        let list: Value = client
+            .get(format!("{DRIVE_API}/files"))
+            .bearer_auth(&self.token)
+            .query(&[
+                ("q", query.as_str()),
+                ("pageSize", page_size.as_str()),
+                ("fields", "files(id,name,webViewLink)"),
+            ])
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let files = list
+            .get("files")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("drive_files_unreadable"))?;
+        let now = Utc::now();
+        let mut specs = Vec::new();
+        for file in files {
+            let Some(id) = file.get("id").and_then(|v| v.as_str()) else { continue };
+            let text = client
+                .get(format!("{DRIVE_API}/files/{id}/export"))
+                .bearer_auth(&self.token)
+                .query(&[("mimeType", "text/plain")])
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            match drive_transcript_to_task_spec(file, &text, &self.target, now) {
+                Ok(Some(spec)) => specs.push(spec),
+                Ok(None) => {}
+                Err(reason) => tracing::warn!(file = %id, "Skipping Drive file in intake: {reason}"),
+            }
+        }
+        Ok(specs)
+    }
+}
+
+// ---------------------------------------------------------------- Uploaded / local transcripts (F4)
+
+/// A transcript with no attached resolver has no code destination; this
+/// placeholder satisfies `TaskRepository`'s `owner/repo` shape without naming
+/// a real repository. Chosen so a repository-keyed lookup (`untrusted_intake_
+/// issue`/`_pull`) simply never matches these items — there is no PR to
+/// protect because there is no repository to open one in.
+pub const NO_RESOLVER_REPOSITORY: &str = "none/transcript-intake";
+
+/// A local `.txt` file or an admin-uploaded transcript (plan D13): raw text
+/// with no provider id of its own. Always untrusted, always `fix: manual`.
+/// `repository`: the attached resolver's target repository, or `None` when
+/// the transcript has no resolver. There is no provider id to dedupe on, so
+/// the task id is derived from the redacted text itself: uploading the exact
+/// same transcript twice yields the same `task_id`, which the database's
+/// primary key then refuses as a duplicate rather than creating a second task.
+pub fn transcript_text_to_task_spec(
+    title: &str,
+    text: &str,
+    repository: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<TaskSpec, String> {
+    let target = IntakeTarget {
+        repository: repository.unwrap_or(NO_RESOLVER_REPOSITORY).to_string(),
+        base_ref: "main".into(),
+        privacy_class: PrivacyClass::Internal,
+    };
+    let mut redactor = Redactor::new();
+    let title = redactor.apply(title);
+    let description = redactor.apply(text);
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(title.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(description.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(target.repository.as_bytes());
+        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let reference = format!("sha256:{digest}");
+    let source = TaskSource { kind: SourceKind::Transcript, reference: reference.clone(), url: None };
+    build_spec(
+        source,
+        &format!("transcript:{reference}"),
+        OriginTrust::Untrusted,
+        &target,
+        &title,
+        &description,
+        &[],
+        now,
+    )
+}
+
 // ---------------------------------------------------------------- Source config (F3)
 
-/// A configured Slack or Sentry source, as stored in `factory_intake_sources`.
+/// A configured intake source, as stored in `factory_intake_sources`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceConfig {
     Slack { channel_id: String, allowed_reactors: Vec<String> },
     Sentry { base_url: String, org_slug: String, project_slug: String, query: String },
+    /// No fields: the label (`factory`) is fixed, not admin-configurable.
+    Gmail,
+    /// `database_id`: restrict to one database; `None` searches every page
+    /// for the `factory` tag instead.
+    Notion { database_id: Option<String> },
+    Drive { folder_id: String },
 }
 
 /// Slack user ids are uppercase alphanumerics (`U0123ABC`, `W0123ABC`).
@@ -626,7 +1212,8 @@ fn valid_slack_user(user: &str) -> bool {
     (8..=20).contains(&user.len()) && user.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
-/// Validates a stored source config for its kind (`slack` or `sentry`).
+/// Validates a stored source config for its kind (`slack`, `sentry`, `gmail`,
+/// `notion` or `drive`).
 pub fn parse_source_config(kind: &str, config: &Value) -> Result<SourceConfig, String> {
     let text = |name: &str| config.get(name).and_then(|v| v.as_str()).map(str::trim).unwrap_or_default().to_string();
     match kind {
@@ -659,6 +1246,25 @@ pub fn parse_source_config(kind: &str, config: &Value) -> Result<SourceConfig, S
             }
             Ok(SourceConfig::Sentry { base_url, org_slug, project_slug, query })
         }
+        "gmail" => Ok(SourceConfig::Gmail),
+        "notion" => {
+            let database_id = text("database_id");
+            if database_id.is_empty() {
+                Ok(SourceConfig::Notion { database_id: None })
+            } else if valid_notion_id(&database_id) {
+                Ok(SourceConfig::Notion { database_id: Some(database_id) })
+            } else {
+                Err("invalid_notion_database_id".into())
+            }
+        }
+        "drive" => {
+            let folder_id = text("folder_id");
+            if valid_drive_id(&folder_id) {
+                Ok(SourceConfig::Drive { folder_id })
+            } else {
+                Err("invalid_drive_folder_id".into())
+            }
+        }
         _ => Err("unknown_intake_kind".into()),
     }
 }
@@ -672,6 +1278,9 @@ pub fn intake_for(config: SourceConfig, token: String, target: IntakeTarget) -> 
         SourceConfig::Sentry { base_url, org_slug, project_slug, query } => {
             Box::new(SentryIntake { token, base_url, org_slug, project_slug, query, target })
         }
+        SourceConfig::Gmail => Box::new(GmailIntake { token, target }),
+        SourceConfig::Notion { database_id } => Box::new(NotionIntake { token, database_id, target }),
+        SourceConfig::Drive { folder_id } => Box::new(DriveIntake { token, folder_id, target }),
     }
 }
 
@@ -1075,5 +1684,190 @@ mod tests {
         assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
         let member = github_issue_to_task_spec(&issue("MEMBER", &["factory"]), &target(), now()).unwrap().unwrap();
         assert_eq!(member.origin_trust, OriginTrust::Trusted);
+    }
+
+    // ------------------------------------------------------------ Gmail (F4)
+
+    fn gmail_message(label_ids: &[&str], body: &str) -> Value {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(body);
+        json!({
+            "id": "18c7f1",
+            "labelIds": label_ids,
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Refund button broken, contact ana@acme.test"}],
+                "mimeType": "multipart/mixed",
+                "parts": [{"mimeType": "text/plain", "body": {"data": data}}]
+            }
+        })
+    }
+
+    #[test]
+    fn gmail_messages_need_the_factory_label_and_are_always_untrusted() {
+        let message = gmail_message(&["Label_1", "INBOX"], "Steps to reproduce.\nCall 300 123 4567.");
+        let spec = gmail_message_to_task_spec(&message, "Label_1", &target(), now()).unwrap().unwrap();
+        assert_eq!(spec.source.kind, SourceKind::Gmail);
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        assert_eq!(spec.source.reference, "18c7f1");
+        assert_eq!(spec.title, "Refund button broken, contact [EMAIL_1]");
+        assert!(spec.description.contains("[PHONE_1]"), "{}", spec.description);
+        spec.validate().unwrap();
+
+        // Without the (resolved) label id, it is not for the factory.
+        assert_eq!(gmail_message_to_task_spec(&message, "Label_other", &target(), now()).unwrap(), None);
+
+        // No subject is malformed, not a silent skip.
+        let mut no_subject = message.clone();
+        no_subject["payload"]["headers"] = json!([]);
+        assert!(gmail_message_to_task_spec(&no_subject, "Label_1", &target(), now()).is_err());
+    }
+
+    // ------------------------------------------------------------ Notion (F4)
+
+    fn notion_page_tagged() -> Value {
+        json!({
+            "id": "page-1",
+            "url": "https://www.notion.so/page-1",
+            "parent": {"type": "workspace"},
+            "properties": {
+                "Name": {"type": "title", "title": [{"plain_text": "Fix refund flow"}]},
+                "Tags": {"type": "multi_select", "multi_select": [{"name": "factory"}]}
+            }
+        })
+    }
+
+    fn notion_page_untagged(database_id: &str) -> Value {
+        json!({
+            "id": "page-2",
+            "url": "https://www.notion.so/page-2",
+            "parent": {"type": "database_id", "database_id": database_id},
+            "properties": {"Name": {"type": "title", "title": [{"plain_text": "Document API"}]}}
+        })
+    }
+
+    fn notion_blocks() -> Value {
+        json!({"results": [
+            {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Contact ana@acme.test"}]}},
+            {"type": "to_do", "to_do": {"rich_text": [{"plain_text": "Ship the fix"}], "checked": false}}
+        ]})
+    }
+
+    #[test]
+    fn notion_pages_opt_in_by_tag_or_by_database_and_are_untrusted() {
+        let text = notion_blocks_to_text(&notion_blocks());
+        assert!(text.contains("ana@acme.test"));
+        assert!(text.contains("- [ ] Ship the fix"));
+
+        let tagged = notion_page_tagged();
+        let spec = notion_page_to_task_spec(&tagged, &text, None, &target(), now()).unwrap().unwrap();
+        assert_eq!(spec.source.kind, SourceKind::Transcript);
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        assert_eq!(spec.title, "Fix refund flow");
+        assert!(spec.description.contains("[EMAIL_1]"));
+        assert_eq!(spec.acceptance_criteria, vec!["Ship the fix"]);
+        spec.validate().unwrap();
+
+        // Untagged and not in any configured database: skipped.
+        let untagged = notion_page_untagged("db-1");
+        assert_eq!(notion_page_to_task_spec(&untagged, &text, None, &target(), now()).unwrap(), None);
+        // The same page matches once that database is configured.
+        let in_db = notion_page_to_task_spec(&untagged, &text, Some("db-1"), &target(), now())
+            .unwrap()
+            .unwrap();
+        assert_eq!(in_db.title, "Document API");
+    }
+
+    #[test]
+    fn notion_and_drive_ids_are_validated() {
+        assert!(valid_notion_id("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"));
+        assert!(valid_notion_id("a1b2c3d4-e5f6-a1b2-c3d4-e5f6a1b2c3d4"));
+        assert!(!valid_notion_id("not-a-valid-id"));
+        assert!(valid_drive_id("1A2b_3C-4d"));
+        assert!(!valid_drive_id(""));
+        assert!(!valid_drive_id("has space"));
+        assert!(!valid_drive_id("quote'injection"));
+    }
+
+    // ------------------------------------------------------------ Drive (F4)
+
+    fn drive_file() -> Value {
+        json!({
+            "id": "file-1",
+            "name": "Meet transcript 2026-10-05",
+            "webViewLink": "https://drive.google.com/file/d/file-1/view",
+        })
+    }
+
+    #[test]
+    fn drive_transcripts_are_untrusted() {
+        let file = drive_file();
+        let text = "Attendees discussed the refund bug.\nCall ana@acme.test for details.";
+        let spec = drive_transcript_to_task_spec(&file, text, &target(), now()).unwrap().unwrap();
+        assert_eq!(spec.source.kind, SourceKind::Transcript);
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        assert_eq!(spec.title, "Meet transcript 2026-10-05");
+        assert!(spec.description.contains("[EMAIL_1]"));
+        assert_eq!(spec.source.url.as_deref(), Some("https://drive.google.com/file/d/file-1/view"));
+        spec.validate().unwrap();
+
+        let mut no_name = file.clone();
+        no_name["name"] = json!("");
+        assert!(drive_transcript_to_task_spec(&no_name, text, &target(), now()).is_err());
+
+        let mut no_id = file.clone();
+        no_id.as_object_mut().unwrap().remove("id");
+        assert!(drive_transcript_to_task_spec(&no_id, text, &target(), now()).is_err());
+    }
+
+    // ------------------------------------------------------- uploaded transcripts (F4)
+
+    #[test]
+    fn uploaded_transcripts_are_untrusted_and_dedupe_on_identical_content() {
+        let spec =
+            transcript_text_to_task_spec("Fix refund flow", "Contact ana@acme.test about this.", Some("acme/web"), now())
+                .unwrap();
+        assert_eq!(spec.source.kind, SourceKind::Transcript);
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        assert_eq!(spec.repository.remote, "acme/web");
+        assert!(spec.description.contains("[EMAIL_1]"));
+        spec.validate().unwrap();
+
+        // No resolver: falls back to the placeholder repository, which is a
+        // different target (and so a different task id).
+        let no_resolver =
+            transcript_text_to_task_spec("Fix refund flow", "Contact ana@acme.test about this.", None, now()).unwrap();
+        assert_eq!(no_resolver.repository.remote, NO_RESOLVER_REPOSITORY);
+        no_resolver.validate().unwrap();
+        assert_ne!(spec.task_id, no_resolver.task_id);
+
+        // The exact same title, text and target reproduces the same task id,
+        // so re-uploading it is a duplicate rather than a second task.
+        let again =
+            transcript_text_to_task_spec("Fix refund flow", "Contact ana@acme.test about this.", Some("acme/web"), now())
+                .unwrap();
+        assert_eq!(spec.task_id, again.task_id);
+    }
+
+    // ------------------------------------------------------- source config (F4)
+
+    #[test]
+    fn f4_source_configs_are_validated_per_kind() {
+        assert_eq!(parse_source_config("gmail", &json!({})), Ok(SourceConfig::Gmail));
+
+        assert_eq!(parse_source_config("notion", &json!({})), Ok(SourceConfig::Notion { database_id: None }));
+        let database_id = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4";
+        assert_eq!(
+            parse_source_config("notion", &json!({"database_id": database_id})),
+            Ok(SourceConfig::Notion { database_id: Some(database_id.into()) })
+        );
+        assert!(parse_source_config("notion", &json!({"database_id": "not-an-id"})).is_err());
+
+        assert_eq!(
+            parse_source_config("drive", &json!({"folder_id": "1A2b_3C-4d"})),
+            Ok(SourceConfig::Drive { folder_id: "1A2b_3C-4d".into() })
+        );
+        for bad in [json!({}), json!({"folder_id": ""}), json!({"folder_id": "has space"})] {
+            assert!(parse_source_config("drive", &bad).is_err(), "{bad}");
+        }
     }
 }

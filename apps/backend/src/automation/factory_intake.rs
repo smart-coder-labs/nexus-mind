@@ -74,7 +74,7 @@ impl Drop for RunningGuard {
     }
 }
 
-fn class_name(class: crate::factory::contracts::TaskClass) -> String {
+pub(crate) fn class_name(class: crate::factory::contracts::TaskClass) -> String {
     serde_json::to_value(class)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
@@ -91,6 +91,18 @@ fn privacy_class(text: &str) -> PrivacyClass {
 }
 
 // ---------------------------------------------------------------- start floors
+
+/// Gmail and transcript intake (Notion, Drive/Meet, local `.txt`, admin
+/// upload) is always `fix: manual` (plan D13, PLAN.md §4.2): it never
+/// auto-starts, whatever the decision model says. Checked first, so neither
+/// `floor_before_model` nor the model is ever consulted for these sources.
+pub fn floor_source_kind(kind: crate::factory::contracts::SourceKind) -> Option<&'static str> {
+    use crate::factory::contracts::SourceKind;
+    match kind {
+        SourceKind::Gmail | SourceKind::Transcript => Some("fix_manual_source"),
+        _ => None,
+    }
+}
 
 /// Floors checked before asking the decision model. `Some(reason)` keeps the
 /// task in the backlog.
@@ -189,7 +201,7 @@ async fn poll_one(
     let config = parse_source_config(&source.kind, &source.config).map_err(|e| anyhow::anyhow!(e))?;
     let sentry_host = match &config {
         crate::factory::intake::SourceConfig::Sentry { base_url, .. } => crate::factory::intake::sentry_base_host(base_url),
-        crate::factory::intake::SourceConfig::Slack { .. } => None,
+        _ => None,
     };
     let token = {
         let db = store.conn();
@@ -299,6 +311,9 @@ async fn decide_and_start(
     starts_today: i64,
     item: &mut IntakeItem,
 ) -> Result<(), String> {
+    if let Some(reason) = floor_source_kind(spec.source.kind) {
+        return Err(reason.into());
+    }
     if let Some(reason) = floor_before_model(key.is_some(), starts_today, &due.source.privacy_class) {
         return Err(reason.into());
     }
@@ -579,6 +594,16 @@ mod tests {
             }],
             unlabeled_shadow: 2,
             unlabeled_shadow_allows: 0,
+        }
+    }
+
+    #[test]
+    fn gmail_and_transcript_intake_is_always_fix_manual() {
+        use crate::factory::contracts::SourceKind;
+        assert_eq!(floor_source_kind(SourceKind::Gmail), Some("fix_manual_source"));
+        assert_eq!(floor_source_kind(SourceKind::Transcript), Some("fix_manual_source"));
+        for kind in [SourceKind::GithubIssue, SourceKind::NexusmindTask, SourceKind::Slack, SourceKind::Sentry] {
+            assert_eq!(floor_source_kind(kind), None, "{kind:?}");
         }
     }
 

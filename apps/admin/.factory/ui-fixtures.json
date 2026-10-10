@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "description": "Offline API answers for the factory UI specialist's screenshots (docs/factory/ui-fixtures.md). Fake data only: no real names, emails or ids.",
+  "api_base": "/v1/",
+  "themes": ["light"],
+  "default_routes": ["/"],
+  "route_hints": {
+    "src/pages/Dashboard.tsx": "/",
+    "src/pages/dashboard/**": "/",
+    "src/pages/Tasks.tsx": "/tasks",
+    "src/pages/tasks/**": "/tasks",
+    "src/pages/Users.tsx": "/users",
+    "src/pages/Memories.tsx": "/memories",
+    "src/pages/memories/**": "/memories",
+    "src/components/Layout.tsx": "/"
+  },
+  "fixtures": [
+    {
+      "description": "Boot: the session the app loads before any protected route renders.",
+      "path": "/v1/admin/auth/me",
+      "json": {
+        "org": { "id": "00000000-0000-4000-8000-0000000000a1", "name": "Example Org", "slug": "example-org", "created_at": "2026-01-05T10:00:00Z" },
+        "user": {
+          "id": "00000000-0000-4000-8000-000000000001",
+          "org_id": "00000000-0000-4000-8000-0000000000a1",
+          "email": "ada@example.test",
+          "name": "Ada Example",
+          "role": "admin",
+          "status": "active",
+          "created_at": "2026-01-05T10:00:00Z",
+          "permissions": ["task:read", "task:write", "memory:read", "memory:write"]
+        }
+      }
+    },
+    {
+      "description": "Layout: the notification bell.",
+      "path": "/v1/admin/notifications",
+      "json": [
+        { "id": "00000000-0000-4000-8000-000000000101", "message": "Grace Sample stored a memory", "action": "memory.created", "resource_type": "memory", "created_at": "2026-06-02T09:30:00Z", "actor": "Grace Sample" }
+      ]
+    },
+    {
+      "description": "Layout: org settings (announcement banner, logo).",
+      "path": "/v1/admin/org/settings",
+      "json": {
+        "events": { "resolve_issues": false, "review_prs": false, "respond_comments": false, "auto_index": true, "scanner": false },
+        "retention_days": null,
+        "custom_instructions": null,
+        "announcement": null,
+        "announcement_type": null,
+        "logo_url": null
+      }
+    },
+    {
+      "description": "Dashboard (/).",
+      "path": "/v1/admin/dashboard",
+      "json": {
+        "stats": { "total_memories": 128, "active_users_24h": 3, "searches_today": 42, "top_tools": [{ "tool": "claude-code", "count": 96 }, { "tool": "cursor", "count": 32 }] },
+        "usage": { "memories": 128, "sessions": 17, "users": 3, "projects": 2, "code_repos": 1 },
+        "trends": {
+          "daily_counts": [
+            { "date": "2026-05-27", "count": 4 }, { "date": "2026-05-28", "count": 7 }, { "date": "2026-05-29", "count": 3 },
+            { "date": "2026-05-30", "count": 0 }, { "date": "2026-05-31", "count": 2 }, { "date": "2026-06-01", "count": 9 },
+            { "date": "2026-06-02", "count": 5 }
+          ],
+          "by_type": [{ "name": "decision", "count": 40 }, { "name": "bugfix", "count": 33 }, { "name": "pattern", "count": 21 }],
+          "by_project": [{ "name": "sample-web", "count": 80 }, { "name": "sample-api", "count": 48 }],
+          "total": 128,
+          "this_week": 30,
+          "this_month": 77
+        },
+        "activity": [
+          { "id": "00000000-0000-4000-8000-000000000201", "org_id": "00000000-0000-4000-8000-0000000000a1", "user_id": "00000000-0000-4000-8000-000000000002", "timestamp": "2026-06-02T09:30:00Z", "action": "memory.created", "resource_type": "memory", "resource_id": "00000000-0000-4000-8000-000000000301", "metadata": {} }
+        ],
+        "agent_activity": [{ "tool": "claude-code", "total_memories": 96, "memories_last_24h": 5, "memories_last_7d": 27, "last_seen": "2026-06-02T09:30:00Z" }],
+        "heatmap": [{ "day": "2026-06-01", "count": 9 }, { "day": "2026-06-02", "count": 5 }],
+        "contributors": [{ "user_id": "00000000-0000-4000-8000-000000000002", "memory_count": 70, "last_activity": "2026-06-02T09:30:00Z", "user_name": "Grace Sample", "user_email": "grace@example.test" }],
+        "health": { "total_memories": 128, "duplicate_count": 2, "stale_count": 5, "untagged_count": 7 },
+        "users": null,
+        "onboarding": null,
+        "conventions": null,
+        "availability": { "usage": true, "users": false, "onboarding": false, "agent_activity": true, "health": true, "contributors": true, "heatmap": true, "conventions": false }
+      }
+    },
+    {
+      "description": "Tasks (/tasks): the board.",
+      "path": "/v1/tasks",
+      "json": [
+        { "id": "00000000-0000-4000-8000-000000000401", "org_id": "00000000-0000-4000-8000-0000000000a1", "project": "sample-web", "title": "Add an empty state to the reports page", "description": null, "status": "todo", "priority": "medium", "due_date": null, "parent_id": null, "sprint_id": null, "created_by": "00000000-0000-4000-8000-000000000001", "created_at": "2026-05-30T08:00:00Z", "updated_at": "2026-05-30T08:00:00Z", "archived_at": null, "assignees": [{ "id": "00000000-0000-4000-8000-000000000002", "name": "Grace Sample", "email": "grace@example.test" }], "labels": ["ui"], "comment_count": 2, "spec_links": [], "subtask_count": 0 },
+        { "id": "00000000-0000-4000-8000-000000000402", "org_id": "00000000-0000-4000-8000-0000000000a1", "project": "sample-api", "title": "Paginate the export endpoint", "description": null, "status": "in_progress", "priority": "high", "due_date": "2026-06-10", "parent_id": null, "sprint_id": null, "created_by": "00000000-0000-4000-8000-000000000001", "created_at": "2026-05-28T08:00:00Z", "updated_at": "2026-06-01T08:00:00Z", "archived_at": null, "assignees": [], "labels": ["backend"], "comment_count": 0, "spec_links": [], "subtask_count": 1 },
+        { "id": "00000000-0000-4000-8000-000000000403", "org_id": "00000000-0000-4000-8000-0000000000a1", "project": "sample-web", "title": "Fix the sidebar focus ring", "description": null, "status": "done", "priority": "low", "due_date": null, "parent_id": null, "sprint_id": null, "created_by": "00000000-0000-4000-8000-000000000002", "created_at": "2026-05-20T08:00:00Z", "updated_at": "2026-05-25T08:00:00Z", "archived_at": null, "assignees": [{ "id": "00000000-0000-4000-8000-000000000001", "name": "Ada Example", "email": "ada@example.test" }], "labels": ["a11y"], "comment_count": 1, "spec_links": [], "subtask_count": 0 }
+      ]
+    },
+    {
+      "description": "Projects (task filters, memory filters).",
+      "path": "/v1/projects",
+      "json": [
+        { "id": "00000000-0000-4000-8000-000000000501", "org_id": "00000000-0000-4000-8000-0000000000a1", "name": "sample-web", "description": "Sample web app", "parent_id": null, "created_at": "2026-01-10T10:00:00Z", "archived_at": null, "client_id": null },
+        { "id": "00000000-0000-4000-8000-000000000502", "org_id": "00000000-0000-4000-8000-0000000000a1", "name": "sample-api", "description": null, "parent_id": null, "created_at": "2026-01-12T10:00:00Z", "archived_at": null, "client_id": null }
+      ]
+    },
+    {
+      "description": "Users (/users) and the task assignee filter.",
+      "path": "/v1/users",
+      "json": [
+        { "id": "00000000-0000-4000-8000-000000000001", "org_id": "00000000-0000-4000-8000-0000000000a1", "email": "ada@example.test", "name": "Ada Example", "role": "admin", "status": "active", "created_at": "2026-01-05T10:00:00Z", "last_active": "2026-06-02T09:00:00Z", "disabled_at": null, "last_login_at": "2026-06-02T08:55:00Z" },
+        { "id": "00000000-0000-4000-8000-000000000002", "org_id": "00000000-0000-4000-8000-0000000000a1", "email": "grace@example.test", "name": "Grace Sample", "role": "member", "status": "active", "created_at": "2026-02-01T10:00:00Z", "last_active": "2026-06-02T09:30:00Z", "disabled_at": null, "last_login_at": "2026-06-01T17:00:00Z" },
+        { "id": "00000000-0000-4000-8000-000000000003", "org_id": "00000000-0000-4000-8000-0000000000a1", "email": "linus@example.test", "name": "Linus Placeholder", "role": "member", "status": "invited", "created_at": "2026-05-29T10:00:00Z", "last_active": null, "disabled_at": null, "last_login_at": null }
+      ]
+    },
+    {
+      "description": "Users (/users): the role picker.",
+      "path": "/v1/roles",
+      "json": [
+        { "id": "00000000-0000-4000-8000-000000000601", "org_id": null, "name": "admin", "display_name": "Admin", "description": "Full access", "extends": [], "permissions": ["*"] },
+        { "id": "00000000-0000-4000-8000-000000000602", "org_id": null, "name": "member", "display_name": "Member", "description": "Read and write memories", "extends": [], "permissions": ["memory:read", "memory:write", "task:read"] }
+      ]
+    },
+    {
+      "description": "Users (/users): API keys per user.",
+      "path": "/v1/admin/keys",
+      "json": [
+        { "id": "00000000-0000-4000-8000-000000000701", "user_id": "00000000-0000-4000-8000-000000000002", "user_name": "Grace Sample", "user_email": "grace@example.test", "label": "laptop", "last_used": "2026-06-02T09:30:00Z", "created_at": "2026-02-01T10:00:00Z", "revoked": false, "expires_at": null, "times_used": 412, "last_used_at": "2026-06-02T09:30:00Z" }
+      ]
+    },
+    {
+      "description": "Memories (/memories): the list.",
+      "path": "/v1/memory",
+      "json": {
+        "memories": [
+          { "id": "00000000-0000-4000-8000-000000000301", "org_id": "00000000-0000-4000-8000-0000000000a1", "user_id": "00000000-0000-4000-8000-000000000002", "project": "sample-web", "tool": "claude-code", "content": "**What**: Moved the date helpers into one module.\n**Why**: three copies had drifted.", "tags": ["refactor"], "created_at": "2026-06-02T09:30:00Z", "title": "Merged the date helpers", "type": "refactoring", "scope": "project", "pinned": false, "archived_at": null },
+          { "id": "00000000-0000-4000-8000-000000000302", "org_id": "00000000-0000-4000-8000-0000000000a1", "user_id": "00000000-0000-4000-8000-000000000001", "project": "sample-api", "tool": "cursor", "content": "**What**: Retries stop after three attempts.\n**Why**: a stuck job held the queue.", "tags": ["queue", "bugfix"], "created_at": "2026-05-31T15:10:00Z", "title": "Capped job retries at three", "type": "bugfix", "scope": "project", "pinned": true, "archived_at": null }
+        ],
+        "total": 2,
+        "limit": 50,
+        "offset": 0
+      }
+    },
+    {
+      "description": "Memories (/memories): filter facets.",
+      "path": "/v1/admin/stats/memory-facets",
+      "json": {
+        "types": [{ "value": "refactoring", "count": 1 }, { "value": "bugfix", "count": 1 }],
+        "scopes": [{ "value": "project", "count": 2 }],
+        "projects": [{ "value": "sample-web", "count": 1 }, { "value": "sample-api", "count": 1 }]
+      }
+    },
+    {
+      "description": "Memories (/memories): health tiles.",
+      "path": "/v1/admin/memories/health",
+      "json": { "total_memories": 2, "duplicate_count": 0, "stale_count": 0, "untagged_count": 0 }
+    },
+    {
+      "description": "Memories (/memories): the weekly trend.",
+      "path": "/v1/admin/stats/trends",
+      "json": {
+        "daily_counts": [{ "date": "2026-05-31", "count": 1 }, { "date": "2026-06-02", "count": 1 }],
+        "by_type": [{ "name": "refactoring", "count": 1 }, { "name": "bugfix", "count": 1 }],
+        "by_project": [{ "name": "sample-web", "count": 1 }, { "name": "sample-api", "count": 1 }],
+        "total": 2,
+        "this_week": 2,
+        "this_month": 2
+      }
+    },
+    {
+      "description": "Lists that render empty: an empty array, not the default {}.",
+      "path": "/v1/admin/collections",
+      "json": []
+    },
+    {
+      "path": "/v1/audit",
+      "json": []
+    },
+    {
+      "path": "/v1/conventions",
+      "json": []
+    },
+    {
+      "path": "/v1/clients",
+      "json": []
+    }
+  ]
+}

@@ -167,6 +167,38 @@ pub fn resolver_ready(conn: &Connection, org_id: &str, resolver_definition_id: &
     )?)
 }
 
+/// The repository an admin-uploaded transcript may attach to: `Ok(None)` when
+/// `resolver_definition_id` is not this org's `github_issue_resolver` (a
+/// transcript may only ever point at a real resolver of this org, never
+/// another org's or the wrong template); `Ok(Some(None))` when it is one but
+/// has no repository configured yet.
+pub fn resolver_repository(
+    conn: &Connection,
+    org_id: &str,
+    resolver_definition_id: &str,
+) -> Result<Option<Option<String>>> {
+    let resolver: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions
+          WHERE id=?1 AND org_id=?2 AND template_key='github_issue_resolver')",
+        params![resolver_definition_id, org_id],
+        |row| row.get(0),
+    )?;
+    if !resolver {
+        return Ok(None);
+    }
+    let repository: Option<String> = conn
+        .query_row(
+            "SELECT json_extract(r.config_json,'$.repository') FROM autonomous_agent_definitions d
+               JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
+              WHERE d.id=?1",
+            params![resolver_definition_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(Some(repository))
+}
+
 /// Pauses or resumes a source without re-validating it, so a broken source
 /// can always be paused.
 pub fn set_source_enabled(conn: &Connection, org_id: &str, id: &str, enabled: bool) -> Result<bool> {
@@ -692,6 +724,23 @@ mod tests {
             config: serde_json::json!({"channel_id": "C0123ABCD", "allowed_reactors": ["ULEAD0001"]}),
             enabled: true,
         }
+    }
+
+    #[test]
+    fn resolver_repository_is_only_readable_for_this_orgs_issue_resolver() {
+        let (conn, org, user) = setup();
+        let def = resolver(&conn, &org, &user);
+        assert_eq!(resolver_repository(&conn, &org, &def).unwrap(), Some(Some("acme/app".into())));
+        // Another org, or a resolver that is not `github_issue_resolver`, refuses.
+        assert_eq!(resolver_repository(&conn, "org-2", &def).unwrap(), None);
+        assert_eq!(resolver_repository(&conn, &org, "nope").unwrap(), None);
+        conn.execute(
+            "INSERT INTO autonomous_agent_definitions (id,org_id,template_key,template_version,name,status,current_revision,created_by)
+             VALUES ('def-qa',?1,'qa',1,'QA','enabled',1,?2)",
+            params![org, user],
+        )
+        .unwrap();
+        assert_eq!(resolver_repository(&conn, &org, "def-qa").unwrap(), None);
     }
 
     #[test]

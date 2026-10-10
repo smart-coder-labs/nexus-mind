@@ -187,6 +187,9 @@ COPY --from=builder /app/target/release/factory-golden-replay /app/factory-golde
 # Jev shadow decisions over real PRs (factory F3): backfill, refresh, report.
 #   factory-shadow <backfill|refresh|report> <org_id> ...
 COPY --from=builder /app/target/release/factory-shadow /app/factory-shadow
+# F4 frozen specialist eval (docs/factory/specialist-eval.md), run in the worker:
+#   factory-specialist-eval <org_id> < tasks.jsonl
+COPY --from=builder /app/target/release/factory-specialist-eval /app/factory-specialist-eval
 COPY --from=nexus-builder /app/target/release/nexus /app/nexus
 # The SDD importer has to ship with the image, or it cannot be run where it is
 # actually needed. It is a one-shot binary, invoked manually:
@@ -208,7 +211,7 @@ COPY --from=builder /app/target/release/backfill-embeddings /app/backfill-embedd
 
 # Fail the build, not the deploy, if any binary needs a library or glibc version
 # the runtime does not have.
-RUN for bin in nexusmind autonomous_worker factory-egress-proxy factory-golden-replay factory-shadow nexus import-sdd nexusmind-seed backfill-embeddings; do \
+RUN for bin in nexusmind autonomous_worker factory-egress-proxy factory-golden-replay factory-shadow factory-specialist-eval nexus import-sdd nexusmind-seed backfill-embeddings; do \
       if ldd "/app/$bin" 2>&1 | grep -q "not found"; then \
         ldd "/app/$bin"; echo "incompatible binary: $bin"; exit 1; \
       fi; \
