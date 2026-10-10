@@ -6,6 +6,7 @@ import { createClient } from '../api/client'
 import type { Backup, BackupDetail, BackupRestoreSummary } from '../types'
 import { BackupsTable, formatBytes } from '../components/backups/BackupsTable'
 import { RestoreConfirmDialog } from '../components/backups/RestoreConfirmDialog'
+import { Button } from '../components/ui/Button'
 
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 
@@ -177,21 +178,20 @@ export default function Backups() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">
             Backups
           </h1>
-          <p className="mt-1 text-[13px] text-text-secondary max-w-xl">
+          <p className="mt-1 text-sm text-text-secondary max-w-xl">
             Manage Postgres database backups. Restoring from a backup{' '}
             <span className="text-status-error font-semibold">REPLACES</span> the current database.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button
+          <Button
             onClick={() => createMut.mutate()}
             disabled={createMut.isPending}
-            className={`flex items-center gap-1.5 rounded-full bg-accent-blue px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-accent-blue-hover transition-colors disabled:opacity-40 ${FOCUS}`}
           >
             {createMut.isPending ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -199,7 +199,7 @@ export default function Backups() {
               <Plus className="w-3.5 h-3.5" />
             )}
             {createMut.isPending ? 'Creating…' : 'Create backup'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -207,7 +207,7 @@ export default function Backups() {
         <div
           role="status"
           aria-live="polite"
-          className={`flex items-start gap-3 rounded-[11px] border px-4 py-3 ${
+          className={`flex items-start gap-3 rounded-md border px-4 py-3 ${
             flash.kind === 'success'
               ? 'border-status-success/30 bg-status-success/5 text-status-success'
               : 'border-status-error/30 bg-status-error/5 text-status-error'
@@ -218,11 +218,11 @@ export default function Backups() {
           ) : (
             <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           )}
-          <p className="flex-1 text-[13px] leading-relaxed">{flash.message}</p>
+          <p className="flex-1 text-sm leading-relaxed">{flash.message}</p>
           <button
             onClick={() => showFlash(null)}
             aria-label="Dismiss"
-            className={`rounded-full p-1 hover:bg-white/[0.06] transition-colors ${FOCUS}`}
+            className={`rounded-full p-1 hover:bg-foreground/[0.06] transition-colors ${FOCUS}`}
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -230,22 +230,21 @@ export default function Backups() {
       )}
 
       {listErrorMessage && (
-        <div className="rounded-[11px] border border-status-warning/30 bg-status-warning/5 px-4 py-3 text-[13px] text-status-warning flex items-start gap-2">
+        <div role="alert" className="rounded-md border border-status-warning/30 bg-status-warning/5 px-4 py-3 text-sm text-status-warning flex flex-wrap items-start gap-2">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          <div className="flex-1">
+          <div className="min-w-0 flex-1 basis-40 break-words">
             <p className="font-semibold">Backup API not available.</p>
             <p className="text-[12px] mt-0.5 text-text-secondary">{listErrorMessage}</p>
           </div>
-          <button
+          <Button variant="outline" size="sm"
             onClick={() => refetch()}
-            className={`text-[12px] text-text-secondary border border-border-primary rounded-full px-2.5 py-1 hover:text-text-primary hover:bg-white/[0.04] transition-colors ${FOCUS}`}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
-      <BackupsTable
+      {(!listErrorMessage || backups.length > 0) && <BackupsTable
         backups={backups}
         loading={isLoading}
         downloadingId={downloadingId}
@@ -256,7 +255,7 @@ export default function Backups() {
         onToggleExpand={toggleExpand}
         onDownload={handleDownload}
         onRestore={openRestore}
-      />
+      />}
 
       {!isLoading && backups.length > 0 && (
         <p className="text-[11px] text-text-quaternary text-right">

@@ -1,11 +1,14 @@
 /**
- * Apple Design System - Global Styles
- * Tokens and base styles for @smart-coder-labs/apple-design-system
+ * NexusMind lime design system — global styles
+ * Shared light/dark tokens and compatibility aliases for existing components
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
 
 @import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "tw-animate-css";
+@import "./styles/audit1-theme.css";
 @variant dark (&:where(.dark, .dark *));
 
 
@@ -13,56 +16,30 @@
    CSS VARIABLES
    ======================================== */
 
+/* Compatibility aliases keep existing route semantics on the Audit1 tokens. */
 :root {
-  /* Action Blue — the single interactive color */
-  --color-accent-blue: #0066cc;           /* Action Blue (light/dark surfaces) */
-  --color-accent-blue-hover: #0071e3;     /* Focus Blue */
-  --color-accent-blue-active: #0058a8;    /* Pressed */
-  --color-accent-blue-tint: rgba(0, 102, 204, 0.12);
-  --color-accent-on-dark: #2997ff;        /* Sky Link Blue — for dark tiles */
-  --color-accent-purple: #bf5af2;         /* memory-type accent (Dashboard TYPE_COLORS) */
-
-  /* Background — Apple near-black tile family */
-  --color-bg-primary: #000000;           /* surface-black: true black, nav bg */
-  --color-bg-secondary: #1d1d1f;         /* ink: near-black, main canvas */
-  --color-bg-tertiary: #272729;          /* surface-tile-1: dark tile */
-  --color-bg-elevated: #2a2a2c;          /* surface-tile-2: stacked dark tile */
-
-  /* Surface */
-  --color-surface-primary: #272729;      /* surface-tile-1 */
-  --color-surface-secondary: #2a2a2c;   /* surface-tile-2 */
-  --color-surface-glass: rgba(39, 39, 41, 0.80);
-  --color-surface-glass-dark: rgba(0, 0, 0, 0.85);
-
-  /* Text — Apple text ladder on dark */
-  --color-text-primary: #ffffff;          /* body-on-dark */
-  --color-text-secondary: #cccccc;       /* body-muted */
-  --color-text-tertiary: #7a7a7a;        /* ink-muted-48 */
-  --color-text-quaternary: #555555;
-  --color-text-inverse: #1d1d1f;
-
-  /* Border — hairline */
-  --color-border-primary: rgba(255, 255, 255, 0.08);   /* hairline on dark */
-  --color-border-secondary: rgba(255, 255, 255, 0.04);
-  --color-border-focus: #0066cc;
-  --color-focus-ring: #0071e3;            /* Focus Blue — keyboard focus only */
-
-  /* Status — semantic clarity */
-  --color-status-success: #30d158;
-  --color-status-warning: #ffd60a;
-  --color-status-error: #ff453a;
-  --color-status-info: #0066cc;
-
-  /* Shadows — ZERO decorative shadows; only product photography */
-  --shadow-product: rgba(0, 0, 0, 0.22) 3px 5px 30px;
+ --color-accent-blue:var(--brand-link); --color-accent-blue-hover:var(--lime-800); --color-accent-blue-active:var(--lime-900); --color-accent-blue-tint:color-mix(in srgb,var(--primary) 12%,transparent); --color-accent-on-dark:var(--brand-link);
+ --color-action-primary:var(--primary); --color-action-primary-hover:var(--lime-300); --color-action-primary-active:var(--lime-500); --color-action-foreground:var(--primary-foreground);
+ --color-accent-amber:var(--color-status-warning); --color-accent-red:var(--color-status-error);
+ --color-accent-purple:var(--brand-link); --color-accent-pink:var(--brand-link);
+ --color-bg-primary:var(--background); --color-bg-secondary:var(--card); --color-bg-tertiary:var(--muted); --color-bg-elevated:var(--popover);
+ --color-surface-primary:var(--card); --color-surface-secondary:var(--muted); --color-surface-elevated:var(--popover); --color-surface-glass:var(--card); --color-surface-glass-dark:var(--popover);
+ --color-text-primary:var(--foreground); --color-text-secondary:var(--foreground); --color-text-tertiary:var(--muted-foreground); --color-text-quaternary:var(--muted-foreground); --color-text-inverse:var(--background); --color-foreground:var(--foreground);
+ --color-border-primary:var(--border); --color-border-secondary:var(--border); --color-border-tertiary:var(--input); --color-border-focus:var(--ring); --color-focus-ring:var(--ring);
+ --color-status-success:#27713f; --color-status-warning:#866200; --color-status-error:var(--destructive); --color-status-info:#2563eb;
 }
-
-
-.dark {
-  /* Dark mode inherits :root — no overrides needed */
+:root.dark {
+ --color-accent-blue-hover:var(--lime-300); --color-accent-blue-active:var(--lime-500);
+ --color-status-success:#84e6b0; --color-status-warning:#e2c467; --color-status-info:#93c5fd;
 }
 
 @theme {
+  --color-foreground:var(--foreground);
+  --color-action-primary:var(--color-action-primary);
+  --color-action-primary-hover:var(--color-action-primary-hover);
+  --color-action-primary-active:var(--color-action-primary-active);
+  --color-action-foreground:var(--color-action-foreground);
+  --color-surface-elevated:var(--color-surface-elevated);
   /* Background */
   --color-background-primary: var(--color-bg-primary);
   --color-background-secondary: var(--color-bg-secondary);
@@ -85,6 +62,7 @@
   /* Border */
   --color-border-primary: var(--color-border-primary);
   --color-border-secondary: var(--color-border-secondary);
+  --color-border-tertiary: var(--color-border-tertiary);
   --color-border-focus: var(--color-border-focus);
   --color-focus-ring: var(--color-focus-ring);
 
@@ -94,6 +72,9 @@
   --color-accent-blue-active: var(--color-accent-blue-active);
   --color-accent-blue-tint: var(--color-accent-blue-tint);
   --color-accent-purple: var(--color-accent-purple);
+  --color-accent-amber: var(--color-accent-amber);
+  --color-accent-red: var(--color-accent-red);
+  --color-accent-pink: var(--color-accent-pink);
   --color-accent-on-dark: var(--color-accent-on-dark);
 
   /* Status */
@@ -102,11 +83,9 @@
   --color-status-error: var(--color-status-error);
   --color-status-info: var(--color-status-info);
 
-  /* Shadows — only product photography shadow */
-  --shadow-product: var(--shadow-product);
 
   /* Typography */
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+  --font-sans: 'Geist Variable', sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Monaco", "Cascadia Code", monospace;
 
   /* Motion */
@@ -124,6 +103,7 @@
   }
 
   html {
+    color-scheme: light;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -132,11 +112,15 @@
   body {
     background-color: var(--color-bg-primary);
     color: var(--color-text-primary);
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
-    font-size: 17px;            /* Apple body — not 16px */
+    font-family: 'Geist Variable', sans-serif;
+    font-size: 16px;
     line-height: 1.47;
-    letter-spacing: -0.374px;  /* Apple body tracking */
+    letter-spacing: normal;
   }
+
+  :focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+  input, textarea { caret-color: var(--color-accent-on-dark); }
+  select option { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
 
   ::-webkit-scrollbar {
     width: 8px;
@@ -271,3 +255,107 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Audit1 neutral inset shell, light and dark. */
+html.dark { color-scheme:dark; }
+::selection { background:var(--primary); color:var(--primary-foreground); }
+html { scrollbar-color:var(--muted-foreground) transparent; }
+.audit-sidebar { background:var(--sidebar); color:var(--sidebar-foreground); }
+/* Keep scrolling available without a bright track competing with the icon rail. */
+.audit-sidebar-scroll {
+  scrollbar-width:thin;
+  scrollbar-color:color-mix(in srgb,var(--muted-foreground) 25%,transparent) transparent;
+}
+.audit-sidebar-scroll:hover,
+.audit-sidebar-scroll:focus-within {
+  scrollbar-color:color-mix(in srgb,var(--muted-foreground) 45%,transparent) transparent;
+}
+.audit-sidebar-scroll::-webkit-scrollbar { width:4px; }
+.audit-sidebar-scroll::-webkit-scrollbar-thumb {
+  background:color-mix(in srgb,var(--muted-foreground) 25%,transparent);
+}
+.audit-sidebar-scroll:hover::-webkit-scrollbar-thumb,
+.audit-sidebar-scroll:focus-within::-webkit-scrollbar-thumb {
+  background:color-mix(in srgb,var(--muted-foreground) 45%,transparent);
+}
+[data-collapsible=icon] .audit-sidebar-scroll { scrollbar-width:none; }
+[data-collapsible=icon] .audit-sidebar-scroll::-webkit-scrollbar { display:none; }
+.audit-sidebar [data-slot="sidebar-menu-button"],
+.audit-sidebar a[aria-current=page] { border-radius:12px; }
+.audit-sidebar a[aria-current=page] { background:color-mix(in srgb,var(--primary) 5%,transparent); color:var(--brand-link); border-color:color-mix(in srgb,var(--primary) 35%,transparent); font-weight:500; transform:none; }
+.audit-sidebar a[aria-current=page] svg { color:var(--brand-link); }
+.audit-sidebar nav>div>p { font-size:12px; font-weight:500; letter-spacing:0; text-transform:none; }
+.audit-topbar { background:var(--top-bar-background); border-bottom:1px solid var(--border); }
+.audit-workspace { background:var(--workspace); position:relative; isolation:isolate; }
+.audit-workspace::before { content:''; position:absolute; inset:0; z-index:-1; pointer-events:none; background:radial-gradient(ellipse 60% 40% at 30% 20%,color-mix(in srgb,var(--primary) 6%,transparent),transparent 60%),radial-gradient(ellipse 50% 40% at 70% 60%,color-mix(in srgb,var(--complementary) 5%,transparent),transparent 60%); }
+.audit-workspace::after { content:''; position:absolute; inset:0; z-index:-1; pointer-events:none; background-image:linear-gradient(color-mix(in srgb,var(--foreground) 3%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--foreground) 3%,transparent) 1px,transparent 1px); background-size:64px 64px; mask-image:radial-gradient(ellipse 60% 50% at 50% 30%,#000,transparent); }
+.lima-panel { border:1px solid var(--border); background:var(--card); border-radius:calc(var(--radius) + 4px); }
+.lima-theme-button { display:inline-flex; align-items:center; gap:8px; height:36px; padding:8px 12px; border:1px solid var(--input); border-radius:calc(var(--radius) - 2px); color:var(--foreground); background:var(--background); font-size:14px; box-shadow:0 1px 2px #0000000d; }
+.lima-theme-button.lima-theme-button--compact { width:36px; height:36px; justify-content:center; gap:0; padding:0; }
+.lima-theme-button:hover { background:var(--accent); }
+/* Audit1 shadcn table geometry. Specificity also normalizes legacy route tables. */
+.admin-data-table { border-collapse:collapse; font-size:14px; line-height:1.5; }
+.admin-data-table > thead { background:transparent; }
+.admin-data-table > thead > tr > th { height:40px; padding:0 8px; font-size:14px; font-weight:500; letter-spacing:0; text-transform:none; color:var(--foreground); white-space:nowrap; border-bottom:1px solid var(--border); }
+.admin-data-table > tbody > tr > td { padding:8px; vertical-align:middle; border-bottom:1px solid var(--border); }
+.admin-data-table > tbody > tr:last-child > td { border-bottom:0; }
+.admin-data-table > tbody > tr:hover { background:color-mix(in srgb,var(--muted) 50%,transparent); }
+.admin-data-table[data-density=compact] > tbody > tr > td { padding-block:6px; }
+.admin-data-table :is(th,td):has(> input[type=checkbox], > button[role=checkbox]) { width:36px; padding-right:0; }
+.admin-data-table td[colspan] { padding-block:32px; }
+/* A shared page gutter follows the reference's px-5 content inset. */
+.audit-workspace > .admin-page { width:100%; max-width:none; margin-inline:0; padding:20px; }
+@media (max-width:640px) { .audit-workspace > .admin-page { padding:16px; } }
+
+/* Soft edge fades show scrollable content without pinning page content over itself. */
+.audit-scroll-fade-layer { position:sticky; top:0; z-index:30; height:0; pointer-events:none; }
+.audit-scroll-fade-top,
+.audit-scroll-fade-bottom {
+  position:absolute;
+  inset-inline:0;
+  height:104px;
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  transition:opacity 280ms ease;
+}
+.audit-scroll-fade-top {
+  top:0;
+  background:linear-gradient(to bottom,var(--workspace) 0%,color-mix(in srgb,var(--workspace) 88%,transparent) 18%,color-mix(in srgb,var(--workspace) 56%,transparent) 48%,color-mix(in srgb,var(--workspace) 20%,transparent) 76%,transparent 100%);
+  mask-image:linear-gradient(to bottom,#000 0%,#000 28%,transparent 100%);
+  -webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 28%,transparent 100%);
+}
+.audit-scroll-fade-bottom {
+  background:linear-gradient(to top,var(--workspace) 0%,color-mix(in srgb,var(--workspace) 88%,transparent) 18%,color-mix(in srgb,var(--workspace) 56%,transparent) 48%,color-mix(in srgb,var(--workspace) 20%,transparent) 76%,transparent 100%);
+  mask-image:linear-gradient(to top,#000 0%,#000 28%,transparent 100%);
+  -webkit-mask-image:linear-gradient(to top,#000 0%,#000 28%,transparent 100%);
+}
+body:has([role="dialog"][aria-modal="true"]) .audit-scroll-fade-layer { visibility:hidden; }
+@media (prefers-reduced-motion:reduce) {
+  .audit-scroll-fade-top,.audit-scroll-fade-bottom { transition:none; }
+}
+
+/* Native selects use the same quiet, bordered control language as Audit1's
+   Radix select. This keeps legacy forms and filters consistent with shadcn. */
+select:not([data-slot="select-trigger"]):not([multiple]) {
+  appearance:none;
+  min-height:2.25rem;
+  padding-right:2.5rem;
+  border:1px solid var(--input);
+  border-radius:calc(var(--radius) - 2px);
+  background-color:var(--background);
+  background-image:linear-gradient(45deg,transparent 50%,var(--muted-foreground) 50%),linear-gradient(135deg,var(--muted-foreground) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 50%,calc(100% - 11px) 50%;
+  background-repeat:no-repeat;
+  background-size:5px 5px;
+  color:var(--foreground);
+  box-shadow:0 1px 2px #0000000d;
+  transition:border-color 150ms ease,box-shadow 150ms ease,background-color 150ms ease;
+}
+select:not([data-slot="select-trigger"]):not([multiple]):hover:not(:disabled) { border-color:color-mix(in srgb,var(--input) 55%,var(--foreground)); }
+select:not([data-slot="select-trigger"]):not([multiple]):focus-visible { outline:none; border-color:var(--ring); box-shadow:0 0 0 3px color-mix(in srgb,var(--ring) 18%,transparent); }
+select:not([data-slot="select-trigger"]):not([multiple]):disabled { cursor:not-allowed; opacity:.55; }
+select:not([data-slot="select-trigger"]):not([multiple]) option { background:var(--popover); color:var(--popover-foreground); }
+
+.admin-page > :is(div,section)[class*="p-"], .admin-page > :is(div,section)[class*="px-"] { padding:0; max-width:none; margin-inline:0; }
+
+[data-collapsible=icon] a[aria-current=page] { transform:none; }

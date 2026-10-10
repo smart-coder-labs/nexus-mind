@@ -1,0 +1,6 @@
+---
+interface Props { name: 'arrow' | 'external' | 'down' | 'plus'; }
+const paths = { arrow:'M4 12h16m-6-6 6 6-6 6', external:'M6 18 18 6M6 6h12v12', down:'M12 4v16m-6-6 6 6 6-6', plus:'M12 5v14M5 12h14' };
+const { name } = Astro.props;
+---
+<svg class="sc-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={paths[name]}/></svg>

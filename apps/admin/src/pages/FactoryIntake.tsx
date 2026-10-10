@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BellRing, GitPullRequest, Hash, Plus, Radio, Siren, Trash2, X } from 'lucide-react'
@@ -210,7 +211,7 @@ export default function FactoryIntake() {
   const sourceName = (item: FactoryIntakeItem) => sources.data?.find(source => source.id === item.source_id)?.name
 
   return (
-    <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-8">
+    <div className="p-6 md:p-8 min-w-0 max-w-7xl mx-auto space-y-6">
       <PageHeader
         title="Intake"
         subtitle="Where the factory takes work from. Every new item becomes a factory task."
@@ -237,11 +238,11 @@ export default function FactoryIntake() {
             {sources.data.map(source => (
               <li key={source.id} className={cn(PANEL_CLASS, 'flex flex-col gap-4')}>
                 <div className="flex items-start gap-3">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] border border-border-primary bg-white/[0.04] text-text-secondary">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-primary bg-foreground/[0.04] text-text-secondary">
                     <KindIcon kind={source.kind} />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{source.name}</p>
+                    <p className="break-words text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{source.name}</p>
                     <p className="text-[12px] text-text-tertiary">{KIND_LABEL[source.kind]}</p>
                   </div>
                   {!source.enabled ? (
@@ -252,13 +253,13 @@ export default function FactoryIntake() {
                     <Badge role="none" size="sm" variant="success" dot>Connected</Badge>
                   )}
                 </div>
-                <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1.5 text-[13px]">
+                <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
                   <dt className="text-text-tertiary">Repository</dt>
-                  <dd className="min-w-0 truncate">
+                  <dd className="min-w-0 break-all">
                     {source.repository ? <span className="font-mono text-text-primary">{source.repository}</span> : <span className="text-text-secondary">No repository</span>}
                   </dd>
                   <dt className="text-text-tertiary">Tasks go to</dt>
-                  <dd className="min-w-0 truncate text-text-secondary">{source.project}</dd>
+                  <dd className="min-w-0 break-words text-text-secondary">{source.project}</dd>
                   <dt className="text-text-tertiary">Data privacy</dt>
                   <dd className="text-text-secondary">{PRIVACY_LABEL[source.privacy_class]}</dd>
                   <dt className="text-text-tertiary">Last fetch</dt>
@@ -267,7 +268,7 @@ export default function FactoryIntake() {
                   <dd className="tabular-nums text-text-secondary">{itemCount(source.id)} recent items</dd>
                 </dl>
                 {source.last_error && (
-                  <div role="status" className="rounded-[11px] border border-status-error/20 bg-status-error/[0.08] px-3.5 py-2.5 text-[13px]">
+                  <div role="status" className="rounded-md border border-status-error/20 bg-status-error/[0.08] px-3.5 py-2.5 text-sm">
                     <p className="break-words text-text-primary">Last poll failed: {source.last_error}</p>
                     {pollHint(source.last_error) && <p className="mt-0.5 text-[12px] text-text-secondary">{pollHint(source.last_error)}</p>}
                   </div>
@@ -291,13 +292,13 @@ export default function FactoryIntake() {
                 )}
               </li>
             ))}
-            <li className="flex items-start gap-3 rounded-[18px] border border-dashed border-border-primary p-5">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] border border-border-primary text-text-tertiary">
+            <li className="flex items-start gap-3 rounded-xl border border-dashed border-border-primary p-5">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-primary text-text-tertiary">
                 <KindIcon kind="github" />
               </span>
               <div className="min-w-0">
                 <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">GitHub issues</p>
-                <p className="mt-0.5 text-[13px] text-text-secondary">Reach the factory through the issue resolver agent. No source needed.</p>
+                <p className="mt-0.5 text-sm text-text-secondary">Reach the factory through the issue resolver agent. No source needed.</p>
               </div>
             </li>
           </ul>
@@ -309,8 +310,8 @@ export default function FactoryIntake() {
       {items.data && items.data.length > 0 && (
         <section aria-labelledby="items-title" className="space-y-3">
           <SectionHeading id="items-title" title="What came in" description="The latest 50 items and whether each started on its own." />
-          <div className="overflow-x-auto rounded-[18px] border border-border-primary">
-            <table className="w-full min-w-[44rem] text-[13px]" aria-label="Intake items">
+          <div className="overflow-x-auto rounded-xl border border-border-primary">
+            <table className="admin-data-table w-full min-w-[44rem] text-sm" aria-label="Intake items">
               <thead>
                 <tr className="border-b border-border-secondary text-left text-[12px] text-text-tertiary">
                   <th scope="col" className="px-4 py-2.5 font-medium">When</th>
@@ -321,7 +322,7 @@ export default function FactoryIntake() {
               </thead>
               <tbody>
                 {items.data.map(item => (
-                  <tr key={item.task_id} className="border-b border-border-secondary align-top last:border-0 hover:bg-white/[0.03]">
+                  <tr key={item.task_id} className="border-b border-border-secondary align-top last:border-0 hover:bg-foreground/[0.03]">
                     <td className="whitespace-nowrap px-4 py-2.5 text-text-tertiary">{when(item.created_at)}</td>
                     <td className="px-4 py-2.5">
                       {sourceName(item) && <span className="block text-text-primary">{sourceName(item)}</span>}
@@ -451,13 +452,13 @@ function SourceEditor({
 
             <FieldGroup title="Where work lands">
               <Field id="intake-resolver" label="Issue resolver (sets the repository)">
-                <select id="intake-resolver" className={SELECT_CLASS} value={draft.resolver} onChange={event => set('resolver', event.target.value)}>
+                <StyledSelect id="intake-resolver" className={SELECT_CLASS} value={draft.resolver} onChange={event => set('resolver', event.target.value)}>
                   <option value="">Choose an agent</option>
                   {resolvers.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                   {draft.resolver && !resolvers.some(agent => agent.id === draft.resolver) && (
                     <option value={draft.resolver}>Unavailable agent (choose another)</option>
                   )}
-                </select>
+                </StyledSelect>
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field id="intake-project" label="NexusMind project for the tasks">
@@ -468,9 +469,9 @@ function SourceEditor({
                 </Field>
               </div>
               <Field id="intake-privacy" label="Data privacy" hint="Restricted sources never start work on their own.">
-                <select id="intake-privacy" className={SELECT_CLASS} value={draft.privacy} onChange={event => set('privacy', event.target.value as FactoryPrivacyClass)}>
+                <StyledSelect id="intake-privacy" className={SELECT_CLASS} value={draft.privacy} onChange={event => set('privacy', event.target.value as FactoryPrivacyClass)}>
                   {PRIVACY.map(value => <option key={value} value={value}>{PRIVACY_LABEL[value]}{value === 'restricted' ? ' (never starts on its own)' : ''}</option>)}
-                </select>
+                </StyledSelect>
               </Field>
             </FieldGroup>
 
@@ -483,14 +484,14 @@ function SourceEditor({
               }
             >
               <Field id="intake-token" label="Token">
-                <select id="intake-token" className={SELECT_CLASS} value={draft.connector} onChange={event => set('connector', event.target.value)}>
+                <StyledSelect id="intake-token" className={SELECT_CLASS} value={draft.connector} onChange={event => set('connector', event.target.value)}>
                   {canAddToken && <option value={NEW_TOKEN}>Paste a new token</option>}
                   {!canAddToken && draft.connector === NEW_TOKEN && <option value={NEW_TOKEN}>Choose a stored token</option>}
                   {secrets.map(connector => <option key={connector.id} value={connector.id}>{connector.name}</option>)}
                   {draft.connector !== NEW_TOKEN && !secrets.some(connector => connector.id === draft.connector) && (
                     <option value={draft.connector}>Unavailable token (paste or choose another)</option>
                   )}
-                </select>
+                </StyledSelect>
               </Field>
               {draft.connector === NEW_TOKEN && canAddToken && (
                 <Field id="intake-new-token" label={draft.kind === 'slack' ? 'Slack bot token (xoxb-…)' : 'Sentry auth token'}>
@@ -570,7 +571,7 @@ function WatchdogCard({
               <Badge role="none" size="sm" variant={enabled ? 'success' : 'default'}>{enabled ? 'On' : 'Off'}</Badge>
             )}
           </div>
-          <p className="mt-1 max-w-3xl text-[13px] text-text-secondary">
+          <p className="mt-1 max-w-3xl text-sm text-text-secondary">
             Posts to Slack when a merge is held for a person, a run stops short or a new factory task arrives (at most one
             message every 15 minutes), plus a daily summary.
             {enabled && <> Last message {when(watchdog?.last_sent_at ?? null)}.</>}
@@ -582,10 +583,10 @@ function WatchdogCard({
       {canWrite && (
         <div className={cn(PANEL_CLASS, 'grid items-end gap-4 sm:grid-cols-[minmax(0,1fr)_12rem_auto]')}>
           <Field id="watchdog-connector" label="Slack webhook" hint={hooks.length === 0 ? 'Add a Slack webhook connector in Autonomous agents first.' : undefined}>
-            <select id="watchdog-connector" className={SELECT_CLASS} value={selected} onChange={event => setConnector(event.target.value)}>
+            <StyledSelect id="watchdog-connector" className={SELECT_CLASS} value={selected} onChange={event => setConnector(event.target.value)}>
               <option value="">Choose a Slack connector</option>
               {hooks.map(hook => <option key={hook.id} value={hook.id}>{hook.name}</option>)}
-            </select>
+            </StyledSelect>
           </Field>
           <Field id="watchdog-hour" label="Daily summary hour (UTC)">
             <Input id="watchdog-hour" type="number" min={0} max={23} value={dailyHour} onChange={event => setHour(Math.min(23, Math.max(0, Number(event.target.value) || 0)))} />

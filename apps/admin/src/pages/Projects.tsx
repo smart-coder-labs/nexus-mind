@@ -6,7 +6,7 @@ import { useAuth, isPrivileged } from '../auth/AuthContext'
 import {
   FolderGit, Plus, Users, UserPlus, UserMinus,
   FolderOpen, ChevronRight, ChevronDown, Brain, GitBranch, Loader2,
-  Archive, RotateCcw, BookMarked, Settings, X, Search,
+  Archive, RotateCcw, BookMarked, Settings, X, Search, Building2,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -27,7 +27,7 @@ const INTERNAL_CLIENT = '__internal__'
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Projects page.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 // ─── Three-way toggle: null (inherit) | true (on) | false (off) ──────────────
 
@@ -49,7 +49,7 @@ function ThreeWayToggle({ value, onChange }: ThreeWayToggleProps) {
     return (
       <button
         onClick={cycle}
-        className="border border-border-secondary rounded-[8px] px-2.5 py-1 text-[10px] text-text-quaternary hover:text-text-tertiary transition-colors"
+        className="border border-border-secondary rounded-md px-2.5 py-1 text-xs text-text-quaternary hover:text-text-tertiary transition-colors"
         title="Inherits org setting — click to override"
       >
         Inherit
@@ -60,7 +60,7 @@ function ThreeWayToggle({ value, onChange }: ThreeWayToggleProps) {
     return (
       <button
         onClick={cycle}
-        className="border border-status-success/30 rounded-[8px] px-2.5 py-1 text-[10px] text-status-success bg-status-success/10 font-semibold"
+        className="border border-status-success/30 rounded-md px-2.5 py-1 text-xs text-status-success bg-status-success/10 font-semibold"
         title="Enabled for this project — click to disable"
       >
         On
@@ -70,7 +70,7 @@ function ThreeWayToggle({ value, onChange }: ThreeWayToggleProps) {
   return (
     <button
       onClick={cycle}
-      className="border border-status-error/30 rounded-[8px] px-2.5 py-1 text-[10px] text-status-error bg-status-error/10 font-semibold"
+      className="border border-status-error/30 rounded-md px-2.5 py-1 text-xs text-status-error bg-status-error/10 font-semibold"
       title="Disabled for this project — click to clear override"
     >
       Off
@@ -87,7 +87,7 @@ function SavedBadge() {
     return () => clearTimeout(t)
   }, [])
   if (!visible) return null
-  return <span className="text-[10px] text-status-success">Saved</span>
+  return <span className="text-xs text-status-success">Saved</span>
 }
 
 const EVENT_KEYS: { key: keyof ProjectEventOverrides; label: string }[] = [
@@ -238,27 +238,27 @@ function MembersPanel({
   }
 
   return (
-    <div className="rounded-b-[18px] border border-t-0 border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] px-5 pb-5 pt-4 space-y-4">
+    <div className="rounded-b-[18px] border border-t-0 border-border-primary bg-surface-primary px-5 pb-5 pt-4 space-y-4">
       {stats && (
         <div className="flex items-center gap-6 pb-4 mb-4 border-b border-border-secondary/40">
           <div>
             <p className="text-lg font-semibold text-text-primary">{stats.total_memories}</p>
-            <p className="text-[10px] text-text-quaternary">Total memories</p>
+            <p className="text-xs text-text-quaternary">Total memories</p>
           </div>
           <div>
             <p className="text-lg font-semibold text-text-primary">{stats.memories_this_week}</p>
-            <p className="text-[10px] text-text-quaternary">This week</p>
+            <p className="text-xs text-text-quaternary">This week</p>
           </div>
           {stats.last_memory_at && (
             <div>
               <p className="text-xs font-semibold text-text-secondary">{relativeTime(stats.last_memory_at)}</p>
-              <p className="text-[10px] text-text-quaternary">Last activity</p>
+              <p className="text-xs text-text-quaternary">Last activity</p>
             </div>
           )}
           {stats.top_tags.length > 0 && (
             <div className="flex flex-wrap gap-1 ml-auto">
               {stats.top_tags.map(tag => (
-                <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-[5px] bg-white/[0.04] text-text-quaternary border border-border-secondary/50">{tag}</span>
+                <span key={tag} className="text-xs px-1.5 py-0.5 rounded-sm bg-foreground/[0.04] text-text-quaternary border border-border-secondary/50">{tag}</span>
               ))}
             </div>
           )}
@@ -266,7 +266,7 @@ function MembersPanel({
       )}
       {/* Members list */}
       <div className="space-y-1">
-        <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
+        <span className="text-xs font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
           Members
         </span>
 
@@ -274,16 +274,16 @@ function MembersPanel({
           <div className="pt-1">
             {Array.from({ length: 2 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3 py-2.5 border-b border-border-secondary/50">
-                <div className="w-8 h-8 rounded-full bg-white/[0.04] animate-pulse shrink-0" />
+                <div className="w-8 h-8 rounded-full bg-foreground/[0.04] animate-pulse shrink-0" />
                 <div className="flex-1 space-y-1.5">
-                  <div className="h-3 rounded-[5px] bg-white/[0.04] animate-pulse w-1/3" />
-                  <div className="h-2.5 rounded-[5px] bg-white/[0.04] animate-pulse w-1/2" />
+                  <div className="h-3 rounded-sm bg-foreground/[0.04] animate-pulse w-1/3" />
+                  <div className="h-2.5 rounded-sm bg-foreground/[0.04] animate-pulse w-1/2" />
                 </div>
               </div>
             ))}
           </div>
         ) : !members?.length ? (
-          <div className="flex flex-col items-center gap-1.5 py-5 text-center border border-dashed border-border-secondary rounded-[11px] mt-2">
+          <div className="flex flex-col items-center gap-1.5 py-5 text-center border border-dashed border-border-secondary rounded-md mt-2">
             <Users className="w-4 h-4 text-text-quaternary/60" />
             <p className="text-xs text-text-tertiary">No members in this project yet.</p>
           </div>
@@ -297,7 +297,7 @@ function MembersPanel({
                   className="flex items-center gap-3 py-2.5 border-b border-border-secondary/50 last:border-b-0"
                 >
                   {/* Avatar */}
-                  <div className="w-8 h-8 rounded-full bg-accent-blue/15 text-accent-blue text-xs font-semibold flex items-center justify-center shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-action-primary/15 text-accent-blue text-xs font-semibold flex items-center justify-center shrink-0">
                     {initial}
                   </div>
 
@@ -307,12 +307,12 @@ function MembersPanel({
                       {member.name || member.email}
                     </div>
                     {member.name && (
-                      <div className="text-[10px] text-text-quaternary truncate">{member.email}</div>
+                      <div className="text-xs text-text-secondary line-clamp-2">{member.email}</div>
                     )}
                   </div>
 
                   {/* Role badge */}
-                  <span className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-white/[0.06] border border-white/[0.09] text-text-tertiary shrink-0">
+                  <span className="rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-foreground/[0.06] border border-border-primary text-text-tertiary shrink-0">
                     {member.role}
                   </span>
 
@@ -346,18 +346,18 @@ function MembersPanel({
       <div className="mt-3 pt-3 border-t border-border-secondary/50 space-y-3">
         {/* Mode toggle header */}
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">Add members</span>
+          <span className="text-xs font-semibold text-text-tertiary tracking-[-0.08px] uppercase">Add members</span>
           <button
             type="button"
             onClick={() => { setBulkMode(false); setBulkResult(null) }}
-            className={`border border-border-primary rounded-full px-2.5 py-1 text-xs transition-colors ${!bulkMode ? 'bg-white/[0.06] text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+            className={`border border-border-primary rounded-full px-2.5 py-1 text-xs transition-colors ${!bulkMode ? 'bg-foreground/[0.06] text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
           >
             Single
           </button>
           <button
             type="button"
             onClick={() => { setBulkMode(true); setBulkResult(null) }}
-            className={`border border-border-primary rounded-full px-2.5 py-1 text-xs transition-colors ${bulkMode ? 'bg-white/[0.06] text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+            className={`border border-border-primary rounded-full px-2.5 py-1 text-xs transition-colors ${bulkMode ? 'bg-foreground/[0.06] text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
           >
             Bulk add
           </button>
@@ -369,12 +369,12 @@ function MembersPanel({
               value={bulkInput}
               onChange={e => { setBulkInput(e.target.value); setBulkResult(null) }}
               placeholder={"Paste user IDs, one per line…"}
-              className="bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-xs text-text-secondary resize-none w-full h-20 focus:border-accent-blue/60 focus:outline-none placeholder:text-text-quaternary"
+              className="bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-base sm:text-sm text-text-secondary resize-none w-full h-20 focus:border-accent-blue/60 focus:outline-none placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
             <div className="flex items-center gap-2">
               {/* Role select for bulk */}
               <Select value={addRole} onValueChange={setAddRole}>
-                <SelectTrigger className="w-32 h-8 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
+                <SelectTrigger className="w-32 h-8 text-xs bg-transparent border border-border-primary rounded-md px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -387,7 +387,7 @@ function MembersPanel({
                 type="button"
                 onClick={handleBulkAdd}
                 disabled={!!bulkProgress || !bulkInput.trim()}
-                className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                className="rounded-md bg-action-primary text-action-foreground px-3 py-1.5 text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0 h-9 shadow-xs"
               >
                 {bulkProgress
                   ? <Loader2 className="w-3 h-3 animate-spin" />
@@ -410,10 +410,10 @@ function MembersPanel({
             <form onSubmit={handleAdd} className="flex items-center gap-2">
               {/* User select */}
               {usersLoading ? (
-                <div className="flex-1 h-9 rounded-[11px] bg-white/[0.04] animate-pulse" />
+                <div className="flex-1 h-9 rounded-md bg-foreground/[0.04] animate-pulse" />
               ) : (
                 <Select value={addUserId} onValueChange={setAddUserId}>
-                  <SelectTrigger className="flex-1 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60">
+                  <SelectTrigger className="flex-1 h-9 text-xs bg-transparent border border-border-primary rounded-md px-3 focus:outline-none focus:border-accent-blue/60">
                     <SelectValue placeholder="Choose user…" />
                   </SelectTrigger>
                   <SelectContent>
@@ -432,7 +432,7 @@ function MembersPanel({
 
               {/* Role select */}
               <Select value={addRole} onValueChange={setAddRole}>
-                <SelectTrigger className="w-32 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
+                <SelectTrigger className="w-32 h-9 text-xs bg-transparent border border-border-primary rounded-md px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -446,7 +446,7 @@ function MembersPanel({
               <button
                 type="submit"
                 disabled={addMut.isPending || !addUserId}
-                className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                className="rounded-md bg-action-primary text-action-foreground px-3 py-1.5 text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0 h-9 shadow-xs"
               >
                 {addMut.isPending
                   ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -468,15 +468,15 @@ function MembersPanel({
       {/* Agent Event Overrides */}
       <div className="mt-4 pt-4 border-t border-border-secondary/50">
         <div className="flex items-center gap-2 mb-2">
-          <p className="text-[10px] font-semibold text-text-quaternary">Agent Event Overrides</p>
+          <p className="text-xs font-semibold text-text-quaternary">Agent Event Overrides</p>
           {overridesMut.isPending && (
-            <span className="text-[10px] text-text-quaternary">Saving…</span>
+            <span className="text-xs text-text-quaternary">Saving…</span>
           )}
           {!overridesMut.isPending && overridesMut.isSuccess && (
             <SavedBadge />
           )}
         </div>
-        <p className="text-[10px] text-text-quaternary mb-3">
+        <p className="text-xs text-text-quaternary mb-3">
           Override org-level event settings for this project. Leave as "Inherit" to use org defaults.
         </p>
         {overridesMut.isError && (
@@ -870,10 +870,10 @@ export default function Projects() {
       <div key={project.id}>
         {/* Row */}
         <div
-          className={`group p-4 flex items-start justify-between gap-4 transition-colors ${
-            isExpanded ? 'bg-accent-blue/10' : 'hover:bg-accent-blue/[0.05]'
+          className={`group p-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 transition-colors ${
+            isExpanded ? 'bg-action-primary/10' : 'hover:bg-action-primary/[0.05]'
           } ${depth > 0 ? `${depthPad(depth)} border-l-2 border-border-secondary ml-4` : ''} ${
-            isArchived ? 'opacity-60' : ''
+            isArchived ? 'bg-muted/20' : ''
           }`}
         >
           <div className="flex items-center gap-1.5 flex-1 min-w-0">
@@ -898,25 +898,25 @@ export default function Projects() {
             )}
             <FolderOpen className="w-4 h-4 text-text-tertiary flex-shrink-0" />
             <div className="min-w-0">
-              <span className="text-xs font-semibold text-text-primary truncate block">{project.name}</span>
+              <span className="text-sm font-semibold text-text-primary break-words block">{project.name}</span>
               {project.description && (
-                <p className="text-[10px] text-text-quaternary truncate">{project.description}</p>
+                <p className="text-xs text-text-secondary line-clamp-2">{project.description}</p>
               )}
               <div className="flex items-center gap-2 mt-1 flex-wrap">
-                <span className="text-[10px] text-text-tertiary">{new Date(project.created_at).toLocaleDateString()}</span>
+                <span className="text-xs text-text-tertiary">{new Date(project.created_at).toLocaleDateString()}</span>
                 {/* Owning client — "Internal" when null (not unassigned). */}
                 <span
                   className={cn(
-                    'text-[10px] rounded-[5px] px-1.5 py-0.5 border',
+                    'text-xs rounded-sm px-1.5 py-0.5 border',
                     project.client_id
-                      ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/20'
-                      : 'bg-white/[0.06] text-text-tertiary border-white/[0.09]',
+                      ? 'bg-action-primary/10 text-accent-blue border-accent-blue/20'
+                      : 'bg-foreground/[0.06] text-text-tertiary border-border-primary',
                   )}
                 >
                   {project.client_id ? (clientsById.get(project.client_id)?.name ?? 'Client') : 'Internal'}
                 </span>
                 {isArchived && (
-                  <span className="text-[10px] bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-[5px] px-1.5 py-0.5">
+                  <span className="text-xs bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-sm px-1.5 py-0.5">
                     archived
                   </span>
                 )}
@@ -927,7 +927,7 @@ export default function Projects() {
                     navigate('/conventions')
                   }}
                   title="View conventions"
-                  className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary flex items-center gap-1 hover:bg-white/[0.10] transition-colors"
+                  className="rounded-sm bg-foreground/[0.06] px-1.5 py-0.5 text-xs text-text-secondary flex items-center gap-1 hover:bg-foreground/[0.10] transition-colors"
                 >
                   <BookMarked className="w-3 h-3" />
                   {(allConventions ?? []).filter((c: Convention) => !c.archived_at && (c.project_id === project.id || c.project_id == null)).length} conventions
@@ -939,7 +939,7 @@ export default function Projects() {
                     handleMemoriesClick(project.id)
                   }}
                   title="View memories"
-                  className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary flex items-center gap-1 hover:bg-white/[0.10] transition-colors"
+                  className="rounded-sm bg-foreground/[0.06] px-1.5 py-0.5 text-xs text-text-secondary flex items-center gap-1 hover:bg-foreground/[0.10] transition-colors"
                 >
                   <Brain className="w-3 h-3" />
                   memories
@@ -948,7 +948,7 @@ export default function Projects() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0 self-end sm:self-auto">
             {!isArchived && (
               <>
                 {/* Memories button */}
@@ -956,7 +956,7 @@ export default function Projects() {
                   onClick={() => handleMemoriesClick(project.id)}
                   aria-label={`View memories for ${project.name}`}
                   title="View memories"
-                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-accent-blue hover:bg-white/[0.10] transition-colors"
+                  className="p-1.5 rounded-md text-text-tertiary hover:text-accent-blue hover:bg-foreground/[0.10] transition-colors"
                 >
                   <Brain className="w-4 h-4" />
                 </button>
@@ -966,7 +966,7 @@ export default function Projects() {
                   onClick={(e) => { e.stopPropagation(); setEditingProjectId(project.id) }}
                   aria-label={`Settings for ${project.name}`}
                   title="Project settings"
-                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.10] opacity-0 group-hover:opacity-100 transition-all"
+                  className="p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.10] transition-colors"
                 >
                   <Settings className="w-3 h-3" />
                 </button>
@@ -978,10 +978,10 @@ export default function Projects() {
                   aria-expanded={isExpanded}
                   title={isExpanded ? 'Collapse members' : 'Expand members'}
                   className={cn(
-                    'rounded-full p-1.5 transition-colors flex items-center gap-1',
+                    'rounded-md p-1.5 transition-colors flex items-center gap-1',
                     isExpanded
-                      ? 'text-accent-blue bg-accent-blue/10'
-                      : 'text-text-tertiary hover:text-accent-blue hover:bg-white/[0.06]',
+                      ? 'text-accent-blue bg-action-primary/10'
+                      : 'text-text-tertiary hover:text-accent-blue hover:bg-foreground/[0.06]',
                   )}
                 >
                   <Users className="w-4 h-4" />
@@ -1000,7 +1000,7 @@ export default function Projects() {
                 aria-label={`Restore project ${project.name}`}
                 title="Restore project"
                 disabled={restoreProjectMut.isPending}
-                className="p-1.5 rounded-[8px] text-text-quaternary hover:text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-40"
+                className="p-1.5 rounded-md text-text-quaternary hover:text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-40"
               >
                 <RotateCcw className="w-4 h-4" />
               </button>
@@ -1015,7 +1015,7 @@ export default function Projects() {
                 aria-label={`Archive project ${project.name}`}
                 title="Archive project"
                 disabled={archiveProjectMut.isPending}
-                className="p-1.5 rounded-[8px] text-text-quaternary hover:text-status-warning hover:bg-status-warning/10 transition-colors disabled:opacity-40"
+                className="p-1.5 rounded-md text-text-quaternary hover:text-status-warning hover:bg-status-warning/10 transition-colors disabled:opacity-40"
               >
                 <Archive className="w-4 h-4" />
               </button>
@@ -1074,27 +1074,27 @@ export default function Projects() {
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-xl bg-action-primary/12 flex items-center justify-center shrink-0">
             <FolderGit className="w-5 h-5 text-accent-blue" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">Projects & Scopes</h1>
+            <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Projects & Scopes</h1>
             <p className="text-xs text-text-quaternary mt-0.5">
               Manage organization projects and configure dynamic per-project user role overrides.
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-44">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <div className="w-full sm:w-44">
             <Select value={clientFilter} onValueChange={setClientFilter}>
-              <SelectTrigger className="h-8 text-xs" aria-label="Filter by client">
+              <SelectTrigger className="w-full h-9 text-sm" aria-label="Filter by client">
                 <SelectValue placeholder="All clients" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All clients</SelectItem>
-                <SelectItem value={INTERNAL_CLIENT}>Internal (no client)</SelectItem>
+                <SelectItem value="" icon={<Building2 />} description="Projects for every client">All clients</SelectItem>
+                <SelectItem value={INTERNAL_CLIENT} icon={<FolderGit />} description="Projects managed by your organization">Internal (no client)</SelectItem>
                 {(clients ?? []).map(c => (
-                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                  <SelectItem key={c.id} value={c.id} icon={<Building2 />} indicatorColor={c.status === 'active' ? 'var(--color-status-success)' : c.status === 'paused' ? 'var(--color-status-warning)' : 'var(--muted-foreground)'} description={`${c.slug} · ${c.status}`}>{c.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -1102,9 +1102,9 @@ export default function Projects() {
           <button
             onClick={() => setShowArchived(v => !v)}
             className={cn(
-              'flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+              'flex items-center gap-1.5 text-xs h-9 px-3 py-1.5 rounded-md border transition-colors',
               showArchived
-                ? 'bg-accent-blue/10 border-accent-blue/30 text-accent-blue font-semibold'
+                ? 'bg-action-primary/10 border-accent-blue/30 text-accent-blue font-semibold'
                 : 'border-border-primary text-text-quaternary hover:text-text-tertiary',
             )}
           >
@@ -1113,7 +1113,7 @@ export default function Projects() {
           </button>
           <button
             onClick={() => setCreateOpen(true)}
-            className="flex items-center gap-1.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white px-3.5 py-1.5 text-xs font-semibold transition-colors"
+            className="flex items-center gap-1.5 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground px-3.5 py-1.5 text-sm font-medium transition-colors h-9 shadow-xs"
           >
             <Plus className="w-3.5 h-3.5" />
             New Project
@@ -1121,7 +1121,7 @@ export default function Projects() {
         </div>
       </div>
 
-      <KpiMarquee role="list" aria-label="Project statistics">
+      <KpiMarquee compact role="list" aria-label="Project statistics">
         {statTiles.map((tile, i) => (
           <div key={tile.label} className="w-[232px] flex-none">
             <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
@@ -1130,10 +1130,10 @@ export default function Projects() {
       </KpiMarquee>
 
       {/* Project List (full width, matches mockup) */}
-      <div className={`rounded-[18px] overflow-hidden ${GLASS_PANEL}`}>
+      <div className={`rounded-xl overflow-hidden ${GLASS_PANEL}`}>
         <div className="px-5 py-4 border-b border-border-secondary flex items-center justify-between gap-3 flex-wrap">
           <span className="text-sm font-semibold text-text-primary">Projects</span>
-          <div className="flex items-center gap-2 h-8 w-60 px-3 rounded-[10px] border border-border-primary bg-white/[0.02]">
+          <div className="flex items-center gap-2 h-9 w-full sm:w-60 px-3 rounded-lg border border-border-primary bg-foreground/[0.02]">
             <Search className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
             <input
               type="text"
@@ -1141,12 +1141,12 @@ export default function Projects() {
               onChange={e => setFilterQuery(e.target.value)}
               placeholder="Filter projects…"
               aria-label="Filter projects"
-              className="flex-1 min-w-0 bg-transparent border-none outline-none text-xs text-text-primary placeholder:text-text-quaternary"
+              className="flex-1 min-w-0 bg-transparent border-none outline-none text-base sm:text-sm text-text-primary placeholder:text-text-quaternary"
             />
           </div>
         </div>
         {deleteProjectMut.isError && (
-          <div className="mx-4 mt-3 p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[8px]">
+          <div className="mx-4 mt-3 p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
             {(deleteProjectMut.error as Error)?.message ?? 'Failed to delete project'}
           </div>
         )}
@@ -1154,10 +1154,10 @@ export default function Projects() {
           {projectsLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="p-4 flex items-center gap-3">
-                <div className="w-4 h-4 rounded-[5px] bg-white/[0.04] animate-pulse flex-shrink-0" />
+                <div className="w-4 h-4 rounded-sm bg-foreground/[0.04] animate-pulse flex-shrink-0" />
                 <div className="flex-1 space-y-2">
-                  <div className="h-3.5 rounded-[5px] bg-white/[0.04] animate-pulse w-1/3" />
-                  <div className="h-2.5 rounded-[5px] bg-white/[0.04] animate-pulse w-2/3" />
+                  <div className="h-3.5 rounded-sm bg-foreground/[0.04] animate-pulse w-1/3" />
+                  <div className="h-2.5 rounded-sm bg-foreground/[0.04] animate-pulse w-2/3" />
                 </div>
               </div>
             ))
@@ -1181,77 +1181,69 @@ export default function Projects() {
       {/* Create Project Modal (mockup: header "New Project" trigger) */}
       <Modal open={createOpen} onOpenChange={setCreateOpen}>
         <ModalCloseButton />
-        <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
-          <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
+        <div className="w-full min-w-0">
+          <h2 className="text-lg font-semibold text-text-primary mb-1 flex items-center gap-2">
             <FolderGit className="w-4 h-4 text-accent-blue" />
             Create Project
           </h2>
-          <p className="text-[10px] text-text-quaternary mb-5">
+          <p className="text-xs text-text-quaternary mb-5">
             Register a new workspace scope inside the organization.
           </p>
 
           {errorMsg && (
-            <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+            <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
               {errorMsg}
             </div>
           )}
 
-          <form onSubmit={handleCreateProject} className="space-y-4 text-xs">
+          <form onSubmit={handleCreateProject} className="space-y-4 text-sm">
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                Project Name (slug)
-              </label>
-              <input
+              <label htmlFor="project-create-name" className="text-xs font-medium text-text-secondary">Project Name (slug)</label>
+              <input id="project-create-name"
                 type="text"
                 placeholder="e.g. core-payments"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 required
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                Description
-              </label>
-              <textarea
+              <label htmlFor="project-create-description" className="text-xs font-medium text-text-secondary">Description</label>
+              <textarea id="project-create-description"
                 placeholder="What is this scope about?"
                 value={description}
                 onChange={e => setDescription(e.target.value)}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                Parent Project
-              </label>
+              <label htmlFor="project-create-parent" className="text-xs font-medium text-text-secondary">Parent Project</label>
               <Select value={parentId} onValueChange={setParentId}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger id="project-create-parent" aria-label="Parent Project" className="w-full h-9 text-sm">
                   <SelectValue placeholder="— None (root) —" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">— None (root) —</SelectItem>
+                  <SelectItem value="" icon={<FolderGit />} description="Create this as a top-level project">— None (root) —</SelectItem>
                   {(projects ?? []).map(p => (
-                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    <SelectItem key={p.id} value={p.id} icon={<FolderGit />} description={p.description || 'Parent project in this workspace'}>{p.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                Client
-              </label>
+              <label htmlFor="project-create-client" className="text-xs font-medium text-text-secondary">Client</label>
               <Select value={createClientId} onValueChange={setCreateClientId}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger id="project-create-client" aria-label="Client" className="w-full h-9 text-sm">
                   <SelectValue placeholder="— Internal (no client) —" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">— Internal (no client) —</SelectItem>
+                  <SelectItem value="" icon={<FolderGit />} description="Keep this project within your organization">— Internal (no client) —</SelectItem>
                   {(clients ?? []).map(c => (
-                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    <SelectItem key={c.id} value={c.id} icon={<Building2 />} indicatorColor={c.status === 'active' ? 'var(--color-status-success)' : c.status === 'paused' ? 'var(--color-status-warning)' : 'var(--muted-foreground)'} description={`${c.slug} · ${c.status}`}>{c.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -1261,14 +1253,14 @@ export default function Projects() {
               <button
                 type="button"
                 onClick={() => setCreateOpen(false)}
-                className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+                className="px-4 py-2 rounded-md border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={createProjectMut.isPending}
-                className="flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-semibold transition-colors disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground font-medium transition-colors disabled:opacity-50 h-9 shadow-xs"
               >
                 <Plus className="w-3.5 h-3.5" />
                 {createProjectMut.isPending ? 'Creating…' : projectCreated ? 'Created!' : 'Create Project'}
@@ -1282,15 +1274,15 @@ export default function Projects() {
       <Modal open={!!editingProjectId} onOpenChange={(open) => { if (!open) setEditingProjectId(null) }}>
         <ModalCloseButton />
         {editingProject && (
-          <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
-            <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
+          <div className="w-full min-w-0">
+            <h2 className="text-lg font-semibold text-text-primary mb-1 flex items-center gap-2">
               <Settings className="w-4 h-4 text-accent-blue" />
               Project Settings
             </h2>
-            <p className="text-[10px] text-text-quaternary mb-5 font-mono">{editingProject.name}</p>
+            <p className="text-xs text-text-quaternary mb-5 font-mono">{editingProject.name}</p>
 
             {updateProjectSettingsMut.isError && (
-              <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+              <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
                 {(updateProjectSettingsMut.error as Error)?.message ?? 'Failed to save settings'}
               </div>
             )}
@@ -1308,40 +1300,43 @@ export default function Projects() {
               className="space-y-4"
             >
               <div className="space-y-1">
-                <label className="text-[10px] text-text-quaternary">Description</label>
+                <label className="text-xs text-text-quaternary">Description</label>
                 <textarea
+                  aria-label="Description"
                   value={settingsDescription}
                   onChange={e => setSettingsDescription(e.target.value)}
                   placeholder="Project description…"
-                  className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary p-3 resize-none h-20 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full"
+                  className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary p-3 resize-none h-20 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] text-text-quaternary">Custom AI Instructions</label>
+                <label className="text-xs text-text-quaternary">Custom AI Instructions</label>
                 <textarea
+                  aria-label="Custom AI Instructions"
                   value={settingsCustomInstructions}
                   onChange={e => setSettingsCustomInstructions(e.target.value)}
                   placeholder="Instructions injected into agent context for this project…"
-                  className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary p-3 resize-none h-28 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full"
+                  className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary p-3 resize-none h-28 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] text-text-quaternary">Retention Days</label>
+                <label className="text-xs text-text-quaternary">Retention Days</label>
                 <input
                   type="number"
                   min={0}
+                  aria-label="Retention Days"
                   value={settingsRetentionDays}
                   onChange={e => setSettingsRetentionDays(e.target.value === '' ? '' : Number(e.target.value))}
                   placeholder="Inherit from org (leave blank)"
-                  className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2.5 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+                  className="w-full rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-3 py-2.5 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
               </div>
 
               {/* Parent project */}
               <div className="space-y-1">
-                <label className="text-[10px] text-text-quaternary">Parent project</label>
+                <label className="text-xs text-text-quaternary">Parent project</label>
                 <Select
                   key={editingProject.id + '-parent'}
                   value={editingProject.parent_id ?? ''}
@@ -1349,13 +1344,13 @@ export default function Projects() {
                     updateProjectMut.mutate({ id: editingProject.id, parent_id: v || null })
                   }
                 >
-                  <SelectTrigger className="h-8 text-xs" disabled={updateProjectMut.isPending}>
+                  <SelectTrigger aria-label="Parent project" className="w-full h-9 text-sm" disabled={updateProjectMut.isPending}>
                     <SelectValue placeholder="— No parent (root) —" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">— No parent (root) —</SelectItem>
+                    <SelectItem value="" icon={<FolderGit />} description="Move this project to the organization root">— No parent (root) —</SelectItem>
                     {parentOptionsForEdit.map(p => (
-                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      <SelectItem key={p.id} value={p.id} icon={<FolderGit />} description={p.description || 'Parent project in this workspace'}>{p.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -1363,7 +1358,7 @@ export default function Projects() {
 
               {/* Owning client */}
               <div className="space-y-1">
-                <label className="text-[10px] text-text-quaternary">Client</label>
+                <label className="text-xs text-text-quaternary">Client</label>
                 <Select
                   key={editingProject.id + '-client'}
                   value={editingProject.client_id ?? ''}
@@ -1371,13 +1366,13 @@ export default function Projects() {
                     updateProjectMut.mutate({ id: editingProject.id, client_id: v || null })
                   }
                 >
-                  <SelectTrigger className="h-8 text-xs" disabled={updateProjectMut.isPending}>
+                  <SelectTrigger aria-label="Client" className="w-full h-9 text-sm" disabled={updateProjectMut.isPending}>
                     <SelectValue placeholder="Internal (no client)" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Internal (no client)</SelectItem>
+                    <SelectItem value="" icon={<FolderGit />} description="Keep this project within your organization">Internal (no client)</SelectItem>
                     {(clients ?? []).map(c => (
-                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                      <SelectItem key={c.id} value={c.id} icon={<Building2 />} indicatorColor={c.status === 'active' ? 'var(--color-status-success)' : c.status === 'paused' ? 'var(--color-status-warning)' : 'var(--muted-foreground)'} description={`${c.slug} · ${c.status}`}>{c.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -1385,7 +1380,7 @@ export default function Projects() {
 
               {/* Child projects */}
               <div className="space-y-2 pt-1">
-                <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
+                <span className="text-xs font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
                   Child projects
                 </span>
 
@@ -1427,7 +1422,7 @@ export default function Projects() {
                       setAddChildQuery(e.target.value)
                       setAddChildOpen(true)
                     }}
-                    className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary disabled:opacity-40"
+                    className="w-full rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary disabled:opacity-40 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                   {addChildOpen && filteredChildCandidates.length > 0 && (
                     <>
@@ -1435,7 +1430,7 @@ export default function Projects() {
                         className="fixed inset-0 z-40"
                         onClick={() => setAddChildOpen(false)}
                       />
-                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] z-50 max-h-48 overflow-y-auto">
+                      <div className="absolute top-full left-0 right-0 mt-1 rounded-md border border-border-primary bg-surface-elevated shadow-md z-50 max-h-48 overflow-y-auto">
                         {filteredChildCandidates.map(p => (
                           <button
                             key={p.id}
@@ -1446,11 +1441,11 @@ export default function Projects() {
                               setAddChildQuery('')
                               setAddChildOpen(false)
                             }}
-                            className="w-full px-3 py-2 text-xs text-left text-text-secondary hover:bg-white/[0.06] flex items-center justify-between gap-2 first:rounded-t-[11px] last:rounded-b-[11px] disabled:opacity-40"
+                            className="w-full px-3 py-2 text-xs text-left text-text-secondary hover:bg-foreground/[0.06] flex items-center justify-between gap-2 first:rounded-t-[11px] last:rounded-b-[11px] disabled:opacity-40"
                           >
                             <span className="font-mono">{p.name}</span>
                             {p.parent_id && (
-                              <span className="text-[10px] text-text-quaternary shrink-0">
+                              <span className="text-xs text-text-quaternary shrink-0">
                                 currently under {projects?.find(x => x.id === p.parent_id)?.name ?? '…'}
                               </span>
                             )}
@@ -1465,7 +1460,7 @@ export default function Projects() {
                         className="fixed inset-0 z-40"
                         onClick={() => setAddChildOpen(false)}
                       />
-                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] z-50 px-3 py-2">
+                      <div className="absolute top-full left-0 right-0 mt-1 rounded-md border border-border-primary bg-surface-elevated shadow-md z-50 px-3 py-2">
                         <p className="text-xs text-text-quaternary">No assignable projects found.</p>
                       </div>
                     </>
@@ -1483,14 +1478,14 @@ export default function Projects() {
                 <button
                   type="button"
                   onClick={() => setEditingProjectId(null)}
-                  className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+                  className="px-4 py-2 rounded-md border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={updateProjectSettingsMut.isPending}
-                  className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+                  className="px-4 py-2 rounded-md bg-action-primary text-action-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 h-9 shadow-xs"
                 >
                   {updateProjectSettingsMut.isPending && <Loader2 className="w-3 h-3 animate-spin" />}
                   {updateProjectSettingsMut.isPending ? 'Saving…' : 'Save'}
@@ -1537,9 +1532,9 @@ export default function Projects() {
                       <SelectValue placeholder="— No parent —" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">— No parent —</SelectItem>
+                      <SelectItem value="" icon={<FolderGit />} description="This project has no parent">— No parent —</SelectItem>
                       {parentOptions.map(p => (
-                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                        <SelectItem key={p.id} value={p.id} icon={<FolderGit />} description={p.description || 'Parent project in this workspace'}>{p.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -1558,14 +1553,14 @@ export default function Projects() {
               {memoriesLoading ? (
                 <div className="text-center py-8 text-xs text-text-tertiary">Loading memories...</div>
               ) : !projectMemories?.length ? (
-                <div className="text-center py-8 text-xs text-text-tertiary border border-dashed border-border-secondary rounded-[18px]">
+                <div className="text-center py-8 text-xs text-text-tertiary border border-dashed border-border-secondary rounded-xl">
                   No memories stored for this project.
                 </div>
               ) : (
                 projectMemories.map(memory => (
                   <div
                     key={memory.id}
-                    className="p-3 rounded-[11px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] space-y-1"
+                    className="p-3 rounded-md border border-border-primary bg-surface-primary space-y-1"
                   >
                     {memory.title && (
                       <div className="text-xs font-semibold text-text-primary">{memory.title}</div>
@@ -1573,11 +1568,11 @@ export default function Projects() {
                     <p className="text-xs text-text-secondary line-clamp-3">{memory.content}</p>
                     <div className="flex items-center gap-2 pt-1">
                       {memory.type && (
-                        <span className="text-[10px] bg-accent-blue/10 text-accent-blue px-1.5 py-0.5 rounded-[5px] font-mono">
+                        <span className="text-xs bg-action-primary/10 text-accent-blue px-1.5 py-0.5 rounded-sm font-mono">
                           {memory.type}
                         </span>
                       )}
-                      <span className="text-[10px] text-text-tertiary ml-auto">
+                      <span className="text-xs text-text-tertiary ml-auto">
                         {new Date(memory.created_at).toLocaleDateString()}
                       </span>
                     </div>

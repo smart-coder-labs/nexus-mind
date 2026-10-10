@@ -30,7 +30,7 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className }) => {
           <h2 className="text-xs font-semibold text-text-primary mt-5 mb-1.5 pb-1.5 border-b border-border-secondary first:mt-0">{children}</h2>
         ),
         h3: ({ children }) => (
-          <h3 className="text-[13px] font-semibold text-accent-blue mt-4 mb-1 first:mt-0">{children}</h3>
+          <h3 className="text-sm font-semibold text-accent-blue mt-4 mb-1 first:mt-0">{children}</h3>
         ),
         p: ({ children }) => (
           <p className="text-xs text-text-secondary leading-relaxed mb-3 last:mb-0">{children}</p>
@@ -53,7 +53,7 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className }) => {
           }
           return (
             <li className="text-xs text-text-secondary leading-relaxed flex gap-2">
-              <span className="text-accent-blue/50 mt-1.5 shrink-0 w-1 h-1 rounded-full bg-accent-blue/40 inline-block" />
+              <span className="text-accent-blue/50 mt-1.5 shrink-0 w-1 h-1 rounded-full bg-action-primary/40 inline-block" />
               <span>{children}</span>
             </li>
           )
@@ -67,7 +67,7 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className }) => {
               checked={Boolean(checked)}
               disabled
               readOnly
-              className="mt-1 shrink-0 h-3 w-3 rounded-[3px] border border-border-primary accent-accent-blue cursor-default"
+              className="mt-1 shrink-0 h-3 w-3 rounded-[3px] border border-input accent-accent-blue cursor-default shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
           ) : null,
         strong: ({ children }) => (
@@ -97,13 +97,13 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className }) => {
             )
           }
           return (
-            <code className="text-[12px] font-mono text-accent-blue bg-accent-blue/8 rounded px-1.5 py-0.5">
+            <code className="text-[12px] font-mono text-accent-blue bg-action-primary/8 rounded px-1.5 py-0.5">
               {children}
             </code>
           )
         },
         pre: ({ children }) => (
-          <pre className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] px-4 py-3 overflow-x-auto mb-3 last:mb-0">
+          <pre className="border border-border-primary bg-surface-primary rounded-md px-4 py-3 overflow-x-auto mb-3 last:mb-0">
             {children}
           </pre>
         ),
@@ -111,12 +111,12 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className }) => {
         // A tasks.md table is wide. Scroll it inside its own container so it
         // never blows out the width of the drawer that hosts it.
         table: ({ children }) => (
-          <div className="overflow-x-auto mb-3 last:mb-0 border border-border-primary rounded-[8px]">
+          <div className="overflow-x-auto mb-3 last:mb-0 border border-border-primary rounded-md">
             <table className="w-full text-xs text-text-secondary border-collapse">{children}</table>
           </div>
         ),
         thead: ({ children }) => (
-          <thead className="bg-white/[0.04]">{children}</thead>
+          <thead className="bg-foreground/[0.04]">{children}</thead>
         ),
         tr: ({ children }) => (
           <tr className="border-b border-border-secondary last:border-b-0">{children}</tr>

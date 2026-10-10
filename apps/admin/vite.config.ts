@@ -3,6 +3,7 @@ import { loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
+import { liveApiProxy } from './dev/live-api-proxy'
 
 // Mirrors `AdminProfile` in src/config/disabled-sections.ts. Validated HERE, at
 // build time, because Vite only inlines the string: the runtime check in that
@@ -10,10 +11,24 @@ import { resolve } from 'path'
 // as a failed deploy.
 const ADMIN_PROFILES = ['full', 'only-context']
 
-export default defineConfig(({ mode }) => {
-  const profile = loadEnv(mode, process.cwd(), 'VITE_').VITE_ADMIN_PROFILE
+export default defineConfig(({ mode, command }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const profile = env.VITE_ADMIN_PROFILE
   if (profile && !ADMIN_PROFILES.includes(profile)) {
     throw new Error(`Unknown VITE_ADMIN_PROFILE "${profile}". Expected one of: ${ADMIN_PROFILES.join(', ')}`)
+  }
+  if (command === 'serve' && mode === 'development' && env.ADMIN_PROXY_TARGET) {
+    const live = liveApiProxy(env.ADMIN_PROXY_TARGET)
+    return {
+      ...config,
+      plugins: [...config.plugins, live.plugin],
+      server: {
+        ...config.server,
+        host: '127.0.0.1',
+        cors: false,
+        proxy: { '/v1': live.proxy },
+      },
+    }
   }
   return config
 })

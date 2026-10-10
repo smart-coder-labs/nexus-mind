@@ -1,36 +1,15 @@
-/* ========================================
-   KPI MARQUEE — seamless horizontal scroll for stat-tile strips
-   ======================================== */
-
-.kpi-marquee-wrapper {
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+.kpi-marquee-wrapper { min-width:0; container-type:inline-size; }
+.kpi-marquee-track { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); gap:16px; }
+.kpi-marquee-track > * { width:auto; min-width:0; background:var(--card); border:1px solid var(--border); border-radius:calc(var(--radius) + 4px); box-shadow:0 1px 3px #0000001a,0 1px 2px #0000000f; }
+@media (min-width:1280px) { .kpi-marquee-track:not(.kpi-summary-track):has(> :nth-child(6)):not(:has(> :nth-child(7))) { grid-template-columns:repeat(6,minmax(0,1fr)); } }
+@media (min-width:700px) and (max-width:1279px) { .kpi-marquee-track:not(.kpi-summary-track):has(> :nth-child(6)):not(:has(> :nth-child(7))) { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:699px) { .kpi-marquee-track { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; } }
+.kpi-marquee-track.kpi-summary-track { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr)); align-items:stretch; gap:8px; }
+.kpi-summary-track > * { width:auto; max-width:100%; min-width:0; border:0; border-radius:0; box-shadow:none; background:transparent; }
+.kpi-summary-track > * > [role="listitem"] { height:100%; }
+@container (min-width:640px) {
+  .kpi-marquee-track.kpi-summary-track:has(> :nth-child(6)):not(:has(> :nth-child(7))) { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
-
-.kpi-marquee-track {
-  display: flex;
-  gap: 12px;
-  width: max-content;
-  animation: kpi-marquee 36s linear infinite;
-}
-
-/* Pause on hover so the numbers can actually be read. */
-.kpi-marquee-wrapper:hover .kpi-marquee-track {
-  animation-play-state: paused;
-}
-
-@keyframes kpi-marquee {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-50%);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .kpi-marquee-track {
-    animation-play-state: paused;
-  }
+@container (min-width:1200px) {
+  .kpi-marquee-track.kpi-summary-track:has(> :nth-child(6)):not(:has(> :nth-child(7))) { grid-template-columns:repeat(6,minmax(0,1fr)); }
 }

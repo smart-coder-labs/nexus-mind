@@ -1,9 +1,10 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Bot, Target, SlidersHorizontal, CalendarClock, ClipboardCheck } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter } from '../components/ui/Modal'
+import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalCloseButton } from '../components/ui/Modal'
 import { Button } from '../components/ui/Button'
 import { Input, Textarea } from '../components/ui/Input'
 import { Switch } from '../components/ui/Switch'
@@ -467,10 +468,11 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
   const isLast = stepIndex === steps.length - 1
 
   return (
-    <Modal open={open} onOpenChange={value => { if (!value) onClose() }} size="xl">
+    <Modal open={open} onOpenChange={value => { if (!value) onClose() }} size="2xl">
+      <ModalCloseButton className="grid h-8 w-8 place-items-center" />
       <ModalHeader>
-        <ModalTitle>{isEdit ? `Edit “${editing?.name}”` : 'New agent'}</ModalTitle>
-        <ol className="mt-4 flex items-center gap-1.5 overflow-x-auto" aria-label="Wizard steps">
+        <ModalTitle className="break-words pr-10">{isEdit ? `Edit “${editing?.name}”` : 'New agent'}</ModalTitle>
+        <ol className="mt-4 flex flex-wrap items-center gap-1.5" aria-label="Wizard steps">
           {steps.map((item, index) => {
             const Icon = item.icon
             const active = index === stepIndex
@@ -481,9 +483,9 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
                   type="button"
                   onClick={() => index <= stepIndex && setStepIndex(index)}
                   disabled={index > stepIndex}
-                  className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${active ? 'bg-accent-blue/15 text-accent-blue' : done ? 'text-text-secondary hover:text-text-primary' : 'text-text-tertiary'} ${index > stepIndex ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                  className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'bg-action-primary/15 text-accent-blue' : done ? 'text-text-secondary hover:text-text-primary' : 'text-text-tertiary'} ${index > stepIndex ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                 >
-                  <span className={`grid h-5 w-5 place-items-center rounded-full text-[11px] ${active ? 'bg-accent-blue text-white' : done ? 'bg-status-success/20 text-status-success' : 'bg-white/[0.06]'}`}>
+                  <span className={`grid h-5 w-5 place-items-center rounded-full text-[11px] ${active ? 'bg-action-primary text-action-foreground' : done ? 'bg-status-success/20 text-status-success' : 'bg-foreground/[0.06]'}`}>
                     {done ? <Check className="h-3 w-3" /> : <Icon className="h-3 w-3" />}
                   </span>
                   {item.title}
@@ -513,9 +515,10 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
         )}
       </ModalContent>
 
-      <ModalFooter className="justify-between">
+      <ModalFooter className="flex-wrap justify-between">
         <div className="text-xs text-status-error min-h-[1rem]" role={error ? 'alert' : undefined}>{error}</div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
           {stepIndex > 0 && (
             <Button variant="ghost" size="sm" leftIcon={<ChevronLeft className="h-4 w-4" />} onClick={() => setStepIndex(index => index - 1)}>Back</Button>
           )}
@@ -589,18 +592,18 @@ function buildTargetConfig(state: FormState): Record<string, unknown> {
 function StepTemplate({ templates, value, onChange }: { templates: AutonomousAgentTemplate[]; value: AutonomousAgentTemplateKey; onChange: (key: AutonomousAgentTemplateKey) => void }) {
   return (
     <div className="space-y-3">
-      <p className="text-[13px] text-text-secondary">Pick a managed template. Each pins its own workflow, capability envelope, and budgets — you configure it, you don't rewrite it.</p>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <p className="text-sm text-text-secondary">Pick a managed template. Each pins its own workflow, capability envelope, and budgets — you configure it, you don't rewrite it.</p>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3">
         {templates.map(item => {
           const active = item.key === value
           return (
-            <button key={item.key} type="button" onClick={() => onChange(item.key)} className={`text-left rounded-[14px] border p-4 transition-colors ${active ? 'border-accent-blue bg-accent-blue/[0.06]' : 'border-border-primary hover:border-white/20'}`}>
-              <div className="flex items-center justify-between">
+            <button key={item.key} type="button" aria-pressed={active} onClick={() => onChange(item.key)} className={`flex min-w-0 flex-col items-stretch justify-start text-left rounded-xl border p-4 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'border-accent-blue bg-action-primary/[0.06]' : 'border-border-primary bg-card hover:bg-muted/50'}`}>
+              <div className="flex items-start justify-between gap-2">
                 <h3 className="font-semibold text-text-primary">{item.name}</h3>
-                {active && <Check className="h-4 w-4 text-accent-blue" />}
+                {active && <Check className="h-4 w-4 shrink-0 text-accent-blue" />}
               </div>
               <p className="mt-1.5 text-xs text-text-tertiary">{item.description}</p>
-              <div className="mt-3 flex flex-wrap gap-1">{item.capabilities.slice(0, 4).map(cap => <Badge key={cap} size="sm" variant="default">{cap}</Badge>)}</div>
+              <div className="mt-3 flex flex-wrap gap-1">{item.capabilities.slice(0, 4).map(cap => <Badge key={cap} size="sm" variant="default" className="max-w-full whitespace-normal break-all">{cap}</Badge>)}</div>
             </button>
           )
         })}
@@ -621,23 +624,23 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 function NativeSelect({ value, onChange, children }: { value: string; onChange: (value: string) => void; children: React.ReactNode }) {
   return (
-    <select value={value} onChange={event => onChange(event.target.value)} className="mt-1 block w-full rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none">
+    <StyledSelect value={value} onChange={event => onChange(event.target.value)} className="mt-1 block w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
       {children}
-    </select>
+    </StyledSelect>
   )
 }
 
 function StepTarget({ state, set }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void }) {
   const isWeb = state.targetKind === 'web_application'
   if (state.template === 'lead_generation') {
-    return <p className="text-[13px] text-text-secondary">This agent has no fixed target — it discovers companies from the web based on the product and ICP you set in the next step. Nothing to configure here.</p>
+    return <p className="text-sm text-text-secondary">This agent has no fixed target — it discovers companies from the web based on the product and ICP you set in the next step. Nothing to configure here.</p>
   }
   if (state.template === 'ai_content_manager') {
-    return <p className="text-[13px] text-text-secondary">This agent has no fixed target — it writes LinkedIn posts from the topics and audience you set in the next step. Nothing to configure here.</p>
+    return <p className="text-sm text-text-secondary">This agent has no fixed target — it writes LinkedIn posts from the topics and audience you set in the next step. Nothing to configure here.</p>
   }
   return (
     <div className="space-y-4">
-      <p className="text-[13px] text-text-secondary">What should this agent act on? The target is optional now and can be added later. No credentials are stored here — Slack and GitHub are configured in Claude Code.</p>
+      <p className="text-sm text-text-secondary">What should this agent act on? The target is optional now and can be added later. No credentials are stored here — Slack and GitHub are configured in Claude Code.</p>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Target type">
           <NativeSelect value={state.targetKind} onChange={value => set('targetKind', value)}>
@@ -738,7 +741,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Repository to check out (owner/repo)" hint="Optional. Needed if the agent should inspect or run the codebase; the target URL is enough for pure browser QA.">
             <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
           </Field>
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind is always the canonical output. Slack/GitHub delivery uses the server-side integrations in Claude Code.</p>
             <div className="mt-3 space-y-2.5">
@@ -763,7 +766,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="Guidance for how the agent should approach the issue — priorities, conventions, gotchas. Cannot expand its scope or lift safety limits.">
             <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer the existing repository pattern in api/; keep the change minimal and add a test." />
           </Field>
-          <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+          <div className="rounded-xl border border-border-primary p-3 space-y-3">
             <Switch checked={state.reviewAfterDeploy} onCheckedChange={value => set('reviewAfterDeploy', value)} size="sm" label="Review the PR with a Judge after deploy" />
             <p className="text-[11px] text-text-tertiary">When on, each opened PR is marked (label + body marker) so your deploy workflow can deploy that branch to a preview and then call the Judge to verify the running app and post visual evidence on the PR. The Judge produces the visual evidence; the resolver already includes its own verification output.</p>
             {state.reviewAfterDeploy && (
@@ -785,7 +788,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="Guidance for what the review should focus on — areas, standards, risks. Cannot approve, merge, push, or publish.">
             <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Focus on error handling and auth checks; flag any missing input validation." />
           </Field>
-          <div className="rounded-[12px] border border-border-primary p-3 space-y-2">
+          <div className="rounded-xl border border-border-primary p-3 space-y-2">
             <Switch checked={state.autoMerge} onCheckedChange={value => set('autoMerge', value)} size="sm" label="Request auto-merge for docs and tests PRs" />
             <p className="text-[11px] text-text-tertiary">When on, a PR is proposed for merge ONLY if every changed file is documentation or tests, the review found no blocking issues, and every required GitHub check is green on the reviewed commit. The organization&apos;s merge policy (Factory policies) then decides: without a policy, or until a decision model is connected, the PR stays open for a person. An allowed merge waits 10 minutes and is re-checked before it happens; any new commit cancels it.</p>
           </div>
@@ -808,7 +811,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="Tone, angle, what to emphasize or avoid in the drafts.">
             <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Keep emails under 90 words, lead with a specific pain point, no buzzwords." />
           </Field>
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">Leads and drafted emails are stored in NexusMind for your review. This agent never sends email.</p>
             <div className="mt-3 space-y-2.5">
@@ -827,7 +830,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch.">
             <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Pay special attention to the checkout totals and the empty-cart state." />
           </Field>
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Verdict delivery</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind always records findings with evidence. Publishing a verdict comment on each PR/issue is opt-in.</p>
             <div className="mt-3 space-y-2.5">
@@ -860,7 +863,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="Anything else to emphasize or avoid.">
             <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer short posts; open with a contrarian take; no emojis." />
           </Field>
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Destinations</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">Which LinkedIn destinations these posts are for.</p>
             <div className="mt-3 space-y-2.5">
@@ -869,7 +872,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </div>
           </div>
 
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Post images</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">Generates an illustration for each post from the design system below, so the whole feed looks like one brand. Needs the Higgsfield CLI installed and signed in on the server; without it posts still go out, as text only.</p>
             <div className="mt-3 space-y-2.5">
@@ -894,7 +897,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
                     </NativeSelect>
                   </Field>
                 ) : (
-                  <p className="rounded-[8px] border border-border-primary p-2 text-[11px] text-text-tertiary">
+                  <p className="rounded-md border border-border-primary p-2 text-[11px] text-text-tertiary">
                     Uses FLUX.1 schnell. Needs <code>CLOUDFLARE_AI_TOKEN</code> on the server and object storage configured. Two limits worth knowing: it takes no logo reference, and it ignores the aspect ratio below — the model accepts only a prompt and a step count, so images come back square.
                   </p>
                 )}
@@ -913,7 +916,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           </div>
 
           {state.imagesEnabled && (
-            <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+            <div className="rounded-xl border border-border-primary p-3 space-y-3">
               <div>
                 <p className="text-xs font-medium text-text-secondary">Design system</p>
                 <p className="mt-0.5 text-[11px] text-text-tertiary">Applied unchanged to every image the agent ever generates — that is what keeps them consistent instead of a different look each run. Fill in at least one field. Images never contain readable text: generators garble type, and the post already carries its own copy.</p>
@@ -971,7 +974,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </div>
           )}
 
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Publishing</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">By default the agent writes drafts and you approve each one from the Findings tab.</p>
             <div className="mt-3 space-y-2.5">
@@ -979,7 +982,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </div>
             {state.autoPublish && (
               <div className="mt-3 space-y-3">
-                <p className="rounded-[8px] border border-accent-amber/40 bg-accent-amber/10 p-2 text-[11px] text-text-secondary">
+                <p className="rounded-md border border-accent-amber/40 bg-accent-amber/10 p-2 text-[11px] text-text-secondary">
                   Each generated post goes straight to your live LinkedIn feed. A published post is public immediately and cannot be withdrawn from here — only from LinkedIn. Review the topics, tone and custom instructions before enabling this.
                 </p>
                 <Field label="Maximum posts published per day" hint="1–10. Rolling 24 hours, counted per agent. Extra drafts wait for approval.">
@@ -991,7 +994,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
               </div>
             )}
           </div>
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-medium text-text-secondary">Connect LinkedIn</p>
               <button type="button" onClick={() => linkedinQuery.refetch()} className="text-[11px] text-accent-blue">Refresh</button>
@@ -1003,7 +1006,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </div>
             <p className="mt-2 text-[11px] text-text-tertiary">Requires the server's LinkedIn app to be configured (LINKEDIN_CLIENT_ID/SECRET + redirect URL).</p>
           </div>
-          <div className="rounded-[12px] border border-border-primary p-3">
+          <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">Every generated post is stored in NexusMind, whether it is published automatically or waits for your approval.</p>
             <div className="mt-3 space-y-2.5">
@@ -1015,7 +1018,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
       )}
 
       {['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template) && (
-        <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+        <div className="rounded-xl border border-border-primary p-3 space-y-3">
           <p className="text-xs font-medium text-text-secondary">Chain — run another agent on success</p>
           <p className="text-[11px] text-text-tertiary">When this agent finishes successfully on a PR, enqueue the chosen agent on the SAME PR. E.g. Resolver → PR Reviewer → Judge, so the agents hand off to each other.</p>
           <Field label="Next agent (optional)">
@@ -1033,7 +1036,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
       )}
 
       {(template === 'judge' || template === 'qa') && (
-        <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+        <div className="rounded-xl border border-border-primary p-3 space-y-3">
           <div>
             <p className="text-xs font-medium text-text-secondary">App login</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">If the app requires sign-in, provide credentials so the agent logs in before testing — without them it hits the login gate and can't verify the real UI. Stored encrypted and never shown again; leave blank to keep the current login when editing.</p>
@@ -1052,7 +1055,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
         </div>
       )}
 
-      <details className="rounded-[12px] border border-border-primary p-3">
+      <details className="rounded-xl border border-border-primary p-3">
         <summary className="cursor-pointer text-xs font-medium text-text-secondary">Advanced — extra configuration (merged JSON)</summary>
         <Textarea
           className="mt-2 font-mono text-xs"
@@ -1063,7 +1066,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           error={extraError ? 'Must be a JSON object' : undefined}
         />
         <p className="mt-2 text-[11px] text-text-tertiary">Resulting configuration:</p>
-        <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-black/30 p-2 font-mono text-[11px] text-text-tertiary">{JSON.stringify(config, null, 2)}</pre>
+        <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-muted p-2 font-mono text-[11px] text-text-tertiary">{JSON.stringify(config, null, 2)}</pre>
       </details>
     </div>
   )
@@ -1106,7 +1109,7 @@ function IsolationFields({ state, set, template }: { state: FormState; set: <K e
         </NativeSelect>
       </Field>
       {state.isolation === 'local' && (
-        <p role="alert" className="flex items-start gap-2 rounded-[10px] border border-border-secondary p-2 text-[12px] text-text-primary">
+        <p role="alert" className="flex items-start gap-2 rounded-lg border border-border-secondary p-2 text-[12px] text-text-primary">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           Local runs execute repository code and the agent inside the worker, next to its database and secrets. Use only for repositories you fully trust.
         </p>
@@ -1137,7 +1140,7 @@ function StepSchedule({ state, set }: { state: FormState; set: <K extends keyof 
   const tooShort = interval && state.scheduleExpression.trim().length > 0 && intervalMinutes < 15
   return (
     <div className="space-y-4">
-      <p className="text-[13px] text-text-secondary">When should this agent run? You can always trigger runs manually regardless of the schedule.</p>
+      <p className="text-sm text-text-secondary">When should this agent run? You can always trigger runs manually regardless of the schedule.</p>
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="Cadence">
           <NativeSelect value={state.scheduleKind} onChange={value => {
@@ -1185,7 +1188,7 @@ function StepReview({ state, set, template, isEdit, budgetsError }: { state: For
           <Input inputSize="sm" value={state.description} onChange={event => set('description', event.target.value)} placeholder="Optional" />
         </Field>
       </div>
-      <div className="rounded-[12px] border border-border-primary bg-white/[0.02] p-3 text-[12px] text-text-secondary">
+      <div className="rounded-xl border border-border-primary bg-foreground/[0.02] p-3 text-[12px] text-text-secondary">
         Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : state.executor === 'codex' ? 'Codex (sandbox)' : 'Claude pure'}</span>
         {' · '}Isolation: <span className="font-medium text-text-primary">{state.isolation === 'sandbox' ? 'Sandbox' : state.isolation === 'local' ? 'Local worker (unsafe)' : 'Server default'}</span>
       </div>
@@ -1193,12 +1196,12 @@ function StepReview({ state, set, template, isEdit, budgetsError }: { state: For
         <Textarea className="font-mono text-xs" rows={5} value={state.budgets || JSON.stringify(template?.default_budgets ?? {}, null, 2)} onChange={event => set('budgets', event.target.value)} error={budgetsError ? 'Must be a JSON object' : undefined} />
       </Field>
       {template && (
-        <div className="rounded-[12px] border border-border-primary bg-white/[0.02] p-3 text-[12px] text-text-secondary">
+        <div className="rounded-xl border border-border-primary bg-foreground/[0.02] p-3 text-[12px] text-text-secondary">
           <p className="font-medium text-text-primary">Authority envelope</p>
           <div className="mt-2 flex flex-wrap gap-1">{template.capabilities.map(cap => <Badge key={cap} size="sm" variant="info">{cap}</Badge>)}</div>
         </div>
       )}
-      <div className="flex items-start gap-2 rounded-[12px] border border-status-warning/30 bg-status-warning/[0.06] p-3 text-[12px] text-status-warning">
+      <div className="flex items-start gap-2 rounded-xl border border-status-warning/30 bg-status-warning/[0.06] p-3 text-[12px] text-status-warning">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
         <p>{isEdit ? 'Saving creates a new revision and disables the agent. Validate and enable it again to resume runs.' : 'Creation always saves the agent disabled. Validate and enable it explicitly after reviewing this configuration.'}</p>
       </div>

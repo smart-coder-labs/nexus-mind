@@ -82,18 +82,18 @@ export function AgentCard({ agent, runs, actions }: { agent: AutonomousAgentDefi
   const nextRun = schedule.data?.enabled && schedule.data.kind !== 'manual' && agent.status === 'enabled' ? fmtDateTime(schedule.data.next_run_at) : ''
 
   return (
-    <article aria-labelledby={`agent-${agent.id}`} className="flex flex-col gap-4 rounded-[18px] border border-border-primary bg-white/[0.02] p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 id={`agent-${agent.id}`} className="truncate text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{agent.name}</h2>
+    <article aria-labelledby={`agent-${agent.id}`} className="flex min-w-0 flex-col gap-4 rounded-xl border border-border-primary bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 basis-40 flex-1">
+          <h2 id={`agent-${agent.id}`} className="break-words text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{agent.name}</h2>
           <p className="mt-0.5 text-[12px] text-text-tertiary">{templateName(agent.template_key)}</p>
         </div>
         <Badge size="sm" variant={status.variant} dot className="shrink-0">{status.label}</Badge>
       </div>
 
-      {agent.description && <p className="line-clamp-2 text-[13px] leading-relaxed text-text-secondary">{agent.description}</p>}
+      {agent.description && <p className="line-clamp-2 text-sm leading-relaxed text-text-secondary">{agent.description}</p>}
 
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[13px]">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-text-tertiary">Schedule</dt>
         <dd className="min-w-0 text-text-secondary">
           {schedule.isLoading ? <span className="text-text-tertiary">Loading…</span> : scheduleWords(schedule.data)}
@@ -109,7 +109,7 @@ export function AgentCard({ agent, runs, actions }: { agent: AutonomousAgentDefi
 
       {(primary || (canUpdate && agent.status !== 'archived') || menu.length > 0) && (
         <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border-secondary pt-4">
-          {primary && <Button size="sm" variant="primary" leftIcon={primary.icon} loading={primary.loading} onClick={primary.onClick}>{primary.label}</Button>}
+          {primary && <Button size="sm" variant={agent.status === 'enabled' ? 'primary' : 'secondary'} leftIcon={primary.icon} loading={primary.loading} onClick={primary.onClick}>{primary.label}</Button>}
           {canUpdate && agent.status !== 'archived' && <Button size="sm" variant="secondary" leftIcon={<Pencil className="h-3.5 w-3.5" />} onClick={() => actions.onEdit(agent)}>Edit</Button>}
           <div className="ml-auto"><OverflowMenu label={`More actions for ${agent.name}`} items={menu} /></div>
         </div>

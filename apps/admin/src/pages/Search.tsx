@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useState, useEffect, useCallback } from 'react'
 import { Search as SearchIcon, X, ChevronDown } from 'lucide-react'
 import { createClient } from '../api/client'
@@ -119,18 +120,18 @@ export default function Search() {
   const hasSearched = debouncedQuery.trim().length > 0
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-5xl mx-auto">
       {/* Hero — compresses toward the top once the user starts typing */}
       <div
         className={cn(
           'flex flex-col items-center gap-4 transition-all duration-300 ease-out',
-          isTyping ? 'pt-4 pb-8' : 'pt-16 pb-10',
+          isTyping ? 'pt-4 pb-8' : 'pt-8 pb-8 sm:pt-16 sm:pb-10',
         )}
       >
         <h1
           className={cn(
-            'font-extrabold text-text-primary tracking-tight text-center transition-all duration-300',
-            isTyping ? 'text-2xl' : 'text-[32px]',
+            'font-semibold text-text-primary tracking-tight text-center transition-all duration-300',
+            isTyping ? 'text-2xl' : 'text-2xl sm:text-[32px]',
           )}
         >
           Search the organization&apos;s memory
@@ -143,14 +144,14 @@ export default function Search() {
 
         <div className="w-full max-w-[720px] flex flex-col gap-3">
           {/* Search box */}
-          <div className="relative flex items-center h-[54px] px-[18px] rounded-2xl border border-accent-blue/35 bg-white/[0.04] backdrop-blur-md">
+          <div className="relative flex items-center h-[54px] px-[18px] rounded-xl border border-input bg-card shadow-xs focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-[3px]">
             <SearchIcon className="w-[18px] h-[18px] text-accent-blue shrink-0" />
             <input
               autoFocus
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search everything…"
-              className="flex-1 min-w-0 bg-transparent border-none outline-none text-[15px] text-text-primary placeholder:text-text-quaternary px-3"
+              className="flex-1 min-w-0 bg-transparent border-none outline-none text-base text-text-primary placeholder:text-text-quaternary px-3"
             />
             {query ? (
               <button
@@ -161,7 +162,7 @@ export default function Search() {
                 <X className="w-4 h-4" />
               </button>
             ) : (
-              <span className="shrink-0 text-[11px] text-text-quaternary font-mono border border-border-primary rounded-[5px] px-1.5 py-0.5">
+              <span className="shrink-0 text-[11px] text-text-quaternary font-mono border border-border-primary rounded-sm px-1.5 py-0.5">
                 ⌘K
               </span>
             )}
@@ -178,18 +179,18 @@ export default function Search() {
           {(hasResults || loading) && hasSearched && (
             <div className="flex items-center justify-center">
               <div className="relative inline-flex items-center">
-                <select
+                <StyledSelect
                   value={activeTab}
                   onChange={e => setActiveTab(e.target.value as Tab)}
                   aria-label="Filter by result type"
-                  className="appearance-none h-[34px] pl-3.5 pr-8 rounded-[10px] border border-border-primary bg-white/[0.04] text-[12.5px] text-text-secondary cursor-pointer hover:border-border-primary/70 focus:outline-none focus:border-accent-blue/60 transition-colors"
+                  className="appearance-none h-[34px] pl-3.5 pr-8 rounded-lg border border-input bg-foreground/[0.04] text-[12.5px] text-text-secondary cursor-pointer hover:border-border-primary/70 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 >
                   {TABS.map(t => (
-                    <option key={t.key} value={t.key} className="bg-[#111319]">
+                    <option key={t.key} value={t.key} className="bg-surface-elevated">
                       {t.label}
                     </option>
                   ))}
-                </select>
+                </StyledSelect>
                 <ChevronDown className="w-3 h-3 text-text-quaternary absolute right-2.5 pointer-events-none" />
               </div>
             </div>
@@ -214,7 +215,7 @@ export default function Search() {
       {loading && (
         <div className="space-y-2.5">
           {[0, 1, 2].map(i => (
-            <div key={i} className="h-20 animate-pulse bg-white/[0.04] rounded-[14px]" />
+            <div key={i} className="h-20 animate-pulse bg-foreground/[0.04] rounded-xl" />
           ))}
         </div>
       )}
@@ -282,7 +283,7 @@ export default function Search() {
                   query={debouncedQuery}
                   meta={[u.email]}
                   extra={
-                    <span className="shrink-0 text-[10px] font-semibold bg-white/[0.06] border border-border-secondary text-text-tertiary rounded-full px-2 py-0.5 capitalize">
+                    <span className="shrink-0 text-[10px] font-semibold bg-foreground/[0.06] border border-border-secondary text-text-tertiary rounded-full px-2 py-0.5 capitalize">
                       {u.role}
                     </span>
                   }
@@ -333,7 +334,7 @@ export default function Search() {
                         'shrink-0 text-[10px] font-semibold rounded-full px-2 py-0.5',
                         p.enabled
                           ? 'bg-status-success/10 border border-status-success/20 text-status-success'
-                          : 'bg-white/[0.06] border border-border-secondary text-text-quaternary',
+                          : 'bg-foreground/[0.06] border border-border-secondary text-text-quaternary',
                       )}
                     >
                       {p.enabled ? 'enabled' : 'disabled'}
@@ -384,7 +385,7 @@ export default function Search() {
                   meta={[c.project]}
                   href={`/sdd?change=${encodeURIComponent(c.name)}`}
                   extra={
-                    <span className="shrink-0 text-[10px] font-semibold bg-accent-blue/10 text-accent-blue border border-accent-blue/20 rounded-full px-2 py-0.5">
+                    <span className="shrink-0 text-[10px] font-semibold bg-action-primary/10 text-accent-blue border border-accent-blue/20 rounded-full px-2 py-0.5">
                       {c.phase}
                     </span>
                   }

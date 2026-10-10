@@ -17,7 +17,7 @@ const outcomeToneClass: Record<Tone, string> = {
   warn: 'border-status-warning/25 bg-status-warning/[0.06]',
   bad: 'border-status-error/25 bg-status-error/[0.06]',
   info: 'border-status-info/30 bg-status-info/[0.08]',
-  neutral: 'border-border-primary bg-white/[0.02]',
+  neutral: 'border-border-primary bg-foreground/[0.02]',
 }
 
 // ── Budget meter ──
@@ -31,9 +31,9 @@ function Meter({ label, used, max, format }: { label: string; used?: number; max
     <div className="min-w-0">
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
         <span className="text-[12px] text-text-tertiary">{label}</span>
-        <span className={`text-[13px] font-semibold tabular-nums ${valColor}`}>{used != null ? format(used) : '—'}</span>
+        <span className={`text-sm font-semibold tabular-nums ${valColor}`}>{used != null ? format(used) : '—'}</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-valuetext={used != null ? `${format(used)} of ${format(max)}` : 'Not started'}>
+      <div className="h-2 overflow-hidden rounded-full bg-foreground/[0.06]" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-valuetext={used != null ? `${format(used)} of ${format(max)}` : 'Not started'}>
         <div className={`h-full rounded-full ${fill}`} style={{ width: `${pct}%` }} />
       </div>
       <div className="mt-1 text-[12px] text-text-tertiary tabular-nums">of {format(max)} max{used != null ? ` · ${pct}% used` : ''}</div>
@@ -52,8 +52,8 @@ const STAGE_STYLE: Record<StageState, { bar: string; icon: ReactNode; word: stri
   failed: { bar: 'bg-status-error', icon: <XCircle className="h-3.5 w-3.5 text-status-error" aria-hidden />, word: 'Failed' },
   warn: { bar: 'bg-status-warning', icon: <AlertTriangle className="h-3.5 w-3.5 text-status-warning" aria-hidden />, word: 'Stopped early' },
   cancelled: { bar: 'bg-text-tertiary', icon: <Ban className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Cancelled' },
-  pending: { bar: 'bg-white/[0.08]', icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Not reached' },
-  skipped: { bar: 'bg-white/[0.08]', icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Not run' },
+  pending: { bar: 'bg-foreground/[0.08]', icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Not reached' },
+  skipped: { bar: 'bg-foreground/[0.08]', icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Not run' },
 }
 
 export function runStages(run: AutonomousAgentRun, events: AutonomousAgentEvent[], reports: StoredVerificationReport[], code?: string): Stage[] {
@@ -94,7 +94,7 @@ function StageStrip({ stages }: { stages: Stage[] }) {
         return (
           <li key={stage.name} className="min-w-0" aria-label={`${stage.name}: ${word}`}>
             <div className={`h-1 rounded-full ${style.bar}`} aria-hidden />
-            <div className="mt-2 flex items-center gap-1.5 text-[13px] font-medium text-text-primary">{style.icon}{stage.name}</div>
+            <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-text-primary">{style.icon}{stage.name}</div>
             <div className="mt-0.5 text-[12px] text-text-tertiary">{word}</div>
           </li>
         )
@@ -127,9 +127,9 @@ function eventLine(e: AutonomousAgentEvent, run: AutonomousAgentRun, code?: stri
 
 function Stat({ value, label, tone }: { value: ReactNode; label: string; tone?: 'ok' | 'bad' }) {
   return (
-    <div className="rounded-[11px] border border-border-primary bg-white/[0.02] px-3 py-2">
-      <div className={`text-[15px] font-semibold tabular-nums ${tone === 'ok' ? 'text-status-success' : tone === 'bad' ? 'text-status-error' : 'text-text-primary'}`}>{value}</div>
-      <div className="text-[12px] text-text-tertiary">{label}</div>
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-border-primary bg-card px-3 py-2">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className={`rounded-md bg-muted px-2 py-0.5 text-xs font-semibold tabular-nums ${tone === 'ok' ? 'text-status-success' : tone === 'bad' ? 'text-status-error' : 'text-text-primary'}`}>{value}</span>
     </div>
   )
 }
@@ -223,7 +223,7 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
 
   // One primary action: open the PR it produced, else continue, else cancel.
   let primary: ReactNode = null
-  if (pr && prUrl) primary = <a href={prUrl} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-2 rounded-full bg-accent-blue px-4 text-[12px] font-semibold text-white transition-colors hover:bg-accent-blue-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"><GitPullRequest className="h-3.5 w-3.5" aria-hidden />{prNumber != null ? `Open PR #${prNumber}` : 'Open draft PR'}<ExternalLink className="h-3 w-3" aria-hidden /></a>
+  if (pr && prUrl) primary = <a href={prUrl} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-2 rounded-md bg-action-primary px-4 text-[12px] font-semibold text-action-foreground transition-colors hover:bg-action-primary-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"><GitPullRequest className="h-3.5 w-3.5" aria-hidden />{prNumber != null ? `Open PR #${prNumber}` : 'Open draft PR'}<ExternalLink className="h-3 w-3" aria-hidden /></a>
   else if (canContinue) primary = <Button size="sm" variant="primary" leftIcon={<RefreshCw className="h-3.5 w-3.5" />} loading={continuing} onClick={() => onContinue?.(run.id)}>Continue</Button>
   else if (active && onCancel) primary = <Button size="sm" variant="destructive" leftIcon={<Ban className="h-3.5 w-3.5" />} loading={cancelling} onClick={() => setConfirmCancel(true)}>Cancel run</Button>
 
@@ -259,7 +259,7 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       </div>
 
       {/* outcome sentence */}
-      <p className={`rounded-[11px] border px-4 py-3 text-[13px] leading-relaxed text-text-secondary ${outcomeToneClass[meta.tone]}`}>
+      <p className={`rounded-md border px-4 py-3 text-sm leading-relaxed text-text-secondary ${outcomeToneClass[meta.tone]}`}>
         <span className="font-semibold text-text-primary">{lead}</span> {phrase}
         {bits.length ? <> and used {bits.join(', ')}</> : null}. {tail.join(' ')}
         {code && !RESULT_CODE[code] && <> Result: {humanize(code).toLowerCase()}.</>}
@@ -281,8 +281,8 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       {(findings?.length || screenshots) && (
         <section aria-labelledby="run-result-qa" className="space-y-2">
           <SectionTitle id="run-result-qa">Result</SectionTitle>
-          <div className="rounded-[18px] border border-border-primary bg-white/[0.02] p-5">
-            <div className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-text-primary">
+          <div className="rounded-xl border border-border-primary bg-foreground/[0.02] p-5">
+            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
               <Camera className="h-4 w-4 text-text-secondary" aria-hidden />
               {findings?.length ?? 0} finding{(findings?.length ?? 0) === 1 ? '' : 's'}
               {screenshots && <span className="font-normal text-text-tertiary">and {Object.keys(screenshots).length} screenshot{Object.keys(screenshots).length === 1 ? '' : 's'}</span>}
@@ -296,10 +296,10 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
                     ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(run.id)}/${encodeURIComponent(name)}`
                     : (typeof url === 'string' ? url : undefined)
                   return (
-                    <a key={name} href={src} target="_blank" rel="noreferrer" className="w-28 rounded-[8px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
+                    <a key={name} href={src} target="_blank" rel="noreferrer" className="w-28 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
                       {src
-                        ? <img src={src} alt={`Screenshot ${name}`} className="h-[70px] w-full rounded-[8px] border border-border-primary object-cover" />
-                        : <div className="h-[70px] rounded-[8px] border border-border-primary bg-white/[0.03]" />}
+                        ? <img src={src} alt={`Screenshot ${name}`} className="h-[70px] w-full rounded-md border border-border-primary object-cover" />
+                        : <div className="h-[70px] rounded-md border border-border-primary bg-foreground/[0.03]" />}
                       <div className="mt-1 truncate text-center text-[11px] text-text-tertiary">{name}</div>
                     </a>
                   )
@@ -315,7 +315,7 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       {pr && (
         <section aria-labelledby="run-result-pr" className="space-y-2">
           <SectionTitle id="run-result-pr">Pull request</SectionTitle>
-          <div className="space-y-3 rounded-[18px] border border-border-primary bg-white/[0.02] p-5">
+          <div className="space-y-3 rounded-xl border border-border-primary bg-foreground/[0.02] p-5">
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
               {filesChanged != null && <Stat value={filesChanged} label="Files changed" />}
               {linesAdded != null && <Stat value={`+${linesAdded}`} label="Lines added" tone="ok" />}
@@ -323,7 +323,7 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
               {linesTotal != null && <Stat value={linesTotal} label="Lines changed" />}
               {verification && <Stat value={humanize(verification)} label="Verification" />}
             </div>
-            <p className="flex flex-wrap items-center gap-2 text-[13px] text-text-secondary">
+            <p className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
               <GitPullRequest className="h-4 w-4 text-text-secondary" aria-hidden />
               {prUrl ? <a href={prUrl} target="_blank" rel="noreferrer" className={TEXT_LINK}>{prNumber != null ? `Draft PR #${prNumber}` : 'Draft PR'}</a> : <span>{prNumber != null ? `Draft PR #${prNumber}` : 'Draft PR'}</span>}
               <Badge size="sm" variant="default">Draft</Badge>
@@ -336,7 +336,7 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       {(review || reviewEvent) && !pr && (
         <section aria-labelledby="run-result-review" className="space-y-2">
           <SectionTitle id="run-result-review">Review</SectionTitle>
-          <div className="flex flex-wrap items-center gap-2 rounded-[18px] border border-border-primary bg-white/[0.02] p-5 text-[13px]">
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-primary bg-foreground/[0.02] p-5 text-sm">
             <GitPullRequest className="h-4 w-4 text-text-secondary" aria-hidden />
             {reviewUrl ? <a href={reviewUrl} target="_blank" rel="noreferrer" className={TEXT_LINK}>Review posted on GitHub</a> : <span className="text-text-primary">Review posted</span>}
             {reviewMeta && <Badge size="sm" variant={reviewMeta.variant}>{reviewMeta.label}</Badge>}
@@ -355,17 +355,17 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
 
       {/* event log */}
       <details className="border-t border-border-secondary pt-3">
-        <summary className="cursor-pointer rounded-[8px] text-[12px] text-text-tertiary hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">Event log ({events.length})</summary>
+        <summary className="cursor-pointer rounded-md text-[12px] text-text-tertiary hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">Event log ({events.length})</summary>
         {events.length ? (
           <ol className="mt-3 list-none space-y-1.5 p-0">
             {events.map(e => (
-              <li key={e.sequence} className="flex gap-3 text-[13px]">
+              <li key={e.sequence} className="flex gap-3 text-sm">
                 <span className="w-12 shrink-0 text-[12px] text-text-tertiary tabular-nums">{fmtTime(e.created_at)}</span>
                 <span className="text-text-secondary">{eventLine(e, run, code)}</span>
               </li>
             ))}
           </ol>
-        ) : <p className="mt-2 text-[13px] text-text-tertiary">No events recorded yet.</p>}
+        ) : <p className="mt-2 text-sm text-text-tertiary">No events recorded yet.</p>}
       </details>
 
       {finished && <RawJson label="Raw result (JSON)" value={finished.payload} />}

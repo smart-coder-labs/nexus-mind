@@ -111,7 +111,7 @@ describe('Usage', () => {
     // without seeing the marks. The bucket count is the gap-filled window, not
     // the single bucket the backend returned: idle days are plotted as zeroes.
     expect(
-      await screen.findByRole('img', { name: /^Tokens by day, 30 buckets, / }),
+      await screen.findByRole('figure', { name: /^Tokens by day, 30 buckets, / }),
     ).toBeInTheDocument()
 
     // The KPI total comes from the summary rollup, so it is range-exact.
@@ -120,7 +120,7 @@ describe('Usage', () => {
 
     // Both series are named in a legend rather than relying on the two shades
     // alone. Scoped to the chart: the detail table reuses the same words.
-    const chartCard = screen.getByText('Usage over time').closest('section')!
+    const chartCard = screen.getByRole('figure', { name: /by day/ })
     expect(within(chartCard).getByText('Tokens in')).toBeInTheDocument()
     expect(within(chartCard).getByText('Tokens out')).toBeInTheDocument()
 
@@ -139,10 +139,10 @@ describe('Usage', () => {
 
     // Every metric rides on the same response, so the toggle costs no request.
     expect(getUsageTimeseries.mock.calls.length).toBe(callsBefore)
-    expect(await screen.findByRole('img', { name: /Events by day/ })).toBeInTheDocument()
+    expect(await screen.findByRole('figure', { name: /Events by day/ })).toBeInTheDocument()
 
     // A single series carries no legend — the heading already names it.
-    const chartCard = screen.getByText('Usage over time').closest('section')!
+    const chartCard = screen.getByRole('figure', { name: /by day/ })
     expect(within(chartCard).queryByText('Tokens in')).not.toBeInTheDocument()
   })
 

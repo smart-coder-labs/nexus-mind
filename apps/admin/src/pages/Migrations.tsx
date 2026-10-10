@@ -45,7 +45,7 @@ import type {
  */
 
 // Same glass recipe used across Sessions/Sdd — inlined to keep pages independent.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 const DESTINATION_LABELS: Record<string, string> = {
   memory: 'Memory',
@@ -89,10 +89,10 @@ const SOURCE_ICONS: Record<string, LucideIcon> = {
 function statusTone(s: string): string {
   const v = s.toLowerCase()
   if (v.includes('commit')) return 'bg-status-success/15 text-status-success'
-  if (v.includes('stag')) return 'bg-accent-blue/15 text-accent-blue'
+  if (v.includes('stag')) return 'bg-action-primary/15 text-accent-blue'
   if (v.includes('fail') || v.includes('error')) return 'bg-status-error/15 text-status-error'
-  if (v.includes('cancel')) return 'bg-white/[0.06] text-text-tertiary'
-  return 'bg-white/[0.06] text-text-tertiary'
+  if (v.includes('cancel')) return 'bg-foreground/[0.06] text-text-tertiary'
+  return 'bg-foreground/[0.06] text-text-tertiary'
 }
 
 function relTime(iso: string): string {
@@ -116,11 +116,11 @@ function highlightJson(value: unknown): string {
     /("(?:\\.|[^"\\])*"(\s*:)?)|(\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|\b(true|false|null)\b/g,
     (m: string, str: string, colon: string, num: string, lit: string) => {
       if (str !== undefined) {
-        const cls = colon ? 'text-[#79c0ff]' : 'text-[#a5d6ff]'
+        const cls = colon ? 'text-status-info' : 'text-text-secondary'
         return `<span class="${cls}">${str}</span>`
       }
-      if (num !== undefined) return `<span class="text-[#f0883e]">${num}</span>`
-      if (lit !== undefined) return `<span class="text-[#ff7b72]">${lit}</span>`
+      if (num !== undefined) return `<span class="text-status-warning">${num}</span>`
+      if (lit !== undefined) return `<span class="text-status-error">${lit}</span>`
       return m
     },
   )
@@ -145,10 +145,10 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
   }
 
   return (
-    <div className="overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#0a0c10]">
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-1.5">
-        <span className="flex items-center gap-1.5 font-mono text-[10px] text-text-tertiary">
-          <span className="h-2 w-2 rounded-full bg-white/[0.12]" />
+    <div className="overflow-hidden rounded-xl border border-border-primary bg-background-primary">
+      <div className="flex items-center justify-between border-b border-border-primary px-3 py-1.5">
+        <span className="flex items-center gap-1.5 font-mono text-xs text-text-tertiary">
+          <span className="h-2 w-2 rounded-full bg-foreground/[0.12]" />
           {label}
         </span>
         {!isEmpty && (
@@ -156,7 +156,7 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
             type="button"
             onClick={copy}
             aria-label={`Copy ${label}`}
-            className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] text-text-tertiary transition-colors hover:bg-white/[0.06] hover:text-text-secondary"
+            className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-text-tertiary transition-colors hover:bg-foreground/[0.06] hover:text-text-secondary"
           >
             {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
             {copied ? 'Copied' : 'Copy'}
@@ -164,10 +164,10 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
         )}
       </div>
       {isEmpty ? (
-        <p className="px-3 py-3 font-mono text-[11px] text-text-quaternary">{'{ }'} · empty</p>
+        <p className="px-3 py-3 font-mono text-xs text-text-quaternary">{'{ }'} · empty</p>
       ) : (
         <pre
-          className="overflow-x-auto px-3 py-3 font-mono text-[11px] leading-relaxed text-text-secondary"
+          className="overflow-x-auto px-3 py-3 font-mono text-xs leading-relaxed text-text-secondary"
           dangerouslySetInnerHTML={{ __html: highlightJson(value) }}
         />
       )}
@@ -183,14 +183,14 @@ function confidenceLabel(c?: number | null): string {
 /** The classifier's score only orders the queue — it never authorizes. The
  *  colour is a reading aid, not a verdict. */
 function confidenceTone(c?: number | null): string {
-  if (c === null || c === undefined) return 'bg-white/[0.06] text-text-tertiary'
+  if (c === null || c === undefined) return 'bg-foreground/[0.06] text-text-tertiary'
   if (c >= 0.8) return 'bg-status-success/15 text-status-success'
-  if (c >= 0.5) return 'bg-accent-blue/15 text-accent-blue'
+  if (c >= 0.5) return 'bg-action-primary/15 text-accent-blue'
   return 'bg-status-warning/15 text-status-warning'
 }
 
 const PILL_BASE =
-  'inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed'
+  'inline-flex items-center gap-1.5 rounded-md min-h-9 px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed'
 
 export default function Migrations() {
   const api = useMemo(() => createClient(), [])
@@ -364,14 +364,14 @@ export default function Migrations() {
   const approvedCount = candidates.filter((c) => c.status === 'approved').length
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="min-w-0 p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <header className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-accent-blue/[0.12] text-accent-blue">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-action-primary/[0.12] text-accent-blue">
           <Layers className="h-5 w-5" />
         </div>
         <div>
-          <h1 className="text-base font-semibold text-text-primary">Knowledge migration</h1>
+          <h1 className="text-[22px] leading-tight font-semibold text-text-primary">Knowledge migration</h1>
           <p className="text-xs text-text-quaternary mt-0.5">
             Nothing here has entered the company brain yet. Every candidate is waiting for a
             decision.
@@ -382,7 +382,7 @@ export default function Migrations() {
       {error && (
         <div
           role="alert"
-          className="flex items-start gap-2.5 rounded-[14px] border border-status-error/30 bg-status-error/[0.08] p-3.5 text-xs text-status-error"
+          className="flex items-start gap-2.5 rounded-xl border border-status-error/30 bg-status-error/[0.08] p-3.5 text-xs text-status-error"
         >
           <AlertCircle className="h-4 w-4 shrink-0 mt-px" />
           <span className="leading-relaxed">{error}</span>
@@ -391,7 +391,7 @@ export default function Migrations() {
       {notice && (
         <div
           role="status"
-          className="flex items-start gap-2.5 rounded-[14px] border border-status-success/30 bg-status-success/[0.08] p-3.5 text-xs text-status-success"
+          className="flex items-start gap-2.5 rounded-xl border border-status-success/30 bg-status-success/[0.08] p-3.5 text-xs text-status-success"
         >
           <CheckCircle2 className="h-4 w-4 shrink-0 mt-px" />
           <span className="leading-relaxed">{notice}</span>
@@ -402,12 +402,12 @@ export default function Migrations() {
       <section aria-label="Runs" className="space-y-3">
         <div className="flex items-baseline gap-2">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">Runs</h2>
-          <span className="text-[10px] text-text-quaternary">{runs.length}</span>
+          <span className="text-xs text-text-quaternary">{runs.length}</span>
         </div>
 
         {runs.length === 0 ? (
           <div
-            className={`flex flex-col items-center gap-2 rounded-[18px] py-12 text-center ${GLASS_PANEL}`}
+            className={`flex flex-col items-center gap-2 rounded-xl py-12 text-center ${GLASS_PANEL}`}
           >
             <Inbox className="h-6 w-6 text-text-quaternary" />
             <p className="text-xs text-text-quaternary">
@@ -415,7 +415,7 @@ export default function Migrations() {
             </p>
           </div>
         ) : (
-          <div className="grid gap-2.5 sm:grid-cols-2">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2">
             {runs.map((r) => {
               const active = selectedRun === r.id
               const SrcIcon = SOURCE_ICONS[r.source_kind] ?? Layers
@@ -427,16 +427,16 @@ export default function Migrations() {
                   onClick={() => loadCandidates(r.id)}
                   aria-pressed={active}
                   aria-label={`Migration run ${r.source_kind}${r.source_ref ? ` (${r.source_ref})` : ''}, ${r.status}`}
-                  className={`group flex flex-col gap-2.5 rounded-[16px] border p-4 text-left transition-colors ${
+                  className={`group min-w-0 flex flex-col gap-2.5 rounded-xl border p-4 text-left transition-colors ${
                     active
-                      ? 'border-accent-blue/50 bg-accent-blue/[0.08]'
-                      : `${GLASS_PANEL} hover:bg-white/[0.05]`
+                      ? 'border-accent-blue/50 bg-action-primary/[0.08]'
+                      : `${GLASS_PANEL} hover:bg-foreground/[0.05]`
                   }`}
                 >
-                  <div className="flex items-start gap-3">
+                  <div className="flex w-full min-w-0 items-start gap-3">
                     <span
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] ${
-                        active ? 'bg-accent-blue/20 text-accent-blue' : 'bg-white/[0.06] text-text-secondary'
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${
+                        active ? 'bg-action-primary/20 text-accent-blue' : 'bg-foreground/[0.06] text-text-secondary'
                       }`}
                     >
                       <SrcIcon className="h-4 w-4" />
@@ -445,20 +445,20 @@ export default function Migrations() {
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-semibold text-text-primary">{label}</span>
                         <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusTone(r.status)}`}
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusTone(r.status)}`}
                         >
                           {r.status}
                         </span>
                       </div>
                       {r.source_ref && (
-                        <p className="mt-1 truncate font-mono text-[11px] text-text-tertiary">
+                        <p className="mt-1 break-all font-mono text-xs text-text-tertiary">
                           {r.source_ref}
                         </p>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10px] text-text-quaternary">
+                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-text-quaternary">
                     <span className="inline-flex items-center gap-1">
                       <Clock className="h-3 w-3" />
                       {relTime(r.created_at)}
@@ -468,7 +468,7 @@ export default function Migrations() {
                       className={`rounded-full px-1.5 py-0.5 ${
                         r.client_id
                           ? 'bg-accent-purple/15 text-accent-purple'
-                          : 'bg-white/[0.06] text-text-tertiary'
+                          : 'bg-foreground/[0.06] text-text-tertiary'
                       }`}
                     >
                       {r.client_id ? `client ${r.client_id}` : 'internal'}
@@ -493,12 +493,12 @@ export default function Migrations() {
             <h2 className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
               Review queue
             </h2>
-            <span className="text-[10px] text-text-quaternary">{staged.length} staged</span>
+            <span className="text-xs text-text-quaternary">{staged.length} staged</span>
             <button
               type="button"
               onClick={deleteRun}
               disabled={loading}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-status-error/30 bg-status-error/[0.08] px-2.5 py-1 text-[11px] font-medium text-status-error transition-colors hover:bg-status-error/[0.14] disabled:opacity-50"
+              className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-status-error/30 bg-status-error/[0.08] px-2.5 py-1 text-xs font-medium text-status-error transition-colors hover:bg-status-error/[0.14] disabled:opacity-50"
               title="Delete this run and its candidates. A run that committed knowledge cannot be deleted."
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -509,7 +509,7 @@ export default function Migrations() {
           {/* Run summary — the aggregate counts that tell the reviewer where this
               run stands at a glance. Only rendered once the report loads. */}
           {report && (
-            <div className={`flex flex-wrap gap-2 rounded-[14px] p-3 ${GLASS_PANEL}`}>
+            <div className={`flex flex-wrap gap-2 rounded-xl p-3 ${GLASS_PANEL}`}>
               {[
                 { label: 'staged', value: report.staged, tone: 'text-accent-blue' },
                 { label: 'approved', value: report.approved, tone: 'text-status-success' },
@@ -520,16 +520,16 @@ export default function Migrations() {
               ].map((s) => (
                 <div
                   key={s.label}
-                  className="flex min-w-[64px] flex-col items-center rounded-[10px] bg-white/[0.03] px-3 py-1.5"
+                  className="flex min-w-[64px] flex-col items-center rounded-lg bg-foreground/[0.03] px-3 py-1.5"
                 >
                   <span className={`text-base font-semibold tabular-nums ${s.tone}`}>{s.value}</span>
-                  <span className="text-[10px] uppercase tracking-wide text-text-quaternary">
+                  <span className="text-xs uppercase tracking-wide text-text-quaternary">
                     {s.label}
                   </span>
                 </div>
               ))}
               {report.pending_index > 0 && (
-                <div className="flex items-center gap-1.5 rounded-[10px] bg-status-warning/10 px-3 py-1.5 text-[11px] text-status-warning">
+                <div className="flex items-center gap-1.5 rounded-lg bg-status-warning/10 px-3 py-1.5 text-xs text-status-warning">
                   <Clock className="h-3.5 w-3.5" />
                   {report.pending_index} indexing
                 </div>
@@ -540,12 +540,12 @@ export default function Migrations() {
           {loading && staged.length === 0 ? (
             <div className="space-y-2">
               {[...Array(3)].map((_, i) => (
-                <div key={i} className={`h-16 rounded-[16px] animate-pulse ${GLASS_PANEL}`} />
+                <div key={i} className={`h-16 rounded-xl animate-pulse ${GLASS_PANEL}`} />
               ))}
             </div>
           ) : staged.length === 0 ? (
             <div
-              className={`flex flex-col items-center gap-2 rounded-[18px] py-12 text-center ${GLASS_PANEL}`}
+              className={`flex flex-col items-center gap-2 rounded-xl py-12 text-center ${GLASS_PANEL}`}
             >
               <Inbox className="h-6 w-6 text-text-quaternary" />
               <p className="text-xs text-text-quaternary">Nothing staged for review in this run.</p>
@@ -559,8 +559,8 @@ export default function Migrations() {
                 return (
                   <li
                     key={c.id}
-                    className={`rounded-[16px] transition-colors ${
-                      isSelected ? 'border border-accent-blue/40 bg-accent-blue/[0.06]' : GLASS_PANEL
+                    className={`rounded-xl transition-colors ${
+                      isSelected ? 'border border-accent-blue/40 bg-action-primary/[0.06]' : GLASS_PANEL
                     }`}
                   >
                     <label className="flex cursor-pointer items-start gap-3 p-4">
@@ -572,7 +572,7 @@ export default function Migrations() {
                         className="mt-0.5 h-4 w-4 shrink-0 rounded accent-[#0066cc]"
                       />
                       <span className="flex flex-1 min-w-0 items-start gap-2.5">
-                        <span className="mt-px flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] bg-white/[0.06] text-text-secondary">
+                        <span className="mt-px flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-foreground/[0.06] text-text-secondary">
                           <Icon className="h-3.5 w-3.5" />
                         </span>
                         <span className="min-w-0 flex-1">
@@ -581,15 +581,15 @@ export default function Migrations() {
                               {DESTINATION_LABELS[c.destination_kind] ?? c.destination_kind}
                             </span>
                             <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${confidenceTone(c.confidence)}`}
+                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${confidenceTone(c.confidence)}`}
                             >
                               {confidenceLabel(c.confidence)}
                             </span>
                             <span
-                              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
                                 attested
                                   ? 'bg-status-warning/15 text-status-warning'
-                                  : 'bg-white/[0.06] text-text-tertiary'
+                                  : 'bg-foreground/[0.06] text-text-tertiary'
                               }`}
                             >
                               {attested ? (
@@ -600,7 +600,7 @@ export default function Migrations() {
                               {c.provenance_kind}
                             </span>
                           </span>
-                          <span className="mt-1 block truncate font-mono text-[11px] text-text-tertiary">
+                          <span className="mt-1 block truncate font-mono text-xs text-text-tertiary">
                             {c.source_identity}
                           </span>
                         </span>
@@ -611,7 +611,7 @@ export default function Migrations() {
                           e.preventDefault()
                           setOpenCandidate(c.id)
                         }}
-                        className="flex shrink-0 items-center gap-1 rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:bg-white/[0.10] hover:text-text-primary"
+                        className="flex shrink-0 items-center gap-1 rounded-md bg-foreground/[0.06] px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:bg-foreground/[0.10] hover:text-text-primary"
                       >
                         <Eye className="h-3 w-3" />
                         Inspect
@@ -626,7 +626,7 @@ export default function Migrations() {
           {batchBlocked && (
             <p
               role="alert"
-              className="flex items-start gap-2.5 rounded-[14px] border border-status-warning/30 bg-status-warning/[0.08] p-3.5 text-xs leading-relaxed text-status-warning"
+              className="flex items-start gap-2.5 rounded-xl border border-status-warning/30 bg-status-warning/[0.08] p-3.5 text-xs leading-relaxed text-status-warning"
             >
               <ShieldX className="h-4 w-4 shrink-0 mt-px" />
               <span>
@@ -640,7 +640,7 @@ export default function Migrations() {
           {selectionIncludesHarness && (
             <p
               role="note"
-              className="flex items-start gap-2.5 rounded-[14px] border border-accent-blue/30 bg-accent-blue/[0.07] p-3.5 text-xs leading-relaxed text-text-secondary"
+              className="flex items-start gap-2.5 rounded-xl border border-accent-blue/30 bg-action-primary/[0.07] p-3.5 text-xs leading-relaxed text-text-secondary"
             >
               <Sparkles className="h-4 w-4 shrink-0 mt-px text-accent-blue" />
               <span>
@@ -653,7 +653,7 @@ export default function Migrations() {
 
           {/* Action bar */}
           <div
-            className={`flex flex-wrap items-center gap-2 rounded-[16px] p-3 ${GLASS_PANEL}`}
+            className={`flex flex-wrap items-center gap-2 rounded-xl p-3 ${GLASS_PANEL}`}
           >
             {selected.length > 0 && (
               <span className="mr-auto text-xs text-text-quaternary">
@@ -664,7 +664,7 @@ export default function Migrations() {
               type="button"
               onClick={() => submit('approved')}
               disabled={loading || selected.length === 0 || batchBlocked}
-              className={`${PILL_BASE} bg-accent-blue text-white hover:bg-accent-blue-hover`}
+              className={`${PILL_BASE} bg-action-primary text-action-foreground hover:bg-action-primary-hover`}
             >
               <Check className="h-3.5 w-3.5" />
               Approve {selected.length > 0 ? `(${selected.length})` : ''}
@@ -673,7 +673,7 @@ export default function Migrations() {
               type="button"
               onClick={() => submit('rejected')}
               disabled={loading || selected.length === 0}
-              className={`${PILL_BASE} bg-white/[0.06] text-text-secondary hover:bg-white/[0.10]`}
+              className={`${PILL_BASE} bg-foreground/[0.06] text-text-secondary hover:bg-foreground/[0.10]`}
             >
               <X className="h-3.5 w-3.5" />
               Reject {selected.length > 0 ? `(${selected.length})` : ''}
@@ -694,7 +694,7 @@ export default function Migrations() {
       {open && (
         <section
           aria-label="Candidate detail"
-          className={`space-y-4 rounded-[18px] p-5 ${GLASS_PANEL}`}
+          className={`space-y-4 rounded-xl p-5 ${GLASS_PANEL}`}
         >
           <div className="flex items-center justify-between gap-3">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
@@ -708,7 +708,7 @@ export default function Migrations() {
               type="button"
               onClick={() => setOpenCandidate(null)}
               aria-label="Close detail"
-              className="flex h-7 w-7 items-center justify-center rounded-full text-text-quaternary transition-colors hover:bg-white/[0.06] hover:text-text-primary"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-text-quaternary transition-colors hover:bg-foreground/[0.06] hover:text-text-primary"
             >
               <X className="h-4 w-4" />
             </button>
@@ -716,7 +716,7 @@ export default function Migrations() {
 
           <dl className="space-y-4">
             <div>
-              <dt className="text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+              <dt className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
                 Source
               </dt>
               <dd className="mt-1 break-all font-mono text-xs text-text-secondary">
@@ -724,25 +724,25 @@ export default function Migrations() {
               </dd>
             </div>
             <div>
-              <dt className="text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+              <dt className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
                 Proposed content
               </dt>
-              <dd className="mt-1 whitespace-pre-wrap rounded-[12px] bg-white/[0.04] p-3 text-xs leading-relaxed text-text-primary">
+              <dd className="mt-1 whitespace-pre-wrap rounded-xl bg-foreground/[0.04] p-3 text-xs leading-relaxed text-text-primary">
                 {open.content}
               </dd>
             </div>
             {open.source_excerpt && (
               <div>
-                <dt className="text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+                <dt className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
                   Verbatim from the source
                 </dt>
-                <dd className="mt-1 whitespace-pre-wrap rounded-[12px] border-l-2 border-accent-blue/40 bg-white/[0.02] p-3 text-xs italic leading-relaxed text-text-secondary">
+                <dd className="mt-1 whitespace-pre-wrap rounded-xl border-l-2 border-accent-blue/40 bg-foreground/[0.02] p-3 text-xs italic leading-relaxed text-text-secondary">
                   {open.source_excerpt}
                 </dd>
               </div>
             )}
             <div>
-              <dt className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+              <dt className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
                 Structured metadata
               </dt>
               <dd className="space-y-2">
@@ -763,21 +763,21 @@ export default function Migrations() {
       {commitResult && (
         <section
           aria-label="Commit result"
-          className={`space-y-3 rounded-[18px] p-5 ${GLASS_PANEL}`}
+          className={`space-y-3 rounded-xl p-5 ${GLASS_PANEL}`}
         >
           <div className="flex flex-wrap gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-status-success/15 px-3 py-1 text-xs font-medium text-status-success">
               <CheckCircle2 className="h-3.5 w-3.5" />
               {commitResult.committed} committed
             </span>
-            <span className="inline-flex items-center rounded-full bg-white/[0.06] px-3 py-1 text-xs font-medium text-text-tertiary">
+            <span className="inline-flex items-center rounded-full bg-foreground/[0.06] px-3 py-1 text-xs font-medium text-text-tertiary">
               {commitResult.skipped} skipped
             </span>
             <span
               className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
                 commitResult.failed > 0
                   ? 'bg-status-error/15 text-status-error'
-                  : 'bg-white/[0.06] text-text-tertiary'
+                  : 'bg-foreground/[0.06] text-text-tertiary'
               }`}
             >
               {commitResult.failed} failed
@@ -801,7 +801,7 @@ export default function Migrations() {
                 .map((r) => (
                   <li
                     key={r.candidate_id}
-                    className="flex items-center gap-2 font-mono text-[11px] text-text-tertiary"
+                    className="flex items-center gap-2 font-mono text-xs text-text-tertiary"
                   >
                     <span className="rounded-full bg-status-error/15 px-1.5 py-0.5 text-status-error">
                       {r.outcome}

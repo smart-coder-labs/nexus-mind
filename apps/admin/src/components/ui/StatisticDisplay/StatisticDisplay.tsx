@@ -94,41 +94,41 @@ const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: s
 };
 
 const variantClasses: Record<StatisticVariant, string> = {
-    card: "border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px]",
-    soft: "border border-white/[0.05] bg-[#0d0f14]/40 backdrop-blur-[10px] rounded-[18px]",
-    bordered: "border border-border-tertiary bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px]",
-    minimal: "rounded-[18px]",
-    glass: "bg-accent-blue/5 border border-accent-blue/10 backdrop-blur-xl rounded-[18px]",
+    card: "border border-border-primary bg-surface-primary rounded-xl",
+    soft: "border border-border-primary bg-surface-primary backdrop-blur-[10px] rounded-xl",
+    bordered: "border border-border-tertiary bg-surface-primary rounded-xl",
+    minimal: "rounded-xl",
+    glass: "bg-action-primary/5 border border-accent-blue/10 backdrop-blur-xl rounded-xl",
 };
 
 const accentTokens: Record<StatisticAccent, { color: string; fillColor: string; text: string; chip: string; }> = {
     blue: {
-        color: '#0066cc',
-        fillColor: 'rgba(0,102,204,0.12)',
+        color: 'var(--color-accent-blue)',
+        fillColor: 'color-mix(in srgb, var(--color-accent-blue) 12%, transparent)',
         text: 'text-accent-blue',
-        chip: 'bg-accent-blue/10 text-accent-blue',
+        chip: 'bg-action-primary/10 text-accent-blue',
     },
     green: {
-        color: '#4ade80',
-        fillColor: 'rgba(74,222,128,0.12)',
+        color: 'var(--color-status-success)',
+        fillColor: 'color-mix(in srgb, var(--color-status-success) 12%, transparent)',
         text: 'text-status-success',
         chip: 'bg-status-success/10 text-status-success',
     },
     purple: {
-        color: '#7c3aed',
-        fillColor: 'rgba(124,58,237,0.12)',
+        color: 'var(--color-accent-purple)',
+        fillColor: 'color-mix(in srgb, var(--color-accent-purple) 12%, transparent)',
         text: 'text-accent-purple',
         chip: 'bg-accent-purple/10 text-accent-purple',
     },
     orange: {
-        color: '#ea580c',
-        fillColor: 'rgba(234,88,12,0.12)',
+        color: 'var(--color-status-warning)',
+        fillColor: 'color-mix(in srgb, var(--color-status-warning) 12%, transparent)',
         text: 'text-status-warning',
         chip: 'bg-status-warning/15 text-status-warning',
     },
     pink: {
-        color: '#db2777',
-        fillColor: 'rgba(219,39,119,0.12)',
+        color: 'var(--color-accent-pink)',
+        fillColor: 'color-mix(in srgb, var(--color-accent-pink) 12%, transparent)',
         text: 'text-accent-pink',
         chip: 'bg-accent-pink/15 text-accent-pink',
     },
@@ -150,7 +150,7 @@ const trendTokens: Record<StatisticTrend, { icon: React.ComponentType<{ classNam
     neutral: {
         icon: Minus,
         text: 'text-text-tertiary',
-        bg: 'bg-white/[0.06]',
+        bg: 'bg-foreground/[0.06]',
         trend: 'neutral',
     },
 };
@@ -168,7 +168,7 @@ const GoalMeter: React.FC<{ goal?: StatisticGoal }> = ({ goal }) => {
                     <span>{goal.value}</span>
                 </div>
             )}
-            <div className="h-1.5 w-full rounded-full bg-white/[0.06] overflow-hidden">
+            <div className="h-1.5 w-full rounded-full bg-foreground/[0.06] overflow-hidden">
                 <div
                     className="h-full rounded-full bg-gradient-to-r from-accent-blue to-accent-blue-hover transition-all"
                     style={{ width: `${progress * 100}%` }}
@@ -228,7 +228,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                                 'relative overflow-hidden group transition-all duration-300',
                                 variantClasses[variant],
                                 currentSize.padding,
-                                metric.subtle && 'bg-[#0d0f14]/30',
+                                metric.subtle && 'bg-surface-primary',
                                 'flex flex-col'
                             )}
                             whileHover={{ y: -4, scale: 1.01 }}
@@ -250,7 +250,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                                 </span>
                                 {metric.icon && (
                                     <div className={cn(
-                                        'flex items-center justify-center rounded-[11px] bg-white/5 border border-white/5 text-text-secondary group-hover:text-text-primary transition-colors',
+                                        'flex items-center justify-center rounded-md bg-foreground/5 border border-border-primary text-text-secondary group-hover:text-text-primary transition-colors',
                                         currentSize.icon
                                     )}>
                                         {metric.icon}
@@ -356,7 +356,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
             <MotionDiv
                 ref={ref}
                 className={cn(
-                    'w-full rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] p-6 md:p-8 relative overflow-hidden',
+                    'w-full rounded-xl border border-border-primary bg-surface-primary p-6 md:p-8 relative overflow-hidden',
                     className
                 )}
                 initial={{ opacity: 0, scale: 0.98 }}
@@ -388,7 +388,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
                             {value}
                         </span>
                         {(change || trend) && TrendIcon && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.06] text-[11px] font-semibold">
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-foreground/[0.06] text-[11px] font-semibold">
                                 <TrendIcon className={cn('w-4 h-4', trendTokens[resolvedTrend].text)} />
                                 {change && (
                                     <span className={trendTokens[resolvedTrend].text}>{change}</span>
@@ -416,7 +416,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
                                 <span>Progress</span>
                                 <span>{Math.round(progress * 100)}%</span>
                             </div>
-                            <div className="h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+                            <div className="h-1.5 bg-foreground/[0.06] rounded-full overflow-hidden">
                                 <div
                                     className="h-full bg-gradient-to-r from-accent-blue to-accent-blue-hover rounded-full"
                                     style={{ width: `${Math.min(Math.max(progress, 0), 1) * 100}%` }}

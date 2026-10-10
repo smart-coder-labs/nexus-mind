@@ -7,6 +7,8 @@ import { Layout } from './components/Layout'
 import { DISABLED_NAV_HREFS } from './config/disabled-sections'
 import Migrations from './pages/Migrations'
 
+const DesignSystem = import.meta.env.DEV ? lazy(() => import('./pages/DesignSystem')) : null
+
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Users     = lazy(() => import('./pages/Users'))
 const Memories  = lazy(() => import('./pages/Memories'))
@@ -69,7 +71,7 @@ function SuperUserRoute({ children }: { children: React.ReactNode }) {
 
 const PageFallback = () => (
   <div className="flex-1 p-8">
-    <div className="animate-pulse h-8 bg-white/[0.04] rounded-[11px] w-48 mb-4" />
+    <div className="animate-pulse h-8 bg-foreground/[0.04] rounded-[11px] w-48 mb-4" />
   </div>
 )
 
@@ -78,6 +80,7 @@ function AppRoutes() {
   return (
     <Suspense fallback={<PageFallback />}>
       <Routes>
+        {DesignSystem && <Route path="/design-system" element={<DesignSystem />} />}
         <Route path="/set-password" element={<SetPassword />} />
         <Route
           path="/login"

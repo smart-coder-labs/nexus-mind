@@ -38,13 +38,13 @@ export function SandboxBotPanel({ client, canWrite }: { client: NexusMindClient;
   }
 
   return (
-    <section aria-labelledby="sandbox-bot-title" className="space-y-4 rounded-[18px] border border-border-primary bg-white/[0.02] p-5">
+    <section aria-labelledby="sandbox-bot-title" className="space-y-4 rounded-xl border border-border-primary bg-foreground/[0.02] p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1 basis-64">
           <h2 id="sandbox-bot-title" className="flex items-center gap-2 text-[15px] font-semibold tracking-[-0.2px] text-text-primary">
             <Bot className="h-4 w-4 text-text-secondary" aria-hidden="true" />Sandbox bot
           </h2>
-          <p className="mt-1 max-w-2xl text-[13px] leading-normal text-text-secondary">
+          <p className="mt-1 max-w-2xl text-sm leading-normal text-text-secondary">
             Sandboxed agents call NexusMind as this bot. Its permissions come from the <code className="font-mono text-[12px]">factory-bot</code> role
             (edit it in Roles). The key goes only into the egress proxy secret; agents never see it.
           </p>
@@ -68,10 +68,10 @@ export function SandboxBotPanel({ client, canWrite }: { client: NexusMindClient;
         <InlineAlert onRetry={() => bot.refetch()}>Could not load the sandbox bot. Reload it before issuing a key.</InlineAlert>
       )}
       {bot.isSuccess && !current && (
-        <p className="text-[13px] text-text-secondary">No sandbox bot yet — sandboxed agents run without NexusMind context until a key is generated.</p>
+        <p className="text-sm text-text-secondary">No sandbox bot yet — sandboxed agents run without NexusMind context until a key is generated.</p>
       )}
       {current && (
-        <dl className="grid gap-x-4 gap-y-1.5 text-[13px] sm:grid-cols-[8rem_1fr]">
+        <dl className="grid gap-x-4 gap-y-1.5 text-sm sm:grid-cols-[8rem_1fr]">
           <dt className="text-text-tertiary">Status</dt>
           <dd>
             <Badge role="none" size="sm" variant={current.status === 'active' ? 'success' : 'default'}>{readable(current.status)}</Badge>
@@ -84,11 +84,11 @@ export function SandboxBotPanel({ client, canWrite }: { client: NexusMindClient;
       )}
 
       {issuedKey && (
-        <div role="status" className="space-y-2 rounded-[11px] border border-status-warning/20 bg-status-warning/[0.08] p-3.5">
-          <p className="text-[13px] text-text-primary">
+        <div role="status" className="space-y-2 rounded-md border border-status-warning/20 bg-status-warning/[0.08] p-3.5">
+          <p className="text-sm text-text-primary">
             Copy this key into the proxy secret (<code className="font-mono text-[12px]">FACTORY_NEXUSMIND_KEYS</code>) now. It will not be shown again.
           </p>
-          <code className="block break-all rounded-[8px] bg-background-primary/60 p-2.5 font-mono text-[12px] text-text-primary">{issuedKey}</code>
+          <code className="block break-all rounded-md bg-background-primary/60 p-2.5 font-mono text-[12px] text-text-primary">{issuedKey}</code>
           <Button size="sm" variant="secondary" onClick={() => setIssuedKey(null)}>I stored it</Button>
         </div>
       )}

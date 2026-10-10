@@ -14,7 +14,7 @@ import { Modal, ModalHeader, ModalTitle, ModalDescription, ModalFooter, ModalClo
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Roles page.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   admin: 'Full access to all settings and data',
@@ -70,13 +70,13 @@ const MAX_VISIBLE_PERMISSION_CHIPS = 5
 // partition all 35 real permissions with no leftovers (verified: 9 + 5 + 5 +
 // 3 + 5 + 2 + 6 = 35), so nothing is fabricated or silently dropped.
 const PERMISSION_GROUPS: { label: string; color: string; prefixes: string[] }[] = [
-  { label: 'MEMORIES', color: '#3b82f6', prefixes: ['memory', 'collection', 'tag', 'graph'] },
-  { label: 'USERS & ACCESS', color: '#f97316', prefixes: ['user', 'api_key', 'policy'] },
-  { label: 'PROJECTS & SESSIONS', color: '#6366f1', prefixes: ['project', 'session', 'convention'] },
-  { label: 'CODE', color: '#a855f7', prefixes: ['code'] },
-  { label: 'HARNESSES', color: '#a78bfa', prefixes: ['harness'] },
-  { label: 'FACTORY', color: '#22c55e', prefixes: ['factory_policy'] },
-  { label: 'SYSTEM', color: '#facc15', prefixes: ['audit', 'settings', 'webhook', 'backup'] },
+  { label: 'MEMORIES', color: 'var(--muted-foreground)', prefixes: ['memory', 'collection', 'tag', 'graph'] },
+  { label: 'USERS & ACCESS', color: 'var(--muted-foreground)', prefixes: ['user', 'api_key', 'policy'] },
+  { label: 'PROJECTS & SESSIONS', color: 'var(--muted-foreground)', prefixes: ['project', 'session', 'convention'] },
+  { label: 'CODE', color: 'var(--muted-foreground)', prefixes: ['code'] },
+  { label: 'HARNESSES', color: 'var(--muted-foreground)', prefixes: ['harness'] },
+  { label: 'FACTORY', color: 'var(--muted-foreground)', prefixes: ['factory_policy'] },
+  { label: 'SYSTEM', color: 'var(--muted-foreground)', prefixes: ['audit', 'settings', 'webhook', 'backup'] },
 ]
 
 // A permission is only offered when the feature it unlocks exists in this
@@ -275,17 +275,17 @@ export default function Roles() {
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-[13px] bg-status-success/12 flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-xl bg-status-success/12 flex items-center justify-center shrink-0">
             <Shield className="w-5 h-5 text-status-success" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">Roles & Permissions</h1>
+            <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Roles & Permissions</h1>
             <p className="text-xs text-text-quaternary mt-0.5">Define custom roles and manage fine-grained permissions.</p>
           </div>
         </div>
         <button
           onClick={() => setCreateOpen(true)}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors"
+          className="flex items-center gap-2 px-3.5 py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium transition-colors h-9 shadow-xs"
         >
           <Plus className="w-4 h-4" />
           Create role
@@ -293,7 +293,7 @@ export default function Roles() {
       </div>
 
       {roleStats && (
-        <KpiMarquee role="list" aria-label="Role statistics">
+        <KpiMarquee compact role="list" aria-label="Role statistics">
           {roleStats.map((t, i) => (
             <div key={t.label} className="w-[232px] flex-none">
               <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} accent={accentFor(i)} />
@@ -303,28 +303,28 @@ export default function Roles() {
       )}
 
       <div className="space-y-3">
-        <span className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Active Roles</span>
+        <span className="text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">Active Roles</span>
         {deleteErrorMsg && (
-          <div className="p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[8px]">
+          <div className="p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
             {deleteErrorMsg}
           </div>
         )}
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className={`rounded-[18px] p-5 space-y-2 animate-pulse ${GLASS_PANEL}`}>
-                <div className="h-3.5 rounded-[5px] bg-white/[0.06] w-1/3" />
-                <div className="h-2.5 rounded-[5px] bg-white/[0.06] w-2/3" />
+              <div key={i} className={`rounded-xl p-5 space-y-2 animate-pulse ${GLASS_PANEL}`}>
+                <div className="h-3.5 rounded-sm bg-foreground/[0.06] w-1/3" />
+                <div className="h-2.5 rounded-sm bg-foreground/[0.06] w-2/3" />
                 <div className="flex gap-1">
                   {Array.from({ length: 3 }).map((_, j) => (
-                    <div key={j} className="h-4 w-16 rounded-full bg-white/[0.06]" />
+                    <div key={j} className="h-4 w-16 rounded-md bg-foreground/[0.06]" />
                   ))}
                 </div>
               </div>
             ))}
           </div>
         ) : roles?.length === 0 ? (
-          <div className={`rounded-[18px] px-5 py-12 flex flex-col items-center gap-2 text-center ${GLASS_PANEL}`}>
+          <div className={`rounded-xl px-5 py-12 flex flex-col items-center gap-2 text-center ${GLASS_PANEL}`}>
             <Shield className="w-6 h-6 text-text-quaternary/50" />
             <p className="text-xs font-semibold text-text-secondary">No custom roles yet</p>
             <p className="text-xs text-text-quaternary max-w-xs">Create a custom role to define fine-grained permission sets for your team.</p>
@@ -341,32 +341,32 @@ export default function Roles() {
               const visiblePerms = role.permissions.slice(0, MAX_VISIBLE_PERMISSION_CHIPS)
               const overflowCount = role.permissions.length - visiblePerms.length
               return (
-                <div key={role.id} className={`rounded-[18px] p-5 flex flex-col gap-3 ${GLASS_PANEL}`}>
+                <div key={role.id} className={`rounded-xl p-5 flex flex-col gap-3 ${GLASS_PANEL}`}>
                   <div className="flex items-start gap-2.5">
                     <div
                       className={cn(
-                        'w-[38px] h-[38px] rounded-[11px] flex items-center justify-center shrink-0',
-                        role.is_template ? 'bg-accent-blue/12' : 'bg-status-success/12'
+                        'w-[38px] h-[38px] rounded-md flex items-center justify-center shrink-0',
+                        'bg-muted'
                       )}
                     >
-                      <Shield className={cn('w-[18px] h-[18px]', role.is_template ? 'text-accent-blue' : 'text-status-success')} />
+                      <Shield className={cn('w-[18px] h-[18px]', 'text-text-secondary')} />
                     </div>
                     <div className="flex flex-col gap-1 flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[15px] font-bold tracking-[-0.01em] text-text-primary">{role.display_name}</span>
-                        <span className="text-[11px] text-text-tertiary font-mono">({role.name})</span>
+                        <span className="text-base font-bold tracking-[-0.01em] text-text-primary">{role.display_name}</span>
+                        <span className="text-xs text-text-tertiary font-mono">({role.name})</span>
                       </div>
                       <div className="flex items-center gap-1.5 flex-wrap">
                         {role.is_template ? (
-                          <span className="text-[10.5px] font-bold bg-white/[0.06] text-text-quaternary px-2.5 py-0.5 rounded-full">
+                          <span className="text-xs font-bold bg-foreground/[0.06] text-text-quaternary px-2.5 py-0.5 rounded-md">
                             System
                           </span>
                         ) : (
-                          <span className="text-[10.5px] font-bold bg-status-success/15 text-status-success px-2.5 py-0.5 rounded-full">
+                          <span className="text-xs font-bold bg-status-success/15 text-status-success px-2.5 py-0.5 rounded-md">
                             Custom
                           </span>
                         )}
-                        <span className="rounded-full bg-white/[0.06] px-2.5 py-0.5 text-[10.5px] font-semibold text-text-secondary flex items-center gap-1">
+                        <span className="rounded-md bg-foreground/[0.06] px-2.5 py-0.5 text-xs font-semibold text-text-secondary flex items-center gap-1">
                           <Users className="w-2.5 h-2.5" />
                           {userCount != null ? `${userCount} member${userCount === 1 ? '' : 's'}` : '—'}
                         </span>
@@ -375,52 +375,44 @@ export default function Roles() {
                   </div>
 
                   {roleDescription && (
-                    <p className="text-[12.5px] text-text-secondary leading-relaxed">{roleDescription}</p>
+                    <p className="text-sm text-text-secondary leading-relaxed">{roleDescription}</p>
                   )}
 
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold tracking-[0.1em] text-text-tertiary">
-                        PERMISSIONS
+                      <span className="text-xs font-medium text-text-tertiary">
+                        Permissions
                       </span>
-                      <span className="text-[11px] font-bold text-accent-blue">
+                      <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-text-secondary">
                         {role.permissions.length}/{AVAILABLE_PERMISSIONS.length}
                       </span>
-                    </div>
-                    <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-accent-blue"
-                        style={{
-                          width: `${Math.min(100, Math.round((role.permissions.length / AVAILABLE_PERMISSIONS.length) * 100))}%`,
-                        }}
-                      />
                     </div>
                     <div className="flex flex-wrap gap-1">
                       {/* Mockup: truncate the permission chip list to 5, with a "+N" overflow chip */}
                       {visiblePerms.map(p => (
                         <span
                           key={p}
-                          className="text-[10.5px] font-mono border border-white/[0.08] bg-white/[0.02] text-text-tertiary px-2.5 py-0.5 rounded-full"
+                          className="text-xs font-mono border border-border-primary bg-foreground/[0.02] text-text-tertiary px-2.5 py-0.5 rounded-md"
                         >
                           {p}
                         </span>
                       ))}
                       {overflowCount > 0 && (
-                        <span className="text-[10.5px] font-bold bg-accent-blue/10 text-accent-blue px-2.5 py-0.5 rounded-full">
+                        <span className="text-xs font-bold bg-action-primary/10 text-accent-blue px-2.5 py-0.5 rounded-md">
                           +{overflowCount}
                         </span>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 pt-3 border-t border-white/[0.05] mt-auto">
+                  <div className="flex items-center gap-1.5 pt-3 border-t border-border-primary mt-auto">
                     <button
                       onClick={() => {
                         setManagingRole(role)
                         setMemberSearch('')
                         setAddSearch('')
                       }}
-                      className="flex items-center gap-1.5 h-[30px] px-3 rounded-[9px] border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                      className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
                     >
                       <Users className="w-3 h-3" />
                       Manage members
@@ -432,7 +424,7 @@ export default function Roles() {
                           setEditPermissions(role.permissions)
                           setEditSaved(false)
                         }}
-                        className="flex items-center gap-1.5 h-[30px] px-3 rounded-[9px] border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                        className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
                       >
                         <Shield className="w-3 h-3" />
                         Edit permissions
@@ -448,7 +440,7 @@ export default function Roles() {
                         }}
                         aria-label={`Delete role ${role.display_name}`}
                         disabled={deleteMut.isPending}
-                        className="w-[30px] h-[30px] rounded-[9px] flex items-center justify-center text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40"
+                        className="w-[30px] h-8 rounded-md flex items-center justify-center text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -475,70 +467,64 @@ export default function Roles() {
         </ModalHeader>
 
         {errorMsg && (
-          <div className="p-3 mb-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+          <div className="p-3 mb-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
             {errorMsg}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="space-y-4 text-sm">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                Role Name (slug)
-              </label>
-              <input
+              <label htmlFor="role-create-name" className="text-xs font-medium text-text-secondary">Role Name (slug)</label>
+              <input id="role-create-name"
                 type="text"
                 placeholder="e.g. security-officer"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full bg-white/[0.02] border border-border-primary rounded-[11px] px-3 py-2 text-text-primary font-mono focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary font-mono focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 required
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                Display Name
-              </label>
-              <input
+              <label htmlFor="role-create-display-name" className="text-xs font-medium text-text-secondary">Display Name</label>
+              <input id="role-create-display-name"
                 type="text"
                 placeholder="e.g. Security Officer"
                 value={displayName}
                 onChange={e => setDisplayName(e.target.value)}
-                className="w-full bg-white/[0.02] border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 required
               />
             </div>
           </div>
 
           <div className="space-y-1">
-            <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-              Description
-            </label>
-            <textarea
+            <label htmlFor="role-create-description" className="text-xs font-medium text-text-secondary">Description</label>
+            <textarea id="role-create-description"
               placeholder="What is this role for?"
               value={description}
               onChange={e => setDescription(e.target.value)}
-              className="w-full bg-white/[0.02] border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors h-16 resize-none"
+              className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 transition-colors h-16 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
           </div>
 
           <div className="space-y-2.5">
             <div className="flex items-center justify-between">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+              <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px]">
                 Permissions
               </label>
-              <span className="text-[11px] font-bold text-accent-blue">{selectedPermissions.length} selected</span>
+              <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-text-secondary">{selectedPermissions.length} selected</span>
             </div>
             {/* Mockup groups permissions into labeled sections with a color
                 dot and renders each as a toggle chip (not a checkbox row). */}
-            <div className="space-y-3 max-h-64 overflow-y-auto border border-border-secondary p-3 rounded-[11px] bg-white/[0.02]">
+            <div className="space-y-3 max-h-64 overflow-y-auto border border-border-secondary p-3 rounded-md bg-foreground/[0.02]">
               {GROUPED_PERMISSIONS.map(group => (
                 <div key={group.label} className="space-y-1.5">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-[3px]" style={{ backgroundColor: group.color }} />
-                    <span className="text-[10px] font-bold tracking-[0.08em] text-text-tertiary">{group.label}</span>
-                    <div className="flex-1 h-px bg-white/[0.05]" />
+                    <span className="text-xs font-bold tracking-[0.08em] text-text-tertiary">{group.label}</span>
+                    <div className="flex-1 h-px bg-foreground/[0.05]" />
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {group.perms.map(perm => {
@@ -548,12 +534,13 @@ export default function Roles() {
                           key={perm.key}
                           type="button"
                           title={perm.description}
+                          aria-pressed={checked}
                           onClick={() => handlePermissionToggle(perm.key)}
                           className={cn(
-                            'flex items-center gap-1.5 h-[26px] px-2.5 rounded-full border text-[11px] font-semibold transition-colors',
+                            'flex items-center gap-1.5 h-8 px-2.5 rounded-md border text-xs font-semibold transition-colors',
                             checked
-                              ? 'border-accent-blue/60 bg-accent-blue/10 text-accent-blue'
-                              : 'border-border-primary text-text-secondary hover:border-white/25',
+                              ? 'border-accent-blue/60 bg-action-primary/10 text-accent-blue'
+                              : 'border-border-primary text-text-secondary hover:border-border-primary',
                           )}
                         >
                           {checked && <Check className="w-2.5 h-2.5" />}
@@ -571,14 +558,14 @@ export default function Roles() {
             <button
               type="button"
               onClick={() => setCreateOpen(false)}
-              className="flex items-center h-[38px] px-4 rounded-[10px] text-[13px] font-semibold text-text-secondary hover:text-text-primary transition-colors"
+              className="flex items-center h-[38px] px-4 rounded-lg text-sm font-semibold text-text-secondary hover:text-text-primary transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={createMut.isPending}
-              className="flex items-center gap-2 h-[38px] px-5 rounded-[10px] bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 h-[38px] px-5 rounded-lg bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
             >
               <Plus className="w-3.5 h-3.5" />
               {createMut.isPending ? 'Creating…' : roleSaved ? 'Created!' : 'Create Role'}
@@ -590,7 +577,7 @@ export default function Roles() {
       {/* Manage members modal */}
       {managingRole && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
+          <div className="border border-border-primary bg-surface-elevated rounded-xl w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
             {/* Header */}
             <div className="flex items-center justify-between p-5 border-b border-border-primary">
               <h2 className="text-xs font-semibold text-text-primary">
@@ -598,7 +585,7 @@ export default function Roles() {
               </h2>
               <button
                 onClick={() => setManagingRole(null)}
-                className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                className="p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -607,7 +594,7 @@ export default function Roles() {
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
               {/* Current members */}
               <div className="space-y-2">
-                <p className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">
+                <p className="text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">
                   Current members
                 </p>
                 {/* Search members */}
@@ -618,14 +605,14 @@ export default function Roles() {
                     placeholder="Filter members…"
                     value={memberSearch}
                     onChange={e => setMemberSearch(e.target.value)}
-                    className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] pl-7 pr-3 py-1.5 text-xs text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-1.5 text-base sm:text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                 </div>
 
                 {roleUsersLoading ? (
                   <div className="space-y-2">
                     {Array.from({ length: 3 }).map((_, i) => (
-                      <div key={i} className="h-9 rounded-[8px] bg-white/[0.04] animate-pulse" />
+                      <div key={i} className="h-9 rounded-md bg-foreground/[0.04] animate-pulse" />
                     ))}
                   </div>
                 ) : roleUsers && roleUsers.length > 0 ? (
@@ -639,19 +626,19 @@ export default function Roles() {
                       .map(user => (
                         <div
                           key={user.id}
-                          className="flex items-center justify-between gap-3 px-3 py-2 rounded-[8px] bg-white/[0.03] border border-border-primary/50"
+                          className="flex items-center justify-between gap-3 px-3 py-2 rounded-md bg-foreground/[0.03] border border-border-primary/50"
                         >
                           <div className="min-w-0">
                             <p className="text-xs font-semibold text-text-primary truncate">{user.name ?? user.email ?? user.id}</p>
                             {user.email && user.name && (
-                              <p className="text-[10px] text-text-quaternary truncate">{user.email}</p>
+                              <p className="text-xs text-text-quaternary truncate">{user.email}</p>
                             )}
                           </div>
                           <button
                             onClick={() => assignRoleMut.mutate({ userId: user.id, role: 'viewer' })}
                             disabled={assignRoleMut.isPending}
                             title="Remove from this role (set to viewer)"
-                            className="p-1 rounded-[6px] text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 shrink-0"
+                            className="p-1 rounded-sm text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 shrink-0"
                           >
                             <UserMinus className="w-3.5 h-3.5" />
                           </button>
@@ -668,7 +655,7 @@ export default function Roles() {
 
               {/* Add user */}
               <div className="space-y-2">
-                <p className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">
+                <p className="text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">
                   Add user
                 </p>
                 <div className="relative">
@@ -678,7 +665,7 @@ export default function Roles() {
                     placeholder="Search users to assign…"
                     value={addSearch}
                     onChange={e => setAddSearch(e.target.value)}
-                    className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] pl-7 pr-3 py-1.5 text-xs text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-1.5 text-base sm:text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                 </div>
                 {addSearch.trim() && (
@@ -695,12 +682,12 @@ export default function Roles() {
                       .map(user => (
                         <div
                           key={user.id}
-                          className="flex items-center justify-between gap-3 px-3 py-2 rounded-[8px] bg-white/[0.03] border border-border-primary/50"
+                          className="flex items-center justify-between gap-3 px-3 py-2 rounded-md bg-foreground/[0.03] border border-border-primary/50"
                         >
                           <div className="min-w-0">
                             <p className="text-xs font-semibold text-text-primary truncate">{user.name ?? user.email ?? user.id}</p>
                             {user.email && user.name && (
-                              <p className="text-[10px] text-text-quaternary truncate">{user.email}</p>
+                              <p className="text-xs text-text-quaternary truncate">{user.email}</p>
                             )}
                           </div>
                           <button
@@ -709,7 +696,7 @@ export default function Roles() {
                               setAddSearch('')
                             }}
                             disabled={assignRoleMut.isPending}
-                            className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-accent-blue hover:bg-accent-blue-hover text-white transition-colors disabled:opacity-40 shrink-0"
+                            className="px-2.5 py-1 rounded-md text-sm font-medium bg-action-primary hover:bg-action-primary-hover text-action-foreground transition-colors disabled:opacity-40 shrink-0 h-9 shadow-xs"
                           >
                             Assign
                           </button>
@@ -735,21 +722,21 @@ export default function Roles() {
 
       {editingRole && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
+          <div className="border border-border-primary bg-surface-elevated rounded-xl w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
             <div className="flex items-center justify-between p-5 border-b border-border-primary">
               <h2 className="text-xs font-semibold text-text-primary">
                 Edit permissions — {editingRole.display_name}
               </h2>
               <button
                 onClick={() => setEditingRole(null)}
-                className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                className="p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-1.5">
               {AVAILABLE_PERMISSIONS.map(perm => (
-                <label key={perm.key} className="flex items-start gap-2 p-1.5 rounded-[8px] hover:bg-white/[0.04] cursor-pointer">
+                <label key={perm.key} className="flex items-start gap-2 p-1.5 rounded-md hover:bg-foreground/[0.04] cursor-pointer">
                   <input
                     type="checkbox"
                     checked={editPermissions.includes(perm.key)}
@@ -758,11 +745,11 @@ export default function Roles() {
                         prev.includes(perm.key) ? prev.filter(p => p !== perm.key) : [...prev, perm.key]
                       )
                     }
-                    className="mt-0.5 rounded border-border-primary text-accent-blue focus:outline-none"
+                    className="mt-0.5 rounded border-input text-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                   <div>
-                    <div className="font-semibold text-text-secondary text-[10px]">{perm.name}</div>
-                    <div className="text-[10px] text-text-tertiary leading-tight">{perm.description}</div>
+                    <div className="font-semibold text-text-secondary text-xs">{perm.name}</div>
+                    <div className="text-xs text-text-tertiary leading-tight">{perm.description}</div>
                   </div>
                 </label>
               ))}
@@ -771,7 +758,7 @@ export default function Roles() {
               <button
                 onClick={() => updatePermsMut.mutate({ id: editingRole.id, permissions: editPermissions })}
                 disabled={updatePermsMut.isPending}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium transition-colors disabled:opacity-50 h-9 shadow-xs"
               >
                 {updatePermsMut.isPending ? 'Saving…' : editSaved ? 'Saved!' : 'Save permissions'}
               </button>

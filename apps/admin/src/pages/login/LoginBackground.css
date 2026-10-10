@@ -1,0 +1,67 @@
+.login-mesh-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  isolation: isolate;
+  pointer-events: none;
+  --mesh-color: 72, 105, 25;
+  background:
+    radial-gradient(ellipse at 76% 19%, color-mix(in srgb, var(--primary) 15%, transparent), transparent 36%),
+    radial-gradient(ellipse at 10% 86%, color-mix(in srgb, var(--data-teal) 8%, transparent), transparent 42%),
+    var(--background);
+}
+
+.dark .login-mesh-layer {
+  --mesh-color: 190, 220, 116;
+  background:
+    radial-gradient(ellipse at 76% 19%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 38%),
+    radial-gradient(ellipse at 10% 86%, color-mix(in srgb, var(--data-teal) 9%, transparent), transparent 44%),
+    var(--background);
+}
+
+.login-mesh-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: .64;
+}
+
+.login-mesh-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, color-mix(in srgb, var(--background) 40%, transparent), transparent 82%);
+}
+
+.login-mesh-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .18s;
+}
+
+.login-mesh-cursor > span {
+  display: block;
+  width: 30px;
+  height: 30px;
+  margin: -15px;
+  border: 1px solid var(--primary);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--primary) 0 2px, transparent 3px);
+  transition: scale .18s;
+}
+
+.login-mesh-cursor.is-visible { opacity: 1; }
+.login-mesh-cursor.is-interactive > span { scale: 1.4; }
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .login-mesh-cursor { display: block; }
+  .login-screen.pointer-ready,
+  .login-screen.pointer-ready a,
+  .login-screen.pointer-ready button,
+  .login-screen.pointer-ready input { cursor: none; }
+}

@@ -1,0 +1,33 @@
+{
+  "generated_at": "2026-10-09",
+  "method": "Built-in image_gen.imagegen tool",
+  "generation_calls": 3,
+  "variants": 0,
+  "retries": 0,
+  "input_reference_images": [],
+  "source_description": "Original generated imagery; art direction specified by parent, no proprietary Globant media or screenshots used.",
+  "processing": "Format-only conversion from original PNG to WebP quality 90; original 2172x724 pixels retained, no cropping or retouching.",
+  "assets": [
+    {
+      "name": "software-product",
+      "path": "product.webp",
+      "width": 2172,
+      "height": 724,
+      "prompt": "Use case: photorealistic-natural\nAsset type: original editorial thumbnail for a premium Spanish digital-engineering company website service card.\nPrimary request: authentic contemporary software designers and engineers seen in profile, candidly collaborating at a large monitor.\nScene: a real contemporary software studio in evening practical light, restrained and credible. One woman and one man are focused on their work rather than posing; profile and three-quarter profile view.\nStyle: nuanced high-end editorial photography with realistic skin and fabric, subtly grainy dark atmospheric depth.\nComposition: ultra-wide landscape 3:1 banner, full-bleed photograph, no border, subjects and monitor contained within a narrow horizontal crop. Output exactly 1536 by 512 pixels if possible.\nLighting and palette: deep charcoal and graphite shadows, subdued teal practical light, restrained lime highlights, neutral skin tones. Black/white/lime art direction.\nConstraints: entirely original scene; do not imitate or copy an existing photograph; no logos, no watermark, no visible text or letters, no legible screen interface. No cheesy stock-photo smiles or staged pointing at camera."
+    },
+    {
+      "name": "backend-api",
+      "path": "backend.webp",
+      "width": 2172,
+      "height": 724,
+      "prompt": "Use case: photorealistic-natural\nAsset type: original editorial thumbnail for a premium Spanish digital-engineering company website backend/API service card.\nPrimary request: precise close editorial photograph of physical server hardware and optical connections, industrial credibility.\nScene and subject: dark server rack hardware at close range, elegant rows of metal ports, several physically credible fiber-optic patch connections, fine machined surfaces, tiny green status indicators.\nStyle: premium industrial editorial photography with shallow but useful depth of field and exact tactile detail, no fantastical computer hardware.\nComposition: ultra-wide landscape 3:1 banner, full-bleed photograph, no border, an oblique close perspective emphasizing connections and rack geometry across a narrow horizontal crop. Output exactly 1536 by 512 pixels if possible.\nLighting and palette: deep graphite and black, emerald and subdued teal signal light, restrained lime accents, controlled highlights on brushed dark metal.\nConstraints: entirely original scene; no logos, no watermark, no visible text, numbers, labels, or letters. No people, no generic floating icons."
+    },
+    {
+      "name": "applied-ai",
+      "path": "ai.webp",
+      "width": 2172,
+      "height": 724,
+      "prompt": "Use case: stylized-concept\nAsset type: original editorial thumbnail for a premium Spanish digital-engineering company website applied-AI service card.\nPrimary request: a sophisticated dark microscopic field of fine emerald and lime luminous fibers shaped by flowing data.\nScene and subject: an abstract macro landscape of countless impossibly fine translucent filaments in precise flowing wave patterns, fine points of luminous signal along the fibers, an organic yet computational field.\nStyle: premium scientific-art editorial abstraction with believable optical depth, controlled luminosity, quiet sophistication, detailed fine fibers rather than thick neon tubes.\nComposition: ultra-wide landscape 3:1 banner, full-bleed, no border, flow and layered fibers stretching horizontally through a narrow crop. Output exactly 1536 by 512 pixels if possible.\nLighting and palette: black and graphite void, luminous emerald and occasional lime, restrained teal depth, subtle white pinpoint highlights.\nConstraints: entirely original image; no robots, no brains, no faces, no circuitry symbols, no purple, no magenta, no logos, no text, no watermark."
+    }
+  ]
+}

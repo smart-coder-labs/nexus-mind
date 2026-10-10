@@ -93,7 +93,7 @@ export function ShadowRouterPanel({ client, canWrite }: { client: NexusMindClien
 
   return (
     <div className="space-y-8">
-      <p className="max-w-3xl text-[13px] leading-normal text-text-secondary">
+      <p className="max-w-3xl text-sm leading-normal text-text-secondary">
         A task class may be routed automatically only after <span className="text-text-primary tabular-nums">{minAllows}</span> settled
         “allow” decisions, with at most <span className="text-text-primary tabular-nums">{percent(maxRate)}</span> of them turning out
         risky.
@@ -108,7 +108,7 @@ export function ShadowRouterPanel({ client, canWrite }: { client: NexusMindClien
 
       {loading && (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-hidden="true">
-          {[0, 1, 2].map(index => <Skeleton key={index} className="h-44 rounded-[18px]" />)}
+          {[0, 1, 2].map(index => <Skeleton key={index} className="h-44 rounded-xl" />)}
         </div>
       )}
 
@@ -148,12 +148,12 @@ export function ShadowRouterPanel({ client, canWrite }: { client: NexusMindClien
             }
           />
           {visible.length === 0 ? (
-            <p className="rounded-[18px] border border-border-primary px-5 py-6 text-center text-[13px] text-text-tertiary">
+            <p className="rounded-xl border border-border-primary px-5 py-6 text-center text-sm text-text-tertiary">
               Every recent decision the bar counts has a label.
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-[18px] border border-border-primary">
-              <table className="w-full min-w-[56rem] text-[13px]" aria-label="Recent shadow decisions">
+            <div className="overflow-x-auto rounded-xl border border-border-primary">
+              <table className="admin-data-table w-full min-w-[56rem] text-sm" aria-label="Recent shadow decisions">
                 <thead>
                   <tr className="border-b border-border-secondary text-left text-[12px] text-text-tertiary">
                     <th scope="col" className="px-4 py-2.5 font-medium">Pull request</th>
@@ -203,7 +203,7 @@ function ReadinessCard({ row, bar }: { row: ShadowClassReport; bar: ShadowReport
   const nameId = `readiness-${row.task_class}`
 
   return (
-    <li aria-labelledby={nameId} className="rounded-[18px] border border-border-primary bg-white/[0.02] p-5 space-y-4">
+    <li aria-labelledby={nameId} className="min-w-0 rounded-xl border border-border-primary bg-card p-4 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 id={nameId} className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{taskClassLabel(row.task_class)}</h3>
@@ -219,7 +219,7 @@ function ReadinessCard({ row, bar }: { row: ShadowClassReport; bar: ShadowReport
           <span className="text-text-secondary">Settled allows</span>
           <span className="tabular-nums text-text-primary">{row.settled_allowed} / {bar.min_settled_allows}</span>
         </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]" aria-hidden="true">
+        <div className="h-1.5 overflow-hidden rounded-full bg-foreground/[0.06]" aria-hidden="true">
           <div className="h-full rounded-full bg-text-secondary" style={{ width: `${progress * 100}%` }} />
         </div>
         {status !== 'ready' && missing > 0 && (
@@ -235,7 +235,7 @@ function ReadinessCard({ row, bar }: { row: ShadowClassReport; bar: ShadowReport
             {row.false_low_rate !== null && <span className="text-text-tertiary"> ({percent(row.false_low_rate)})</span>}
           </span>
         </div>
-        <div className="relative h-1.5 rounded-full bg-white/[0.06]" aria-hidden="true">
+        <div className="relative h-1.5 rounded-full bg-foreground/[0.06]" aria-hidden="true">
           <div
             className={cn('h-full rounded-full', status === 'over' ? 'bg-status-error' : 'bg-text-secondary')}
             style={{ width: `${rateWidth * 100}%` }}
@@ -262,7 +262,7 @@ function DecisionRow({
   const name = `${row.repository}#${row.pull_number}`
   const url = `https://github.com/${row.repository}/pull/${row.pull_number}`
   return (
-    <tr className="border-b border-border-secondary align-middle last:border-0 hover:bg-white/[0.03]">
+    <tr className="border-b border-border-secondary align-middle last:border-0 hover:bg-foreground/[0.03]">
       <td className="px-4 py-2.5">
         <a href={url} target="_blank" rel="noreferrer" className={cn('font-mono', LINK_CLASS)}>
           {row.repository}#{row.pull_number}

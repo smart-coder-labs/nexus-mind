@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, ArrowUp, Archive, Box, CheckCircle2, Download, Eye, FileJson, GitBranch, PackagePlus, ShieldCheck, X } from 'lucide-react'
@@ -12,7 +13,7 @@ import { KpiMarquee } from '@/components/ui/KpiMarquee'
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Harnesses page.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 const MAX_INLINE_UPLOAD_BYTES = 64 * 1024
 const FORMAT_OPTIONS: Array<{ value: HarnessFormat; label: string; path: string; kind: 'file' | 'folder' | 'plugin_marketplace' | 'theme_json'; mediaType: string; content: string; executable?: boolean }> = [
   { value: 'agent', label: 'Agent Markdown', path: 'agents/example.md', kind: 'file', mediaType: 'text/markdown', content: '# Example Agent' },
@@ -324,36 +325,36 @@ function ManifestBuilderFields({ builder }: { builder: ManifestBuilder }) {
   const manifestJson = useMemo(() => (manifest ? JSON.stringify(manifest, null, 2) : ''), [manifest])
   return (
     <>
-      <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+      <label className="block space-y-1.5 text-xs text-text-quaternary">
         <span>Format</span>
-        <select value={format} onChange={e => setFormat(e.target.value as HarnessFormat)} className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">
+        <StyledSelect value={format} onChange={e => setFormat(e.target.value as HarnessFormat)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
           {FORMAT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+        </StyledSelect>
       </label>
       {(format === 'hook' || format === 'claude_code_plugin') && (
-        <div role="alert" className="rounded-[11px] border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-[11px] text-status-warning">
+        <div role="alert" className="rounded-md border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">
           Executable hook/plugin formats require explicit review and approval before download.
         </div>
       )}
       {(format === 'theme' || format === 'claude_code_plugin') && fileEntries.length === 0 && (
-        <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+        <label className="block space-y-1.5 text-xs text-text-quaternary">
           <span>Plugin or theme JSON content</span>
-          <textarea value={jsonContent} onChange={e => setJsonContent(e.target.value)} rows={4} className="font-mono w-full resize-none rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+          <textarea value={jsonContent} onChange={e => setJsonContent(e.target.value)} rows={4} className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
         </label>
       )}
-      <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+      <label className="block space-y-1.5 text-xs text-text-quaternary">
         <span>{uploadLabelFor(format)}</span>
-        <input aria-label="Upload files" type="file" multiple onChange={e => void handleFiles(e.target.files)} className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary file:mr-3 file:rounded-full file:border-0 file:bg-accent-blue file:px-3 file:py-1 file:text-xs file:text-white" />
+        <input aria-label="Upload files" type="file" multiple onChange={e => void handleFiles(e.target.files)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary file:mr-3 file:rounded-md file:border-0 file:bg-action-primary file:px-3 file:py-1 file:text-base sm:text-sm file:text-action-foreground shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
       </label>
       {fileEntries.length > 0 && (
-        <div className="rounded-[8px] border border-border-secondary bg-black/20 p-3 text-[11px] text-text-secondary">
+        <div className="rounded-md border border-border-secondary bg-muted/40 p-3 text-xs text-text-secondary">
           <p className="mb-2 text-text-primary">Safe upload entries</p>
           {fileEntries.map(entry => <div key={entry.path}>{entry.path} · {entry.size_bytes} bytes · {entry.sha256}</div>)}
         </div>
       )}
-      <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+      <label className="block space-y-1.5 text-xs text-text-quaternary">
         <span>Manifest JSON preview</span>
-        <textarea readOnly value={manifestJson || (isPreparingManifest ? 'Preparing manifest integrity metadata…' : '')} rows={10} className="font-mono w-full resize-none rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+        <textarea readOnly value={manifestJson || (isPreparingManifest ? 'Preparing manifest integrity metadata…' : '')} rows={10} className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
       </label>
     </>
   )
@@ -418,39 +419,39 @@ function CreateHarnessModal({ onClose, onFlash }: { onClose: () => void; onFlash
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Create harness" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label="Create harness" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-border-primary bg-surface-elevated p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-xs font-semibold text-text-primary">Create harness</h2>
-          <button onClick={onClose} aria-label="Close" className={`rounded-[6px] text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
+          <button onClick={onClose} aria-label="Close" className={`rounded-sm text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={submit} className="space-y-4">
-          <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+          <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Name</span>
-            <input value={name} onChange={e => setName(e.target.value)} className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+            <input value={name} onChange={e => setName(e.target.value)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
           </label>
-          <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+          <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Slug</span>
-            <input value={slug} onChange={e => setSlug(e.target.value)} className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+            <input value={slug} onChange={e => setSlug(e.target.value)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
           </label>
-          <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+          <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Description</span>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full resize-none rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
           </label>
-          <div className="rounded-[11px] border border-border-secondary bg-black/20 p-4">
-            <p className="mb-3 text-[11px] text-text-primary">Initial version</p>
-            <p className="mb-3 text-[10px] text-text-quaternary">Choose a format and provide a template, uploaded file, or folder. Leave the version blank to create an empty harness and publish later.</p>
-            <label className="mb-4 block space-y-1.5 text-[10px] text-text-quaternary">
+          <div className="rounded-md border border-border-secondary bg-muted/40 p-4">
+            <p className="mb-3 text-xs text-text-primary">Initial version</p>
+            <p className="mb-3 text-xs text-text-secondary">Choose a format and provide a template, uploaded file, or folder. Leave the version blank to create an empty harness and publish later.</p>
+            <label className="mb-4 block space-y-1.5 text-xs text-text-quaternary">
               <span>Version</span>
-              <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+              <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
             </label>
             <div className="space-y-4">
               <ManifestBuilderFields builder={builder} />
             </div>
           </div>
-          {(error ?? builder.uploadError ?? builder.manifestError) && <p className="text-[10px] text-status-error">{error ?? builder.uploadError ?? builder.manifestError}</p>}
+          {(error ?? builder.uploadError ?? builder.manifestError) && <p className="text-xs text-status-error">{error ?? builder.uploadError ?? builder.manifestError}</p>}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose} className={`rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>Cancel</button>
-            <button type="submit" disabled={createMut.isPending || builder.isReadingFiles} className={`rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}>{createMut.isPending ? 'Creating…' : builder.isReadingFiles ? 'Reading uploads…' : 'Create'}</button>
+            <button type="button" onClick={onClose} className={`h-9 rounded-md border border-border-primary px-4 py-1.5 text-sm text-text-secondary hover:bg-foreground/[0.04] ${FOCUS}`}>Cancel</button>
+            <button type="submit" disabled={createMut.isPending || builder.isReadingFiles} className={`h-9 rounded-md bg-action-primary px-4 py-1.5 text-sm font-medium text-action-foreground hover:bg-action-primary-hover disabled:opacity-50 ${FOCUS}`}>{createMut.isPending ? 'Creating…' : builder.isReadingFiles ? 'Reading uploads…' : 'Create'}</button>
           </div>
         </form>
       </div>
@@ -492,21 +493,21 @@ function PublishModal({ harness, onClose, onFlash }: { harness: Harness; onClose
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Publish harness version" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label="Publish harness version" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-border-primary bg-surface-elevated p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-xs font-semibold text-text-primary">Publish harness version</h2>
-          <button onClick={onClose} aria-label="Close" className={`rounded-[6px] text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
+          <button onClick={onClose} aria-label="Close" className={`rounded-sm text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={submit} className="space-y-4">
-          <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+          <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Version</span>
-            <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+            <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
           </label>
           <ManifestBuilderFields builder={builder} />
-          {(error ?? builder.uploadError ?? builder.manifestError) && <p className="text-[10px] text-status-error">{error ?? builder.uploadError ?? builder.manifestError}</p>}
+          {(error ?? builder.uploadError ?? builder.manifestError) && <p className="text-xs text-status-error">{error ?? builder.uploadError ?? builder.manifestError}</p>}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose} className={`rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>Cancel</button>
-            <button type="submit" disabled={publishMut.isPending || builder.isReadingFiles} className={`rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}>{publishMut.isPending ? 'Publishing…' : builder.isReadingFiles ? 'Reading uploads…' : 'Publish'}</button>
+            <button type="button" onClick={onClose} className={`h-9 rounded-md border border-border-primary px-4 py-1.5 text-sm text-text-secondary hover:bg-foreground/[0.04] ${FOCUS}`}>Cancel</button>
+            <button type="submit" disabled={publishMut.isPending || builder.isReadingFiles} className={`h-9 rounded-md bg-action-primary px-4 py-1.5 text-sm font-medium text-action-foreground hover:bg-action-primary-hover disabled:opacity-50 ${FOCUS}`}>{publishMut.isPending ? 'Publishing…' : builder.isReadingFiles ? 'Reading uploads…' : 'Publish'}</button>
           </div>
         </form>
       </div>
@@ -543,7 +544,7 @@ function ApprovalModal({ harness, onClose, onFlash }: { harness: Harness; onClos
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Approve harness download" className="w-full max-w-lg rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label="Approve harness download" className="w-full max-w-lg rounded-xl border border-border-primary bg-surface-elevated p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-4 flex items-center gap-2 text-text-primary">
           <ShieldCheck className="h-4 w-4 text-accent-blue" />
           <h2 className="text-xs font-semibold">Approve harness download</h2>
@@ -551,9 +552,9 @@ function ApprovalModal({ harness, onClose, onFlash }: { harness: Harness; onClos
         <div className="space-y-3 text-xs text-text-secondary">
           <p>NexusMind will not mutate local files. Local tools must show a diff and ask before applying Claude, Codex, Cursor, shell, or project file changes.</p>
           {requiresWarningAck && (
-            <div role="alert" className="rounded-[11px] border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-status-warning">
+            <div role="alert" className="rounded-md border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-status-warning">
               <p>{warningMessage}</p>
-              <label className="mt-2 flex items-center gap-2 text-[11px] text-status-warning">
+              <label className="mt-2 flex items-center gap-2 text-xs text-status-warning">
                 <input type="checkbox" checked={warningAcknowledged} onChange={e => setWarningAcknowledged(e.target.checked)} />
                 <span>I reviewed and acknowledge this high-trust harness warning.</span>
               </label>
@@ -562,8 +563,8 @@ function ApprovalModal({ harness, onClose, onFlash }: { harness: Harness; onClos
           <p><span className="text-text-quaternary">Manifest hash:</span> <span className="font-mono text-text-primary">{latest?.manifest_hash ?? 'No published version'}</span></p>
         </div>
         <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onClose} className={`rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>Cancel</button>
-          <button onClick={() => approveMut.mutate()} disabled={approveMut.isPending || !latest || (requiresWarningAck && !warningAcknowledged)} className={`rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}>{approveMut.isPending ? 'Approving…' : 'Approve and download'}</button>
+          <button onClick={onClose} className={`h-9 rounded-md border border-border-primary px-4 py-1.5 text-sm text-text-secondary hover:bg-foreground/[0.04] ${FOCUS}`}>Cancel</button>
+          <button onClick={() => approveMut.mutate()} disabled={approveMut.isPending || !latest || (requiresWarningAck && !warningAcknowledged)} className={`h-9 rounded-md bg-action-primary px-4 py-1.5 text-sm font-medium text-action-foreground hover:bg-action-primary-hover disabled:opacity-50 ${FOCUS}`}>{approveMut.isPending ? 'Approving…' : 'Approve and download'}</button>
         </div>
       </div>
     </div>
@@ -631,41 +632,41 @@ function ConfigReviewForm({ onFlash }: { onFlash: (flash: Flash) => void }) {
   }
 
   return (
-    <section className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
+    <section className={`rounded-xl p-5 ${GLASS_PANEL}`}>
       <div className="mb-4 flex items-center gap-2">
         <FileJson className="h-4 w-4 text-accent-blue" />
         <div>
           <h2 className="text-xs font-semibold text-text-primary">Claude config review</h2>
-          <p className="text-[11px] text-text-quaternary">Local redaction → preview → approve. Share only reviewed snapshots; raw secrets are rejected.</p>
+          <p className="text-xs text-text-quaternary">Local redaction → preview → approve. Share only reviewed snapshots; raw secrets are rejected.</p>
         </div>
       </div>
-      <div className="mb-4 grid gap-2 text-[11px] text-text-secondary md:grid-cols-3">
-        <div className="rounded-[10px] border border-border-secondary bg-black/20 p-3"><span className="text-text-primary">1. Paste</span><br />Paste your raw Claude config — it never leaves your browser.</div>
-        <div className="rounded-[10px] border border-border-secondary bg-black/20 p-3"><span className="text-text-primary">2. Auto-redact</span><br />Secrets, tokens, and private paths are replaced automatically.</div>
-        <div className="rounded-[10px] border border-border-secondary bg-black/20 p-3"><span className="text-text-primary">3. Review &amp; share</span><br />Confirm the redacted preview, then submit the safe snapshot.</div>
+      <div className="mb-4 grid gap-2 text-xs text-text-secondary md:grid-cols-3">
+        <div className="rounded-lg border border-border-secondary bg-muted/40 p-3"><span className="text-text-primary">1. Paste</span><br />Paste your raw Claude config — it never leaves your browser.</div>
+        <div className="rounded-lg border border-border-secondary bg-muted/40 p-3"><span className="text-text-primary">2. Auto-redact</span><br />Secrets, tokens, and private paths are replaced automatically.</div>
+        <div className="rounded-lg border border-border-secondary bg-muted/40 p-3"><span className="text-text-primary">3. Review &amp; share</span><br />Confirm the redacted preview, then submit the safe snapshot.</div>
       </div>
       <form onSubmit={submit} className="grid gap-4 lg:grid-cols-2">
-        <label className="block space-y-1.5 text-[10px] text-text-quaternary lg:col-span-2">
+        <label className="block space-y-1.5 text-xs text-text-quaternary lg:col-span-2">
           <span>Paste your Claude config</span>
-          <textarea value={rawConfig} onChange={e => setRawConfig(e.target.value)} rows={10} placeholder='{ "mcpServers": { … }, "env": { … } }' className="font-mono w-full resize-none rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+          <textarea value={rawConfig} onChange={e => setRawConfig(e.target.value)} rows={10} placeholder='{ "mcpServers": { … }, "env": { … } }' className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
         </label>
-        {parseError && <p className="lg:col-span-2 text-[10px] text-status-error">{parseError}</p>}
+        {parseError && <p className="lg:col-span-2 text-xs text-status-error">{parseError}</p>}
         {redaction && (
           <>
-            <div className="space-y-2 text-[11px] text-text-secondary">
+            <div className="space-y-2 text-xs text-text-secondary">
               <p className="text-text-primary">Redaction summary</p>
               <p>Redactions: {secretCount}{secretCount > 0 ? ` (${Object.entries(categories).map(([cat, n]) => `${cat} ×${n}`).join(', ')})` : ' — nothing sensitive detected'}</p>
               <p className="break-all"><span className="text-text-quaternary">Content hash:</span> <span className="font-mono">{redaction.contentHash}</span></p>
             </div>
-            <div className="space-y-1.5 text-[10px] text-text-quaternary">
+            <div className="space-y-1.5 text-xs text-text-secondary">
               <span>Redacted preview (what gets shared)</span>
-              <pre className="max-h-40 overflow-auto rounded-[8px] border border-border-secondary bg-black/20 p-3 text-[11px] text-text-secondary">{redactedPreview}</pre>
+              <pre className="max-h-40 overflow-auto rounded-md border border-border-secondary bg-muted/40 p-3 text-xs text-text-secondary">{redactedPreview}</pre>
             </div>
           </>
         )}
-        {error && <p className="lg:col-span-2 text-[10px] text-status-error">{error}</p>}
+        {error && <p className="lg:col-span-2 text-xs text-status-error">{error}</p>}
         <div className="lg:col-span-2 flex justify-end">
-          <button type="submit" disabled={submitMut.isPending || !redaction} className={`rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}>{submitMut.isPending ? 'Submitting…' : 'Submit config review'}</button>
+          <button type="submit" disabled={submitMut.isPending || !redaction} className={`h-9 rounded-md bg-action-primary px-4 py-1.5 text-sm font-medium text-action-foreground hover:bg-action-primary-hover disabled:opacity-50 ${FOCUS}`}>{submitMut.isPending ? 'Submitting…' : 'Submit config review'}</button>
         </div>
       </form>
     </section>
@@ -708,25 +709,25 @@ function ConfigReviewComments({ reviewId }: { reviewId: string }) {
 
   return (
     <div className="mt-3 space-y-3 border-t border-border-secondary pt-3">
-      <p className="text-[11px] font-semibold text-text-primary">Comments</p>
+      <p className="text-xs font-semibold text-text-primary">Comments</p>
       <div className="space-y-2">
-        {isLoading && <p className="text-[11px] text-text-quaternary">Loading comments…</p>}
-        {!isLoading && comments.length === 0 && <p className="text-[11px] text-text-quaternary">No comments yet. Start the discussion.</p>}
+        {isLoading && <p className="text-xs text-text-quaternary">Loading comments…</p>}
+        {!isLoading && comments.length === 0 && <p className="text-xs text-text-quaternary">No comments yet. Start the discussion.</p>}
         {comments.map(comment => (
-          <div key={comment.id} className="rounded-[8px] border border-border-secondary bg-black/20 p-2.5">
-            <p className="mb-1 text-[10px] text-text-quaternary">{comment.author?.name ?? 'Unknown'}</p>
-            <p className="whitespace-pre-wrap text-[11px] text-text-secondary">{comment.body}</p>
+          <div key={comment.id} className="rounded-md border border-border-secondary bg-muted/40 p-2.5">
+            <p className="mb-1 text-xs text-text-secondary">{comment.author?.name ?? 'Unknown'}</p>
+            <p className="whitespace-pre-wrap text-xs text-text-secondary">{comment.body}</p>
           </div>
         ))}
       </div>
       <form onSubmit={submit} className="space-y-2">
-        <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+        <label className="block space-y-1.5 text-xs text-text-quaternary">
           <span>Add a comment</span>
-          <textarea value={body} onChange={e => setBody(e.target.value)} rows={2} className="w-full resize-none rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows={2} className="w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
         </label>
-        {error && <p className="text-[10px] text-status-error">{error}</p>}
+        {error && <p className="text-xs text-status-error">{error}</p>}
         <div className="flex justify-end">
-          <button type="submit" disabled={postMut.isPending} className={`rounded-full bg-accent-blue px-3 py-1 text-[11px] font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}>{postMut.isPending ? 'Posting…' : 'Post comment'}</button>
+          <button type="submit" disabled={postMut.isPending} className={`rounded-md bg-action-primary px-3 py-1 text-xs font-semibold text-action-foreground hover:bg-action-primary-hover disabled:opacity-50 ${FOCUS}`}>{postMut.isPending ? 'Posting…' : 'Post comment'}</button>
         </div>
       </form>
     </div>
@@ -736,22 +737,22 @@ function ConfigReviewComments({ reviewId }: { reviewId: string }) {
 function ConfigReviewItem({ review }: { review: HarnessConfigReview }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-[11px] border border-border-secondary bg-black/20 p-3">
+    <div className="rounded-md border border-border-secondary bg-muted/40 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
-            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-text-primary">{review.source_tool}</span>
-            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5">{review.status}</span>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+            <span className="rounded-sm bg-foreground/[0.06] px-1.5 py-0.5 text-text-primary">{review.source_tool}</span>
+            <span className="rounded-sm bg-foreground/[0.06] px-1.5 py-0.5">{review.status}</span>
             <span className="text-text-quaternary">by {review.author?.name ?? 'Unknown'}</span>
             <span className="text-text-quaternary">{redactionSummary(review.redaction_report)}</span>
           </div>
-          <p className="break-all font-mono text-[10px] text-text-quaternary">{review.content_hash}</p>
+          <p className="break-all font-mono text-xs text-text-secondary">{review.content_hash}</p>
         </div>
-        <button onClick={() => setOpen(o => !o)} aria-label={`Inspect config review ${review.id}`} className={`rounded-full border border-border-primary px-3 py-1 text-[11px] text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>{open ? 'Hide' : 'Inspect'}</button>
+        <button onClick={() => setOpen(o => !o)} aria-label={`Inspect config review ${review.id}`} className={`rounded-md border border-border-primary px-3 py-1 text-xs text-text-secondary hover:bg-foreground/[0.04] ${FOCUS}`}>{open ? 'Hide' : 'Inspect'}</button>
       </div>
       {open && (
         <>
-          <pre className="mt-3 max-h-56 overflow-auto rounded-[8px] border border-border-secondary bg-black/30 p-3 text-[11px] text-text-secondary">{JSON.stringify(review.redacted_config, null, 2)}</pre>
+          <pre className="mt-3 max-h-56 overflow-auto rounded-md border border-border-secondary bg-muted/40 p-3 text-xs text-text-secondary">{JSON.stringify(review.redacted_config, null, 2)}</pre>
           <ConfigReviewComments reviewId={review.id} />
         </>
       )}
@@ -768,18 +769,18 @@ function ConfigReviewList() {
   })
 
   return (
-    <section className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
+    <section className={`rounded-xl p-5 ${GLASS_PANEL}`}>
       <div className="mb-4 flex items-center gap-2">
         <FileJson className="h-4 w-4 text-accent-blue" />
         <div>
           <h2 className="text-xs font-semibold text-text-primary">Shared config reviews</h2>
-          <p className="text-[11px] text-text-quaternary">Redacted Claude config snapshots shared for review. Raw secrets are never stored.</p>
+          <p className="text-xs text-text-quaternary">Redacted Claude config snapshots shared for review. Raw secrets are never stored.</p>
         </div>
       </div>
-      {error && <div className="rounded-[11px] border border-status-error/30 bg-status-error/5 px-4 py-3 text-xs text-status-error">{error instanceof Error ? error.message : 'Failed to load config reviews'}</div>}
+      {error && <div className="rounded-md border border-status-error/30 bg-status-error/5 px-4 py-3 text-xs text-status-error">{error instanceof Error ? error.message : 'Failed to load config reviews'}</div>}
       <div className="space-y-2">
-        {isLoading && [1, 2].map(i => <div key={i} className="h-16 animate-pulse rounded-[11px] border border-border-secondary bg-black/20" />)}
-        {!isLoading && reviews.length === 0 && <p className="rounded-[11px] border border-border-secondary bg-black/20 p-6 text-center text-xs text-text-quaternary">No config reviews shared yet.</p>}
+        {isLoading && [1, 2].map(i => <div key={i} className="h-16 animate-pulse rounded-md border border-border-secondary bg-muted/40" />)}
+        {!isLoading && reviews.length === 0 && <p className="rounded-md border border-border-secondary bg-muted/40 p-6 text-center text-xs text-text-quaternary">No config reviews shared yet.</p>}
         {reviews.map(review => <ConfigReviewItem key={review.id} review={review} />)}
       </div>
     </section>
@@ -803,8 +804,8 @@ function statusPillClass(status: string): string {
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5 border-b border-border-secondary py-2 last:border-b-0 sm:flex-row sm:justify-between sm:gap-4">
-      <span className="text-[10px] uppercase tracking-wide text-text-quaternary">{label}</span>
-      <span className="min-w-0 break-words text-right text-[11px] text-text-secondary">{children}</span>
+      <span className="text-xs uppercase tracking-wide text-text-quaternary">{label}</span>
+      <span className="min-w-0 break-words text-right text-xs text-text-secondary">{children}</span>
     </div>
   )
 }
@@ -844,22 +845,22 @@ function HarnessContentPreview({ harness }: { harness: Harness }) {
     enabled: !!version,
   })
 
-  if (!version) return <p className="text-[11px] text-text-quaternary">No version published yet — nothing to preview.</p>
-  if (isLoading) return <p className="text-[11px] text-text-quaternary">Loading content…</p>
-  if (error) return <p className="text-[11px] text-status-error">{error instanceof Error ? error.message : 'Failed to load content'}</p>
+  if (!version) return <p className="text-xs text-text-quaternary">No version published yet — nothing to preview.</p>
+  if (isLoading) return <p className="text-xs text-text-quaternary">Loading content…</p>
+  if (error) return <p className="text-xs text-status-error">{error instanceof Error ? error.message : 'Failed to load content'}</p>
 
   const files = manifestPreviewFiles(fullVersion?.manifest)
-  if (files.length === 0) return <p className="text-[11px] text-text-quaternary">This version has no inline file content to preview.</p>
+  if (files.length === 0) return <p className="text-xs text-text-quaternary">This version has no inline file content to preview.</p>
 
   return (
     <div className="space-y-3">
       {files.map((file, i) => (
         <div key={`${file.path}-${i}`}>
-          <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-[10px] text-text-quaternary">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
             <span className="break-all font-mono text-text-secondary">{file.path}</span>
             {file.mediaType && <span>{file.mediaType}</span>}
           </div>
-          <pre className="max-h-56 overflow-auto rounded-[8px] border border-border-secondary bg-black/30 p-3 text-[11px] text-text-secondary">{file.content}</pre>
+          <pre className="max-h-56 overflow-auto rounded-md border border-border-secondary bg-muted/40 p-3 text-xs text-text-secondary">{file.content}</pre>
         </div>
       ))}
     </div>
@@ -870,10 +871,10 @@ function HarnessDetailModal({ harness, onClose }: { harness: Harness; onClose: (
   const version = harness.latest_version
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label={`Harness detail ${harness.name}`} className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label={`Harness detail ${harness.name}`} className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-border-primary bg-surface-elevated p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-text-primary">{harness.name}</h2>
-          <button onClick={onClose} aria-label="Close" className={`rounded-[6px] text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
+          <button onClick={onClose} aria-label="Close" className={`rounded-sm text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
         </div>
         <div className="space-y-0">
           <DetailRow label="Slug"><span className="font-mono">{harness.slug}</span></DetailRow>
@@ -896,7 +897,7 @@ function HarnessDetailModal({ harness, onClose }: { harness: Harness; onClose: (
           )}
         </div>
         <div className="mt-5">
-          <p className="mb-2 text-[11px] font-semibold text-text-primary">Content preview</p>
+          <p className="mb-2 text-xs font-semibold text-text-primary">Content preview</p>
           <HarnessContentPreview harness={harness} />
         </div>
       </div>
@@ -948,22 +949,22 @@ export default function Harnesses() {
     <div className="mx-auto max-w-6xl space-y-6 p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-xl bg-action-primary/12 flex items-center justify-center shrink-0">
             <Box className="w-5 h-5 text-accent-blue" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">Harness Library</h1>
+            <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Harness Library</h1>
             <p className="mt-1 max-w-2xl text-xs text-text-tertiary">Publish reusable AI tooling harnesses. Downloads require explicit approval and never mutate local configuration from the backend.</p>
           </div>
         </div>
-        <button onClick={() => setShowCreate(true)} className={`flex items-center gap-2 rounded-full bg-accent-blue px-4 py-2 text-[13px] font-semibold text-white hover:bg-accent-blue-hover ${FOCUS}`}>
+        <button onClick={() => setShowCreate(true)} className={`flex items-center gap-2 h-9 justify-center self-start shrink-0 rounded-md bg-action-primary px-4 py-2 text-sm font-medium text-action-foreground hover:bg-action-primary-hover ${FOCUS}`}>
           <PackagePlus className="h-4 w-4" />
           New harness
         </button>
       </div>
 
       {!isLoading && (
-        <KpiMarquee role="list" aria-label="Harness stats">
+        <KpiMarquee compact role="list" aria-label="Harness stats">
           {stats.map((tile, i) => (
             <div key={tile.label} className="w-[232px] flex-none">
               <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
@@ -973,55 +974,57 @@ export default function Harnesses() {
       )}
 
       {flash && (
-        <div role="status" className={`flex items-start gap-2 rounded-[11px] border px-4 py-3 text-xs ${flash.kind === 'success' ? 'border-status-success/30 bg-status-success/5 text-status-success' : 'border-status-error/30 bg-status-error/5 text-status-error'}`}>
+        <div role="status" className={`flex items-start gap-2 rounded-md border px-4 py-3 text-xs ${flash.kind === 'success' ? 'border-status-success/30 bg-status-success/5 text-status-success' : 'border-status-error/30 bg-status-error/5 text-status-error'}`}>
           {flash.kind === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
           <span className="flex-1">{flash.message}</span>
           <button onClick={() => setFlash(null)} aria-label="Dismiss" className={FOCUS}><X className="h-3.5 w-3.5" /></button>
         </div>
       )}
 
-      <div className={`flex flex-wrap items-center gap-3 rounded-[18px] p-4 ${GLASS_PANEL}`}>
-        <label className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary" htmlFor="target-filter">Target filter</label>
-        <select id="target-filter" value={target} onChange={e => setTarget(e.target.value)} className="rounded-[9px] border border-white/[0.08] bg-black/20 px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">
+      <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl p-4 ${GLASS_PANEL}`}>
+        <div className="space-y-1.5">
+        <label className="block text-xs font-medium text-text-secondary" htmlFor="target-filter">Target filter</label>
+        <StyledSelect id="target-filter" value={target} onChange={e => setTarget(e.target.value)} className="w-full h-9 rounded-md border border-input bg-background px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
           <option value="">All targets</option>
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
           <option value="cursor">Cursor</option>
-        </select>
-        <label className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary" htmlFor="owner-filter">Owner filter</label>
-        <select id="owner-filter" value={ownerUserId} onChange={e => setOwnerUserId(e.target.value)} className="rounded-[9px] border border-white/[0.08] bg-black/20 px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">
+        </StyledSelect>
+        </div>
+        <div className="space-y-1.5">
+        <label className="block text-xs font-medium text-text-secondary" htmlFor="owner-filter">Owner filter</label>
+        <StyledSelect id="owner-filter" value={ownerUserId} onChange={e => setOwnerUserId(e.target.value)} className="w-full h-9 rounded-md border border-input bg-background px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
           <option value="">All owners</option>
           {Array.from(new Map(harnesses.filter(h => h.owner).map(h => [h.owner_user_id, h.owner!]))).map(([id, owner]) => <option key={id} value={id}>{owner.name}</option>)}
-        </select>
+        </StyledSelect>
+        </div>
       </div>
 
-      {error && <div className="rounded-[11px] border border-status-error/30 bg-status-error/5 px-4 py-3 text-xs text-status-error">{error instanceof Error ? error.message : 'Failed to load harnesses'}</div>}
+      {error && <div className="rounded-md border border-status-error/30 bg-status-error/5 px-4 py-3 text-xs text-status-error">{error instanceof Error ? error.message : 'Failed to load harnesses'}</div>}
 
       <div className="grid gap-4">
-        {isLoading && [1, 2, 3].map(i => <div key={i} className={`h-28 animate-pulse rounded-[18px] ${GLASS_PANEL}`} />)}
-        {!isLoading && harnesses.length === 0 && <div className={`rounded-[18px] p-10 text-center text-xs text-text-quaternary ${GLASS_PANEL}`}>No harnesses found.</div>}
-        {harnesses.map((harness, index) => {
-          const accent = accentFor(index)
+        {isLoading && [1, 2, 3].map(i => <div key={i} className={`h-28 animate-pulse rounded-xl ${GLASS_PANEL}`} />)}
+        {!isLoading && harnesses.length === 0 && <div className={`rounded-xl p-10 text-center text-xs text-text-quaternary ${GLASS_PANEL}`}>No harnesses found.</div>}
+        {harnesses.map(harness => {
           return (
-            <article key={harness.id} className={`relative overflow-hidden rounded-[18px] p-5 transition-colors hover:border-white/[0.16] ${GLASS_PANEL}`}>
-              <div aria-hidden="true" className="absolute -top-12 -right-10 w-32 h-32 rounded-full pointer-events-none" style={{ background: accent, opacity: 0.12, filter: 'blur(34px)' }} />
+            <article key={harness.id} className={`relative overflow-hidden rounded-xl p-5 transition-colors hover:border-border-primary ${GLASS_PANEL}`}>
               <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0 flex-1 space-y-2.5">
                   <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-[11px] flex items-center justify-center shrink-0" style={{ backgroundColor: `color-mix(in srgb, ${accent} 16%, transparent)` }}>
-                      <Box className="w-4 h-4" style={{ color: accent }} />
+                    <div className="w-9 h-9 rounded-md bg-muted flex items-center justify-center shrink-0">
+                      <Box className="w-4 h-4 text-text-secondary" />
                     </div>
                     <div className="min-w-0 space-y-1.5">
                       <h2 className="text-sm font-semibold text-text-primary">{harness.name}</h2>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className={`rounded-[9px] px-2 py-0.5 text-[10px] font-semibold ${statusPillClass(harness.status)}`}>{harness.status}</span>
-                        <span className="rounded-[9px] bg-white/[0.06] px-2 py-0.5 text-[10px] font-semibold text-text-tertiary">{harness.visibility}</span>
-                        {harness.latest_version?.targets.map(t => <span key={t} className="rounded-[9px] bg-accent-blue/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-accent-blue">{t}</span>)}
+                        <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${statusPillClass(harness.status)}`}>{harness.status}</span>
+                        <span className="rounded-md bg-foreground/[0.06] px-2 py-0.5 text-xs font-semibold text-text-tertiary">{harness.visibility}</span>
+                        {harness.latest_version?.targets.map(t => <span key={t} className="rounded-md bg-foreground/[0.05] px-2 py-0.5 font-mono text-[12px] font-medium text-text-secondary">{t}</span>)}
                       </div>
                     </div>
                   </div>
                   <p className="text-xs text-text-quaternary">{harness.description ?? 'No description'}</p>
-                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-text-tertiary">
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-text-tertiary">
                     <span>Owner: {harness.owner?.name ?? harness.owner_user_id}</span>
                     {harness.latest_version && (
                       <>
@@ -1033,11 +1036,11 @@ export default function Harnesses() {
                     )}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2 border-t border-white/[0.05] pt-3 lg:border-t-0 lg:pt-0">
-                  <button onClick={() => setDetailTarget(harness)} aria-label={`View ${harness.name} details`} className={`flex items-center gap-1.5 rounded-[9px] border border-white/[0.09] px-3 h-[30px] text-xs font-semibold text-text-secondary hover:border-white/[0.25] hover:text-text-primary ${FOCUS}`}><Eye className="h-3.5 w-3.5" />Details</button>
-                  <button onClick={() => setPublishTarget(harness)} aria-label={`Publish version for ${harness.name}`} className={`flex items-center gap-1.5 rounded-[9px] border border-white/[0.09] px-3 h-[30px] text-xs font-semibold text-text-secondary hover:border-white/[0.25] hover:text-text-primary ${FOCUS}`}><ArrowUp className="h-3.5 w-3.5" />Publish</button>
-                  <button onClick={() => setApprovalTarget(harness)} disabled={!harness.latest_version} aria-label={`Download ${harness.name}`} className={`flex items-center gap-1.5 rounded-[9px] bg-accent-blue px-3 h-[30px] text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}><Download className="h-3.5 w-3.5" />Download</button>
-                  <button onClick={() => archiveMut.mutate(harness)} disabled={archiveMut.isPending || harness.status === 'archived'} aria-label={`Archive ${harness.name}`} title="Archive" className={`flex items-center justify-center w-[30px] h-[30px] rounded-[9px] text-text-quaternary hover:bg-status-error/10 hover:text-status-error disabled:opacity-50 ${FOCUS}`}><Archive className="h-3.5 w-3.5" /></button>
+                <div className="flex flex-wrap shrink-0 items-center gap-2 border-t border-border-primary pt-3 lg:border-t-0 lg:pt-0">
+                  <button onClick={() => setDetailTarget(harness)} aria-label={`View ${harness.name} details`} className={`flex items-center gap-1.5 rounded-md border border-border-primary px-3 h-8 text-xs font-semibold text-text-secondary hover:border-border-primary hover:text-text-primary ${FOCUS}`}><Eye className="h-3.5 w-3.5" />Details</button>
+                  <button onClick={() => setPublishTarget(harness)} aria-label={`Publish version for ${harness.name}`} className={`flex items-center gap-1.5 rounded-md border border-border-primary px-3 h-8 text-xs font-semibold text-text-secondary hover:border-border-primary hover:text-text-primary ${FOCUS}`}><ArrowUp className="h-3.5 w-3.5" />Publish</button>
+                  <button onClick={() => setApprovalTarget(harness)} disabled={!harness.latest_version} aria-label={`Download ${harness.name}`} className={`flex items-center gap-1.5 rounded-md border border-border-primary bg-background px-3 h-8 text-xs font-medium text-text-primary hover:bg-muted disabled:opacity-50 ${FOCUS}`}><Download className="h-3.5 w-3.5" />Download</button>
+                  <button onClick={() => archiveMut.mutate(harness)} disabled={archiveMut.isPending || harness.status === 'archived'} aria-label={`Archive ${harness.name}`} title="Archive" className={`flex items-center justify-center w-8 h-8 rounded-md text-text-quaternary hover:bg-status-error/10 hover:text-status-error disabled:opacity-50 ${FOCUS}`}><Archive className="h-3.5 w-3.5" /></button>
                 </div>
               </div>
             </article>

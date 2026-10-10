@@ -9,7 +9,9 @@ import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { cn } from '../lib/utils'
 import type { FactoryEconomics, FactoryHeldMerge } from '../types'
-import { CardListSkeleton, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, StatTile, when } from './factory/govern/ui'
+import { CardListSkeleton, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, when } from './factory/govern/ui'
+import { MetricSummary } from '../components/ui/MetricSummary'
+import { accentFor } from './dashboard/colors'
 import { holdReason, holdSource, readable, runStatusLabel } from './factory/govern/words'
 
 /** `owner/repo#7@sha` → GitHub pull URL. */
@@ -55,7 +57,7 @@ export default function FactoryDigest() {
   const waiting = data ? data.held_merges.length + blocked.length + data.factory_tasks.length : 0
 
   return (
-    <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-8">
+    <div className="p-6 md:p-8 min-w-0 max-w-7xl mx-auto space-y-6">
       <PageHeader
         title="Needs a human"
         aside={data && waiting > 0 ? <Badge role="none" variant="warning">{waiting} waiting</Badge> : undefined}
@@ -104,7 +106,7 @@ export default function FactoryDigest() {
           <SectionHeading id="approved-title" title="Approved merges" description="Decided by a person; the factory re-checks each one before it merges." />
           <ul className={cn(PANEL_CLASS, 'm-0 list-none divide-y divide-border-secondary p-0')}>
             {data.approved_merges.map(merge => (
-              <li key={merge.subject} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-[13px]">
+              <li key={merge.subject} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-sm">
                 <CheckCircle2 className="h-4 w-4 shrink-0 text-status-success" aria-hidden="true" />
                 <span className="font-mono text-text-primary">{merge.subject.split('@')[0]}</span>
                 <code className="font-mono text-[12px] text-text-tertiary">{merge.subject.split('@')[1]?.slice(0, 12)}</code>
@@ -126,16 +128,16 @@ export default function FactoryDigest() {
                 <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-status-error" aria-hidden="true" />
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13px] font-medium text-text-primary">{run.agent}</span>
+                    <span className="text-sm font-medium text-text-primary">{run.agent}</span>
                     <Badge role="none" size="sm" variant="error">{runStatusLabel(run.status)}</Badge>
                   </div>
-                  <p className="text-[13px] text-text-secondary">
+                  <p className="text-sm text-text-secondary">
                     {run.reason ? readable(run.reason) : 'No reason recorded.'}
-                    {run.reason && <> <code className="ml-1 font-mono text-[12px] text-text-tertiary">{run.reason}</code></>}
+                    {run.reason && <> <code className="ml-1 break-all font-mono text-[12px] text-text-tertiary">{run.reason}</code></>}
                   </p>
                   <p className="text-[12px] text-text-tertiary">Stopped {when(run.finished_at)}</p>
                 </div>
-                <Link to="/factory/runs" className="inline-flex h-8 items-center rounded-full border border-border-primary px-4 text-[12px] font-semibold text-text-secondary transition-apple hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
+                <Link to="/factory/runs" className="inline-flex h-8 items-center rounded-md border border-border-primary bg-background px-3 text-sm font-medium text-text-secondary transition-apple hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
                   Open runs
                 </Link>
               </li>
@@ -149,7 +151,7 @@ export default function FactoryDigest() {
           <SectionHeading id="tasks-title" title="Factory tasks not started" description="Work that came in but did not start on its own. Start or dismiss it from Tasks." />
           <ul className={cn(PANEL_CLASS, 'm-0 list-none divide-y divide-border-secondary p-0')}>
             {data.factory_tasks.map(task => (
-              <li key={task.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-[13px]">
+              <li key={task.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-sm">
                 <ListTodo className="h-4 w-4 shrink-0 text-text-tertiary" aria-hidden="true" />
                 <Link to="/tasks" className={LINK_CLASS}>{task.title}</Link>
                 <span className="text-text-tertiary">{task.project}</span>
@@ -164,13 +166,13 @@ export default function FactoryDigest() {
         <section aria-labelledby="labels-title" className={cn(PANEL_CLASS, 'flex flex-wrap items-center gap-4')}>
           <Scale className="h-5 w-5 shrink-0 text-text-secondary" aria-hidden="true" />
           <div className="min-w-0 flex-1">
-            <h2 id="labels-title" className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Decision model labels</h2>
-            <p className="mt-1 text-[13px] text-text-secondary">
+            <h2 id="labels-title" className="text-base font-semibold tracking-[-0.2px] text-text-primary">Decision model labels</h2>
+            <p className="mt-1 text-sm text-text-secondary">
               {data.unlabeled_shadow} shadow decisions have no human label ({data.unlabeled_shadow_allows} of them “allow”, which
               are the ones the routing bar counts).
             </p>
           </div>
-          <Link to="/factory/decision-model" className="inline-flex h-8 items-center rounded-full border border-border-primary px-4 text-[12px] font-semibold text-text-secondary transition-apple hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
+          <Link to="/factory/decision-model" className="inline-flex h-8 items-center rounded-md border border-border-primary bg-background px-3 text-sm font-medium text-text-secondary transition-apple hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
             Label them
           </Link>
         </section>
@@ -202,7 +204,7 @@ function HeldMergeCard({
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
         <GitMerge className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden="true" />
         <div className="min-w-0 flex-1 space-y-1.5">
-          <p className="text-[13px] text-text-secondary">
+          <p className="text-sm text-text-secondary">
             Merge{' '}
             {url ? (
               <a href={url} target="_blank" rel="noreferrer" className={cn('font-mono', LINK_CLASS)}>{pull}</a>
@@ -211,7 +213,7 @@ function HeldMergeCard({
             )}{' '}
             at commit <code className="font-mono text-[12px] text-text-primary">{sha?.slice(0, 12)}</code>
           </p>
-          <dl className="grid gap-x-4 gap-y-1 text-[13px] sm:grid-cols-[7rem_1fr]">
+          <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[7rem_1fr]">
             <dt className="text-text-tertiary">Why</dt>
             <dd className="text-text-primary">
               <span className="text-text-secondary">{holdSource(merge.source)}.</span> {holdReason(merge.reason)}
@@ -242,22 +244,22 @@ function Economics({ data }: { data: FactoryEconomics }) {
   return (
     <section aria-labelledby="economics-title" className="space-y-3 border-t border-border-primary pt-6">
       <SectionHeading id="economics-title" title={`Economics, last ${data.days} days`} description="What the factory cost at list price." />
-      <dl className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile label="Runs" value={data.runs} />
-        <StatTile label="Spend (list price)" value={usd(data.cost_usd)} />
-        <StatTile label="Runs below the frontier tier" value={data.frontier_avoidance === null ? '—' : `${Math.round(data.frontier_avoidance * 100)}%`} />
-        <StatTile label="Cost per proposed change" value={data.cost_per_proposed_change === null ? '—' : usd(data.cost_per_proposed_change)} />
-      </dl>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] gap-3" role="list" aria-label="Factory economics statistics">
+        <div role="listitem"><MetricSummary label="Runs" value={data.runs} icon={ListTodo} accent={accentFor(0)} /></div>
+        <div role="listitem"><MetricSummary label="Spend (list price)" value={usd(data.cost_usd)} icon={Scale} accent={accentFor(1)} /></div>
+        <div role="listitem"><MetricSummary label="Runs below the frontier tier" value={data.frontier_avoidance === null ? '—' : `${Math.round(data.frontier_avoidance * 100)}%`} icon={CheckCircle2} accent={accentFor(2)} /></div>
+        <div role="listitem"><MetricSummary label="Cost per proposed change" value={data.cost_per_proposed_change === null ? '—' : usd(data.cost_per_proposed_change)} icon={GitMerge} accent={accentFor(3)} /></div>
+      </div>
       {!data.accepted_changes_tracked && (
         <p className="text-[12px] text-text-tertiary">Merged (accepted) changes are not measured yet, so cost per accepted change is not shown.</p>
       )}
       {data.by_model.length > 0 && (
-        <details className="group rounded-[18px] border border-border-primary">
-          <summary className="cursor-pointer list-none rounded-[18px] px-5 py-3 text-[13px] text-text-secondary hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
+        <details className="group rounded-xl border border-border-primary">
+          <summary className="cursor-pointer list-none rounded-xl px-5 py-3 text-sm text-text-secondary hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
             Spend by model ({data.by_model.length})
           </summary>
           <div className="overflow-x-auto border-t border-border-secondary">
-            <table className="w-full text-[13px]" aria-label="Spend by model">
+            <table className="admin-data-table w-full text-sm" aria-label="Spend by model">
               <thead>
                 <tr className="border-b border-border-secondary text-left text-[12px] text-text-tertiary">
                   <th scope="col" className="px-5 py-2.5 font-medium">Model</th>

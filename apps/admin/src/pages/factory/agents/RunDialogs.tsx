@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
@@ -11,7 +12,7 @@ import type { AutonomousAgentDefinition } from '../../../types'
 export type RunTarget = { repository: string; type: 'pr' | 'issue'; number: number }
 
 /** Native select styled as the kit's input (36px, 11px radius, focus ring). */
-export const SELECT_CLASS = 'mt-1 block h-9 w-full rounded-[11px] border border-border-primary bg-white/[0.04] px-3 text-[13px] text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+export const SELECT_CLASS = 'mt-1 block h-9 w-full rounded-md border border-border-primary bg-foreground/[0.04] px-3 text-sm text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 
 /**
  * Run dialog for the PR reviewer: the PR to review is chosen per run. Repository
@@ -32,7 +33,7 @@ export function ReviewerRunDialog({ agent, pending, onClose, onRun }: { agent: A
         <ModalTitle>Run “{agent.name}”</ModalTitle>
       </ModalHeader>
       <ModalContent className="space-y-4">
-        <p className="text-[13px] text-text-secondary">Choose the pull request to review this run. Only this PR is reviewed; nothing is merged.</p>
+        <p className="text-sm text-text-secondary">Choose the pull request to review this run. Only this PR is reviewed; nothing is merged.</p>
         <label className="block">
           <span className="text-[12px] font-medium text-text-secondary">Repository</span>
           <Input inputSize="sm" className="mt-1 w-full" value={repository} onChange={e => setRepository(e.target.value)} placeholder="owner/repo" />
@@ -78,21 +79,21 @@ export function JudgeRunDialog({ agent, pending, onClose, onRun }: { agent: Auto
         <ModalTitle>Run “{agent.name}”</ModalTitle>
       </ModalHeader>
       <ModalContent className="space-y-4">
-        <p className="text-[13px] text-text-secondary">Choose the pull requests or issues to judge this run. Each is verified against the live app, scoped to what it touches.</p>
+        <p className="text-sm text-text-secondary">Choose the pull requests or issues to judge this run. Each is verified against the live app, scoped to what it touches.</p>
         {repos.length === 0 && !detail.isLoading && <p className="text-[12px] text-status-warning">This agent has no configured repositories. Edit it to add some first.</p>}
         <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
           <label className="block">
             <span className="text-[12px] font-medium text-text-secondary">Repository</span>
-            <select value={repository} onChange={e => setRepository(e.target.value)} className={SELECT_CLASS}>
+            <StyledSelect value={repository} onChange={e => setRepository(e.target.value)} className={SELECT_CLASS}>
               {repos.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
+            </StyledSelect>
           </label>
           <label className="block">
             <span className="text-[12px] font-medium text-text-secondary">Type</span>
-            <select value={type} onChange={e => setType(e.target.value as 'pr' | 'issue')} className={SELECT_CLASS}>
+            <StyledSelect value={type} onChange={e => setType(e.target.value as 'pr' | 'issue')} className={SELECT_CLASS}>
               <option value="pr">Pull request</option>
               <option value="issue">Issue</option>
-            </select>
+            </StyledSelect>
           </label>
           <label className="block">
             <span className="text-[12px] font-medium text-text-secondary">Number</span>
@@ -107,7 +108,7 @@ export function JudgeRunDialog({ agent, pending, onClose, onRun }: { agent: Auto
                 <Badge size="sm" variant="default">
                   <span className="font-mono">{t.repository}#{t.number}</span>
                   <span>{t.type === 'pr' ? 'PR' : 'Issue'}</span>
-                  <button type="button" className="ml-0.5 rounded-full text-text-tertiary hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring" onClick={() => setTargets(prev => prev.filter((_, idx) => idx !== i))} aria-label={`Remove ${t.repository}#${t.number}`}>
+                  <button type="button" className="ml-0.5 rounded-md text-text-tertiary hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring" onClick={() => setTargets(prev => prev.filter((_, idx) => idx !== i))} aria-label={`Remove ${t.repository}#${t.number}`}>
                     <X className="h-3 w-3" aria-hidden />
                   </button>
                 </Badge>

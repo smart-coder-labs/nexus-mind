@@ -1,3 +1,5 @@
+import { Modal } from '../components/ui/Modal/Modal'
+import { Button } from '../components/ui/Button'
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Pencil, Trash2, Check, X, GitMerge, Hash, Layers, TrendingUp } from 'lucide-react'
@@ -12,7 +14,7 @@ const client = createClient()
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Tags page.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 // Word-cloud size/weight/color scaled by usage relative to the top tag —
 // mirrors the mockup's "Vocabulary" cloud using only real counts.
@@ -114,8 +116,8 @@ export default function Tags() {
   if (isLoading) {
     return (
       <div className="flex-1 p-8">
-        <div className="animate-pulse h-8 bg-white/[0.04] rounded-[11px] w-48 mb-4" />
-        <div className={`animate-pulse h-40 rounded-[18px] w-full ${GLASS_PANEL}`} />
+        <div className="animate-pulse h-8 bg-foreground/[0.04] rounded-md w-48 mb-4" />
+        <div className={`animate-pulse h-40 rounded-xl w-full ${GLASS_PANEL}`} />
       </div>
     )
   }
@@ -124,12 +126,12 @@ export default function Tags() {
     <div className="flex-1 p-8 max-w-5xl">
       {/* Header */}
       <div className="flex items-center gap-3.5 mb-6">
-        <div className="w-11 h-11 rounded-[13px] bg-status-success/10 flex items-center justify-center flex-shrink-0">
+        <div className="w-11 h-11 rounded-xl bg-status-success/10 flex items-center justify-center flex-shrink-0">
           <Hash className="w-[22px] h-[22px] text-status-success" />
         </div>
         <div>
           <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-text-primary">Tags</h1>
-          <p className="text-[13px] text-text-tertiary mt-0.5">
+          <p className="text-sm text-text-tertiary mt-0.5">
             Manage memory tags across your organization
           </p>
         </div>
@@ -138,7 +140,7 @@ export default function Tags() {
       {/* Stat tiles — derived from getTagStats(), no fabricated numbers */}
       {tags.length > 0 && (
         <div className="mb-4">
-          <KpiMarquee>
+          <KpiMarquee compact>
             <div key="tags" className="w-[232px] flex-none">
               <StatTile label="Tags" value={String(tags.length)} sub="vocabulary size" icon={Hash} accent={accentFor(0)} />
             </div>
@@ -159,10 +161,10 @@ export default function Tags() {
       )}
 
       {/* Tag cloud — size/weight/color scaled by relative usage */}
-      <div className={`rounded-[18px] p-5 mb-4 ${GLASS_PANEL}`}>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-[13px] font-semibold text-text-primary">Vocabulary</h2>
-          <span className="text-[11px] text-text-quaternary">size = usage · click to filter</span>
+      <div className={`rounded-xl p-5 mb-4 ${GLASS_PANEL}`}>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-semibold text-text-primary">Vocabulary</h2>
+          <span className="text-xs text-text-quaternary">size = usage · click to filter</span>
         </div>
         {tags.length === 0 ? (
           <p className="text-xs text-text-quaternary">No tags found.</p>
@@ -176,7 +178,7 @@ export default function Tags() {
                   onClick={() => setSelectedTag(selectedTag === t.name ? null : t.name)}
                   style={{ fontSize: `${size}px`, fontWeight: weight }}
                   className={cn(
-                    'leading-tight transition-colors hover:text-accent-blue cursor-pointer',
+                    'max-w-full break-words text-left leading-tight transition-colors hover:text-accent-blue cursor-pointer focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2',
                     selectedTag === t.name ? 'text-accent-blue' : color,
                   )}
                 >
@@ -189,17 +191,17 @@ export default function Tags() {
       </div>
 
       {/* Tag table */}
-      <div className={`rounded-[18px] overflow-hidden overflow-x-auto ${GLASS_PANEL}`}>
-        <table className="w-full">
+      <div className={`rounded-xl overflow-hidden overflow-x-auto ${GLASS_PANEL}`}>
+        <table className="admin-data-table w-full min-w-[560px]">
           <thead>
             <tr className="border-b border-border-primary">
-              <th className="text-left px-5 py-3 text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">
+              <th className="text-left px-5 py-3 text-xs text-text-quaternary uppercase tracking-wide font-semibold">
                 Tag
               </th>
-              <th className="text-left px-5 py-3 text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">
+              <th className="text-left px-5 py-3 text-xs text-text-quaternary uppercase tracking-wide font-semibold">
                 Memories
               </th>
-              <th className="text-left px-5 py-3 text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">
+              <th className="text-left px-5 py-3 text-xs text-text-quaternary uppercase tracking-wide font-semibold">
                 Distribution
               </th>
               <th className="px-5 py-3 w-20" />
@@ -216,7 +218,7 @@ export default function Tags() {
             {filteredTags.map((t) => (
               <tr
                 key={t.name}
-                className="border-b border-border-secondary/20 last:border-b-0 group hover:bg-accent-blue/[0.05] transition-colors"
+                className="border-b border-border-secondary/20 last:border-b-0 group hover:bg-action-primary/[0.05] transition-colors"
               >
                 <td className="px-5 py-3">
                   {renamingTag === t.name ? (
@@ -226,7 +228,7 @@ export default function Tags() {
                         value={renameValue}
                         onChange={(e) => setRenameValue(e.target.value)}
                         onKeyDown={handleRenameKeyDown}
-                        className="bg-transparent border-b border-border-primary text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 min-w-0 w-32"
+                        className="bg-transparent border-b border-input text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 min-w-0 w-32 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                       />
                       <button
                         onClick={handleRenameSave}
@@ -248,20 +250,20 @@ export default function Tags() {
                   )}
                 </td>
                 <td className="px-5 py-3">
-                  <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-quaternary tabular-nums">
+                  <span className="rounded-full bg-foreground/[0.06] px-2 py-0.5 text-xs text-text-quaternary tabular-nums">
                     {t.count}
                   </span>
                 </td>
                 <td className="px-5 py-3">
-                  <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden max-w-[140px]">
+                  <div className="h-1 rounded-full bg-foreground/[0.06] overflow-hidden max-w-[140px]">
                     <div
-                      className="h-full rounded-full bg-status-success"
-                      style={{ width: `${maxCount > 0 ? Math.max(2, Math.round((t.count / maxCount) * 100)) : 0}%` }}
+                      className="h-full rounded-full bg-[var(--chart-1)]"
+                      style={{ width: `${maxCount > 0 ? Math.round((t.count / maxCount) * 100) : 0}%` }}
                     />
                   </div>
                 </td>
                 <td className="px-5 py-3">
-                  <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
+                  <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity justify-end">
                     {renamingTag !== t.name && (
                       <>
                         <button
@@ -283,7 +285,7 @@ export default function Tags() {
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => handleDeleteExecute(t.name)}
-                              className="text-[10px] text-status-error hover:text-status-error/80 transition-colors"
+                              className="text-xs text-status-error hover:text-status-error/80 transition-colors"
                             >
                               Confirm
                             </button>
@@ -316,9 +318,9 @@ export default function Tags() {
 
       {/* Merge modal */}
       {mergingTag && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md shadow-xl">
-            <h2 className="text-xs font-semibold text-text-primary">Merge "{mergingTag}"</h2>
+        <Modal open ariaLabel="Merge tags" onOpenChange={open => { if (!open) { setMergingTag(null); setMergeTarget(''); mergeMut.reset() } }}>
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-text-primary">Merge "{mergingTag}"</h2>
             <p className="text-xs text-text-quaternary mt-1">
               All memories tagged "{mergingTag}" will be retagged to the target.
               The original tag will be removed.
@@ -329,9 +331,10 @@ export default function Tags() {
                 autoFocus
                 value={mergeTarget}
                 onChange={(e) => setMergeTarget(e.target.value)}
+                aria-label="Target tag name"
                 placeholder="Target tag name…"
                 list="tag-list"
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
               <datalist id="tag-list">
                 {tags.filter((t) => t.name !== mergingTag).map((t) => (
@@ -341,7 +344,7 @@ export default function Tags() {
             </div>
 
             {mergeMut.isError && (
-              <p className="text-[10px] text-status-error mt-2">
+              <p className="text-xs text-status-error mt-2">
                 {(mergeMut.error as Error)?.message ?? 'Merge failed'}
               </p>
             )}
@@ -353,20 +356,20 @@ export default function Tags() {
                   setMergeTarget('')
                   mergeMut.reset()
                 }}
-                className="border border-border-primary rounded-full px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] transition-colors"
+                className="border border-border-primary rounded-md px-4 py-1.5 text-xs text-text-secondary hover:bg-foreground/[0.04] transition-colors"
               >
                 Cancel
               </button>
-              <button
+              <Button
                 onClick={() => mergeMut.mutate({ source: mergingTag, target: mergeTarget })}
                 disabled={!mergeTarget || mergeTarget === mergingTag || mergeMut.isPending}
-                className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold disabled:opacity-40 hover:bg-accent-blue/90 transition-colors"
+
               >
                 {mergeMut.isPending ? 'Merging…' : 'Merge'}
-              </button>
+              </Button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

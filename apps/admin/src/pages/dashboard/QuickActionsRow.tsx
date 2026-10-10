@@ -10,7 +10,7 @@ const FOCUS_TILE = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus
 
 /**
  * Design delta 3: quick actions moved from a bottom card into a row of
- * small pill buttons under the header. Handlers/hrefs are passed in
+ * compact outline buttons under the header. Handlers/hrefs are passed in
  * unchanged from the page — this component is purely presentational.
  */
 export function QuickActionsRow({ actions }: { actions: QuickAction[] }) {
@@ -22,7 +22,7 @@ export function QuickActionsRow({ actions }: { actions: QuickAction[] }) {
             key={action.label}
             to={action.href}
             className={cn(
-              'flex items-center gap-1.5 h-[26px] px-2.5 rounded-full border border-border-secondary bg-white/[0.03] text-[12px] text-text-secondary hover:text-text-primary hover:border-white/[0.2] transition-colors',
+              'flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-secondary bg-foreground/[0.03] text-[12px] text-text-secondary hover:text-text-primary hover:border-border-primary transition-colors',
               FOCUS_TILE
             )}
           >
@@ -34,7 +34,7 @@ export function QuickActionsRow({ actions }: { actions: QuickAction[] }) {
             key={action.label}
             onClick={action.onAction}
             className={cn(
-              'flex items-center gap-1.5 h-[26px] px-2.5 rounded-full border border-border-secondary bg-white/[0.03] text-[12px] text-text-secondary hover:text-text-primary hover:border-white/[0.2] transition-colors',
+              'flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-secondary bg-foreground/[0.03] text-[12px] text-text-secondary hover:text-text-primary hover:border-border-primary transition-colors',
               FOCUS_TILE
             )}
           >

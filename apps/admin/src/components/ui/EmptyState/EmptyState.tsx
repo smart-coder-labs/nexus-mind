@@ -13,20 +13,20 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     <div
       className={`
         animate-fade-in
-        flex flex-col items-center justify-center text-center p-8
-        border border-border-primary bg-white/[0.02] rounded-[18px]
+        flex flex-col items-center justify-center text-center px-6 py-8
+
         ${className}
       `.trim().replace(/\s+/g, ' ')}
     >
       {icon && (
         // Icon in a tinted rounded square — matches the NexusMind UI Kit's
         // empty-state icon treatment (44x44, 13px radius, accent-tinted).
-        <div className="mb-4 w-11 h-11 rounded-[13px] bg-accent-blue/10 flex items-center justify-center shrink-0">
+        <div className="mb-4 w-11 h-11 rounded-xl bg-foreground/[0.04] flex items-center justify-center shrink-0">
           {React.isValidElement(icon) ? (
             React.cloneElement(icon as React.ReactElement, {
               size: 20,
               strokeWidth: 1.7,
-              className: 'w-5 h-5 text-accent-blue',
+              className: 'w-5 h-5 text-text-tertiary',
             } as Record<string, unknown>)
           ) : (
             icon
@@ -39,7 +39,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       </h3>
 
       {description && (
-        <p className="text-[13px] text-text-secondary max-w-sm mb-5 leading-relaxed">
+        <p className="text-sm text-text-secondary max-w-sm leading-relaxed">
           {description}
         </p>
       )}

@@ -11,17 +11,17 @@ import { cn } from '../../../lib/utils'
  * DESIGN_DIRECTION §3–§5 for these pages only.
  */
 
-/** Native select styled like `Input` (36px, 11px radius, focus ring outline). */
+/** Native select aligned with the Audit1 control geometry. */
 export const SELECT_CLASS =
-  'block h-9 w-full rounded-[11px] border border-white/[0.09] bg-white/[0.03] px-3 text-[13px] text-text-primary ' +
+  'block h-9 w-full rounded-md border border-border-primary bg-foreground/[0.03] px-3 text-base md:text-sm text-text-primary ' +
   'transition-apple focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ' +
   'disabled:cursor-not-allowed disabled:opacity-40'
 
-/** Section card: 18px radius, hairline border, 20px padding. */
-export const PANEL_CLASS = 'rounded-[18px] border border-border-primary bg-white/[0.02] p-5'
+/** Neutral Audit1 section card with a thin border. */
+export const PANEL_CLASS = 'min-w-0 rounded-xl border border-border-primary bg-card p-4 sm:p-5'
 
 export const LINK_CLASS =
-  'text-[var(--color-accent-on-dark)] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring rounded-[4px]'
+  'text-accent-on-dark underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring rounded-[4px]'
 
 export function PageHeader({
   title,
@@ -42,7 +42,7 @@ export function PageHeader({
           <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">{title}</h1>
           {aside}
         </div>
-        <p className="mt-1 max-w-3xl text-[13px] leading-normal text-text-secondary">{subtitle}</p>
+        <p className="mt-1 max-w-3xl text-sm leading-normal text-text-secondary">{subtitle}</p>
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </header>
@@ -54,7 +54,7 @@ export function SectionHeading({ id, title, description, action }: { id: string;
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
         <h2 id={id} className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{title}</h2>
-        {description && <p className="mt-1 max-w-3xl text-[13px] text-text-secondary">{description}</p>}
+        {description && <p className="mt-1 max-w-3xl text-sm text-text-secondary">{description}</p>}
       </div>
       {action}
     </div>
@@ -67,7 +67,7 @@ export function InlineAlert({ children, onRetry, className }: { children: ReactN
     <div
       role="alert"
       className={cn(
-        'flex flex-wrap items-center gap-3 rounded-[11px] border border-status-error/20 bg-status-error/[0.08] px-3.5 py-2.5 text-[13px] text-text-primary',
+        'flex flex-wrap items-center gap-3 rounded-md border border-status-error/20 bg-status-error/[0.08] px-3.5 py-2.5 text-sm text-text-primary',
         className,
       )}
     >
@@ -154,8 +154,8 @@ export function RadioCard({
   return (
     <label
       className={cn(
-        'flex gap-3 rounded-[11px] border px-3.5 py-3 transition-apple',
-        checked ? 'border-accent-blue/60 bg-accent-blue-tint' : 'border-border-primary hover:bg-white/[0.03]',
+        'flex gap-3 rounded-md border px-3.5 py-3 transition-apple',
+        checked ? 'border-accent-blue/60 bg-action-primary-tint' : 'border-border-primary hover:bg-foreground/[0.03]',
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
       )}
     >
@@ -170,13 +170,13 @@ export function RadioCard({
           className={cn(
             'peer m-0 h-[18px] w-[18px] appearance-none rounded-full border-[1.5px] transition-colors',
             'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring',
-            checked ? 'border-accent-blue' : 'border-white/[0.25]',
+            checked ? 'border-accent-blue' : 'border-border-primary',
           )}
         />
-        <span className="pointer-events-none absolute h-[9px] w-[9px] rounded-full bg-accent-blue opacity-0 transition-opacity peer-checked:opacity-100" />
+        <span className="pointer-events-none absolute h-[9px] w-[9px] rounded-full bg-action-primary opacity-0 transition-opacity peer-checked:opacity-100" />
       </span>
       <span className="min-w-0">
-        <span className="flex items-center gap-2 text-[13px] font-medium text-text-primary">
+        <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
           {icon}
           {title}
         </span>
@@ -186,12 +186,12 @@ export function RadioCard({
   )
 }
 
-/** Stat tile (§5): neutral surface, 28px tabular number, 12px tertiary label. */
+/** Static compact summary: labels and values stay visible. */
 export function StatTile({ label, value, tone }: { label: string; value: ReactNode; tone?: 'error' }) {
   return (
-    <div className="rounded-[18px] border border-border-primary bg-white/[0.04] px-5 py-4">
-      <dt className="text-[12px] text-text-tertiary">{label}</dt>
-      <dd className={cn('mt-1 text-[28px] font-semibold leading-[1.15] tabular-nums', tone === 'error' ? 'text-status-error' : 'text-text-primary')}>
+    <div className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border-primary bg-card px-3 py-2">
+      <dt className="min-w-0 text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className={cn('shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-semibold tabular-nums', tone === 'error' ? 'text-status-error' : 'text-text-primary')}>
         {value}
       </dd>
     </div>
@@ -203,7 +203,7 @@ export function CardListSkeleton({ count = 3, height = 'h-28' }: { count?: numbe
   return (
     <div className="space-y-3" aria-hidden="true">
       {Array.from({ length: count }, (_, index) => (
-        <Skeleton key={index} className={cn('w-full rounded-[18px]', height)} />
+        <Skeleton key={index} className={cn('w-full rounded-xl', height)} />
       ))}
     </div>
   )

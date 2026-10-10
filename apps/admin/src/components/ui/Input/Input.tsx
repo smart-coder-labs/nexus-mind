@@ -1,4 +1,4 @@
-import React, { forwardRef } from 'react';
+import React, { forwardRef, useId } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import type { InputProps } from './Input.types';
 import {
@@ -41,6 +41,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         ref
     ) => {
         const hasError = !!error;
+        const generatedId = useId();
+        const fieldId = props.id ?? generatedId;
+        const messageId = `${fieldId}-message`;
+        const describedBy = [props['aria-describedby'], (error || helperText) ? messageId : undefined].filter(Boolean).join(' ') || undefined;
         const prefersReducedMotion = useReducedMotion();
 
         const inputClassName = `
@@ -74,7 +78,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         return (
             <div className="w-full">
                 {label && (
-                    <label className="block text-xs font-medium text-text-secondary mb-2">
+                    <label htmlFor={fieldId} className="block text-sm font-medium text-foreground mb-1.5">
                         {label}
                     </label>
                 )}
@@ -110,6 +114,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                             damping: 30,
                         }}
                         {...(props as any)}
+                        id={fieldId}
+                        aria-invalid={hasError || props['aria-invalid'] || undefined}
+                        aria-describedby={describedBy}
                     />
 
                     {rightIcon && (
@@ -130,11 +137,13 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
 
                 {(error || helperText) && (
                     <motion.p
-                        initial={{ opacity: 0, y: -4 }}
+                        id={messageId}
+                        role={hasError ? "alert" : undefined}
+                        initial={prefersReducedMotion ? false : { opacity: 0, y: -4 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.16 }}
                         className={`
-              mt-2 text-xs
+              mt-1.5 text-xs
               ${hasError ? 'text-status-error' : 'text-text-secondary'}
             `}
                     >
@@ -173,15 +182,19 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         ref
     ) => {
         const hasError = !!error;
+        const generatedId = useId();
+        const fieldId = props.id ?? generatedId;
+        const messageId = `${fieldId}-message`;
+        const describedBy = [props['aria-describedby'], (error || helperText) ? messageId : undefined].filter(Boolean).join(' ') || undefined;
         const prefersReducedMotion = useReducedMotion();
 
         const textareaClassName = `
       ${baseInputStyles}
       px-4 py-3
-      text-[13px]
-      rounded-[11px]
+      text-sm
+      rounded-md
       min-h-[100px]
-      resize-${resize}
+      ${{ none: 'resize-none', vertical: 'resize-y', horizontal: 'resize-x', both: 'resize' }[resize]}
       ${hasError ? 'border-status-error' : ''}
       ${className}
     `.trim().replace(/\s+/g, ' ');
@@ -189,7 +202,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         return (
             <div className="w-full">
                 {label && (
-                    <label className="block text-xs font-medium text-text-secondary mb-2">
+                    <label htmlFor={fieldId} className="block text-sm font-medium text-foreground mb-1.5">
                         {label}
                     </label>
                 )}
@@ -209,15 +222,20 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
                         damping: 30,
                     }}
                     {...(props as any)}
+                        id={fieldId}
+                        aria-invalid={hasError || props['aria-invalid'] || undefined}
+                        aria-describedby={describedBy}
                 />
 
                 {(error || helperText) && (
                     <motion.p
-                        initial={{ opacity: 0, y: -4 }}
+                        id={messageId}
+                        role={hasError ? "alert" : undefined}
+                        initial={prefersReducedMotion ? false : { opacity: 0, y: -4 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.16 }}
                         className={`
-              mt-2 text-xs
+              mt-1.5 text-xs
               ${hasError ? 'text-status-error' : 'text-text-secondary'}
             `}
                     >

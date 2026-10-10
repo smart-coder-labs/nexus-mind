@@ -44,13 +44,12 @@ export function useGraphChrome({
   hoveredNode,
   graphReady,
 }: UseGraphChromeOptions) {
-  // User-configurable behavior (design props `autoRotate` / `autoHide`,
-  // both default true). Persisted like the rest of the graph state.
+  // Keep operational controls visible by default; idle hiding is opt-in.
   const [autoRotate, setAutoRotate] = usePersistedGraphState<boolean>(
     `nexusmind-graph-auto-rotate-${storageKey}`, true,
   )
   const [autoHide, setAutoHide] = usePersistedGraphState<boolean>(
-    `nexusmind-graph-auto-hide-${storageKey}`, true,
+    `nexusmind-graph-auto-hide-${storageKey}`, false,
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [focused, setFocused] = useState(false)
@@ -66,8 +65,12 @@ export function useGraphChrome({
 
   const toggleFocus = useCallback(() => {
     autoFocusedRef.current = false
-    setFocused(f => !f)
-  }, [])
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
+    // Explicitly showing the UI disables idle hiding. Persist the choice so
+    // the settings switch describes the behavior the user is seeing.
+    if (focused) setAutoHide(false)
+    setFocused(!focused)
+  }, [focused, setAutoHide])
 
   // Measure the container so the 3D graph fills it exactly in both modes.
   // Guarded for environments without ResizeObserver (jsdom in tests).
@@ -87,21 +90,20 @@ export function useGraphChrome({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null
-      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
       if (e.key === 'Escape') {
         if (hasSelection) { clearSelection(); return }
-        if (focused) { autoFocusedRef.current = false; setFocused(false) }
+        if (focused) toggleFocus()
         return
       }
       if ((e.key === 'f' || e.key === 'F') && !typing) {
         e.preventDefault()
-        autoFocusedRef.current = false
-        setFocused(f => !f)
+        toggleFocus()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [focused, hasSelection, clearSelection])
+  }, [focused, hasSelection, clearSelection, toggleFocus])
 
   // Live mirrors of state for the idle timer (avoids stale closures without
   // re-registering the listener on every state change).
@@ -111,17 +113,30 @@ export function useGraphChrome({
   useEffect(() => { selectedRef.current = hasSelection }, [hasSelection])
 
   // Auto-hide: after 3.5s of pointer inactivity (and nothing selected) enter
-  // focus automatically; ANY pointer movement exits an auto-entered focus.
+  // focus automatically; moving on the canvas exits an auto-entered focus.
   useEffect(() => {
-    if (!autoHide) return
-    const onMove = () => {
+    if (!autoHide || settingsOpen) {
+      if (autoFocusedRef.current) {
+        autoFocusedRef.current = false
+        setFocused(false)
+      }
+      return
+    }
+    const onMove = (event?: PointerEvent) => {
+      // Moving onto Show UI must not reveal the UI before the click: that
+      // would change the same button into Focus and immediately hide it again.
+      if (autoFocusedRef.current && event?.target instanceof Element
+        && event.target.closest('[data-graph-focus-toggle]')) return
       if (autoFocusedRef.current) {
         autoFocusedRef.current = false
         setFocused(false)
       }
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
       idleTimerRef.current = setTimeout(() => {
-        if (!focusedRef.current && !selectedRef.current) {
+        const active = document.activeElement
+        const usingControl = active instanceof HTMLElement && containerRef.current?.contains(active)
+          && active.matches('input, select, textarea, button, [role="switch"], [contenteditable="true"]')
+        if (!focusedRef.current && !selectedRef.current && !usingControl) {
           autoFocusedRef.current = true
           setFocused(true)
         }
@@ -133,7 +148,7 @@ export function useGraphChrome({
       window.removeEventListener('pointermove', onMove)
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
     }
-  }, [autoHide])
+  }, [autoHide, settingsOpen])
 
   // Auto-rotate (OrbitControls via controlType="orbit"). Pauses while a node
   // is hovered — the design pauses rotation on hover so tooltips stay put.

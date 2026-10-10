@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Link2 } from 'lucide-react'
+import { X, Link2, CalendarRange, Brain } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { createClient } from '../../api/client'
 import { useAuth, isPrivileged } from '../../auth/AuthContext'
@@ -10,7 +10,7 @@ import {
 import { Badge } from '../../components/ui/Badge/Badge'
 import DocumentView from './DocumentView'
 import { STATUS_BADGE_VARIANT } from '../Tasks'
-import { SDD_PHASE_OPTIONS, SDD_STATUS_OPTIONS } from '../Sdd'
+import { SDD_PHASE_OPTIONS, SDD_STATUS_OPTIONS, SddPhaseOption, SddStatusOption } from '../Sdd'
 import type {
   PatchSddChangeRequest, SddArtifact, SddArtifactKind, SddPhase, SddStatus,
 } from '../../types'
@@ -184,7 +184,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
       <button
         onClick={onClose}
         aria-label="Close"
-        className={`absolute top-0 right-0 w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] hover:bg-white/[0.10] text-text-secondary hover:text-text-primary transition-colors ${FOCUS}`}
+        className={`absolute top-0 right-0 w-8 h-8 flex items-center justify-center rounded-full bg-foreground/[0.06] hover:bg-foreground/[0.10] text-text-secondary hover:text-text-primary transition-colors ${FOCUS}`}
       >
         <X className="w-3.5 h-3.5" />
       </button>
@@ -215,9 +215,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
               <SelectValue placeholder="Phase" />
             </SelectTrigger>
             <SelectContent>
-              {SDD_PHASE_OPTIONS.map(p => (
-                <SelectItem key={p} value={p}>{p}</SelectItem>
-              ))}
+              {SDD_PHASE_OPTIONS.map(phase => <SddPhaseOption key={phase} phase={phase} />)}
             </SelectContent>
           </Select>
 
@@ -229,9 +227,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
-              {SDD_STATUS_OPTIONS.map(s => (
-                <SelectItem key={s} value={s}>{s}</SelectItem>
-              ))}
+              {SDD_STATUS_OPTIONS.map(status => <SddStatusOption key={status} status={status} />)}
             </SelectContent>
           </Select>
 
@@ -243,9 +239,9 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
               <SelectValue placeholder="No sprint" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">No sprint</SelectItem>
+              <SelectItem value="" icon={<CalendarRange />} description="Leave this change outside a sprint">No sprint</SelectItem>
               {sprints.map(s => (
-                <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                <SelectItem key={s.id} value={s.id} icon={<CalendarRange />} indicatorColor={s.status === 'active' ? 'var(--color-status-success)' : s.status === 'completed' ? 'var(--muted-foreground)' : 'var(--color-status-info)'} description={[s.status, s.goal].filter(Boolean).join(' · ') || 'No sprint goal added'}>{s.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -283,7 +279,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
               aria-pressed={cap === currentCapability}
               className={`rounded-full px-2.5 py-1 text-[11px] border transition-colors ${FOCUS} ${
                 cap === currentCapability
-                  ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/20 font-semibold'
+                  ? 'bg-action-primary/10 text-accent-blue border-accent-blue/20 font-semibold'
                   : 'border-border-primary text-text-quaternary hover:text-text-secondary'
               }`}
             >
@@ -322,7 +318,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
             {mergedSpecs.map(s => (
               <li
                 key={s.id}
-                className="flex items-center justify-between gap-2 rounded-[11px] border border-border-secondary px-3 py-2"
+                className="flex items-center justify-between gap-2 rounded-md border border-border-secondary px-3 py-2"
               >
                 <Link
                   to={`/sdd?tab=specs&spec=${encodeURIComponent(s.id)}`}
@@ -347,7 +343,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
             {linkedTasks.map(t => (
               <li
                 key={t.id}
-                className="flex items-center justify-between gap-2 rounded-[11px] border border-border-secondary px-3 py-2"
+                className="flex items-center justify-between gap-2 rounded-md border border-border-secondary px-3 py-2"
               >
                 <Link
                   to={`/tasks?task=${encodeURIComponent(t.id)}`}
@@ -374,7 +370,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
               return (
                 <li
                   key={m.id}
-                  className="flex items-center justify-between gap-2 rounded-[11px] border border-border-secondary px-3 py-2"
+                  className="flex items-center justify-between gap-2 rounded-md border border-border-secondary px-3 py-2"
                 >
                   <Link
                     to={`/memories?id=${encodeURIComponent(m.id)}`}
@@ -409,7 +405,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
               </SelectTrigger>
               <SelectContent>
                 {linkableMemories.map(m => (
-                  <SelectItem key={m.id} value={m.id}>
+                  <SelectItem key={m.id} value={m.id} icon={<Brain />} description={m.type || m.project || 'Memory'}>
                     {m.title ?? m.content.slice(0, 60)}
                   </SelectItem>
                 ))}
@@ -419,7 +415,7 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
               type="button"
               onClick={() => memoryToLink && linkMemoryMut.mutate(memoryToLink)}
               disabled={!memoryToLink || linkMemoryMut.isPending}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 ${FOCUS}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-action-primary text-action-foreground text-xs font-semibold hover:opacity-90 disabled:opacity-50 ${FOCUS}`}
             >
               <Link2 className="w-3 h-3" />
               Link

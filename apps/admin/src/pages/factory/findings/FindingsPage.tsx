@@ -33,7 +33,7 @@ function RailGroup({ title, options, value, count, onChange }: { title: string; 
             type="button"
             aria-pressed={active}
             onClick={() => onChange(o.value)}
-            className={`flex h-8 w-full items-center justify-between gap-2 rounded-[8px] px-2 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'bg-white/[0.08] text-text-primary' : 'text-text-secondary hover:bg-white/[0.04] hover:text-text-primary'}`}
+            className={`flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'bg-foreground/[0.08] text-text-primary' : 'text-text-secondary hover:bg-foreground/[0.04] hover:text-text-primary'}`}
           >
             <span className="truncate">{o.label}</span>
             <span className="text-[12px] text-text-tertiary tabular-nums">{count(o.value)}</span>
@@ -160,7 +160,7 @@ export default function FindingsPage() {
   )
 
   return (
-    <div className="mx-auto max-w-[1440px] space-y-6 p-6 md:p-8">
+    <div className="mx-auto min-w-0 max-w-[1440px] space-y-6 p-6 md:p-8">
       <PageHeader
         title="Findings"
         subtitle="Bugs, posts, feedback and leads the agents found. Decide what happens to each one."
@@ -173,8 +173,8 @@ export default function FindingsPage() {
       {actionError && <InlineError message={actionError} onDismiss={() => setActionError('')} />}
 
       {hasPosts && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-border-primary bg-white/[0.02] px-5 py-4">
-          <div className="text-[13px] text-text-secondary">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-primary bg-card px-4 py-3">
+          <div className="text-sm text-text-secondary">
             <span className="font-medium text-text-primary">LinkedIn</span>{' '}
             {connected.size
               ? <>connected for {[...connected].map(d => (d === 'organization' ? 'the company page' : 'your personal profile')).join(' and ')}.</>
@@ -214,7 +214,7 @@ export default function FindingsPage() {
           </aside>
 
           <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(240px,320px)_minmax(0,1fr)]">
-            <section aria-label="Finding list" className="min-w-0 overflow-hidden rounded-[18px] border border-border-primary lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto">
+            <section aria-label="Finding list" className="min-w-0 overflow-hidden rounded-xl border border-border-primary lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto">
               <p className="border-b border-border-primary px-4 py-2.5 text-[12px] text-text-tertiary"><span className="tabular-nums">{visible.length}</span> of <span className="tabular-nums">{allFindings.length}</span></p>
               {visible.length === 0 ? (
                 <div className="p-4">
@@ -231,9 +231,9 @@ export default function FindingsPage() {
                           type="button"
                           aria-current={active ? 'true' : undefined}
                           onClick={() => select(f.id)}
-                          className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-ring ${active ? 'bg-white/[0.06] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-white/[0.03]'}`}
+                          className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-ring ${active ? 'bg-foreground/[0.06] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-foreground/[0.03]'}`}
                         >
-                          <span className="line-clamp-2 text-[13px] font-medium text-text-primary">{f.title}</span>
+                          <span className="line-clamp-2 text-sm font-medium text-text-primary">{f.title}</span>
                           <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-text-tertiary">
                             <span className="inline-flex items-center gap-1.5"><span className={`h-2 w-2 rounded-full ${severityDot(f.severity)}`} aria-hidden />{severityLabel(f.severity)}</span>
                             <span>{FINDING_TYPE_LABEL[findingType(f)]}</span>
@@ -248,7 +248,7 @@ export default function FindingsPage() {
               )}
             </section>
 
-            <section ref={detailRef} aria-label="Finding detail" className="min-w-0 scroll-mt-4 rounded-[18px] border border-border-primary p-5 md:p-6 lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto">
+            <section ref={detailRef} aria-label="Finding detail" className="min-w-0 scroll-mt-4 rounded-xl border border-border-primary p-5 md:p-6 lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto">
               {selected ? (
                 <FindingDetail
                   key={selected.id}

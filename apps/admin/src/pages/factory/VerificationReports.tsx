@@ -14,7 +14,7 @@ const TONE = {
   success: 'bg-status-success/10 text-status-success border-status-success/20',
   error: 'bg-status-error/10 text-status-error border-status-error/20',
   warning: 'bg-status-warning/10 text-status-warning border-status-warning/20',
-  neutral: 'bg-white/[0.06] text-text-secondary border-white/[0.09]',
+  neutral: 'bg-foreground/[0.06] text-text-secondary border-border-primary',
 } as const
 
 const CHECK: Record<VerificationCheck['status'], { label: string; tone: keyof typeof TONE }> = {
@@ -47,12 +47,12 @@ export function VerificationReports({ reports }: { reports: StoredVerificationRe
   if (!reports.length) return null
   return (
     <section aria-labelledby="verification-title" className="space-y-3">
-      <h3 id="verification-title" className="flex items-center gap-1.5 text-[13px] font-semibold text-text-primary">
+      <h3 id="verification-title" className="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
         <ShieldCheck className="h-4 w-4 text-text-secondary" aria-hidden="true" />Verification
       </h3>
       {reports.map(({ head_sha, created_at, report }) => (
-        <div key={`${head_sha}-${created_at}`} className="space-y-3 rounded-[11px] border border-border-primary p-3.5">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+        <div key={`${head_sha}-${created_at}`} className="space-y-3 rounded-md border border-border-primary p-3.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
             <span className={cn(PILL, report.passed ? TONE.success : TONE.error)}>{report.passed ? 'All checks passed' : 'Blocked'}</span>
             <span className="text-text-secondary">{verdict(report)}</span>
             <span className="text-[12px] text-text-tertiary">on commit</span>
@@ -60,7 +60,7 @@ export function VerificationReports({ reports }: { reports: StoredVerificationRe
           </div>
           <ul className="m-0 list-none space-y-1.5 p-0">
             {report.checks.map((check, index) => (
-              <li key={`${index}-${check.name}`} className="flex items-center gap-2.5 text-[13px]">
+              <li key={`${index}-${check.name}`} className="flex items-center gap-2.5 text-sm">
                 <span className={cn(PILL, 'w-16', TONE[CHECK[check.status].tone])}>{CHECK[check.status].label}</span>
                 <span className="min-w-0 break-all font-mono text-[12px] text-text-primary">{checkLabel(check.name)}</span>
                 {seconds(check.duration_ms) && <span className="ml-auto shrink-0 text-[12px] tabular-nums text-text-tertiary">{seconds(check.duration_ms)}</span>}

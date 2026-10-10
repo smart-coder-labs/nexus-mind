@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "inter",
+        "createdAt": "2026-10-09T20:09:37.386Z",
+        "reason": "User explicitly requested preserving Claude’s existing design. docs/DESIGN_DIRECTION.md section 3 specifies system-ui, -apple-system, Inter; this import and fallback predate this refinement."
+      }
+    ]
+  }
+}

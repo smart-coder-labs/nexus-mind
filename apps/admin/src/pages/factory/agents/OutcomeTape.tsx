@@ -11,7 +11,7 @@ const CELL: Record<Outcome | 'empty', string> = {
   error: 'bg-status-error',
   neutral: 'bg-text-tertiary',
   active: 'border border-text-secondary bg-transparent',
-  empty: 'border border-border-primary bg-white/[0.03]',
+  empty: 'border border-border-primary bg-foreground/[0.03]',
 }
 
 const WORD: Record<Outcome, string> = {

@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { Plus, Trash2, X } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Input } from '../../../components/ui/Input'
@@ -98,23 +99,23 @@ export function PolicyEditor({
               description={editing ? 'Action and scope identify the policy and cannot change. Delete it and create a new one to move it.' : undefined}
             >
               <Field id="policy-action" label="Action" hint={ACTION_DESCRIPTION[draft.action]}>
-                <select id="policy-action" className={`${SELECT_CLASS} font-mono`} value={draft.action} disabled={editing} onChange={event => set('action', event.target.value as FactoryAction)}>
+                <StyledSelect id="policy-action" className={`${SELECT_CLASS} font-mono`} value={draft.action} disabled={editing} onChange={event => set('action', event.target.value as FactoryAction)}>
                   {ACTIONS.map(action => <option key={action} value={action}>{action}</option>)}
-                </select>
+                </StyledSelect>
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field id="policy-project" label="Project" hint="Leave empty for every project.">
                   <Input id="policy-project" value={draft.project} disabled={editing} placeholder="Any project" onChange={event => set('project', event.target.value)} />
                 </Field>
                 <Field id="policy-task-class" label="Task class">
-                  <select id="policy-task-class" className={SELECT_CLASS} value={draft.taskClass} disabled={editing} onChange={event => set('taskClass', event.target.value as FactoryTaskClass | '')}>
+                  <StyledSelect id="policy-task-class" className={SELECT_CLASS} value={draft.taskClass} disabled={editing} onChange={event => set('taskClass', event.target.value as FactoryTaskClass | '')}>
                     <option value="">Any task class</option>
                     {TASK_CLASSES.map(taskClass => <option key={taskClass} value={taskClass}>{taskClassLabel(taskClass)}</option>)}
-                  </select>
+                  </StyledSelect>
                 </Field>
               </div>
               {draft.action === 'merge' && draft.project.trim() && (
-                <p className="rounded-[11px] border border-status-warning/20 bg-status-warning/[0.08] px-3.5 py-2.5 text-[13px] text-text-primary">
+                <p className="rounded-md border border-status-warning/20 bg-status-warning/[0.08] px-3.5 py-2.5 text-sm text-text-primary">
                   Autonomous reviews do not know which project a pull request belongs to yet. While any merge policy is
                   scoped to a project, the factory holds every autonomous merge in the organization for a person rather
                   than guess which policy applies.

@@ -53,9 +53,9 @@ function LeadBlock({ lead }: { lead: Dict }) {
     ...socialChips(lead.social_links, 'co-social-'),
   ].filter(Boolean)
   return (
-    <section aria-label="Lead" className="space-y-3 rounded-[18px] border border-border-primary p-4 text-[13px]">
+    <section aria-label="Lead" className="space-y-3 rounded-xl border border-border-primary p-4 text-sm">
       {(asStr(lead.industry) || asStr(lead.headquarters)) && (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
           {asStr(lead.industry) && <><dt className="text-text-tertiary">Industry</dt><dd className="text-text-secondary">{asStr(lead.industry)}</dd></>}
           {asStr(lead.headquarters) && <><dt className="text-text-tertiary">Headquarters</dt><dd className="text-text-secondary">{asStr(lead.headquarters)}</dd></>}
         </dl>
@@ -79,7 +79,7 @@ function LeadBlock({ lead }: { lead: Dict }) {
       )}
       {(asStr(lead.email_subject) || asStr(lead.email_body)) && (
         <details>
-          <summary className="cursor-pointer rounded-[8px] text-[12px] font-medium text-text-tertiary hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">Drafted email</summary>
+          <summary className="cursor-pointer rounded-md text-[12px] font-medium text-text-tertiary hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">Drafted email</summary>
           {asStr(lead.email_subject) && <p className="mt-1.5 text-text-secondary"><span className="text-text-tertiary">Subject:</span> {asStr(lead.email_subject)}</p>}
           {asStr(lead.email_body) && <pre className="mt-1 whitespace-pre-wrap font-sans text-text-secondary">{asStr(lead.email_body)}</pre>}
         </details>
@@ -158,7 +158,7 @@ export function FindingDetail(props: FindingDetailProps) {
           )}
         </div>
         <h2 id="finding-title" className="text-[15px] font-semibold leading-snug tracking-[-0.2px] text-text-primary">{finding.title}</h2>
-        <p className="text-[13px] leading-relaxed text-text-secondary">{finding.summary}</p>
+        <p className="text-sm leading-relaxed text-text-secondary">{finding.summary}</p>
         <dl className="flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
           {agentName && <div className="flex gap-1.5"><dt className="text-text-tertiary">Agent</dt><dd className="text-text-secondary">{agentName}{templateKey ? ` (${templateName(templateKey)})` : ''}</dd></div>}
           <div className="flex gap-1.5"><dt className="text-text-tertiary">First seen</dt><dd className="text-text-secondary">{relativeTime(finding.created_at)}</dd></div>
@@ -177,8 +177,8 @@ export function FindingDetail(props: FindingDetailProps) {
               const url = asStr(image.url)!
               const alt = asStr(image.alt_text) ?? `Generated image ${index + 1} for this post`
               return (
-                <a key={url} href={url} target="_blank" rel="noreferrer" title={alt} className="rounded-[8px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
-                  <img src={url} alt={alt} className="h-28 w-28 rounded-[8px] border border-border-primary object-cover" loading="lazy" />
+                <a key={url} href={url} target="_blank" rel="noreferrer" title={alt} className="rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
+                  <img src={url} alt={alt} className="h-28 w-28 rounded-md border border-border-primary object-cover" loading="lazy" />
                 </a>
               )
             })}
@@ -191,14 +191,14 @@ export function FindingDetail(props: FindingDetailProps) {
       {(shot || locDict || locStr || (steps && steps.length) || repro) && (
         <section aria-label="Evidence" className="space-y-4">
           {shot && (
-            <a href={shot} target="_blank" rel="noreferrer" className="block max-w-md rounded-[11px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
-              <img src={shot} alt={`Screenshot for ${finding.title}`} className="max-h-56 w-full rounded-[11px] border border-border-primary object-cover object-top" />
+            <a href={shot} target="_blank" rel="noreferrer" className="block max-w-md rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
+              <img src={shot} alt={`Screenshot for ${finding.title}`} className="max-h-56 w-full rounded-md border border-border-primary object-cover object-top" />
             </a>
           )}
           {(locDict || locStr) && (
             <Block title="Where">
               {locDict
-                ? <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[13px]">{Object.entries(locDict).map(([k, v]) => <div key={k} className="contents"><dt className="text-text-tertiary">{humanize(k)}</dt><dd className="break-all font-mono text-[12px] text-text-secondary">{typeof v === 'string' || typeof v === 'number' ? String(v) : JSON.stringify(v)}</dd></div>)}</dl>
+                ? <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">{Object.entries(locDict).map(([k, v]) => <div key={k} className="contents"><dt className="text-text-tertiary">{humanize(k)}</dt><dd className="break-all font-mono text-[12px] text-text-secondary">{typeof v === 'string' || typeof v === 'number' ? String(v) : JSON.stringify(v)}</dd></div>)}</dl>
                 : <p className="break-all font-mono text-[12px] text-text-secondary">{locStr}</p>}
             </Block>
           )}
@@ -206,8 +206,8 @@ export function FindingDetail(props: FindingDetailProps) {
             <Block title="Steps to reproduce">
               <ol className="grid list-none gap-1.5 p-0">
                 {steps.map((s, i) => (
-                  <li key={i} className="flex gap-2 text-[13px] text-text-secondary">
-                    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-border-primary bg-white/[0.05] text-[11px] text-text-tertiary tabular-nums">{i + 1}</span>
+                  <li key={i} className="flex gap-2 text-sm text-text-secondary">
+                    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-border-primary bg-foreground/[0.05] text-[11px] text-text-tertiary tabular-nums">{i + 1}</span>
                     {typeof s === 'string' ? s : JSON.stringify(s)}
                   </li>
                 ))}
@@ -216,20 +216,20 @@ export function FindingDetail(props: FindingDetailProps) {
           )}
           {repro && (
             <Block title="Evidence excerpt">
-              <pre className="overflow-auto rounded-[11px] bg-black/30 p-3 font-mono text-[12px] text-text-secondary">{repro}</pre>
+              <pre className="overflow-auto rounded-md bg-muted p-3 font-mono text-[12px] text-text-secondary">{repro}</pre>
             </Block>
           )}
         </section>
       )}
 
       <Block title="Deliveries">
-        {deliveries.length === 0 ? <p className="text-[13px] text-text-tertiary">Not delivered anywhere yet.</p> : (
+        {deliveries.length === 0 ? <p className="text-sm text-text-tertiary">Not delivered anywhere yet.</p> : (
           <ul className="list-none space-y-1.5 p-0">
             {deliveries.map(item => {
               const meta = deliveryStatusMeta(item.status)
               const retryable = canRun && ['slack', 'github_issue'].includes(item.channel) && ['failed', 'dead_letter'].includes(item.status)
               return (
-                <li key={item.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[11px] border border-border-primary bg-white/[0.02] px-3 py-2 text-[13px]">
+                <li key={item.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border-primary bg-foreground/[0.02] px-3 py-2 text-sm">
                   <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[meta.tone]}`} aria-hidden />
                   <span className="text-text-primary">{channelName(item.channel)}</span>
                   <span className="text-text-secondary">{meta.label}</span>

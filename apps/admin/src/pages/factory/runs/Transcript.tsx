@@ -63,17 +63,17 @@ function toChatMessages(turns: AutonomousAgentEvent[]): ChatMsg[] {
 
 function ChatRow({ m }: { m: ChatMsg }) {
   if (m.kind === 'assistant') return (
-    <div className="rounded-[11px] border border-border-primary bg-white/[0.04] px-3 py-2">
-      {m.badge && <span className="mb-1.5 inline-block rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-medium text-text-tertiary">{m.badge}</span>}
+    <div className="rounded-md border border-border-primary bg-foreground/[0.04] px-3 py-2">
+      {m.badge && <span className="mb-1.5 inline-block rounded-md bg-foreground/[0.06] px-2 py-0.5 text-[11px] font-medium text-text-tertiary">{m.badge}</span>}
       {m.markdown != null
-        ? <div className="text-[13px] leading-relaxed text-text-primary [&_*]:!my-1 [&_h1]:text-[15px] [&_h2]:text-[15px] [&_h3]:text-[13px] [&_table]:text-[12px]"><Markdown content={m.markdown} /></div>
+        ? <div className="text-sm leading-relaxed text-text-primary [&_*]:!my-1 [&_h1]:text-[15px] [&_h2]:text-[15px] [&_h3]:text-sm [&_table]:text-[12px]"><Markdown content={m.markdown} /></div>
         : m.pretty != null
-          ? <pre className="overflow-x-auto rounded-[8px] bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-text-secondary">{m.pretty}</pre>
-          : <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-text-primary">{m.plain}</div>}
+          ? <pre className="overflow-x-auto rounded-md bg-muted p-2 font-mono text-[11px] leading-relaxed text-text-secondary">{m.pretty}</pre>
+          : <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-text-primary">{m.plain}</div>}
     </div>
   )
   if (m.kind === 'tool') return <div className="flex items-center gap-1.5 pl-1 text-[12px] text-text-tertiary"><Wrench className="h-3 w-3" aria-hidden /> Used <span className="font-mono text-text-secondary">{m.tool}</span></div>
-  if (m.kind === 'tool-error') return <div className="whitespace-pre-wrap rounded-[11px] border border-status-error/25 bg-status-error/[0.07] px-3 py-2 font-mono text-[12px] text-status-error">{m.plain}</div>
+  if (m.kind === 'tool-error') return <div className="whitespace-pre-wrap break-all rounded-md border border-status-error/25 bg-status-error/[0.07] px-3 py-2 font-mono text-[12px] text-status-error">{m.plain}</div>
   return null
 }
 
@@ -84,10 +84,10 @@ export function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[];
   useEffect(() => {
     if (live && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [messages.length, live])
-  if (!turns.length) return <p className="text-[13px] text-text-tertiary">{live ? 'Waiting for the agent to start…' : 'No conversation was recorded for this run.'}</p>
+  if (!turns.length) return <p className="text-sm text-text-tertiary">{live ? 'Waiting for the agent to start…' : 'No conversation was recorded for this run.'}</p>
   return (
-    <div ref={scrollRef} className="max-h-[520px] space-y-2 overflow-y-auto rounded-[11px] border border-border-primary bg-black/40 p-3">
-      {messages.length ? messages.map(m => <ChatRow key={m.key} m={m} />) : <p className="text-[13px] text-text-tertiary">No readable messages yet.</p>}
+    <div ref={scrollRef} className="max-h-[520px] space-y-2 overflow-y-auto rounded-md border border-border-primary bg-muted/50 p-3">
+      {messages.length ? messages.map(m => <ChatRow key={m.key} m={m} />) : <p className="text-sm text-text-tertiary">No readable messages yet.</p>}
       {live && <div role="status" className="flex items-center gap-2 pl-1 text-[12px] text-text-tertiary"><Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden /> Streaming…</div>}
     </div>
   )

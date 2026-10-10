@@ -1,48 +1,9 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import type { CardProps, CardVariant } from './Card.types';
+import type { CardProps } from './Card.types';
 
-/* ========================================
-   STYLES
-   ======================================== */
-
-const baseStyles = `
-  rounded-[18px]
-  transition-apple
-`;
-
-const variantStyles: Record<CardVariant, string> = {
-    elevated: `
-    border border-white/[0.07]
-    bg-[#0d0f14]/60
-    backdrop-blur-[12px]
-  `,
-    glass: `
-    glass
-    border border-white/[0.07]
-  `,
-    outlined: `
-    border border-white/[0.07]
-    bg-[#0d0f14]/60
-    backdrop-blur-[12px]
-  `,
-    flat: `
-    border border-white/[0.07]
-    bg-[#0d0f14]/60
-    backdrop-blur-[12px]
-  `,
-};
-
-const paddingStyles = {
-    none: '',
-    sm: 'p-4',
-    md: 'p-6',
-    lg: 'p-8',
-};
-
-/* ========================================
-   COMPONENT
-   ======================================== */
+import { cardBaseStyles, cardVariantStyles, cardPaddingStyles } from './Card.styles';
+import { cn } from '../../../lib/utils';
 
 export const Card = React.forwardRef<HTMLDivElement, CardProps>(
     (
@@ -56,12 +17,12 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
         },
         ref
     ) => {
-        const combinedClassName = `
-      ${baseStyles}
-      ${variantStyles[variant]}
-      ${paddingStyles[padding]}
-      ${className}
-    `.trim().replace(/\s+/g, ' ');
+        const combinedClassName = cn(
+            cardBaseStyles,
+            cardVariantStyles[variant],
+            cardPaddingStyles[padding],
+            className,
+        );
 
         const hoverAnimation = hoverable
             ? {
@@ -86,12 +47,12 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
 
         return (
             <motion.div
+                data-slot="card"
                 ref={ref}
                 className={combinedClassName}
                 role={interactiveAttrs.role}
                 aria-label={interactiveAttrs['aria-label']}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
+
                 transition={{
                     duration: 0.22,
                     ease: [0.16, 1, 0.3, 1] as [number, number, number, number],
@@ -122,7 +83,7 @@ export const CardTitle: React.FC<{
     children: React.ReactNode;
     className?: string;
 }> = ({ children, className = '' }) => (
-    <h3 className={`text-[21px] font-semibold text-text-primary tracking-[0.231px] mb-1 ${className}`}>
+    <h3 className={`text-base font-semibold leading-none text-card-foreground mb-1 ${className}`}>
         {children}
     </h3>
 );

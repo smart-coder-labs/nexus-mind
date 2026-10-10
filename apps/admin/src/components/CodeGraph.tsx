@@ -340,7 +340,7 @@ export default function CodeGraph({
         <GraphChipRow role="list" aria-label="Repository legend">
           <span
             role="listitem"
-            className="flex items-center gap-2 h-[32px] px-[13px] rounded-[16px] border border-white/[0.09] bg-[#0d0f14]/[0.66] backdrop-blur-[12px]"
+            className="flex items-center gap-2 h-[32px] px-[13px] rounded-xl border border-border-primary bg-surface-primary "
             title={`Repository: ${selectedRepoName}`}
           >
             <span
@@ -348,7 +348,7 @@ export default function CodeGraph({
               style={{ backgroundColor: NODE_COLORS.Project }}
               aria-hidden="true"
             />
-            <span className="text-[12.5px] text-[#cfd4de]">{selectedRepoName}</span>
+            <span className="text-[12.5px] text-text-secondary">{selectedRepoName}</span>
           </span>
         </GraphChipRow>
       )}
@@ -396,7 +396,7 @@ export default function CodeGraph({
   if (projectsError) {
     body = (
       <div className="absolute inset-0 flex items-center justify-center p-6">
-        <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
+        <div className="border border-status-error/20 rounded-md px-4 py-3 text-xs text-status-error/80">
           Failed to load repositories. Please refresh.
         </div>
       </div>
@@ -424,7 +424,7 @@ export default function CodeGraph({
   } else if (isError) {
     body = (
       <div className="absolute inset-0 flex items-center justify-center p-6">
-        <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
+        <div className="border border-status-error/20 rounded-md px-4 py-3 text-xs text-status-error/80">
           {(error as Error)?.message ?? 'Failed to load code graph.'}
         </div>
       </div>
@@ -495,14 +495,14 @@ export default function CodeGraph({
 
       {selectedNode && (
         <GraphDetailPanel>
-          <div className="flex items-start gap-3 px-5 pt-[18px] pb-3.5 border-b border-white/[0.06] shrink-0">
+          <div className="flex items-start gap-3 px-5 pt-[18px] pb-3.5 border-b border-border-primary shrink-0">
             <div className="flex flex-col gap-2 flex-1 min-w-0">
-              <h2 className="m-0 text-[16px] font-bold text-[#f4f6fa] leading-[1.35] truncate">
+              <h2 className="m-0 text-[16px] font-bold text-text-primary leading-[1.35] truncate">
                 {selectedNode.name}
               </h2>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span
-                  className="text-[11.5px] font-semibold px-[11px] py-[3px] rounded-[11px]"
+                  className="text-[11.5px] font-semibold px-[11px] py-[3px] rounded-md"
                   style={{
                     backgroundColor: NODE_COLORS[selectedNode.type] ?? '#94a3b8',
                     color: DARK_INK_TYPES.has(selectedNode.type) ? '#1a1405' : '#ffffff',
@@ -511,13 +511,13 @@ export default function CodeGraph({
                   {selectedNode.type}
                 </span>
                 {selectedNode.language && (
-                  <span className="text-[11.5px] px-[11px] py-[3px] rounded-[11px] bg-white/[0.06] text-[#b9c1d0]">
+                  <span className="text-[11.5px] px-[11px] py-[3px] rounded-md bg-foreground/[0.06] text-text-secondary">
                     {selectedNode.language}
                   </span>
                 )}
               </div>
               {selectedNode.fp && (
-                <span className="text-[11.5px] text-[#5b6373] font-mono truncate">
+                <span className="text-[11.5px] text-text-tertiary font-mono truncate">
                   {selectedNode.fp}
                   {selectedNode.startLine != null && `:${selectedNode.startLine}`}
                   {selectedNode.endLine != null && `-${selectedNode.endLine}`}
@@ -526,7 +526,7 @@ export default function CodeGraph({
             </div>
             <button
               onClick={clearSelection}
-              className="shrink-0 w-7 h-7 rounded-[8px] flex items-center justify-center text-[#7c8496] hover:bg-white/[0.06] hover:text-[#e7eaf0] transition-colors"
+              className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:bg-foreground/[0.06] hover:text-text-primary transition-colors"
               aria-label="Close detail panel"
             >
               <X className="w-[15px] h-[15px]" />
@@ -539,7 +539,7 @@ export default function CodeGraph({
             {selectedNode.fp && <DetailField label="FILE" value={selectedNode.fp} />}
 
             {!hasSource && (
-              <p className="text-[13px] text-[#8b93a5] leading-[1.6]">
+              <p className="text-sm text-text-tertiary leading-[1.6]">
                 {selectedNode.type} node — no file source. Click a File or a code symbol
                 (Function, Method, Class…) to view code.
               </p>
@@ -550,14 +550,14 @@ export default function CodeGraph({
               </div>
             )}
             {hasSource && snippetError && (
-              <p className="text-[13px] text-status-error/80">
+              <p className="text-sm text-status-error/80">
                 {(snippetErr as Error)?.message ?? 'No source found.'}
               </p>
             )}
             {hasSource && snippet && (
               <div className="flex flex-col gap-[7px]">
-                <span className="text-[10.5px] font-bold tracking-[0.1em] text-[#5b6373]">SOURCE</span>
-                <pre className="px-4 py-3.5 rounded-[12px] border border-white/[0.06] bg-white/[0.02] text-[11.5px] leading-[1.65] text-[#b9c1d0] font-mono overflow-x-auto">
+                <span className="text-[10.5px] font-bold tracking-[0.1em] text-text-tertiary">SOURCE</span>
+                <pre className="px-4 py-3.5 rounded-xl border border-border-primary bg-foreground/[0.02] text-[11.5px] leading-[1.65] text-text-secondary font-mono overflow-x-auto">
                   <code>{snippet.content}</code>
                 </pre>
               </div>

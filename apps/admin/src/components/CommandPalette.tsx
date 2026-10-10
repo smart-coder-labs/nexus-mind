@@ -241,7 +241,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     >
       <div
         ref={modalRef}
-        className="border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[18px] w-full max-w-lg overflow-hidden mx-4"
+        className="border border-border-primary bg-surface-elevated shadow-md rounded-xl w-full max-w-lg overflow-hidden mx-4"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search input row */}
@@ -259,7 +259,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             aria-controls="command-palette-results"
             className="w-full bg-transparent pl-10 pr-16 py-3.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none"
           />
-          <kbd className="absolute right-4 text-[10px] text-text-quaternary border border-white/[0.1] rounded-[4px] px-[5px] py-px pointer-events-none">
+          <kbd className="absolute right-4 text-[10px] text-text-quaternary border border-border-primary rounded-[4px] px-[5px] py-px pointer-events-none">
             ESC
           </kbd>
         </div>
@@ -276,21 +276,22 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             <div>
               <p className="text-[10px] text-text-quaternary uppercase tracking-wide font-semibold px-3 pb-1 pt-2">Recent</p>
               {history.map((h, i) => (
-                <button
+                <div
                   key={i}
-                  onClick={() => setQuery(h)}
-                  className="flex items-center gap-[10px] w-full px-[11px] py-[9px] hover:bg-white/[0.06] text-xs text-text-secondary rounded-[8px] group"
+                  className="flex items-center w-full hover:bg-foreground/[0.06] text-xs text-text-secondary rounded-md group"
                 >
+                  <button type="button" onClick={() => setQuery(h)} className="flex flex-1 items-center gap-[10px] px-[11px] py-[9px] text-left">
                   <Clock className="w-3 h-3 text-text-quaternary shrink-0" />
                   {h}
+                  </button>
                   <button
                     onClick={e => { e.stopPropagation(); removeFromHistory(h) }}
-                    className="ml-auto opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-text-primary transition-opacity"
+                    className="p-2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-text-quaternary hover:text-text-primary transition-opacity"
                     aria-label={`Remove "${h}" from history`}
                   >
                     <X className="w-3 h-3" />
                   </button>
-                </button>
+                </div>
               ))}
               <button
                 onClick={clearHistory}
@@ -339,11 +340,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                     onClick={() => goTo(r.path)}
                     role="option"
                     aria-selected={isSelected}
-                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-[8px] group ${
-                      isSelected ? 'bg-accent-blue/10' : 'hover:bg-white/[0.06]'
+                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-md group ${
+                      isSelected ? 'bg-action-primary/10' : 'hover:bg-foreground/[0.06]'
                     }`}
                   >
-                    <span className="w-7 h-7 rounded-[8px] bg-white/[0.06] flex items-center justify-center shrink-0">
+                    <span className="w-7 h-7 rounded-md bg-foreground/[0.06] flex items-center justify-center shrink-0">
                       <ResultIcon kind="memory" />
                     </span>
                     <span className="flex flex-col min-w-0 flex-1">
@@ -375,11 +376,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                     onClick={() => goTo(r.path)}
                     role="option"
                     aria-selected={isSelected}
-                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-[8px] group ${
-                      isSelected ? 'bg-accent-blue/10' : 'hover:bg-white/[0.06]'
+                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-md group ${
+                      isSelected ? 'bg-action-primary/10' : 'hover:bg-foreground/[0.06]'
                     }`}
                   >
-                    <span className="w-7 h-7 rounded-[8px] bg-white/[0.06] flex items-center justify-center shrink-0">
+                    <span className="w-7 h-7 rounded-md bg-foreground/[0.06] flex items-center justify-center shrink-0">
                       <ResultIcon kind="user" />
                     </span>
                     <span className="flex flex-col min-w-0 flex-1">
@@ -411,11 +412,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                     onClick={() => goTo(r.path)}
                     role="option"
                     aria-selected={isSelected}
-                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-[8px] group ${
-                      isSelected ? 'bg-accent-blue/10' : 'hover:bg-white/[0.06]'
+                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-md group ${
+                      isSelected ? 'bg-action-primary/10' : 'hover:bg-foreground/[0.06]'
                     }`}
                   >
-                    <span className="w-7 h-7 rounded-[8px] bg-white/[0.06] flex items-center justify-center shrink-0">
+                    <span className="w-7 h-7 rounded-md bg-foreground/[0.06] flex items-center justify-center shrink-0">
                       <ResultIcon kind="project" />
                     </span>
                     <span className="flex flex-col min-w-0 flex-1">
@@ -447,11 +448,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                     onClick={() => goTo(r.path)}
                     role="option"
                     aria-selected={isSelected}
-                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-[8px] group ${
-                      isSelected ? 'bg-accent-blue/10' : 'hover:bg-white/[0.06]'
+                    className={`flex items-center gap-[10px] px-[11px] py-[9px] w-full cursor-pointer transition-colors text-left rounded-md group ${
+                      isSelected ? 'bg-action-primary/10' : 'hover:bg-foreground/[0.06]'
                     }`}
                   >
-                    <span className="w-7 h-7 rounded-[8px] bg-white/[0.06] flex items-center justify-center shrink-0">
+                    <span className="w-7 h-7 rounded-md bg-foreground/[0.06] flex items-center justify-center shrink-0">
                       <ResultIcon kind="sdd" />
                     </span>
                     <span className="flex flex-col min-w-0 flex-1">

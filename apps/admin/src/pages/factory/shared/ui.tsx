@@ -25,9 +25,9 @@ export const errorMessage = (value: unknown, fallback: string) =>
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle: string; actions?: ReactNode }) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1 basis-72">
         <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">{title}</h1>
-        <p className="mt-1 text-[13px] text-text-secondary">{subtitle}</p>
+        <p className="mt-1 text-sm text-text-secondary">{subtitle}</p>
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </header>
@@ -47,7 +47,7 @@ export function FieldLabel({ children, className = '' }: { children: ReactNode; 
 /** Inline error (§5): icon + what failed + retry. */
 export function InlineError({ message, onRetry, onDismiss }: { message: string; onRetry?: () => void; onDismiss?: () => void }) {
   return (
-    <div role="alert" className="flex flex-wrap items-center gap-3 rounded-[11px] border border-status-error/25 bg-status-error/[0.08] px-4 py-3 text-[13px] text-text-primary">
+    <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md border border-status-error/25 bg-status-error/[0.08] px-4 py-3 text-sm text-text-primary">
       <AlertTriangle className="h-4 w-4 shrink-0 text-status-error" aria-hidden />
       <span className="min-w-0 flex-1">{message}</span>
       {onRetry && <Button size="sm" variant="secondary" leftIcon={<RefreshCw className="h-3.5 w-3.5" />} onClick={onRetry}>Try again</Button>}
@@ -94,8 +94,8 @@ export function RunStatusPill({ status, size = 'sm' }: { status: string; size?: 
 export function RawJson({ label, value }: { label: string; value: unknown }) {
   return (
     <details className="group border-t border-border-secondary pt-3">
-      <summary className="cursor-pointer rounded-[8px] text-[12px] text-text-tertiary hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">{label}</summary>
-      <pre className="mt-2.5 max-h-[420px] overflow-auto rounded-[11px] bg-black/30 p-3 font-mono text-[11px] leading-relaxed text-text-secondary whitespace-pre-wrap break-all">{JSON.stringify(value, null, 2)}</pre>
+      <summary className="cursor-pointer rounded-md text-[12px] text-text-tertiary hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">{label}</summary>
+      <pre className="mt-2.5 max-h-[420px] overflow-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed text-text-secondary whitespace-pre-wrap break-all">{JSON.stringify(value, null, 2)}</pre>
     </details>
   )
 }
@@ -147,7 +147,7 @@ export function OverflowMenu({ label, items }: { label: string; items: MenuItem[
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         onClick={() => setOpen(value => !value)}
-        className="grid h-8 w-8 place-items-center rounded-full border border-border-primary text-text-secondary transition-colors hover:bg-white/5 hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
+        className="grid h-8 w-8 place-items-center rounded-md border border-border-primary text-text-secondary transition-colors hover:bg-foreground/5 hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
       >
         <MoreHorizontal className="h-4 w-4" aria-hidden />
       </button>
@@ -158,7 +158,7 @@ export function OverflowMenu({ label, items }: { label: string; items: MenuItem[
           role="menu"
           aria-label={label}
           onKeyDown={onKeyDown}
-          className="absolute right-0 z-30 mt-1.5 min-w-[180px] rounded-[18px] border border-border-primary bg-background-tertiary p-1.5"
+          className="absolute right-0 z-30 mt-1.5 min-w-[180px] rounded-xl border border-border-primary bg-background-tertiary p-1.5"
         >
           {items.map(item => (
             <button
@@ -167,7 +167,7 @@ export function OverflowMenu({ label, items }: { label: string; items: MenuItem[
               role="menuitem"
               disabled={item.disabled}
               onClick={() => { setOpen(false); item.onSelect() }}
-              className={`flex w-full items-center gap-2 rounded-[8px] px-3 py-2 text-left text-[13px] transition-colors hover:bg-white/[0.06] focus-visible:bg-white/[0.06] focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-focus-ring disabled:opacity-40 ${item.danger ? 'text-status-error' : 'text-text-primary'}`}
+              className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-foreground/[0.06] focus-visible:bg-foreground/[0.06] focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-focus-ring disabled:opacity-40 ${item.danger ? 'text-status-error' : 'text-text-primary'}`}
             >
               {item.icon && <span className="inline-flex text-current" aria-hidden>{item.icon}</span>}
               {item.label}
@@ -186,7 +186,7 @@ export function FilterChip({ label, count, active, onClick }: { label: string; c
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'border-accent-blue/40 bg-accent-blue/15 text-text-primary' : 'border-border-primary text-text-secondary hover:text-text-primary'}`}
+      className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-[12px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'border-accent-blue/40 bg-action-primary/15 text-text-primary' : 'border-border-primary text-text-secondary hover:text-text-primary'}`}
     >
       {label}
       {count != null && <span className={`tabular-nums ${active ? 'text-text-secondary' : 'text-text-tertiary'}`}>{count}</span>}
@@ -194,5 +194,5 @@ export function FilterChip({ label, count, active, onClick }: { label: string; c
   )
 }
 
-/** Text link on dark surfaces (Sky Link Blue passes AA on near-black; Action Blue does not). */
-export const TEXT_LINK = 'rounded-[8px] text-[13px] font-medium text-[var(--color-accent-on-dark)] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+/** Theme-aware brand link shared by factory routes. */
+export const TEXT_LINK = 'rounded-md text-sm font-medium text-accent-on-dark hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'

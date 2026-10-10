@@ -8,7 +8,7 @@ import { InviteLinkModal } from '../components/InviteLinkModal'
 import { ConfirmModal } from '../components/ConfirmModal'
 import {
   UserPlus, Link, X, FileText, Search, KeyRound,
-  Users as UsersIcon, UserCheck, Ban, UserMinus, RotateCw, RefreshCcw,
+  Users as UsersIcon, UserCheck, Ban, UserMinus, RotateCw, RefreshCcw, Eye,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Badge } from '../components/ui/Badge/Badge'
@@ -24,7 +24,7 @@ const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visi
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Users page.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 // Server timestamps from SQLite datetime('now') are naive UTC (no zone). Parse
 // them as UTC so past events don't render in the future. No-op for zoned or
@@ -40,7 +40,7 @@ function toDate(iso: string): Date {
 // so the green doesn't get diluted across a whole day of activity.
 function relativeTime(dateStr: string | null | undefined): ReactNode {
   if (!dateStr) {
-    return <span className="text-[13px] text-text-tertiary">Never</span>
+    return <span className="text-sm text-text-tertiary">Never</span>
   }
   const now = Date.now()
   const ms = now - toDate(dateStr).getTime()
@@ -68,7 +68,7 @@ function relativeTime(dateStr: string | null | undefined): ReactNode {
     cls = 'text-text-tertiary'
   }
 
-  return <span className={`text-[13px] ${cls}`}>{label}</span>
+  return <span className={`text-sm ${cls}`}>{label}</span>
 }
 
 // Stable per-user avatar accent: hashes the user's id (falls back to email)
@@ -94,13 +94,13 @@ function statusBadge(user: User) {
 
 function roleBadge(role: string) {
   const styles: Record<string, string> = {
-    admin:  'text-accent-blue border-accent-blue/30 bg-accent-blue/5',
+    admin:  'text-accent-blue border-accent-blue/30 bg-action-primary/5',
     member: 'text-text-tertiary border-border-primary',
     viewer: 'text-text-tertiary border-border-secondary',
   }
   const cls = styles[role] || 'text-status-success border-status-success/30 bg-status-success/5'
   return (
-    <span className={`text-[11px] font-medium border rounded-full px-2 py-0.5 capitalize ${cls}`}>
+    <span className={`text-xs font-medium border rounded-md px-2 py-0.5 capitalize ${cls}`}>
       {role}
     </span>
   )
@@ -282,29 +282,29 @@ export default function Users() {
   ]
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
-            <UsersIcon className="w-5 h-5 text-accent-blue" />
+          <div className="w-11 h-11 rounded-xl bg-foreground/[0.04] flex items-center justify-center shrink-0">
+            <UsersIcon className="w-5 h-5 text-text-secondary" />
           </div>
           <div>
             <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Users</h1>
-            <p className="text-[13px] text-text-secondary mt-1">Manage team members and API keys</p>
+            <p className="text-sm text-text-secondary mt-1">Manage team members and API keys</p>
           </div>
         </div>
         {isAdmin && (
           <div className="flex items-center gap-2">
             <button
               onClick={() => setInviteLinkOpen(true)}
-              className={`border border-border-primary rounded-full px-4 py-2 text-[13px] text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors ${FOCUS}`}
+              className={`border border-border-primary rounded-md px-4 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors ${FOCUS}`}
             >
               <Link className="w-4 h-4" />
               Invite link
             </button>
             <button
               onClick={() => setInviteOpen(true)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors ${FOCUS}`}
+              className={`flex items-center gap-2 px-3 py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-semibold transition-colors ${FOCUS}`}
             >
               <UserPlus className="w-4 h-4" />
               Invite user
@@ -314,7 +314,7 @@ export default function Users() {
       </div>
 
       {users && (
-        <KpiMarquee role="list" aria-label="User statistics">
+        <KpiMarquee compact role="list" aria-label="User statistics">
           {statTiles.map((t, i) => (
             <div key={t.label} className="w-[232px] flex-none">
               <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} accent={accentFor(i)} />
@@ -326,7 +326,7 @@ export default function Users() {
       {/* Search + status filter toolbar (mockup: glass search input, dot
           filter chips toggling the table below, right-aligned shown count) */}
       <div className="flex items-center gap-2 flex-wrap">
-        <div className={`flex items-center gap-2 h-9 w-[280px] px-3.5 rounded-[10px] border border-border-primary bg-[#0d0f14]/60 ${FOCUS}`}>
+        <div className={`flex items-center gap-2 h-9 w-full sm:w-[280px] px-3.5 rounded-lg border border-border-primary bg-surface-primary ${FOCUS}`}>
           <Search className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
           <input
             type="text"
@@ -334,7 +334,7 @@ export default function Users() {
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Search users…"
             aria-label="Search users"
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-[12.5px] placeholder:text-text-quaternary"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-quaternary"
           />
         </div>
         {STATUS_FILTERS.map(f => {
@@ -345,14 +345,14 @@ export default function Users() {
               onClick={() => setStatusFilter(prev => (prev === f.key ? null : f.key))}
               aria-pressed={active}
               className={cn(
-                'flex items-center gap-1.5 h-8 px-3 rounded-full border text-[12px] font-semibold transition-colors',
-                active ? 'border-white/25 bg-white/[0.07] text-text-primary' : 'border-border-primary bg-[#0d0f14]/60 text-text-secondary hover:border-white/25',
+                'flex items-center gap-1.5 h-8 px-3 rounded-md border text-[12px] font-semibold transition-colors',
+                active ? 'border-border-primary bg-foreground/[0.07] text-text-primary' : 'border-border-primary bg-surface-primary text-text-secondary hover:border-border-primary',
                 FOCUS,
               )}
             >
               <span className={cn('w-[7px] h-[7px] rounded-full', f.dotClass)} />
               {f.label}
-              <span className="text-[10.5px] text-text-quaternary">{f.count}</span>
+              <span className="text-xs text-text-quaternary">{f.count}</span>
             </button>
           )
         })}
@@ -360,8 +360,8 @@ export default function Users() {
         <span className="text-[12px] text-text-tertiary">{filteredUsers.length} users</span>
       </div>
 
-      <div className={`rounded-[18px] overflow-hidden overflow-x-auto ${GLASS_PANEL}`}>
-        <table className="w-full text-[13px] min-w-[520px]">
+      <div className={`rounded-xl overflow-hidden overflow-x-auto ${GLASS_PANEL}`}>
+        <table className="admin-data-table w-full text-sm min-w-[520px]">
           <thead>
             <tr className="border-b border-border-secondary">
               {isAdmin && (
@@ -373,15 +373,15 @@ export default function Users() {
                       setSelectedUsers(e.target.checked ? new Set(filteredUsers.map((u: User) => u.id)) : new Set())
                       setSelectMode(e.target.checked)
                     }}
-                    className="rounded border-border-primary bg-white/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer"
+                    className="rounded border-input bg-foreground/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                 </th>
               )}
-              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">User</th>
-              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Role</th>
-              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Status</th>
-              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Last active</th>
-              <th className="text-right px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Actions</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">User</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">Role</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">Status</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">Last active</th>
+              <th className="text-right px-4 py-3 text-xs font-semibold tracking-[0.06em] uppercase text-text-tertiary">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-secondary">
@@ -390,12 +390,12 @@ export default function Users() {
                 <tr key={i}>
                   {isAdmin && (
                     <td className="px-4 py-3 w-8">
-                      <div className="h-3.5 w-3.5 rounded bg-white/[0.04] animate-pulse" />
+                      <div className="h-3.5 w-3.5 rounded bg-foreground/[0.04] animate-pulse" />
                     </td>
                   )}
                   {Array.from({ length: 5 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded-[5px] bg-white/[0.04] animate-pulse" />
+                      <div className="h-4 rounded-sm bg-foreground/[0.04] animate-pulse" />
                     </td>
                   ))}
                 </tr>
@@ -407,7 +407,7 @@ export default function Users() {
                 return (
                 <tr
                   key={user.id}
-                  className={`hover:bg-accent-blue/[0.05] transition-colors duration-150 cursor-pointer${user.disabled_at ? ' opacity-60' : ''}`}
+                  className="hover:bg-muted/50 transition-colors duration-150 cursor-pointer"
                   onClick={() => setSelectedUser(user)}
                 >
                   {isAdmin && (
@@ -421,14 +421,14 @@ export default function Users() {
                           setSelectedUsers(next)
                           setSelectMode(next.size > 0)
                         }}
-                        className="rounded border-border-primary bg-white/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer"
+                        className="rounded border-input bg-foreground/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                       />
                     </td>
                   )}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <div
-                        className="w-8 h-8 rounded-full border flex items-center justify-center text-[13px] font-semibold shrink-0"
+                        className="w-8 h-8 rounded-full border flex items-center justify-center text-sm font-semibold shrink-0"
                         style={{
                           backgroundColor: `color-mix(in srgb, ${avatarAccent} 15%, transparent)`,
                           borderColor: `color-mix(in srgb, ${avatarAccent} 30%, transparent)`,
@@ -452,14 +452,14 @@ export default function Users() {
                           disabled={updateRoleMut.isPending}
                         >
                           <SelectTrigger className="w-[132px]" aria-label={`Role for ${user.name}`}>
-                            <SelectValue />
+                            <SelectValue>{user.role}</SelectValue>
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="admin">Admin</SelectItem>
-                            <SelectItem value="member">Member</SelectItem>
-                            <SelectItem value="viewer">Viewer</SelectItem>
+                            <SelectItem value="admin" icon={<KeyRound />} indicatorColor="var(--data-amber)" description="Full organization and access control">Admin</SelectItem>
+                            <SelectItem value="member" icon={<UsersIcon />} indicatorColor="var(--data-blue)" description="Create and manage permitted workspace content">Member</SelectItem>
+                            <SelectItem value="viewer" icon={<Eye />} indicatorColor="var(--muted-foreground)" description="Read-only access to permitted areas">Viewer</SelectItem>
                             {roles?.map(r => (
-                              <SelectItem key={r.id} value={r.name}>{r.display_name}</SelectItem>
+                              <SelectItem key={r.id} value={r.name} icon={<KeyRound />} indicatorColor={r.color || 'var(--brand-link)'} description={r.description || 'Custom permissions for this workspace role'}>{r.display_name}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -486,7 +486,7 @@ export default function Users() {
                           <button
                             onClick={() => enableMut.mutate(user.id)}
                             disabled={enableMut.isPending && enableMut.variables === user.id}
-                            className={`h-[26px] px-2.5 rounded-[8px] border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-status-success hover:border-status-success/30 transition-colors disabled:opacity-40 ${FOCUS}`}
+                            className={`h-[26px] px-2.5 rounded-md border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-status-success hover:border-status-success/30 transition-colors disabled:opacity-40 ${FOCUS}`}
                           >
                             Enable
                           </button>
@@ -494,7 +494,7 @@ export default function Users() {
                           <button
                             onClick={() => disableMut.mutate(user.id)}
                             disabled={disableMut.isPending && disableMut.variables === user.id}
-                            className={`h-[26px] px-2.5 rounded-[8px] border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-status-error hover:border-status-error/30 transition-colors disabled:opacity-40 ${FOCUS}`}
+                            className={`h-[26px] px-2.5 rounded-md border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-status-error hover:border-status-error/30 transition-colors disabled:opacity-40 ${FOCUS}`}
                           >
                             Disable
                           </button>
@@ -506,7 +506,7 @@ export default function Users() {
                           onClick={() => setRotateTarget(user)}
                           aria-label="Rotate key"
                           title="Rotate key"
-                          className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-white/[0.07] transition-colors ${FOCUS}`}
+                          className={`w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-foreground/[0.07] transition-colors ${FOCUS}`}
                         >
                           <RotateCw className="w-3.5 h-3.5" />
                         </button>
@@ -517,7 +517,7 @@ export default function Users() {
                           onClick={() => setResetTarget(user)}
                           aria-label="Reset key"
                           title="Reset key"
-                          className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-status-warning/70 hover:text-status-warning hover:bg-status-warning/10 transition-colors ${FOCUS}`}
+                          className={`w-[26px] h-[26px] rounded-md flex items-center justify-center text-status-warning/70 hover:text-status-warning hover:bg-status-warning/10 transition-colors ${FOCUS}`}
                         >
                           <RefreshCcw className="w-3.5 h-3.5" />
                         </button>
@@ -527,7 +527,7 @@ export default function Users() {
                           onClick={() => setRevokeTarget(user)}
                           aria-label="Revoke"
                           title="Revoke access"
-                          className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-status-error/70 hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
+                          className={`w-[26px] h-[26px] rounded-md flex items-center justify-center text-status-error/70 hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
                         >
                           <Ban className="w-3.5 h-3.5" />
                         </button>
@@ -543,12 +543,12 @@ export default function Users() {
         {!isLoading && userList.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <UserPlus className="w-6 h-6 text-text-quaternary/50" />
-            <p className="text-[13px] font-semibold text-text-secondary">No team members yet</p>
-            <p className="text-[13px] text-text-tertiary max-w-xs">Invite your first user to start collaborating on memories and projects.</p>
+            <p className="text-sm font-semibold text-text-secondary">No team members yet</p>
+            <p className="text-sm text-text-tertiary max-w-xs">Invite your first user to start collaborating on memories and projects.</p>
             {isAdmin && (
               <button
                 onClick={() => setInviteOpen(true)}
-                className={`mt-2 flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors ${FOCUS}`}
+                className={`mt-2 flex items-center gap-2 px-3 py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-semibold transition-colors ${FOCUS}`}
               >
                 <UserPlus className="w-3.5 h-3.5" />
                 Invite user
@@ -559,28 +559,28 @@ export default function Users() {
         {!isLoading && userList.length > 0 && filteredUsers.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <Search className="w-6 h-6 text-text-quaternary/50" />
-            <p className="text-[13px] font-semibold text-text-secondary">No users match your search</p>
-            <p className="text-[13px] text-text-tertiary max-w-xs">Try a different name, email, or clear the status filter.</p>
+            <p className="text-sm font-semibold text-text-secondary">No users match your search</p>
+            <p className="text-sm text-text-tertiary max-w-xs">Try a different name, email, or clear the status filter.</p>
           </div>
         )}
       </div>
 
       {/* Bulk action bar */}
       {selectMode && selectedUsers.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] px-5 py-2.5">
-          <span className="text-[13px] text-text-secondary">{selectedUsers.size} selected</span>
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex max-w-[calc(100%-2rem)] flex-wrap items-center justify-center gap-3 rounded-xl border border-border-primary bg-surface-elevated shadow-md px-5 py-2.5">
+          <span className="text-sm text-text-secondary">{selectedUsers.size} selected</span>
           <div className="w-px h-4 bg-border-primary" />
           <button
             onClick={() => bulkEnableMut.mutate([...selectedUsers])}
             disabled={bulkEnableMut.isPending}
-            className={`text-[13px] px-2 py-1 rounded-[8px] text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-40 ${FOCUS}`}
+            className={`text-sm px-2 py-1 rounded-md text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-40 ${FOCUS}`}
           >
             Enable
           </button>
           <button
             onClick={() => bulkDisableMut.mutate([...selectedUsers])}
             disabled={bulkDisableMut.isPending}
-            className={`text-[13px] px-2 py-1 rounded-[8px] text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 ${FOCUS}`}
+            className={`text-sm px-2 py-1 rounded-md text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 ${FOCUS}`}
           >
             Disable
           </button>
@@ -620,7 +620,7 @@ export default function Users() {
         onClose={() => setRevokeTarget(null)}
       />
       {revokeMut.isError && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] border border-status-error/30 rounded-[11px] px-4 py-2 text-[13px] text-status-error/80">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-surface-elevated shadow-md border border-status-error/30 rounded-md px-4 py-2 text-sm text-status-error/80">
           {(revokeMut.error as Error)?.message ?? 'Failed to revoke user'}
         </div>
       )}
@@ -646,7 +646,7 @@ export default function Users() {
         onClose={() => setResetTarget(null)}
       />
       {resetMut.isError && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] border border-status-error/30 rounded-[11px] px-4 py-2 text-[13px] text-status-error/80">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-surface-elevated shadow-md border border-status-error/30 rounded-md px-4 py-2 text-sm text-status-error/80">
           {(resetMut.error as Error)?.message ?? 'Failed to reset API key'}
         </div>
       )}
@@ -678,10 +678,10 @@ export default function Users() {
 // ── User Activity Drawer ──────────────────────────────────────────────────────
 
 function actionChipCls(action: string): string {
-  if (action.startsWith('memory.')) return 'text-accent-blue bg-accent-blue/15 border-accent-blue/30'
+  if (action.startsWith('memory.')) return 'text-accent-blue bg-action-primary/15 border-accent-blue/30'
   if (action.startsWith('key.') || action.startsWith('invite')) return 'text-status-warning bg-status-warning/10 border-status-warning/30'
   if (action.startsWith('user.') || action === 'revoke') return 'text-status-error bg-status-error/10 border-status-error/30'
-  return 'text-text-tertiary bg-white/[0.06] border-border-primary'
+  return 'text-text-tertiary bg-foreground/[0.06] border-border-primary'
 }
 
 function UserActivityFeed({ userId, client }: { userId: string; client: NexusMindClient }) {
@@ -696,8 +696,8 @@ function UserActivityFeed({ userId, client }: { userId: string; client: NexusMin
       <div className="px-5 py-3 space-y-3">
         {Array.from({ length: 5 }).map((_, i) => (
           <div key={i} className="flex items-center gap-3">
-            <div className="h-5 w-20 rounded-[5px] bg-white/[0.04] animate-pulse shrink-0" />
-            <div className="h-3.5 flex-1 rounded-[5px] bg-white/[0.04] animate-pulse" />
+            <div className="h-5 w-20 rounded-sm bg-foreground/[0.04] animate-pulse shrink-0" />
+            <div className="h-3.5 flex-1 rounded-sm bg-foreground/[0.04] animate-pulse" />
           </div>
         ))}
       </div>
@@ -724,11 +724,11 @@ function UserActivityFeed({ userId, client }: { userId: string; client: NexusMin
     <div className="divide-y divide-border-secondary/30">
       {data.map(entry => (
         <div key={entry.id} className="px-5 py-3 flex items-start gap-3">
-          <span className={`text-[11px] font-medium border rounded-full px-2 py-0.5 shrink-0 mt-0.5 ${actionChipCls(entry.action)}`}>
+          <span className={`text-xs font-medium border rounded-full px-2 py-0.5 shrink-0 mt-0.5 ${actionChipCls(entry.action)}`}>
             {entry.action}
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[13px] text-text-secondary truncate">
+            <p className="text-sm text-text-secondary truncate">
               {entry.resource_type}{entry.resource_id ? ` · ${entry.resource_id.slice(0, 8)}` : ''}
             </p>
             <p className="text-[12px] text-text-tertiary mt-0.5">
@@ -785,7 +785,7 @@ function UserNoteSection({
   return (
     <div className="px-5 py-3 border-b border-border-secondary/30">
       <div className="flex items-center justify-between mb-1.5">
-        <p className="text-[10px] font-semibold text-text-quaternary">Admin Note</p>
+        <p className="text-xs font-semibold text-text-quaternary">Admin Note</p>
         <button
           onClick={() => { setNoteInput(savedNote ?? ''); setNoteOpen(v => !v) }}
           className="text-text-quaternary hover:text-text-secondary transition-colors"
@@ -798,7 +798,7 @@ function UserNoteSection({
         <p className="text-xs text-text-tertiary italic leading-relaxed">{savedNote}</p>
       )}
       {!noteOpen && !savedNote && (
-        <p className="text-[10px] text-text-quaternary italic">No note — click to add</p>
+        <p className="text-xs text-text-quaternary italic">No note — click to add</p>
       )}
       {noteOpen && (
         <div className="space-y-1.5">
@@ -810,11 +810,11 @@ function UserNoteSection({
             onBlur={handleSave}
             maxLength={500}
             placeholder="Private admin note…"
-            className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary resize-none w-full p-2 focus:outline-none focus:border-accent-blue/60"
+            className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary resize-none w-full p-2 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
           />
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-quaternary">{noteInput.length} / 500</span>
-            <span className="text-[10px] text-text-quaternary">Ctrl+Enter to save · Esc to cancel</span>
+            <span className="text-xs text-text-quaternary">{noteInput.length} / 500</span>
+            <span className="text-xs text-text-quaternary">Ctrl+Enter to save · Esc to cancel</span>
           </div>
         </div>
       )}
@@ -851,7 +851,7 @@ function UserActivityDrawer({
         role="dialog"
         aria-modal="true"
         aria-label={`Activity for ${user.name || user.email}`}
-        className="fixed right-0 top-0 h-full w-96 bg-[#0f1117]/[0.94] backdrop-blur-[22px] border-l border-white/10 z-50 flex flex-col shadow-2xl"
+        className="fixed right-0 top-0 h-full w-96 bg-surface-elevated border-l border-border-primary z-50 flex flex-col shadow-2xl"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-border-secondary/50">
@@ -859,7 +859,7 @@ function UserActivityDrawer({
             <p className="text-xs font-semibold text-text-primary">{user.name || user.email}</p>
             <p className="text-xs text-text-tertiary mt-0.5">{user.role} · {user.email}</p>
             <div className="mt-0.5">
-              <p className="text-[10px] text-text-quaternary uppercase tracking-wide">Last login</p>
+              <p className="text-xs text-text-quaternary uppercase tracking-wide">Last login</p>
               {user.last_login_at
                 ? <span className="text-xs text-text-secondary">{relativeTime(user.last_login_at)}</span>
                 : <span className="text-xs text-text-quaternary italic">Never logged in</span>}
@@ -879,7 +879,7 @@ function UserActivityDrawer({
 
         {/* Section label */}
         <div className="px-5 py-3 border-b border-border-secondary/30">
-          <p className="text-[10px] font-semibold text-text-quaternary uppercase tracking-wide">Recent Activity</p>
+          <p className="text-xs font-semibold text-text-quaternary uppercase tracking-wide">Recent Activity</p>
         </div>
 
         {/* Feed */}
@@ -936,12 +936,12 @@ function NewKeyModal({ userName, apiKey, copied, onCopy, onClose }: { userName: 
       aria-modal="true"
       aria-label={userName ? `New API key for ${userName}` : 'New API key generated'}
     >
-      <div ref={modalRef} className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4" onClick={e => e.stopPropagation()}>
+      <div ref={modalRef} className="border border-border-primary bg-surface-elevated rounded-xl p-6 max-w-sm w-full mx-4 space-y-4" onClick={e => e.stopPropagation()}>
         <p className="text-text-primary font-semibold">
           {userName ? `New API key for ${userName}` : 'New API key generated'}
         </p>
         <p className="text-xs text-status-warning">Copy this key now — it won't be shown again.</p>
-        <div className="font-mono text-xs bg-white/[0.03] border border-white/[0.09] rounded-[11px] p-3 break-all select-all text-text-primary flex items-center gap-2">
+        <div className="font-mono text-xs bg-foreground/[0.03] border border-border-primary rounded-md p-3 break-all select-all text-text-primary flex items-center gap-2">
           <span className="flex-1">{apiKey}</span>
           <button
             onClick={() => onCopy(apiKey)}
@@ -952,7 +952,7 @@ function NewKeyModal({ userName, apiKey, copied, onCopy, onClose }: { userName: 
         </div>
         <button
           onClick={onClose}
-          className="w-full py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:bg-accent-blue-hover transition-colors"
+          className="w-full py-2 rounded-md bg-action-primary text-action-foreground text-sm font-medium hover:bg-action-primary-hover transition-colors h-9 shadow-xs"
         >
           Done
         </button>

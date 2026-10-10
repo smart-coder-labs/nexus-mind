@@ -1,68 +1,13 @@
 import React from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 
-import type { BadgeProps, BadgeVariant, BadgeSize } from './Badge.types';
+import type { BadgeProps, BadgeVariant } from './Badge.types';
 
 /* ========================================
    STYLES
    ======================================== */
 
-const baseStyles = `
-  inline-flex items-center justify-center gap-1.5
-  font-medium
-  rounded-full
-  transition-apple
-`;
-
-// Single badge grammar (DESIGN_DIRECTION §5): tinted background at ~10% of a
-// status/accent color plus a 20% border. `default` is the neutral surface variant.
-const variantStyles: Record<BadgeVariant, string> = {
-  default: `
-    bg-white/[0.06]
-    text-text-secondary
-    border border-white/[0.09]
-  `,
-  primary: `
-    bg-accent-blue/10
-    text-accent-blue
-    border border-accent-blue/20
-  `,
-  success: `
-    bg-status-success/10
-    text-status-success
-    border border-status-success/20
-  `,
-  warning: `
-    bg-status-warning/10
-    text-status-warning
-    border border-status-warning/20
-  `,
-  error: `
-    bg-status-error/10
-    text-status-error
-    border border-status-error/20
-  `,
-  info: `
-    bg-status-info/10
-    text-status-info
-    border border-status-info/20
-  `,
-  purple: `
-    bg-accent-purple/10
-    text-accent-purple
-    border border-accent-purple/20
-  `,
-};
-
-const sizeStyles: Record<BadgeSize, string> = {
-  sm: 'h-5 px-2 text-[11px]',
-  md: 'h-6 px-2.5 text-[11px]',
-  lg: 'h-7 px-3 text-xs',
-};
-
-/* ========================================
-   COMPONENT
-   ======================================== */
+import { badgeBaseStyles as baseStyles, badgeVariantStyles as variantStyles, badgeSizeStyles as sizeStyles } from './Badge.styles';
 
 export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
   (
@@ -93,7 +38,7 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
 
     const dotColorMap: Record<BadgeVariant, string> = {
       default: 'bg-text-secondary',
-      primary: 'bg-accent-blue',
+      primary: 'bg-action-primary',
       success: 'bg-status-success',
       warning: 'bg-status-warning',
       error: 'bg-status-error',
@@ -168,7 +113,7 @@ export const NotificationBadge: React.FC<NotificationBadgeProps> = ({
             }
             flex items-center justify-center
             bg-status-error
-            text-white
+            text-text-inverse
             text-xs
             font-semibold
             rounded-full

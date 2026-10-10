@@ -23,16 +23,16 @@ export function SafetyFloors() {
   return (
     <section
       aria-labelledby="floors-title"
-      className="rounded-[18px] border border-border-primary bg-white/[0.04] p-5"
+      className="min-w-0 rounded-xl border border-border-primary bg-card p-4 sm:p-5"
     >
       <div className="flex flex-wrap items-start gap-3">
         <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-text-secondary" aria-hidden="true" />
         <div className="min-w-0 flex-1">
           <h2 id="floors-title" className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Always a person</h2>
-          <p className="mt-1 text-[13px] text-text-secondary">
+          <p className="mt-1 text-sm text-text-secondary">
             These safety floors hold an action for a person whatever a policy says. No policy can lift them.
           </p>
-          <ul className="mt-3 grid list-none gap-x-6 gap-y-1.5 p-0 text-[13px] text-text-primary sm:grid-cols-2 xl:grid-cols-3">
+          <ul className="mt-3 grid list-none gap-x-6 gap-y-1.5 p-0 text-sm text-text-primary sm:grid-cols-2 xl:grid-cols-3">
             {EVERY_ACTION.map(item => (
               <li key={item} className="flex gap-2">
                 <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-text-tertiary" />

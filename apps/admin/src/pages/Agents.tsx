@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow, isPast, addDays, addMonths, addYears } from 'date-fns'
@@ -155,7 +156,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
     >
       <div
         ref={modalRef}
-        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md space-y-5"
+        className="border border-border-primary bg-surface-elevated rounded-xl p-6 w-full max-w-md space-y-5"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -175,14 +176,14 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
         {newKey ? (
           /* Key reveal */
           <div className="space-y-4">
-            <p className="text-[13px] text-text-tertiary">
+            <p className="text-sm text-text-tertiary">
               Agent created. Copy this API key — it will only be shown once.
             </p>
-            <div className="flex items-center gap-2 bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2">
-              <code className="flex-1 text-[13px] text-text-primary break-all font-mono">{newKey}</code>
+            <div className="flex items-center gap-2 bg-foreground/[0.04] border border-border-primary rounded-md px-3 py-2">
+              <code className="flex-1 text-sm text-text-primary break-all font-mono">{newKey}</code>
               <button
                 onClick={handleCopy}
-                className={`shrink-0 text-text-tertiary hover:text-text-secondary transition-colors rounded-[8px] ${FOCUS_CANVAS}`}
+                className={`shrink-0 text-text-tertiary hover:text-text-secondary transition-colors rounded-md ${FOCUS_CANVAS}`}
                 aria-label="Copy key"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5" />}
@@ -190,7 +191,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
             </div>
             <button
               onClick={handleClose}
-              className={`w-full py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors ${FOCUS_CANVAS}`}
+              className={`w-full py-2 rounded-full bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-semibold transition-colors ${FOCUS_CANVAS}`}
             >
               Done
             </button>
@@ -210,18 +211,18 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
                 onChange={e => setName(e.target.value)}
                 placeholder="My CI agent"
                 required
-                className={`w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 h-9 text-[13px] text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
+                className={`w-full bg-foreground/[0.04] border border-border-primary rounded-md px-3 h-9 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
               />
             </div>
 
             {/* Role */}
             <div className="space-y-1.5">
               <label htmlFor="agent-role" className="text-[12px] font-medium text-text-secondary">Role</label>
-              <select
+              <StyledSelect
                 id="agent-role"
                 value={role}
                 onChange={e => setRole(e.target.value)}
-                className={`w-full bg-white/[0.03] border border-white/[0.09] rounded-[11px] px-3 h-9 text-[13px] text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
+                className={`w-full bg-foreground/[0.03] border border-border-primary rounded-md px-3 h-9 text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
@@ -229,22 +230,22 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
                 {roles?.map(r => (
                   <option key={r.id} value={r.name}>{r.display_name}</option>
                 ))}
-              </select>
+              </StyledSelect>
             </div>
 
             {/* Expires in */}
             <div className="space-y-1.5">
               <label htmlFor="agent-expires" className="text-[12px] font-medium text-text-secondary">Expires in</label>
-              <select
+              <StyledSelect
                 id="agent-expires"
                 value={expires}
                 onChange={e => setExpires(e.target.value as ExpiresOption)}
-                className={`w-full bg-white/[0.03] border border-white/[0.09] rounded-[11px] px-3 h-9 text-[13px] text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
+                className={`w-full bg-foreground/[0.03] border border-border-primary rounded-md px-3 h-9 text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
               >
                 {EXPIRES_OPTIONS.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
-              </select>
+              </StyledSelect>
               {expires !== 'never' && (
                 <p className="text-[12px] text-text-tertiary">
                   Expires {formatDistanceToNow(new Date(expiresAt(expires)!), { addSuffix: true })}
@@ -252,20 +253,20 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
               )}
             </div>
 
-            {error && <p className="text-[13px] text-status-error/80">{error}</p>}
+            {error && <p className="text-sm text-status-error/80">{error}</p>}
 
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
                 onClick={handleClose}
-                className={`flex-1 py-2 rounded-full border border-border-primary text-[13px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors ${FOCUS_CANVAS}`}
+                className={`flex-1 py-2 rounded-full border border-border-primary text-sm text-text-secondary hover:text-text-primary hover:bg-foreground/[0.04] transition-colors ${FOCUS_CANVAS}`}
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading || !name.trim()}
-                className={`flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold disabled:opacity-40 transition-colors ${FOCUS_CANVAS}`}
+                className={`flex-1 py-2 rounded-full bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-semibold disabled:opacity-40 transition-colors ${FOCUS_CANVAS}`}
               >
                 {loading ? 'Creating…' : 'Create agent'}
               </button>
@@ -281,13 +282,13 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
 
 function SkeletonCard() {
   return (
-    <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5 flex flex-col gap-3">
+    <div className="border border-border-primary bg-surface-primary rounded-xl p-5 flex flex-col gap-3">
       <div className="flex items-start justify-between">
-        <div className="animate-pulse h-4 bg-white/[0.06] rounded-[8px] w-32" />
-        <div className="animate-pulse h-4 bg-white/[0.06] rounded-full w-14" />
+        <div className="animate-pulse h-4 bg-foreground/[0.06] rounded-md w-32" />
+        <div className="animate-pulse h-4 bg-foreground/[0.06] rounded-full w-14" />
       </div>
-      <div className="animate-pulse h-3 bg-white/[0.04] rounded-[8px] w-24" />
-      <div className="animate-pulse h-3 bg-white/[0.04] rounded-[8px] w-20" />
+      <div className="animate-pulse h-3 bg-foreground/[0.04] rounded-md w-24" />
+      <div className="animate-pulse h-3 bg-foreground/[0.04] rounded-md w-20" />
     </div>
   )
 }
@@ -303,12 +304,12 @@ interface AgentCardProps {
 
 function AgentCard({ keyData, onRevoke, onRotate, revoking }: AgentCardProps) {
   return (
-    <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5 flex flex-col gap-3 group relative transition-colors hover:border-white/[0.12]">
+    <div className="border border-border-primary bg-surface-primary rounded-xl p-5 flex flex-col gap-3 group relative transition-colors hover:border-border-primary">
       {/* Hover actions */}
       <div className="absolute top-4 right-4 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={() => onRotate(keyData)}
-          className={`p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.06] transition-colors ${FOCUS_TILE}`}
+          className={`p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors ${FOCUS_TILE}`}
           aria-label="Rotate key"
           title="Rotate key"
         >
@@ -317,7 +318,7 @@ function AgentCard({ keyData, onRevoke, onRotate, revoking }: AgentCardProps) {
         <button
           onClick={() => onRevoke(keyData)}
           disabled={revoking || keyData.revoked}
-          className={`p-1.5 rounded-[8px] text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 ${FOCUS_TILE}`}
+          className={`p-1.5 rounded-md text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 ${FOCUS_TILE}`}
           aria-label="Revoke key"
           title="Revoke key"
         >
@@ -327,11 +328,11 @@ function AgentCard({ keyData, onRevoke, onRotate, revoking }: AgentCardProps) {
 
       {/* Top row: name + status */}
       <div className="flex items-start gap-2 pr-16">
-        <div className="w-7 h-7 rounded-full bg-accent-blue/15 border border-accent-blue/20 text-accent-blue text-[13px] font-semibold flex items-center justify-center shrink-0 mt-0.5">
+        <div className="w-7 h-7 rounded-full bg-action-primary/15 border border-accent-blue/20 text-accent-blue text-sm font-semibold flex items-center justify-center shrink-0 mt-0.5">
           {keyData.user_name?.charAt(0).toUpperCase() ?? <Bot className="w-3.5 h-3.5" />}
         </div>
         <div className="min-w-0">
-          <p className="text-[13px] font-semibold text-text-primary truncate">{keyData.user_name}</p>
+          <p className="text-sm font-semibold text-text-primary truncate">{keyData.user_name}</p>
           <p className="text-[11px] text-text-tertiary font-mono mt-0.5">{keyPrefix(keyData)}</p>
         </div>
       </div>
@@ -398,7 +399,7 @@ function AgentActivitySection() {
     return (
       <div className="space-y-2">
         {[1, 2, 3].map(i => (
-          <div key={i} className="animate-pulse h-10 rounded-[11px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]" />
+          <div key={i} className="animate-pulse h-10 rounded-md border border-border-primary bg-surface-primary " />
         ))}
       </div>
     )
@@ -406,7 +407,7 @@ function AgentActivitySection() {
 
   if (!activity?.length) {
     return (
-      <p className="text-[13px] text-text-tertiary text-center py-8">
+      <p className="text-sm text-text-tertiary text-center py-8">
         No recent agent activity.
       </p>
     )
@@ -418,14 +419,14 @@ function AgentActivitySection() {
         {activity.map(item => (
           <div
             key={item.tool}
-            className="flex items-center justify-between px-4 py-2.5 rounded-[11px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]"
+            className="flex items-center justify-between px-4 py-2.5 rounded-md border border-border-primary bg-surface-primary "
           >
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-6 h-6 rounded-full bg-accent-blue/10 flex items-center justify-center shrink-0">
+              <div className="w-6 h-6 rounded-full bg-action-primary/10 flex items-center justify-center shrink-0">
                 <Bot className="w-3 h-3 text-accent-blue" />
               </div>
               <div className="min-w-0">
-                <p className="text-[13px] font-semibold text-text-primary truncate">{item.tool}</p>
+                <p className="text-sm font-semibold text-text-primary truncate">{item.tool}</p>
                 <p className="text-[12px] text-text-tertiary">
                   Last seen {relativeTime(item.last_seen)}
                 </p>
@@ -449,11 +450,11 @@ function AgentActivitySection() {
           <p className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">
             Top agents by requests
           </p>
-          <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5">
+          <div className="border border-border-primary bg-surface-primary rounded-xl p-5">
             {topAgents.map((agent, idx) => (
               <div key={agent.name} className="flex items-center justify-between py-1.5 border-b border-border-primary last:border-0">
-                <span className="text-[13px] font-semibold text-text-primary truncate">{idx + 1}. {agent.name}</span>
-                <span className="text-[13px] text-text-tertiary shrink-0 ml-4">{agent.count}</span>
+                <span className="text-sm font-semibold text-text-primary truncate">{idx + 1}. {agent.name}</span>
+                <span className="text-sm text-text-tertiary shrink-0 ml-4">{agent.count}</span>
               </div>
             ))}
           </div>
@@ -522,13 +523,13 @@ export default function Agents() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Agent identities</h1>
-          <p className="text-[13px] text-text-secondary mt-1">
+          <p className="text-sm text-text-secondary mt-1">
             Identities connected to NexusMind via API key; autonomous jobs are managed under Automation.
           </p>
         </div>
         <button
           onClick={() => setCreateOpen(true)}
-          className={`bg-accent-blue text-white rounded-full px-4 py-1.5 text-[13px] font-semibold hover:bg-accent-blue-hover transition-colors shrink-0 ${FOCUS_CANVAS}`}
+          className={`bg-action-primary text-action-foreground rounded-full px-4 py-1.5 text-sm font-semibold hover:bg-action-primary-hover transition-colors shrink-0 ${FOCUS_CANVAS}`}
         >
           Create agent
         </button>
@@ -536,14 +537,14 @@ export default function Agents() {
 
       {/* Filter bar */}
       <div className="flex items-center">
-        <div className="bg-white/[0.04] rounded-full p-0.5 flex items-center gap-0.5">
+        <div className="bg-foreground/[0.04] rounded-full p-0.5 flex items-center gap-0.5">
           {(['All', 'Active', 'Inactive', 'Expired'] as const).map(filter => (
             <button
               key={filter}
               onClick={() => setStatusFilter(filter)}
-              className={`px-3 py-1 rounded-full text-[13px] transition-colors border ${FOCUS_CANVAS} ${
+              className={`px-3 py-1 rounded-full text-sm transition-colors border ${FOCUS_CANVAS} ${
                 statusFilter === filter
-                  ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/40 font-semibold'
+                  ? 'bg-action-primary/10 text-accent-blue border-accent-blue/40 font-semibold'
                   : 'text-text-tertiary border-transparent hover:text-text-secondary'
               }`}
             >
@@ -555,7 +556,7 @@ export default function Agents() {
 
       {/* Revoke error */}
       {revokeMut.isError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-[13px] text-status-error">
+        <div className="rounded-md border border-status-error/20 bg-status-error/5 px-4 py-3 text-sm text-status-error">
           {revokeMut.error instanceof Error ? revokeMut.error.message : 'Failed to revoke key'}
         </div>
       )}
@@ -571,17 +572,17 @@ export default function Agents() {
           </div>
         ) : !keys?.length ? (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="w-12 h-12 rounded-full bg-white/[0.06] flex items-center justify-center">
+            <div className="w-12 h-12 rounded-full bg-foreground/[0.06] flex items-center justify-center">
               <Bot className="w-6 h-6 text-text-quaternary" />
             </div>
-            <p className="text-[13px] font-semibold text-text-tertiary">No agents yet</p>
-            <p className="text-[13px] text-text-tertiary text-center max-w-xs">
+            <p className="text-sm font-semibold text-text-tertiary">No agents yet</p>
+            <p className="text-sm text-text-tertiary text-center max-w-xs">
               Create an agent to give an AI assistant a dedicated API key and identity.
             </p>
           </div>
         ) : filteredKeys.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 gap-2">
-            <p className="text-[13px] text-text-tertiary">No {statusFilter.toLowerCase()} agents.</p>
+            <p className="text-sm text-text-tertiary">No {statusFilter.toLowerCase()} agents.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

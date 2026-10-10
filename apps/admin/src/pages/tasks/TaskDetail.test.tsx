@@ -370,7 +370,7 @@ describe('TaskDetail — spec links', () => {
       expect(screen.getByText('team-tasks')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /link spec change/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /link spec change/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /sso-callback/i }))
     fireEvent.click(screen.getByRole('button', { name: /^link$/i }))
 
@@ -413,8 +413,8 @@ describe('TaskDetail — assignee editing', () => {
       expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
     })
 
-    const assigneeSelect = screen.getByRole('button', { name: /^assignee$/i })
-    fireEvent.click(assigneeSelect)
+    const assigneeSelect = screen.getByRole('combobox', { name: /^assignee$/i })
+    fireEvent.keyDown(assigneeSelect, { key: 'Enter' })
     const rajOption = await screen.findByRole('option', { name: /raj patel/i })
     fireEvent.click(rajOption)
 
@@ -434,8 +434,8 @@ describe('TaskDetail — assignee editing', () => {
       expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
     })
 
-    const assigneeSelect = screen.getByRole('button', { name: /^assignee$/i })
-    fireEvent.click(assigneeSelect)
+    const assigneeSelect = screen.getByRole('combobox', { name: /^assignee$/i })
+    fireEvent.keyDown(assigneeSelect, { key: 'Enter' })
     const rajOption = await screen.findByRole('option', { name: /raj patel/i })
     fireEvent.click(rajOption)
 
@@ -463,7 +463,7 @@ describe('TaskDetail — assignee editing', () => {
       expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
     })
 
-    expect(screen.queryByRole('button', { name: /^assignee$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: /^assignee$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /unassign sarah chen/i })).not.toBeInTheDocument()
   })
 })
@@ -500,8 +500,8 @@ describe('TaskDetail — hydrated task via getTask', () => {
       expect(getTaskMock).toHaveBeenCalledTimes(1)
     })
 
-    const assigneeSelect = screen.getByRole('button', { name: /^assignee$/i })
-    fireEvent.click(assigneeSelect)
+    const assigneeSelect = screen.getByRole('combobox', { name: /^assignee$/i })
+    fireEvent.keyDown(assigneeSelect, { key: 'Enter' })
     const rajOption = await screen.findByRole('option', { name: /raj patel/i })
     fireEvent.click(rajOption)
     fireEvent.click(screen.getByRole('button', { name: /^add assignee$/i }))
@@ -632,7 +632,7 @@ describe('TaskDetail — linking a spec is a selector, not free text', () => {
     renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /link spec change/i })).toBeInTheDocument()
+      expect(screen.getByRole('combobox', { name: /link spec change/i })).toBeInTheDocument()
     })
 
     // The free-text input — the thing that let a typo become a 422 — must be gone.
@@ -653,7 +653,7 @@ describe('TaskDetail — linking a spec is a selector, not free text', () => {
   it('lists each change with its phase, and excludes changes already linked', async () => {
     renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /link spec change/i }))
+    fireEvent.keyDown(await screen.findByRole('combobox', { name: /link spec change/i }), { key: 'Enter' })
 
     // `sso-callback` is unlinked → offered, with its phase alongside.
     const option = await screen.findByRole('option', { name: /sso-callback/i })
@@ -669,7 +669,7 @@ describe('TaskDetail — linking a spec is a selector, not free text', () => {
   it('calls linkTaskSpec with the selected change name', async () => {
     renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /link spec change/i }))
+    fireEvent.keyDown(await screen.findByRole('combobox', { name: /link spec change/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /sso-callback/i }))
     fireEvent.click(screen.getByRole('button', { name: /^link$/i }))
 
@@ -697,7 +697,7 @@ describe('TaskDetail — project', () => {
     // No project Select: the backend's PatchTaskRequest (models/types.rs) accepts
     // title/description/status/priority/due_date/sprint_id — and nothing else. A
     // project picker here would silently no-op.
-    expect(screen.queryByRole('button', { name: /^project$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: /^project$/i })).not.toBeInTheDocument()
 
     // And Save must never claim to send one.
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
@@ -716,7 +716,7 @@ describe('TaskDetail — assignee candidates come from the project, not the org'
       expect(listProjectMembersMock).toHaveBeenCalledWith('p1')
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /^assignee$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^assignee$/i }), { key: 'Enter' })
 
     // Raj is a project member and unassigned → offered.
     expect(await screen.findByRole('option', { name: /raj patel/i })).toBeInTheDocument()
@@ -730,7 +730,7 @@ describe('TaskDetail — assignee candidates come from the project, not the org'
   it('assigns by user_id, not by the membership row id', async () => {
     renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /^assignee$/i }))
+    fireEvent.keyDown(await screen.findByRole('combobox', { name: /^assignee$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /raj patel/i }))
     fireEvent.click(screen.getByRole('button', { name: /^add assignee$/i }))
 
@@ -755,7 +755,7 @@ describe('TaskDetail — assignee candidates come from the project, not the org'
     })
     expect(listProjectMembersMock).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: /^assignee$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^assignee$/i }), { key: 'Enter' })
     expect(await screen.findByRole('option', { name: /dana kim/i })).toBeInTheDocument()
   })
 

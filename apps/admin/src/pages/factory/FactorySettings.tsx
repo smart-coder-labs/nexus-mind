@@ -13,10 +13,10 @@ import { InlineError, PageHeader, PermissionNote, SectionTitle, errorMessage, us
 
 function Section({ id, title, description, children, tone }: { id: string; title: string; description: string; children: ReactNode; tone?: 'danger' }) {
   return (
-    <section aria-labelledby={id} className={`space-y-4 rounded-[18px] border p-5 ${tone === 'danger' ? 'border-status-error/25' : 'border-border-primary'}`}>
+    <section aria-labelledby={id} className={`min-w-0 space-y-4 rounded-xl border bg-card p-4 sm:p-5 ${tone === 'danger' ? 'border-status-error/25' : 'border-border-primary'}`}>
       <div>
         <SectionTitle id={id}>{title}</SectionTitle>
-        <p className="mt-1 max-w-2xl text-[13px] text-text-secondary">{description}</p>
+        <p className="mt-1 max-w-2xl text-sm text-text-secondary">{description}</p>
       </div>
       {children}
     </section>
@@ -44,7 +44,7 @@ export default function FactorySettings() {
   const retentionDirty = settings.data != null && String(settings.data.retention_days) !== retention
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-6 md:p-8">
+    <div className="mx-auto min-w-0 max-w-4xl space-y-6 p-6 md:p-8">
       <PageHeader title="Factory settings" subtitle="The runtime your agents run on, the switch that pauses them all, and how long their history is kept." />
 
       <Section id="runtime-title" title="Runtime" description="Agents run inside the Claude Code runtime on this server. While it is not ready, runs wait instead of failing.">
@@ -54,16 +54,16 @@ export default function FactorySettings() {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-3">
               <Badge size="md" variant={meta.variant} dot>{meta.label}</Badge>
-              {runtime.data?.claude_version && <span className="text-[13px] text-text-secondary">Claude Code {runtime.data.claude_version}</span>}
-              {runtime.data?.reason_code && runtime.data.status !== 'ready' && <span className="text-[13px] text-text-tertiary">{humanize(runtime.data.reason_code)}</span>}
+              {runtime.data?.claude_version && <span className="text-sm text-text-secondary">Claude Code {runtime.data.claude_version}</span>}
+              {runtime.data?.reason_code && runtime.data.status !== 'ready' && <span className="text-sm text-text-tertiary">{humanize(runtime.data.reason_code)}</span>}
             </div>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[13px]">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
               <dt className="text-text-tertiary">Last checked</dt><dd className="text-text-secondary">{fmtDateTime(runtime.data?.checked_at) || 'Never'}</dd>
               {runtime.data?.last_success_at && <><dt className="text-text-tertiary">Last healthy</dt><dd className="text-text-secondary">{fmtDateTime(runtime.data.last_success_at)}</dd></>}
               {runtime.data?.last_failure_at && <><dt className="text-text-tertiary">Last problem</dt><dd className="text-text-secondary">{fmtDateTime(runtime.data.last_failure_at)}</dd></>}
             </dl>
             {runtime.data?.status === 'reauth_required' && (
-              <p className="flex gap-2 rounded-[11px] border border-status-warning/25 bg-status-warning/[0.08] px-4 py-3 text-[13px] text-text-primary">
+              <p className="flex gap-2 rounded-md border border-status-warning/25 bg-status-warning/[0.08] px-4 py-3 text-sm text-text-primary">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden />
                 <span>Authenticate Claude Code again as the backend OS account, then check again. Schedules stay saved and leasing is paused until then.</span>
               </p>
@@ -120,7 +120,7 @@ export default function FactorySettings() {
             </form>
           ) : (
             <div className="space-y-2">
-              <p className="text-[13px] text-text-primary">History is kept for {settings.data.retention_days} days.</p>
+              <p className="text-sm text-text-primary">History is kept for {settings.data.retention_days} days.</p>
               <PermissionNote permission="autonomous_agent:enable" action="change retention" />
             </div>
           )

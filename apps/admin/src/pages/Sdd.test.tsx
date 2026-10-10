@@ -301,7 +301,7 @@ describe('Sdd — filter bar', () => {
 
     // Project
     listSddChangesMock.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: /^project$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^project$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /^acme-platform$/i }))
     await waitFor(() => {
       expect(listSddChangesMock).toHaveBeenCalledWith(
@@ -312,7 +312,7 @@ describe('Sdd — filter bar', () => {
     // Phase
     listSddChangesMock.mockClear()
     listSddChangesMock.mockResolvedValue([staleChange])
-    fireEvent.click(screen.getByRole('button', { name: /^phase$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^phase$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /^design$/i }))
     await waitFor(() => {
       expect(listSddChangesMock).toHaveBeenCalledWith(
@@ -325,7 +325,7 @@ describe('Sdd — filter bar', () => {
 
     // Status
     listSddChangesMock.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: /^status$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^status$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /^active$/i }))
     await waitFor(() => {
       expect(listSddChangesMock).toHaveBeenCalledWith(
@@ -572,7 +572,7 @@ describe('Sdd — spec detail drawer', () => {
     // The latest revision arrived inline with the detail read — no extra fetch for it.
     expect(getSddSpecRevisionMock).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByLabelText('Revision'))
+    fireEvent.keyDown(screen.getByLabelText('Revision'), { key: 'Enter' })
     fireEvent.click(await screen.findByText(/rev 1 · import/))
 
     await waitFor(() => {
@@ -588,7 +588,7 @@ describe('Sdd — spec detail drawer', () => {
     await openSpecDrawer()
     await waitFor(() => expect(listSddSpecRevisionsMock).toHaveBeenCalledWith('s1'))
 
-    fireEvent.click(screen.getByLabelText('Revision'))
+    fireEvent.keyDown(screen.getByLabelText('Revision'), { key: 'Enter' })
 
     // Revision 3 came from a change and says so. (It matches twice — the trigger shows
     // the selected option's label as well as the list does.)

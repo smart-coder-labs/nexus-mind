@@ -196,8 +196,8 @@ describe('Tasks — list rendering', () => {
     listTasksMock.mockClear()
     listTasksMock.mockResolvedValue([tasks[1]])
 
-    const statusFilter = screen.getByRole('button', { name: /status/i })
-    fireEvent.click(statusFilter)
+    const statusFilter = screen.getByRole('combobox', { name: /status/i })
+    fireEvent.keyDown(statusFilter, { key: 'Enter' })
     const backlogOption = await screen.findByRole('option', { name: /backlog/i })
     fireEvent.click(backlogOption)
 
@@ -234,8 +234,8 @@ describe('Tasks — list rendering', () => {
     listTasksMock.mockClear()
     listTasksMock.mockResolvedValue([tasks[0]])
 
-    const assigneeFilter = screen.getByRole('button', { name: /assignee/i })
-    fireEvent.click(assigneeFilter)
+    const assigneeFilter = screen.getByRole('combobox', { name: /assignee/i })
+    fireEvent.keyDown(assigneeFilter, { key: 'Enter' })
     const option = await screen.findByRole('option', { name: new RegExp(users[0].name, 'i') })
     fireEvent.click(option)
 
@@ -258,7 +258,7 @@ describe('Tasks — list rendering', () => {
     listTasksMock.mockClear()
     listTasksMock.mockResolvedValue([tasks[0]])
 
-    fireEvent.click(screen.getByRole('button', { name: /assignee/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /assignee/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /assigned to me/i }))
 
     await waitFor(() => {
@@ -277,14 +277,14 @@ describe('Tasks — list rendering', () => {
       expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /assignee/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /assignee/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: new RegExp(users[0].name, 'i') }))
     await waitFor(() => {
       expect(listTasksMock).toHaveBeenCalledWith(expect.objectContaining({ assignee: users[0].id }))
     })
 
     listTasksMock.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: /assignee/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /assignee/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /all assignees/i }))
 
     await waitFor(() => {
@@ -386,10 +386,10 @@ describe('Tasks — edit via unified detail modal', () => {
     // The Save button lives in a footer at the bottom of the modal (after Comments),
     // associated to the edit form via `form="task-edit-form"` rather than nested inside
     // it, so scope to the whole modal container instead of just the form's parent.
-    const modal = titleInput.closest('form')!.closest('.rounded-\\[18px\\]') as HTMLElement
+    const modal = titleInput.closest('[role="dialog"]') as HTMLElement
 
-    const statusSelect = within(modal).getByRole('button', { name: /^status$/i })
-    fireEvent.click(statusSelect)
+    const statusSelect = within(modal).getByRole('combobox', { name: /^status$/i })
+    fireEvent.keyDown(statusSelect, { key: 'Enter' })
     const doneOption = await screen.findByRole('option', { name: /^done$/i })
     fireEvent.click(doneOption)
 
@@ -659,7 +659,7 @@ describe('Tasks — the assignee filter does not eject a plain member', () => {
     expect(listUsersMock).not.toHaveBeenCalled()
     // The list itself still renders, and "Assigned to me" still works — it needs no
     // user list, the backend resolves `me` from the API key.
-    expect(screen.getByRole('button', { name: /assignee/i })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /assignee/i })).toBeInTheDocument()
   })
 
   it('still calls listUsers for an admin', async () => {

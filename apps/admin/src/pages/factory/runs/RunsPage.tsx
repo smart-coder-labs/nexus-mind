@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Archive, PlayCircle } from 'lucide-react'
@@ -108,11 +108,18 @@ export default function RunsPage() {
     else groups.push({ label, runs: [run] })
   }
 
+  const detailRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (selectedRun && window.matchMedia('(max-width: 1023px)').matches) {
+      detailRef.current?.scrollIntoView({ block: 'start' })
+    }
+  }, [selectedRun])
+
   const current = selectedRun ? (runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun) : null
   const runAgent = current ? agentById.get(current.definition_id) : undefined
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-6 md:p-8">
+    <div className="mx-auto min-w-0 max-w-7xl space-y-6 p-6 md:p-8">
       <PageHeader title="Runs" subtitle="Every agent run, newest first. Select one to read what happened." />
 
       <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter runs by status">
@@ -122,11 +129,11 @@ export default function RunsPage() {
       {actionError && <InlineError message={actionError} onDismiss={() => setActionError('')} />}
 
       {/* Fixed-height board: the list and the run detail each scroll on their own; the page itself stays put. */}
-      <div className="grid gap-4 lg:h-[calc(100vh-16rem)] lg:min-h-[520px] lg:grid-cols-[minmax(300px,360px)_1fr]">
-        <section aria-label="Run list" className="flex max-h-[70vh] min-h-0 flex-col overflow-hidden rounded-[18px] border border-border-primary lg:max-h-none">
+      <div className="grid gap-4 lg:h-[calc(100vh-16rem)] lg:min-h-[520px] lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
+        <section aria-label="Run list" className="flex max-h-[70vh] min-h-0 flex-col overflow-hidden rounded-xl border border-border-primary lg:max-h-none">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-primary px-4 py-3">
-            <span className="text-[13px] text-text-secondary"><span className="tabular-nums">{visibleRuns.length}</span> run{visibleRuns.length === 1 ? '' : 's'}</span>
-            <div className="flex items-center gap-2">
+            <span className="text-sm text-text-secondary"><span className="tabular-nums">{visibleRuns.length}</span> run{visibleRuns.length === 1 ? '' : 's'}</span>
+            <div className="flex flex-wrap items-center gap-2">
               {archivedCount > 0 && <Switch size="sm" checked={showArchivedRuns} onCheckedChange={setShowArchivedRuns} label={`Archived (${archivedCount})`} />}
               {can('autonomous_agent:update') && archivableCount > 0 && (
                 <Button size="sm" variant="ghost" leftIcon={<Archive className="h-3.5 w-3.5" />} loading={archiveAllRuns.isPending} onClick={() => setConfirmArchiveAll(true)}>Archive all finished</Button>
@@ -142,7 +149,7 @@ export default function RunsPage() {
             {runs.isError && <div className="p-4"><InlineError message="Could not load runs." onRetry={() => void runs.refetch()} /></div>}
             {groups.map(group => (
               <div key={group.label}>
-                <h3 className="sticky top-0 z-10 border-b border-border-secondary bg-background-primary px-4 py-2 text-[12px] font-medium text-text-tertiary">{group.label}</h3>
+                <h3 className="sticky top-0 z-10 border-b border-border-secondary bg-surface-secondary px-4 py-2 text-[12px] font-medium text-text-secondary">{group.label}</h3>
                 <ul className="list-none divide-y divide-border-secondary p-0">
                   {group.runs.map(run => {
                     const selected = selectedRun?.id === run.id
@@ -154,10 +161,10 @@ export default function RunsPage() {
                           type="button"
                           aria-current={selected ? 'true' : undefined}
                           onClick={() => setSelectedRun(run)}
-                          className={`flex w-full flex-col gap-1.5 px-4 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-ring ${selected ? 'bg-white/[0.06] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-white/[0.03]'} ${run.archived_at ? 'opacity-60' : ''}`}
+                          className={`flex w-full flex-col gap-1.5 px-4 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-ring ${selected ? 'bg-foreground/[0.06] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-foreground/[0.03]'}`}
                         >
-                          <span className="flex items-center justify-between gap-2">
-                            <span className="truncate text-[13px] font-semibold text-text-primary">{agent?.name ?? `${triggerName(run.trigger_kind)} run`}</span>
+                          <span className="flex w-full flex-wrap items-start justify-between gap-2">
+                            <span className="min-w-0 break-words text-sm font-semibold text-text-primary">{agent?.name ?? `${triggerName(run.trigger_kind)} run`}</span>
                             <RunStatusPill status={run.status} />
                           </span>
                           <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-text-tertiary tabular-nums">
@@ -187,7 +194,7 @@ export default function RunsPage() {
           </div>
         </section>
 
-        <section aria-label="Run detail" className="min-h-0 overflow-y-auto rounded-[18px] border border-border-primary p-5 md:p-6">
+        <section ref={detailRef} aria-label="Run detail" className="scroll-mt-4 min-h-0 min-w-0 overflow-y-auto rounded-xl border border-border-primary p-5 md:p-6">
           {current ? (
             <RunDetail
               run={current}

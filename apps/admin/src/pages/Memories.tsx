@@ -1,3 +1,5 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
+import { Button } from '../components/ui/Button'
 import React, { useMemo, useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -14,6 +16,7 @@ const MEMORY_TABS = (['memories', 'sessions', 'tags', 'duplicates', 'collections
   .filter(tab => tab !== 'sessions' || isSectionKeptByProfile('/sessions'))
   .filter(tab => tab !== 'collections' || isSectionKeptByProfile('/collections'))
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
+import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
 import { TagAutocomplete } from '../components/TagAutocomplete'
 import { Markdown } from '../components/ui/Markdown'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
@@ -30,10 +33,10 @@ const MemoryBackgroundGraph = lazy(() => import('./memories/MemoryBackgroundGrap
 // Dark-glass surface recipes — same tokens used across the app (see
 // GLASS_PANEL const in src/pages/Users.tsx, and the modal/dropdown recipes
 // inlined in src/components/ui/Modal/Modal.tsx and src/components/ui/Select/Select.tsx).
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
-const GLASS_MODAL = 'border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px]'
-const GLASS_DROPDOWN = 'border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)]'
-const GLASS_CHIP = 'bg-white/[0.06] border-white/[0.09]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
+const GLASS_MODAL = 'border border-border-primary bg-surface-elevated '
+const GLASS_DROPDOWN = 'border border-border-primary bg-surface-elevated shadow-md'
+const GLASS_CHIP = 'bg-foreground/[0.06] border-border-primary'
 
 const FAV_KEY = 'nexusmind-memory-favorites'
 function loadFavorites(): Set<string> {
@@ -49,7 +52,7 @@ function highlightMatch(text: string, query: string): React.ReactNode {
   const parts = text.split(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'))
   return parts.map((part, i) =>
     part.toLowerCase() === query.toLowerCase() ? (
-      <mark key={i} className="bg-accent-blue/20 text-accent-blue rounded-[2px] px-0.5">{part}</mark>
+      <mark key={i} className="bg-action-primary/20 text-accent-blue rounded-[2px] px-0.5">{part}</mark>
     ) : part
   )
 }
@@ -64,14 +67,21 @@ function useDebounce<T>(value: T, delay: number): T {
 }
 
 const TYPE_META: Record<string, { label: string; cls: string }> = {
-  decision:     { label: 'decision',     cls: 'text-accent-blue bg-accent-blue/10 border-accent-blue/25' },
+  decision:     { label: 'decision',     cls: 'text-accent-blue bg-action-primary/10 border-accent-blue/25' },
   bugfix:       { label: 'bugfix',       cls: 'text-status-error bg-status-error/10 border-status-error/25' },
-  discovery:    { label: 'discovery',    cls: 'text-text-secondary bg-white/[0.06] border-border-secondary/60' },
+  discovery:    { label: 'discovery',    cls: 'text-text-secondary bg-foreground/[0.06] border-border-secondary/60' },
   convention:   { label: 'convention',   cls: 'text-status-success bg-status-success/10 border-status-success/25' },
-  architecture: { label: 'architecture', cls: 'text-accent-blue bg-accent-blue/8 border-accent-blue/20' },
+  architecture: { label: 'architecture', cls: 'text-accent-blue bg-action-primary/8 border-accent-blue/20' },
   config:       { label: 'config',       cls: 'text-status-warning bg-status-warning/10 border-status-warning/25' },
-  preference:   { label: 'preference',   cls: 'text-text-tertiary bg-white/[0.04] border-border-secondary/50' },
-  pattern:      { label: 'pattern',      cls: 'text-text-secondary bg-white/[0.05] border-border-secondary/50' },
+  preference:   { label: 'preference',   cls: 'text-text-tertiary bg-foreground/[0.04] border-border-secondary/50' },
+  pattern:      { label: 'pattern',      cls: 'text-text-secondary bg-foreground/[0.05] border-border-secondary/50' },
+}
+
+const MEMORY_TYPE_COLORS: Record<string, string> = {
+  decision: 'var(--data-blue)', bugfix: 'var(--color-status-error)', discovery: 'var(--chart-5)',
+  convention: 'var(--color-status-success)', architecture: 'var(--data-blue)', config: 'var(--data-amber)',
+  preference: 'var(--chart-5)', pattern: 'var(--data-teal)', feature: 'var(--data-teal)',
+  session_summary: 'var(--muted-foreground)', manual: 'var(--data-amber)',
 }
 
 function TypeBadge({ type }: { type?: string }) {
@@ -79,7 +89,7 @@ function TypeBadge({ type }: { type?: string }) {
   const meta = TYPE_META[type]
   const cls = meta?.cls ?? `text-text-tertiary ${GLASS_CHIP}`
   return (
-    <span className={`text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 ${cls}`}>
+    <span className={`text-xs font-semibold border rounded-sm px-2 py-0.5 ${cls}`}>
       {meta?.label ?? type}
     </span>
   )
@@ -94,7 +104,7 @@ function TypeChip({ type }: { type?: string }) {
   const meta = TYPE_META[type]
   const cls = meta?.cls ?? `text-text-tertiary ${GLASS_CHIP}`
   return (
-    <span className={`text-[11.5px] font-semibold border rounded-full px-2.5 py-0.5 ${cls}`}>
+    <span className={`text-xs font-semibold border rounded-full px-2.5 py-0.5 ${cls}`}>
       {meta?.label ?? type}
     </span>
   )
@@ -194,108 +204,107 @@ function CreateMemoryModal({
   if (!open) return null
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={onClose}
-    >
-      <div
-        className={`${GLASS_MODAL} rounded-[18px] p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto`}
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-xs font-semibold text-text-primary">New memory</h2>
-          <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors">
+    <Modal open={open} onOpenChange={value => { if (!value) onClose() }} size="lg">
+      <ModalHeader className="mb-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <ModalTitle>New memory</ModalTitle>
+            <ModalDescription>Save useful context for your workspace and make it easy to find later.</ModalDescription>
+          </div>
+          <button aria-label="Close new memory" type="button" onClick={onClose} className="-mr-9 -mt-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
             <X className="w-4 h-4" />
           </button>
         </div>
+      </ModalHeader>
 
         {flash ? (
-          <div className="flex items-center gap-2 py-6 justify-center text-status-success">
+          <ModalContent className="flex items-center justify-center gap-2 py-10 text-status-success">
             <CheckCircle2 className="w-5 h-5" />
-            <span className="text-xs font-semibold">Memory created</span>
-          </div>
+            <span className="text-sm font-medium">Memory created</span>
+          </ModalContent>
         ) : (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+            <ModalContent className="flex-1 space-y-5 overflow-y-auto pr-1">
             {/* Content */}
             <div>
-              <label className="block text-xs text-text-tertiary mb-1.5">Content</label>
-              <textarea
-                placeholder="Memory content..."
+              <label htmlFor="new-memory-content" className="mb-2 block text-sm font-medium text-foreground">Content</label>
+              <textarea id="new-memory-content"
+                placeholder="Write the context you want your team to remember…"
                 value={content}
                 onChange={e => setContent(e.target.value)}
-                className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary resize-none min-h-[160px] p-3 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary"
+                className="min-h-40 w-full resize-y rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed text-foreground shadow-sm outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
                 maxLength={10000}
                 required
               />
-              <p className="text-[10px] text-text-quaternary text-right mt-0.5">{content.length} / 10000</p>
+              <p className="mt-1.5 text-right text-xs tabular-nums text-muted-foreground">{content.length} / 10000</p>
             </div>
 
             {/* Tags */}
             <div>
-              <label className="block text-xs text-text-tertiary mb-1.5">Tags</label>
-              <div className="rounded-[8px] border border-border-primary bg-white/[0.04] px-2 py-1.5 flex flex-wrap gap-1.5 focus-within:border-accent-blue/60 transition-colors">
+              <label htmlFor="new-memory-tags" className="mb-2 block text-sm font-medium text-foreground">Tags <span className="font-normal text-muted-foreground">· optional</span></label>
+              <div className="flex min-h-11 flex-wrap items-center gap-1.5 rounded-lg border border-input bg-background px-2.5 py-2 shadow-sm transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20">
                 {/* "#tag ×" chip — matches the NexusMind UI Kit multi-select's
                     tag chip inside the field exactly. */}
                 {tags.map(tag => (
-                  <span key={tag} className="inline-flex items-center gap-1 rounded-[9px] bg-accent-blue/[0.14] pl-2.5 pr-1 py-[3px] text-[11.5px] font-semibold text-accent-blue">
+                  <span key={tag} className="inline-flex items-center gap-1 rounded-md bg-primary/10 py-1 pl-2.5 pr-1 text-xs font-medium text-primary">
                     #{tag}
                     <button
                       type="button"
                       onClick={() => removeTag(tag)}
                       aria-label={`Remove tag ${tag}`}
-                      className="inline-flex w-[15px] h-[15px] rounded-[5px] items-center justify-center hover:bg-white/[0.12] transition-colors"
+                      className="inline-flex size-5 items-center justify-center rounded-sm transition-colors hover:bg-primary/10"
                     >
                       <X className="w-2.5 h-2.5" />
                     </button>
                   </span>
                 ))}
-                <TagAutocomplete
+                <TagAutocomplete id="new-memory-tags"
                   value={tagInput}
                   onChange={setTagInput}
                   onSelect={handleTagSelect}
                   onKeyDown={handleTagKeyDown}
                   existingTags={tags}
-                  placeholder={tags.length === 0 ? 'Add tags…' : ''}
-                  className="flex-1 min-w-[100px] bg-transparent text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none"
+                  placeholder={tags.length === 0 ? 'Add tags and press Enter…' : ''}
+                  className="min-w-[140px] flex-1 bg-transparent px-1 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
                 />
               </div>
             </div>
 
             {/* Project */}
             <div>
-              <label className="block text-xs text-text-tertiary mb-1.5">Project <span className="text-text-quaternary">(optional)</span></label>
-              <select
+              <label htmlFor="new-memory-project" className="mb-2 block text-sm font-medium text-foreground">Project <span className="font-normal text-muted-foreground">· optional</span></label>
+              <StyledSelect id="new-memory-project"
                 value={projectId}
                 onChange={e => setProjectId(e.target.value)}
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs focus:outline-none focus:border-accent-blue/60 text-text-primary px-2 py-1.5"
+                className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground shadow-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
               >
-                <option value="">No project</option>
+                <option value="" data-description="Keep this memory outside a project." data-color="var(--muted-foreground)">No project</option>
                 {projects.filter(p => !p.archived_at).map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                  <option key={p.id} value={p.id} data-description={p.description || `Memories connected to ${p.name}.`} data-color="var(--data-blue)">{p.name}</option>
                 ))}
-              </select>
+              </StyledSelect>
             </div>
 
-            <div className="flex gap-2 justify-end pt-1">
+            </ModalContent>
+            <ModalFooter className="mt-4">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 rounded-[8px] text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               >
                 Cancel
               </button>
-              <button
+              <Button
                 type="submit"
                 disabled={saving || !content.trim()}
-                className="px-4 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:bg-accent-blue/90 disabled:opacity-50 transition-colors"
+
               >
                 {saving ? 'Creating…' : 'Create memory'}
-              </button>
-            </div>
+              </Button>
+            </ModalFooter>
           </form>
         )}
-      </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -327,12 +336,15 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
 
   return (
     <div
-      className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-y-0 left-0 right-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px] sm:p-6 lg:left-52"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Memory details"
     >
       <div
         ref={panelRef}
-        className={`${GLASS_MODAL} rounded-[18px] w-full max-w-3xl flex flex-col max-h-full`}
+        className={`${GLASS_MODAL} flex max-h-full w-full max-w-3xl flex-col rounded-2xl border-border bg-popover text-popover-foreground shadow-[0_24px_80px_-24px_rgba(0,0,0,.48),0_8px_24px_-12px_rgba(0,0,0,.18)]`}
         onClick={e => e.stopPropagation()}
       >
 
@@ -343,27 +355,27 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
               <p className="text-xs font-semibold text-text-primary leading-snug">{memory.title}</p>
             )}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={`text-[11px] font-semibold border rounded-[5px] px-2 py-0.5 text-text-tertiary ${GLASS_CHIP}`}>
+              <span className={`text-xs font-semibold border rounded-sm px-2 py-0.5 text-text-tertiary ${GLASS_CHIP}`}>
                 {memory.tool}
               </span>
               {memory.project && (
-                <span className="text-[11px] text-text-tertiary font-semibold">{memory.project}</span>
+                <span className="text-xs text-text-tertiary font-semibold">{memory.project}</span>
               )}
               <TypeBadge type={memory.type} />
               {memory.revision_count != null && memory.revision_count > 1 && (
-                <span className={`text-[11px] text-text-quaternary border rounded-[5px] px-1.5 py-0.5 ${GLASS_CHIP}`}>
+                <span className={`text-xs text-text-quaternary border rounded-sm px-1.5 py-0.5 ${GLASS_CHIP}`}>
                   rev {memory.revision_count}
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-text-quaternary">
+            <p className="text-xs text-text-quaternary">
               {new Date(memory.created_at).toLocaleString()}
             </p>
           </div>
           <button
             onClick={onClose}
             aria-label="Close memory detail"
-            className="p-1.5 rounded-[11px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.10] transition-colors shrink-0"
+            className="p-1.5 rounded-md text-text-quaternary hover:text-text-primary hover:bg-foreground/[0.10] transition-colors shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -377,7 +389,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
             <div className="flex items-center gap-2 flex-wrap mt-5 pt-4 border-t border-border-secondary">
               <Tag className="w-3 h-3 text-text-quaternary shrink-0" />
               {memory.tags.map(tag => (
-                <span key={tag} className={`text-[11px] text-text-tertiary border rounded-[5px] px-2 py-0.5 ${GLASS_CHIP}`}>
+                <span key={tag} className={`text-xs text-text-tertiary border rounded-sm px-2 py-0.5 ${GLASS_CHIP}`}>
                   {tag}
                 </span>
               ))}
@@ -420,28 +432,20 @@ function FacetSelect({
   options: { value: string; count: number }[]
 }) {
   return (
-    <div className="relative shrink-0">
-      <select
+    <div className="relative min-w-0 max-w-full flex-[1_1_150px] sm:flex-initial">
+      <StyledSelect
+        aria-label={label}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="appearance-none h-9 rounded-[11px] border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-3.5 pr-7 text-[12.5px] text-text-tertiary hover:border-white/20 hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+        className="appearance-none w-full max-w-full h-9 rounded-md border border-input bg-surface-primary pl-3.5 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
       >
-        <option value="">{label}</option>
+        <option value="" data-description={`Include every ${label.replace(/^All /i, '').toLowerCase()} value.`} data-color="var(--muted-foreground)">{label}</option>
         {options.map(o => (
-          <option key={o.value} value={o.value}>
+          <option key={o.value} value={o.value} data-description={`${o.count.toLocaleString()} matching memories`} data-color={MEMORY_TYPE_COLORS[o.value] ?? 'var(--data-blue)'}>
             {o.value} ({o.count})
           </option>
         ))}
-      </select>
-      <svg
-        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-        strokeWidth={2}
-      >
-        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-      </svg>
+      </StyledSelect>
     </div>
   )
 }
@@ -482,7 +486,7 @@ function BulkActionBar({
       role="toolbar"
       aria-label="Bulk actions"
     >
-      <span className="bg-accent-blue/10 text-accent-blue rounded-full px-2 py-0.5 text-xs font-semibold">
+      <span className="bg-action-primary/10 text-accent-blue rounded-full px-2 py-0.5 text-xs font-semibold">
         {count}
       </span>
       <div className="w-px h-4 bg-border-primary" />
@@ -497,15 +501,15 @@ function BulkActionBar({
               if (e.key === 'Escape') { setTagAction(null); setTagInput('') }
             }}
             placeholder={tagAction === 'add' ? 'Tag to add…' : 'Tag to remove…'}
-            className="bg-transparent border border-border-primary rounded-[8px] px-2.5 py-1 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 w-36"
+            className="bg-transparent border border-border-primary rounded-md px-2.5 py-1 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 w-36"
           />
-          <button
+          <Button
             onClick={onBulkTag}
             disabled={!tagInput.trim() || bulkTagPending}
-            className="px-3 py-1 rounded-[8px] bg-accent-blue text-white text-xs font-semibold disabled:opacity-50"
+
           >
             {bulkTagPending ? '…' : 'Apply'}
-          </button>
+          </Button>
           <button
             onClick={() => { setTagAction(null); setTagInput('') }}
             className="text-text-quaternary hover:text-text-secondary"
@@ -550,7 +554,7 @@ function BulkActionBar({
       <button
         onClick={onClear}
         disabled={deleting || archiving}
-        className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-quaternary hover:text-text-tertiary transition-colors disabled:opacity-40"
+        className="rounded-md border border-border-primary px-3 py-1 text-xs text-text-quaternary hover:text-text-tertiary transition-colors disabled:opacity-40"
         aria-label="Clear selection"
       >
         Clear
@@ -582,16 +586,16 @@ function AdminNoteEditor({ memoryId, initialNote, client }: { memoryId: string; 
         onChange={e => setNote(e.target.value)}
         placeholder="Internal note visible only to admins…"
         rows={3}
-        className="w-full bg-white/[0.04] rounded-[8px] border border-border-primary text-xs text-text-primary placeholder:text-text-quaternary focus:border-accent-blue/60 focus:outline-none resize-none p-2.5"
+        className="w-full bg-foreground/[0.04] rounded-md border border-input text-xs text-text-primary placeholder:text-text-quaternary focus:border-accent-blue/60 focus:outline-none resize-none p-2.5 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
       />
       <div className="flex items-center gap-2">
-        <button
+        <Button
           onClick={() => saveMut.mutate(note)}
           disabled={saveMut.isPending || note === initialNote}
-          className="bg-accent-blue text-white rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-40"
+
         >
           {saveMut.isPending ? 'Saving…' : saved ? 'Saved!' : 'Save note'}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -699,7 +703,10 @@ function MemorySlideOver({
 
       {/* Slide-over panel */}
       <div
-        className={`fixed right-0 top-0 h-full w-[420px] border-l border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] shadow-2xl z-50 flex flex-col transform transition-transform duration-200 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        role={isOpen ? 'dialog' : undefined}
+        aria-modal={isOpen ? true : undefined}
+        aria-label={isOpen ? 'Memory details' : undefined}
+        className={`fixed right-0 top-0 h-full w-[420px] border-l border-border-primary bg-surface-elevated shadow-2xl z-50 flex flex-col transform transition-transform duration-200 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
       >
         {/* Header */}
         <div className="px-5 py-4 border-b border-border-primary flex items-start justify-between gap-3 shrink-0">
@@ -722,14 +729,14 @@ function MemorySlideOver({
         {isLoading ? (
           <div className="space-y-3">
             {[1, 2, 3].map(i => (
-              <div key={i} className="h-4 rounded-[5px] bg-white/[0.06] animate-pulse" />
+              <div key={i} className="h-4 rounded-sm bg-foreground/[0.06] animate-pulse" />
             ))}
           </div>
         ) : memory ? (
           <div className="space-y-5">
             {/* Full content */}
             <div>
-              <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1.5">Content</p>
+              <p className="text-xs text-text-quaternary uppercase tracking-wide mb-1.5">Content</p>
               <p className="whitespace-pre-wrap text-xs text-text-secondary leading-relaxed">
                 {memory.content}
               </p>
@@ -748,7 +755,7 @@ function MemorySlideOver({
                 ['Revisions',  String(memory.revision_count ?? 1)],
               ] as [string, string][]).map(([label, val]) => (
                 <div key={label}>
-                  <p className="text-[10px] text-text-quaternary uppercase tracking-wide">{label}</p>
+                  <p className="text-xs text-text-quaternary uppercase tracking-wide">{label}</p>
                   <p className="text-xs text-text-secondary mt-0.5">{val}</p>
                 </div>
               ))}
@@ -757,10 +764,10 @@ function MemorySlideOver({
             {/* Tags */}
             {memory.tags && memory.tags.length > 0 && (
               <div className="pt-4 border-t border-border-primary">
-                <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-2">Tags</p>
+                <p className="text-xs text-text-quaternary uppercase tracking-wide mb-2">Tags</p>
                 <div className="flex flex-wrap gap-1.5">
                   {memory.tags.map(tag => (
-                    <span key={tag} className="rounded-full px-2 py-0.5 text-[10px] bg-white/[0.06] text-text-secondary">
+                    <span key={tag} className="rounded-full px-2 py-0.5 text-xs bg-foreground/[0.06] text-text-secondary">
                       {tag}
                     </span>
                   ))}
@@ -774,7 +781,7 @@ function MemorySlideOver({
                 <button
                   onClick={() => unpinMut.mutate(memory.id)}
                   disabled={unpinMut.isPending}
-                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                  className="rounded-md border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
                 >
                   <Pin className="w-3 h-3 fill-current text-accent-blue" />
                   Unpin
@@ -783,7 +790,7 @@ function MemorySlideOver({
                 <button
                   onClick={() => pinMut.mutate(memory.id)}
                   disabled={pinMut.isPending}
-                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                  className="rounded-md border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
                 >
                   <Pin className="w-3 h-3" />
                   Pin
@@ -793,7 +800,7 @@ function MemorySlideOver({
                 <button
                   onClick={() => restoreMut.mutate(memory.id)}
                   disabled={restoreMut.isPending}
-                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                  className="rounded-md border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
                 >
                   <RotateCcw className="w-3 h-3" />
                   Restore
@@ -802,7 +809,7 @@ function MemorySlideOver({
                 <button
                   onClick={() => archiveMut.mutate(memory.id)}
                   disabled={archiveMut.isPending}
-                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                  className="rounded-md border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
                 >
                   <Archive className="w-3 h-3" />
                   Archive
@@ -811,7 +818,7 @@ function MemorySlideOver({
               {!deleteConfirm ? (
                 <button
                   onClick={() => setDeleteConfirm(true)}
-                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-status-error hover:border-status-error/30 transition-colors flex items-center gap-1.5"
+                  className="rounded-md border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-status-error hover:border-status-error/30 transition-colors flex items-center gap-1.5"
                 >
                   <Trash2 className="w-3 h-3" />
                   Delete
@@ -822,13 +829,13 @@ function MemorySlideOver({
                   <button
                     onClick={() => deleteMut.mutate(memory.id)}
                     disabled={deleteMut.isPending}
-                    className="rounded-full bg-status-error/10 border border-status-error/30 px-3 py-1 text-xs text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-40"
+                    className="rounded-md bg-status-error/10 border border-status-error/30 px-3 py-1 text-xs text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-40"
                   >
                     {deleteMut.isPending ? 'Deleting…' : 'Yes, delete'}
                   </button>
                   <button
                     onClick={() => setDeleteConfirm(false)}
-                    className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-quaternary hover:text-text-secondary transition-colors"
+                    className="rounded-md border border-border-primary px-3 py-1 text-xs text-text-quaternary hover:text-text-secondary transition-colors"
                   >
                     Cancel
                   </button>
@@ -838,11 +845,11 @@ function MemorySlideOver({
 
             {/* Related memories */}
             <div className="pt-4 border-t border-border-primary">
-              <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-2">Related memories</p>
+              <p className="text-xs text-text-quaternary uppercase tracking-wide mb-2">Related memories</p>
               {relatedLoading ? (
                 <div className="space-y-2">
                   {[1, 2, 3].map(i => (
-                    <div key={i} className="h-10 rounded-[8px] bg-white/[0.04] animate-pulse" />
+                    <div key={i} className="h-10 rounded-md bg-foreground/[0.04] animate-pulse" />
                   ))}
                 </div>
               ) : (
@@ -851,7 +858,7 @@ function MemorySlideOver({
                     .filter(r => r.id !== memory.id)
                     .slice(0, 3)
                     .map(r => (
-                      <div key={r.id} className="rounded-[11px] bg-white/[0.04] border border-border-primary/50 px-3 py-2">
+                      <div key={r.id} className="rounded-md bg-foreground/[0.04] border border-border-primary/50 px-3 py-2">
                         <div className="flex items-center gap-2 mb-0.5">
                           {r.type && <TypeBadge type={r.type} />}
                         </div>
@@ -869,28 +876,28 @@ function MemorySlideOver({
 
             {/* Add to collection */}
             <div className="border-t border-border-primary pt-3">
-              <p className="text-[10px] text-text-quaternary uppercase tracking-wide font-semibold mb-2">
+              <p className="text-xs text-text-quaternary uppercase tracking-wide font-semibold mb-2">
                 Collections
               </p>
               {addingToCollection ? (
                 <div className="flex items-center gap-2">
-                  <select
+                  <StyledSelect
                     value={collectionId}
                     onChange={e => setCollectionId(e.target.value)}
-                    className="flex-1 bg-white/[0.04] rounded-[8px] border border-border-primary text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none px-2 py-1.5"
+                    className="flex-1 bg-foreground/[0.04] rounded-md border border-input text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none px-2 py-1.5 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   >
-                    <option value="">Select collection…</option>
+                    <option value="" data-description="Choose where to organize this memory." data-color="var(--muted-foreground)">Select collection…</option>
                     {collections.map((c: Collection) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id} data-description={`${c.memory_count ?? 0} memories in this collection.`} data-color="var(--chart-5)">{c.name}</option>
                     ))}
-                  </select>
-                  <button
+                  </StyledSelect>
+                  <Button
                     onClick={() => collectionId && addToCollectionMut.mutate({ collectionId })}
                     disabled={!collectionId || addToCollectionMut.isPending}
-                    className="bg-accent-blue text-white rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-40"
+
                   >
                     Add
-                  </button>
+                  </Button>
                   <button
                     onClick={() => { setAddingToCollection(false); setCollectionId('') }}
                     className="text-text-quaternary hover:text-text-secondary text-xs"
@@ -901,7 +908,7 @@ function MemorySlideOver({
               ) : (
                 <button
                   onClick={() => setAddingToCollection(true)}
-                  className="flex items-center gap-1.5 text-[10px] text-accent-blue hover:text-accent-blue/80 transition-colors"
+                  className="flex items-center gap-1.5 text-xs text-accent-blue hover:text-accent-blue/80 transition-colors"
                 >
                   <Plus className="w-3 h-3" />
                   Add to collection
@@ -911,7 +918,7 @@ function MemorySlideOver({
 
             {/* Admin note section */}
             <div className="border-t border-border-primary pt-3">
-              <p className="text-[10px] text-text-quaternary uppercase tracking-wide font-semibold mb-2">
+              <p className="text-xs text-text-quaternary uppercase tracking-wide font-semibold mb-2">
                 Admin note
               </p>
               <AdminNoteEditor memoryId={memory.id} initialNote={(memory as any).admin_note ?? ''} client={client} />
@@ -964,13 +971,13 @@ function HistoryPanel({
   return (
     <div
       ref={panelRef}
-      className={`absolute right-0 top-6 z-50 ${GLASS_DROPDOWN} rounded-[11px] p-3 w-64`}
+      className={`absolute right-0 top-6 z-50 ${GLASS_DROPDOWN} rounded-md p-3 w-64`}
     >
-      <p className="text-[11px] font-semibold text-text-quaternary mb-2">Edit History</p>
+      <p className="text-xs font-semibold text-text-quaternary mb-2">Edit History</p>
       {isLoading ? (
         <div className="space-y-2">
           {[1, 2].map(i => (
-            <div key={i} className="h-3 rounded-[4px] bg-white/[0.06] animate-pulse" />
+            <div key={i} className="h-3 rounded-[4px] bg-foreground/[0.06] animate-pulse" />
           ))}
         </div>
       ) : !data || data.length === 0 ? (
@@ -981,9 +988,9 @@ function HistoryPanel({
             <div key={entry.id} className="flex items-start gap-2">
               <span className="text-xs text-text-secondary shrink-0 mt-0.5">Edited</span>
               <div className="min-w-0">
-                <p className="text-[10px] text-text-quaternary">{relativeTs(entry.timestamp)}</p>
+                <p className="text-xs text-text-quaternary">{relativeTs(entry.timestamp)}</p>
                 {entry.user_id && (
-                  <p className="text-[10px] text-text-quaternary truncate">by {entry.user_id.slice(0, 8)}</p>
+                  <p className="text-xs text-text-quaternary truncate">by {entry.user_id.slice(0, 8)}</p>
                 )}
               </div>
             </div>
@@ -1801,7 +1808,7 @@ export default function Memories() {
 
       <div
         className={cn(
-          'relative z-10 p-8 max-w-5xl mx-auto space-y-6 transition-opacity duration-300',
+          'relative z-10 space-y-5 transition-opacity duration-300',
           graphFocused && 'opacity-0 pointer-events-none',
         )}
         onDragOver={handleDragOver}
@@ -1810,14 +1817,14 @@ export default function Memories() {
       >
       {/* Drag-and-drop overlay */}
       {isDragOver && (
-        <div className="fixed inset-0 bg-accent-blue/5 border-2 border-dashed border-accent-blue/40 z-20 flex items-center justify-center pointer-events-none">
+        <div className="fixed inset-0 bg-action-primary/5 border-2 border-dashed border-accent-blue/40 z-20 flex items-center justify-center pointer-events-none">
           <p className="text-xs text-accent-blue font-semibold">Drop JSON or CSV to import memories</p>
         </div>
       )}
 
       {/* Import result toast */}
       {importToast && (
-        <div className={`fixed bottom-6 right-6 z-50 ${GLASS_DROPDOWN} rounded-[11px] px-4 py-3 flex items-center gap-3`}>
+        <div className={`fixed bottom-6 right-6 z-50 ${GLASS_DROPDOWN} rounded-md px-4 py-3 flex items-center gap-3`}>
           <CheckCircle2 className="w-4 h-4 text-status-success shrink-0" />
           <span className="text-xs text-text-primary">
             Imported {importToast.imported} {importToast.imported === 1 ? 'memory' : 'memories'}
@@ -1828,7 +1835,7 @@ export default function Memories() {
 
       {/* Session filter banner */}
       {sessionIdFilter && (
-        <div className="flex items-center gap-2 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.08] px-3 py-2">
+        <div className="flex items-center gap-2 rounded-md border border-accent-blue/30 bg-action-primary/[0.08] px-3 py-2">
           <span className="text-xs text-accent-blue font-semibold">Filtered by session</span>
           <span className="text-xs text-text-quaternary font-mono">{sessionIdFilter.slice(0, 12)}…</span>
           <button
@@ -1842,13 +1849,13 @@ export default function Memories() {
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-[11px] bg-accent-blue/10 border border-accent-blue/20">
+          <div className="p-2 rounded-md bg-action-primary/10 border border-accent-blue/20">
             <Brain className="w-4 h-4 text-accent-blue" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">Memories</h1>
+            <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Memories</h1>
             <p className="text-xs text-text-quaternary mt-0.5">
               {memories ? `${memories.length} entries` : 'Browse and search stored memories'}
             </p>
@@ -1863,13 +1870,13 @@ export default function Memories() {
                   onClick={() => {
                     if (memories) setSelectedIds(new Set(memories.map(m => m.id)))
                   }}
-                  className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                  className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
                 >
                   Select all ({memories?.length ?? 0})
                 </button>
                 <button
                   onClick={clearSelection}
-                  className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                  className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
                 >
                   Cancel
                 </button>
@@ -1877,7 +1884,7 @@ export default function Memories() {
             ) : (
               <button
                 onClick={() => setSelectMode(true)}
-                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
               >
                 Select
               </button>
@@ -1889,7 +1896,7 @@ export default function Memories() {
             <button
               onClick={() => { setSavePresetOpen(prev => !prev); setPresetsOpen(false) }}
               aria-label="Save current filter as preset"
-              className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+              className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
             >
               {presetSavedFlash
                 ? <><Check className="w-3.5 h-3.5 text-status-success" /><span className="text-status-success">Saved</span></>
@@ -1897,7 +1904,7 @@ export default function Memories() {
               }
             </button>
             {savePresetOpen && (
-              <div className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-[11px] p-3 z-20 min-w-[200px] space-y-2`}>
+              <div className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-md p-3 z-20 min-w-[200px] space-y-2`}>
                 <p className="text-xs text-text-tertiary">Name this filter preset</p>
                 <input
                   autoFocus
@@ -1905,15 +1912,15 @@ export default function Memories() {
                   onChange={e => setPresetName(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') handleSavePreset(); if (e.key === 'Escape') setSavePresetOpen(false) }}
                   placeholder="e.g. My bugfixes"
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                  className="w-full bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
-                <button
+                <Button
                   onClick={handleSavePreset}
                   disabled={!presetName.trim()}
-                  className="w-full rounded-full bg-accent-blue text-white text-xs font-semibold py-1.5 hover:opacity-90 disabled:opacity-40 transition-opacity"
+                  className="w-full"
                 >
                   Save
-                </button>
+                </Button>
               </div>
             )}
           </div>
@@ -1924,28 +1931,28 @@ export default function Memories() {
               <button
                 onClick={() => { setPresetsOpen(prev => !prev); setSavePresetOpen(false) }}
                 aria-label="Load a filter preset"
-                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
               >
                 <BookmarkCheck className="w-3.5 h-3.5" />
                 Presets
               </button>
               {presetsOpen && (
-                <div className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-[12px] p-[5px] z-20 min-w-[180px]`}>
+                <div className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-xl p-[5px] z-20 min-w-[180px]`}>
                   {presets.map(preset => (
                     <div
                       key={preset.id}
-                      className="flex items-center justify-between gap-[10px] px-[11px] py-[9px] rounded-[8px] hover:bg-white/[0.06] transition-colors group"
+                      className="flex items-center justify-between gap-[10px] px-[11px] py-[9px] rounded-md hover:bg-foreground/[0.06] transition-colors group"
                     >
                       <button
                         onClick={() => handleApplyPreset(preset)}
-                        className="flex-1 text-left text-[12.5px] text-text-secondary hover:text-text-primary transition-colors truncate"
+                        className="flex-1 text-left text-sm text-text-secondary hover:text-text-primary transition-colors truncate"
                       >
                         {preset.name}
                       </button>
                       <button
                         onClick={() => handleDeletePreset(preset.id)}
                         aria-label={`Delete preset ${preset.name}`}
-                        className="text-text-quaternary hover:text-status-error transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                        className="text-text-quaternary hover:text-status-error transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 shrink-0"
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -1970,7 +1977,7 @@ export default function Memories() {
               <button
                 onClick={() => importFileRef.current?.click()}
                 aria-label="Import memories from JSON or CSV"
-                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
+                className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
               >
                 {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                 {importing ? 'Importing…' : 'Import'}
@@ -1979,13 +1986,13 @@ export default function Memories() {
           )}
 
           {/* New memory */}
-          <button
+          <Button
             onClick={() => setCreateMemoryOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
+
           >
             <Plus className="w-4 h-4" />
             New memory
-          </button>
+          </Button>
 
           {/* Export */}
           <div ref={exportRef} className="relative">
@@ -1995,7 +2002,7 @@ export default function Memories() {
               aria-label="Export memories"
               aria-expanded={exportOpen}
               aria-haspopup="menu"
-              className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-30"
+              className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-30"
             >
               {exporting !== null
                 ? <><span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />Exporting…</>
@@ -2005,27 +2012,27 @@ export default function Memories() {
             {exportOpen && (
               <div
                 role="menu"
-                className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-[12px] p-[5px] z-10 min-w-[160px]`}
+                className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-xl p-[5px] z-10 min-w-[160px]`}
               >
                 <button
                   role="menuitem"
                   onClick={() => handleExport('json')}
-                  className="block w-full text-left px-[11px] py-[9px] rounded-[8px] text-[12.5px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                  className="block w-full text-left px-[11px] py-[9px] rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
                 >
                   Export JSON
                 </button>
                 <button
                   role="menuitem"
                   onClick={() => handleExport('csv')}
-                  className="block w-full text-left px-[11px] py-[9px] rounded-[8px] text-[12.5px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                  className="block w-full text-left px-[11px] py-[9px] rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
                 >
                   Export CSV
                 </button>
-                <div className="h-px mx-2 my-1 bg-white/[0.06]" />
+                <div className="h-px mx-2 my-1 bg-foreground/[0.06]" />
                 <button
                   role="menuitem"
                   onClick={handleExportServer}
-                  className="block w-full text-left px-[11px] py-[9px] rounded-[8px] text-[12.5px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                  className="block w-full text-left px-[11px] py-[9px] rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
                 >
                   Export via API
                 </button>
@@ -2045,7 +2052,7 @@ export default function Memories() {
           aria-label="Import memories"
         >
           <div
-            className={`${GLASS_MODAL} rounded-[18px] p-6 max-w-md w-full mx-4 space-y-4`}
+            className={`${GLASS_MODAL} rounded-xl p-6 max-w-md w-full mx-4 space-y-4`}
             onClick={e => e.stopPropagation()}
           >
             {importState === 'success' && importResult ? (
@@ -2065,7 +2072,7 @@ export default function Memories() {
                 <div className="flex justify-end">
                   <button
                     onClick={handleImportClose}
-                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
+                    className="rounded-md border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
                   >
                     Done
                   </button>
@@ -2078,7 +2085,7 @@ export default function Memories() {
                 <div className="flex justify-end">
                   <button
                     onClick={handleImportClose}
-                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
+                    className="rounded-md border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
                   >
                     Close
                   </button>
@@ -2093,7 +2100,7 @@ export default function Memories() {
                   <div className="space-y-1">
                     <p className="text-xs text-text-quaternary">Preview:</p>
                     {importPending.slice(0, 3).map((m, i) => (
-                      <p key={i} className="text-xs text-text-tertiary font-mono bg-white/[0.06] rounded-[8px] px-3 py-1.5 truncate">
+                      <p key={i} className="text-xs text-text-tertiary font-mono bg-foreground/[0.06] rounded-md px-3 py-1.5 truncate">
                         {m.content.slice(0, 50)}{m.content.length > 50 ? '…' : ''}
                       </p>
                     ))}
@@ -2103,20 +2110,20 @@ export default function Memories() {
                   <button
                     onClick={handleImportClose}
                     disabled={importState === 'loading'}
-                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors disabled:opacity-40"
+                    className="rounded-md border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors disabled:opacity-40"
                   >
                     Cancel
                   </button>
-                  <button
+                  <Button
                     onClick={handleImportConfirm}
                     disabled={importState === 'loading'}
-                    className="rounded-full bg-accent-blue text-white font-semibold px-4 py-1.5 text-xs hover:bg-accent-blue/90 transition-colors disabled:opacity-40 flex items-center gap-2"
+
                   >
                     {importState === 'loading'
                       ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Importing…</>
                       : 'Import'
                     }
-                  </button>
+                  </Button>
                 </div>
               </>
             )}
@@ -2147,14 +2154,14 @@ export default function Memories() {
           labels, and a neutral 10.5px counter chip on tabs that carry a count
           (duplicates keeps its red/error tint — that urgency signal predates
           this pass and stays semantically meaningful). */}
-      <div className={`${GLASS_PANEL} rounded-[12px] p-1 flex gap-0.5 w-fit overflow-x-auto`}>
+      <div className={`${GLASS_PANEL} rounded-xl p-1 flex gap-0.5 w-fit max-w-full overflow-x-auto`}>
         {MEMORY_TABS.map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`flex items-center gap-[7px] px-[15px] py-[7px] text-[13px] font-semibold rounded-[9px] transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-[7px] px-[15px] py-[7px] text-sm font-semibold rounded-md transition-colors whitespace-nowrap ${
               activeTab === tab
-                ? 'bg-accent-blue-tint text-accent-blue'
+                ? 'bg-action-primary-tint text-accent-blue'
                 : 'text-text-tertiary hover:text-text-primary'
             }`}
           >
@@ -2169,7 +2176,7 @@ export default function Memories() {
                   <Copy className="w-3.5 h-3.5" />
                   Duplicates
                   {duplicateGroups && duplicateGroups.length > 0 && (
-                    <span className="ml-1 rounded-[8px] bg-status-error/10 border border-status-error/20 text-status-error text-[10.5px] font-bold px-[7px] py-px">
+                    <span className="ml-1 rounded-md bg-status-error/10 border border-status-error/20 text-status-error text-xs font-bold px-[7px] py-px">
                       {duplicateGroups.length}
                     </span>
                   )}
@@ -2178,7 +2185,7 @@ export default function Memories() {
                   <Folder className="w-3.5 h-3.5" />
                   Collections
                   {collections && collections.length > 0 && (
-                    <span className="ml-1 rounded-[8px] bg-white/[0.07] text-text-tertiary text-[10.5px] font-bold px-[7px] py-px">
+                    <span className="ml-1 rounded-md bg-foreground/[0.07] text-text-tertiary text-xs font-bold px-[7px] py-px">
                       {collections.length}
                     </span>
                   )}
@@ -2190,15 +2197,15 @@ export default function Memories() {
 
       {activeTab === 'memories' && <>
       {/* Search */}
-      <div className="flex gap-2">
-        <div className="relative flex-1">
+      <div className="flex flex-wrap sm:flex-nowrap gap-2">
+        <div className="relative min-w-0 flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-quaternary" />
           <input
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="Search memories…"
             aria-label="Search memories"
-            className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] pl-10 pr-4 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
+            className="w-full bg-foreground/[0.04] border border-input rounded-md pl-10 pr-4 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
           />
           {query && (
             <button
@@ -2251,21 +2258,18 @@ export default function Memories() {
             />
           )}
           {collections && collections.length > 0 && (
-            <div className="relative shrink-0">
-              <select
+            <div className="relative min-w-0 max-w-full">
+              <StyledSelect
                 value={filterCollection}
                 onChange={e => setFilterCollection(e.target.value)}
-                className="appearance-none h-9 rounded-[11px] border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-3.5 pr-7 text-[12.5px] text-text-tertiary hover:border-white/20 hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+                className="appearance-none w-full max-w-full h-9 rounded-md border border-input bg-surface-primary pl-3.5 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 aria-label="Filter by collection"
               >
-                <option value="">All collections</option>
+                <option value="" data-description="Show memories regardless of collection." data-color="var(--muted-foreground)">All collections</option>
                 {collections.map(col => (
-                  <option key={col.id} value={col.id}>{col.name}</option>
+                  <option key={col.id} value={col.id} data-description={`${col.memory_count ?? 0} memories in this collection.`} data-color="var(--chart-5)">{col.name}</option>
                 ))}
-              </select>
-              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
+              </StyledSelect>
             </div>
           )}
 
@@ -2282,10 +2286,10 @@ export default function Memories() {
           <button
             onClick={() => setPinnedOnly(v => !v)}
             aria-pressed={pinnedOnly}
-            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors ${
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-md border px-3.5 text-sm font-semibold transition-colors ${
               pinnedOnly
-                ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/40'
-                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
+                ? 'bg-action-primary/10 text-accent-blue border-accent-blue/40'
+                : 'border-border-primary bg-surface-primary text-text-tertiary hover:border-border-primary hover:text-text-secondary'
             }`}
           >
             <Pin className="w-3 h-3" />
@@ -2296,28 +2300,25 @@ export default function Memories() {
               first" pill in the mockup's filter-chip cluster. */}
           <div className="relative shrink-0">
             <ArrowDownWideNarrow className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" />
-            <select
+            <StyledSelect
               value={sortBy}
               onChange={e => setSortBy(e.target.value as SortBy)}
-              className="appearance-none h-9 rounded-full border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-8 pr-7 text-[12.5px] text-text-tertiary hover:border-white/20 hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+              className="appearance-none h-9 rounded-md border border-input bg-surface-primary pl-8 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               aria-label="Sort memories"
             >
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
               <option value="most-used">Most revised</option>
-            </select>
-            <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-            </svg>
+            </StyledSelect>
           </div>
 
           <button
             onClick={() => setShowArchived(a => !a)}
             aria-pressed={showArchived}
-            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors ${
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-md border px-3.5 text-sm font-semibold transition-colors ${
               showArchived
                 ? 'bg-status-warning/10 text-status-warning border-status-warning/30'
-                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
+                : 'border-border-primary bg-surface-primary text-text-tertiary hover:border-border-primary hover:text-text-secondary'
             }`}
           >
             {showArchived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />}
@@ -2326,10 +2327,10 @@ export default function Memories() {
           <button
             onClick={() => setShowFavoritesOnly(v => !v)}
             aria-pressed={showFavoritesOnly}
-            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors ${
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-md border px-3.5 text-sm font-semibold transition-colors ${
               showFavoritesOnly
                 ? 'bg-status-warning/10 text-status-warning border-status-warning/30'
-                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
+                : 'border-border-primary bg-surface-primary text-text-tertiary hover:border-border-primary hover:text-text-secondary'
             }`}
           >
             <Star className="w-3 h-3" />
@@ -2342,10 +2343,10 @@ export default function Memories() {
             disabled={isLoading}
             aria-pressed={viewAll}
             aria-label={viewAll ? 'Back to paginated view' : 'View all memories'}
-            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-md border px-3.5 text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               viewAll
-                ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/30'
-                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
+                ? 'bg-action-primary/10 text-accent-blue border-accent-blue/30'
+                : 'border-border-primary bg-surface-primary text-text-tertiary hover:border-border-primary hover:text-text-secondary'
             }`}
           >
             {isLoading && viewAll
@@ -2359,9 +2360,9 @@ export default function Memories() {
           {activeFilterCount > 0 && (
             <button
               onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false); setQuery('') }}
-              className="inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] px-3.5 text-[11px] text-accent-blue hover:text-accent-blue/80 transition-colors"
+              className="inline-flex items-center gap-1.5 h-9 shrink-0 rounded-md border border-border-primary bg-surface-primary px-3.5 text-xs text-accent-blue hover:text-accent-blue/80 transition-colors"
             >
-              <span className="bg-accent-blue/10 text-accent-blue rounded-full px-1.5 py-0.5 text-[10px] font-semibold">{activeFilterCount}</span>
+              <span className="bg-action-primary/10 text-accent-blue rounded-full px-1.5 py-0.5 text-xs font-semibold">{activeFilterCount}</span>
               filters active · clear all
             </button>
           )}
@@ -2369,7 +2370,7 @@ export default function Memories() {
           {hasFilters && !activeFilterCount && (
             <button
               onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false) }}
-              className="inline-flex items-center gap-1 h-9 shrink-0 text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors"
+              className="inline-flex items-center gap-1 h-9 shrink-0 text-xs text-text-quaternary hover:text-text-tertiary transition-colors"
             >
               <X className="w-3 h-3" /> Clear filters
             </button>
@@ -2392,10 +2393,11 @@ export default function Memories() {
       )}
 
       {/* Table — glass panel wrapper, matches the mockup's rounded/blurred surface */}
-      <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[16px] overflow-hidden">
-        <table className="w-full text-xs">
+      <div className="border border-border-primary bg-surface-primary rounded-xl overflow-hidden">
+        <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Memories table">
+        <table className="admin-data-table w-full min-w-[720px] text-sm">
           <thead>
-            <tr className="border-b border-white/[0.06]">
+            <tr className="border-b border-border-primary">
               {/* Select-all checkbox — admin only, select mode only */}
               <th className="w-10 px-4 py-3">
                 {isAdmin && selectMode && memories && memories.length > 0 && (
@@ -2410,12 +2412,12 @@ export default function Memories() {
                         setSelectedIds(new Set())
                       }
                     }}
-                    className="rounded border-border-primary accent-accent-blue cursor-pointer"
+                    className="rounded border-input accent-accent-blue cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                 )}
               </th>
               {['Date', 'User', 'Type', 'Memory', ''].map((h, i) => (
-                <th key={`h-${i}`} className="text-left px-4 py-3 text-[10.5px] font-bold uppercase tracking-wider text-[#5b6373]">
+                <th key={`h-${i}`} className="text-left px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-tertiary">
                   {h}
                 </th>
               ))}
@@ -2427,7 +2429,7 @@ export default function Memories() {
                 <tr key={i} className="border-t border-border-secondary">
                   {Array.from({ length: 6 }).map((_, j) => (
                     <td key={j} className="px-4 py-4">
-                      <div className="h-3.5 rounded-[5px] bg-white/[0.06] animate-pulse" />
+                      <div className="h-3.5 rounded-sm bg-foreground/[0.06] animate-pulse" />
                     </td>
                   ))}
                 </tr>
@@ -2455,7 +2457,7 @@ export default function Memories() {
                   role="button"
                   tabIndex={0}
                   aria-label={`View memory: ${mem.title ?? 'untitled'}`}
-                  className={`border-t border-white/[0.05] transition-colors cursor-pointer group focus:outline-none focus:border-accent-blue/60 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-white/[0.04]' : 'hover:bg-accent-blue/[0.05]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
+                  className={`border-t border-border-primary transition-colors cursor-pointer group focus:outline-none focus:border-accent-blue/60 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-action-primary/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-foreground/[0.04]' : 'hover:bg-action-primary/[0.05]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
                 >
                   {/* Row checkbox — only shown in selectMode */}
                   <td className="w-10 px-4 py-3.5" onClick={e => e.stopPropagation()}>
@@ -2465,24 +2467,24 @@ export default function Memories() {
                         aria-label={`Select memory ${mem.id}`}
                         checked={isChecked}
                         onChange={() => toggleRow(mem.id)}
-                        className="absolute top-3 left-3 w-4 h-4 rounded border border-border-primary bg-white/[0.04] accent-accent-blue cursor-pointer"
+                        className="absolute top-3 left-3 w-4 h-4 rounded border border-input bg-foreground/[0.04] accent-accent-blue cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                       />
                     )}
                   </td>
                   <td className="px-4 py-3.5 whitespace-nowrap align-top">
-                    <p className="text-[13px] text-text-secondary">
+                    <p className="text-sm text-text-secondary">
                       {new Date(mem.created_at).toLocaleDateString()}
                     </p>
-                    <p className="text-[11.5px] text-text-quaternary mt-0.5">
+                    <p className="text-xs text-text-quaternary mt-0.5">
                       {new Date(mem.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </td>
                   <td className="px-4 py-3.5 align-top">
                     <div className="space-y-1.5">
-                      <p className="text-[13px] text-text-secondary">
+                      <p className="text-sm text-text-secondary">
                         {userMap.get(mem.user_id) ?? '—'}
                       </p>
-                      <span className={`text-[10.5px] border rounded-[6px] px-1.5 py-0.5 text-text-quaternary inline-block font-mono ${GLASS_CHIP}`}>
+                      <span className={`text-xs border rounded-sm px-1.5 py-0.5 text-text-quaternary inline-block font-mono ${GLASS_CHIP}`}>
                         {mem.tool}
                       </span>
                     </div>
@@ -2491,7 +2493,7 @@ export default function Memories() {
                     <div className="space-y-1.5">
                       <TypeChip type={mem.type} />
                       {mem.revision_count != null && mem.revision_count > 1 && (
-                        <p className="text-[10px] text-text-quaternary">rev {mem.revision_count}</p>
+                        <p className="text-xs text-text-quaternary">rev {mem.revision_count}</p>
                       )}
                     </div>
                   </td>
@@ -2506,10 +2508,10 @@ export default function Memories() {
                             if (e.key === 'Escape') { setEditingId(null) }
                           }}
                           rows={3}
-                          className="w-full text-xs text-text-secondary bg-white/[0.03] border border-accent-blue/40 rounded-[8px] p-2 resize-none focus:outline-none focus:border-accent-blue"
+                          className="w-full text-xs text-text-secondary bg-foreground/[0.03] border border-accent-blue/40 rounded-md p-2 resize-none focus:outline-none focus:border-accent-blue"
                         />
                         <div className="flex items-center justify-between mt-1">
-                          <span className="text-[10px] text-text-quaternary">
+                          <span className="text-xs text-text-quaternary">
                             {editContent.trim().split(/\s+/).filter(Boolean).length} words · {editContent.length} chars
                           </span>
                           <div className="flex items-center gap-2">
@@ -2517,7 +2519,7 @@ export default function Memories() {
                               onClick={() => updateMut.mutate({ id: mem.id, content: editContent })}
                               disabled={isSaving || editContent.trim() === ''}
                               aria-label="Save edit"
-                              className="flex items-center gap-1 text-[11px] text-status-success hover:text-status-success/80 disabled:opacity-40 transition-colors"
+                              className="flex items-center gap-1 text-xs text-status-success hover:text-status-success/80 disabled:opacity-40 transition-colors"
                             >
                               <Check className="w-3 h-3" />
                               Save
@@ -2526,13 +2528,13 @@ export default function Memories() {
                               onClick={() => setEditingId(null)}
                               disabled={isSaving}
                               aria-label="Cancel edit"
-                              className="flex items-center gap-1 text-[11px] text-text-quaternary hover:text-text-tertiary disabled:opacity-40 transition-colors"
+                              className="flex items-center gap-1 text-xs text-text-quaternary hover:text-text-tertiary disabled:opacity-40 transition-colors"
                             >
                               <X className="w-3 h-3" />
                               Cancel
                             </button>
                             {updateMut.isError && updateMut.variables?.id === mem.id && (
-                              <span className="text-[11px] text-status-error/80">
+                              <span className="text-xs text-status-error/80">
                                 {(updateMut.error as Error)?.message ?? 'Failed to save'}
                               </span>
                             )}
@@ -2548,12 +2550,12 @@ export default function Memories() {
                             </p>
                           )}
                           {mem.archived_at && (
-                            <span className={`text-[10px] text-text-quaternary border rounded-[5px] px-1.5 py-0.5 shrink-0 ${GLASS_CHIP}`}>
+                            <span className={`text-xs text-text-quaternary border rounded-sm px-1.5 py-0.5 shrink-0 ${GLASS_CHIP}`}>
                               archived
                             </span>
                           )}
                         </div>
-                        <p className="text-[13px] text-text-tertiary line-clamp-2 leading-relaxed">
+                        <p className="text-sm text-text-tertiary line-clamp-2 leading-relaxed">
                           {isSearching && debouncedQuery.length >= 2
                             ? highlightMatch((mem.content ?? '').replace(/#+\s/g, '').replace(/\*\*/g, ''), debouncedQuery)
                             : (mem.content ?? '').replace(/#+\s/g, '').replace(/\*\*/g, '')}
@@ -2561,7 +2563,7 @@ export default function Memories() {
                         {mem.tags.length > 0 && (
                           <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
                             {mem.tags.slice(0, 3).map(tag => (
-                              <span key={tag} className="text-[11px] bg-white/[0.05] text-text-quaternary rounded-full px-2.5 py-0.5">
+                              <span key={tag} className="text-xs bg-foreground/[0.05] text-text-quaternary rounded-full px-2.5 py-0.5">
                                 {tag}
                               </span>
                             ))}
@@ -2570,7 +2572,7 @@ export default function Memories() {
                         {/* Scheduled deletion chip */}
                         {mem.delete_after && (
                           <div className="mt-1.5 flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                            <span className="text-[10px] text-status-warning bg-status-warning/10 rounded-[5px] px-1.5 py-0.5 border border-status-warning/30 flex items-center gap-1">
+                            <span className="text-xs text-status-warning bg-status-warning/10 rounded-sm px-1.5 py-0.5 border border-status-warning/30 flex items-center gap-1">
                               <CalendarClock className="w-2.5 h-2.5" />
                               Deletes {mem.delete_after}
                             </span>
@@ -2606,15 +2608,15 @@ export default function Memories() {
                                   }}
                                   placeholder="Add admin note…"
                                   maxLength={500}
-                                  className="bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-secondary resize-none w-full h-16 focus:border-accent-blue/60 focus:outline-none"
+                                  className="bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-secondary resize-none w-full h-16 focus:border-accent-blue/60 focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                                 />
-                                <span className="text-[10px] text-text-quaternary mt-0.5">
+                                <span className="text-xs text-text-quaternary mt-0.5">
                                   {noteInput.length} / 500
                                 </span>
                               </div>
                             ) : mem.admin_note ? (
                               <div className="flex items-start gap-1.5">
-                                <span className="text-[10px] bg-status-warning/10 text-status-warning rounded-[5px] px-1.5 py-0.5 border border-status-warning/30 shrink-0 mt-0.5">
+                                <span className="text-xs bg-status-warning/10 text-status-warning rounded-sm px-1.5 py-0.5 border border-status-warning/30 shrink-0 mt-0.5">
                                   Note
                                 </span>
                                 <span className="text-xs text-status-warning italic flex-1 min-w-0 break-words">{mem.admin_note}</span>
@@ -2636,7 +2638,7 @@ export default function Memories() {
                             ) : (
                               <button
                                 onClick={() => { setEditingNoteId(mem.id); setNoteInput('') }}
-                                className="text-[11.5px] text-text-quaternary hover:text-accent-blue transition-colors"
+                                className="text-xs text-text-quaternary hover:text-accent-blue transition-colors"
                               >
                                 + Add note
                               </button>
@@ -2661,16 +2663,16 @@ export default function Memories() {
                             onClick={() => setAssigningMemory(assigningMemory === mem.id ? null : mem.id)}
                             aria-label={`Assign memory ${mem.id} to collection`}
                             className={cn(
-                              'w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all',
-                              mem.collection_id ? 'text-accent-blue' : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07]',
+                              'w-[26px] h-[26px] rounded-md flex items-center justify-center transition-all',
+                              mem.collection_id ? 'text-accent-blue' : 'text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-text-primary hover:bg-foreground/[0.07]',
                             )}
                           >
                             <Folder className="w-3.5 h-3.5" />
                           </button>
                           {assigningMemory === mem.id && (
-                            <div className={`absolute right-0 top-7 z-20 ${GLASS_DROPDOWN} rounded-[11px] py-1 min-w-[160px]`}>
+                            <div className={`absolute right-0 top-7 z-20 ${GLASS_DROPDOWN} rounded-md py-1 min-w-[160px]`}>
                               <button
-                                className="w-full text-left px-3 py-2 text-xs text-text-quaternary hover:bg-white/[0.04] transition-colors"
+                                className="w-full text-left px-3 py-2 text-xs text-text-quaternary hover:bg-foreground/[0.04] transition-colors"
                                 onClick={() => assignCollectionMut.mutate({ memoryId: mem.id, collectionId: null })}
                               >
                                 None
@@ -2678,7 +2680,7 @@ export default function Memories() {
                               {collections?.map(col => (
                                 <button
                                   key={col.id}
-                                  className={`w-full text-left px-3 py-2 text-xs transition-colors ${mem.collection_id === col.id ? 'text-accent-blue bg-accent-blue/10' : 'text-text-secondary hover:bg-white/[0.04]'}`}
+                                  className={`w-full text-left px-3 py-2 text-xs transition-colors ${mem.collection_id === col.id ? 'text-accent-blue bg-action-primary/10' : 'text-text-secondary hover:bg-foreground/[0.04]'}`}
                                   onClick={() => assignCollectionMut.mutate({ memoryId: mem.id, collectionId: col.id })}
                                 >
                                   {col.name}
@@ -2696,8 +2698,8 @@ export default function Memories() {
                           disabled={(pinMut.isPending && pinMut.variables === mem.id) || (unpinMut.isPending && unpinMut.variables === mem.id)}
                           aria-label={mem.pinned ? `Unpin memory ${mem.id}` : `Pin memory ${mem.id}`}
                           className={cn(
-                            'w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all',
-                            mem.pinned ? 'text-accent-blue' : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07]',
+                            'w-[26px] h-[26px] rounded-md flex items-center justify-center transition-all',
+                            mem.pinned ? 'text-accent-blue' : 'text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-text-primary hover:bg-foreground/[0.07]',
                           )}
                         >
                           <Pin className={`w-3.5 h-3.5 ${mem.pinned ? 'fill-current' : ''}`} />
@@ -2708,19 +2710,19 @@ export default function Memories() {
                       <button
                         onClick={() => toggleFavorite(mem.id)}
                         aria-label="Toggle favorite"
-                        className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all"
+                        className="w-[26px] h-[26px] rounded-md flex items-center justify-center transition-all"
                       >
                         <Star
                           className={favorites.has(mem.id)
                             ? "text-status-warning fill-current w-3.5 h-3.5"
-                            : "opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-status-warning w-3.5 h-3.5"
+                            : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 text-text-quaternary hover:text-status-warning w-3.5 h-3.5"
                           }
                         />
                       </button>
 
                       {/* Edit */}
                       {didSave ? (
-                        <span className="flex items-center gap-1 text-[10px] text-status-success animate-pulse px-1">
+                        <span className="flex items-center gap-1 text-xs text-status-success animate-pulse px-1">
                           <History className="w-3 h-3" />
                           Edited
                         </span>
@@ -2728,7 +2730,7 @@ export default function Memories() {
                         <button
                           onClick={() => { setEditingId(mem.id); setEditContent(mem.content) }}
                           aria-label={`Edit memory ${mem.id}`}
-                          className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-white/[0.07] opacity-0 group-hover:opacity-100 transition-all"
+                          className="w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-foreground/[0.07] opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-all"
                         >
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
@@ -2740,7 +2742,7 @@ export default function Memories() {
                           <button
                             onClick={() => setHistoryMemoryId(historyMemoryId === mem.id ? null : mem.id)}
                             aria-label={`View edit history for memory ${mem.id}`}
-                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-white/[0.07] opacity-0 group-hover:opacity-100 transition-all"
+                            className="w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-foreground/[0.07] opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-all"
                           >
                             <History className="w-3.5 h-3.5" />
                           </button>
@@ -2761,17 +2763,17 @@ export default function Memories() {
                             onClick={() => setSchedulePopoverId(schedulePopoverId === mem.id ? null : mem.id)}
                             aria-label={`Schedule deletion for memory ${mem.id}`}
                             className={cn(
-                              'w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all',
+                              'w-[26px] h-[26px] rounded-md flex items-center justify-center transition-all',
                               mem.delete_after
                                 ? 'text-status-warning'
-                                : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07]',
+                                : 'text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-text-primary hover:bg-foreground/[0.07]',
                             )}
                           >
                             <CalendarClock className="w-3.5 h-3.5" />
                           </button>
                           {schedulePopoverId === mem.id && (
-                            <div className={`${GLASS_DROPDOWN} rounded-[11px] p-3 absolute right-0 top-7 z-50 min-w-[200px]`} onClick={e => e.stopPropagation()}>
-                              <p className="text-[10px] text-text-tertiary mb-2 font-semibold">Schedule deletion</p>
+                            <div className={`${GLASS_DROPDOWN} rounded-md p-3 absolute right-0 top-7 z-50 min-w-[200px]`} onClick={e => e.stopPropagation()}>
+                              <p className="text-xs text-text-tertiary mb-2 font-semibold">Schedule deletion</p>
                               <input
                                 type="date"
                                 defaultValue={mem.delete_after ?? ''}
@@ -2780,12 +2782,12 @@ export default function Memories() {
                                   const val = e.target.value || null
                                   scheduleDeleteMut.mutate({ id: mem.id, deleteAfter: val })
                                 }}
-                                className="w-full rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-primary px-2 py-1.5 focus:border-accent-blue/60 focus:outline-none [color-scheme:dark]"
+                                className="w-full rounded-md bg-foreground/[0.04] border border-input text-xs text-text-primary px-2 py-1.5 focus:border-accent-blue/60 focus:outline-none [color-scheme:dark] shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                               />
                               {mem.delete_after && (
                                 <button
                                   onClick={() => scheduleDeleteMut.mutate({ id: mem.id, deleteAfter: null })}
-                                  className="mt-2 text-[10px] text-status-error hover:underline w-full text-left"
+                                  className="mt-2 text-xs text-status-error hover:underline w-full text-left"
                                 >
                                   Clear scheduled deletion
                                 </button>
@@ -2802,7 +2804,7 @@ export default function Memories() {
                             onClick={() => restoreMut.mutate(mem.id)}
                             disabled={restoreMut.isPending && restoreMut.variables === mem.id}
                             aria-label={`Restore memory ${mem.id}`}
-                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-accent-blue hover:bg-white/[0.07] transition-all"
+                            className="w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-accent-blue hover:bg-foreground/[0.07] transition-all"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
                           </button>
@@ -2811,7 +2813,7 @@ export default function Memories() {
                             onClick={() => archiveMut.mutate(mem.id)}
                             disabled={archiveMut.isPending && archiveMut.variables === mem.id}
                             aria-label={`Archive memory ${mem.id}`}
-                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07] transition-all"
+                            className="w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-text-primary hover:bg-foreground/[0.07] transition-all"
                           >
                             <Archive className="w-3.5 h-3.5" />
                           </button>
@@ -2824,7 +2826,7 @@ export default function Memories() {
                           onClick={() => deleteMut.mutate(mem.id)}
                           disabled={deleteMut.isPending && deleteMut.variables === mem.id}
                           aria-label={`Delete memory ${mem.id}`}
-                          className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-status-error hover:bg-status-error/10 transition-all"
+                          className="w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-status-error hover:bg-status-error/10 transition-all"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -2837,6 +2839,7 @@ export default function Memories() {
             }
           </tbody>
         </table>
+        </div>
 
         {!isLoading && (!memories || memories.length === 0) && (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
@@ -2859,7 +2862,7 @@ export default function Memories() {
           <button
             onClick={() => setPage(p => Math.max(0, p - 1))}
             disabled={page === 0 || isLoading}
-            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Previous
           </button>
@@ -2867,7 +2870,7 @@ export default function Memories() {
           <button
             onClick={() => setPage(p => p + 1)}
             disabled={(listData?.length ?? 0) < PAGE_SIZE || isLoading}
-            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="border border-border-primary rounded-md px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Next
           </button>
@@ -2910,19 +2913,19 @@ export default function Memories() {
       {activeTab === 'tags' && (
         <div>
           {tagsLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {Array.from({ length: 8 }).map((_, i) => (
                 <div
                   key={i}
-                  className="border border-border-primary rounded-[18px] p-4 animate-pulse"
+                  className="border border-border-primary rounded-xl p-4 animate-pulse"
                 >
-                  <div className="h-3.5 w-1/2 rounded bg-white/[0.06] mb-2" />
-                  <div className="h-5 w-16 rounded bg-white/[0.06]" />
+                  <div className="h-3.5 w-1/2 rounded bg-foreground/[0.06] mb-2" />
+                  <div className="h-5 w-16 rounded bg-foreground/[0.06]" />
                 </div>
               ))}
             </div>
           ) : !tagStats?.length ? (
-            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
+            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-xl">
               <Tag className="w-6 h-6 text-text-quaternary/50" />
               <p className="text-xs font-semibold text-text-secondary">No tags found</p>
               <p className="text-xs text-text-quaternary max-w-xs">
@@ -2930,14 +2933,14 @@ export default function Memories() {
               </p>
             </div>
           ) : (
-            <div className="border border-border-primary rounded-[18px] overflow-hidden">
+            <div className="border border-border-primary rounded-xl overflow-hidden">
               {tagStats.map(tag => {
                 const isRenaming = renamingTag === tag.name
                 const didRename = renameFlash === tag.name || renameFlash === renameValue
                 return (
                   <div
                     key={tag.name}
-                    className="group flex items-center justify-between px-4 py-2 border-b border-border-secondary/30 last:border-b-0 hover:bg-white/[0.02] transition-colors"
+                    className="group flex items-center justify-between px-4 py-2 border-b border-border-secondary/30 last:border-b-0 hover:bg-foreground/[0.02] transition-colors"
                   >
                     {isRenaming ? (
                       <div className="flex-1 flex items-center gap-2" onClick={e => e.stopPropagation()}>
@@ -2959,7 +2962,7 @@ export default function Memories() {
                               setRenameValue('')
                             }
                           }}
-                          className="bg-white/[0.04] border border-border-primary rounded-[8px] px-2 py-0.5 text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none w-full"
+                          className="bg-foreground/[0.04] border border-input rounded-md px-2 py-0.5 text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                           aria-label={`Rename tag ${tag.name}`}
                         />
                         <button
@@ -2972,14 +2975,14 @@ export default function Memories() {
                             }
                           }}
                           disabled={renameTagMut.isPending || !renameValue.trim()}
-                          className="flex items-center gap-1 text-[11px] text-status-success hover:text-status-success/80 disabled:opacity-40 transition-colors shrink-0"
+                          className="flex items-center gap-1 text-xs text-status-success hover:text-status-success/80 disabled:opacity-40 transition-colors shrink-0"
                         >
                           <Check className="w-3 h-3" />
                           Save
                         </button>
                         <button
                           onClick={() => { setRenamingTag(null); setRenameValue('') }}
-                          className="flex items-center gap-1 text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors shrink-0"
+                          className="flex items-center gap-1 text-xs text-text-quaternary hover:text-text-tertiary transition-colors shrink-0"
                         >
                           <X className="w-3 h-3" />
                           Cancel
@@ -2998,7 +3001,7 @@ export default function Memories() {
                             <span className="text-accent-blue/60 font-normal mr-0.5">#</span>
                             {tag.name}
                           </span>
-                          <span className={`shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold border ${didRename ? 'bg-status-success/10 text-status-success border-status-success/20' : 'bg-accent-blue/10 text-accent-blue border-accent-blue/20'}`}>
+                          <span className={`shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-semibold border ${didRename ? 'bg-status-success/10 text-status-success border-status-success/20' : 'bg-action-primary/10 text-accent-blue border-accent-blue/20'}`}>
                             {didRename ? 'Renamed' : `${tag.count} ${tag.count === 1 ? 'memory' : 'memories'}`}
                           </span>
                         </button>
@@ -3011,7 +3014,7 @@ export default function Memories() {
                               setRenameValue(tag.name)
                             }}
                             aria-label={`Rename tag ${tag.name}`}
-                            className="ml-2 shrink-0 text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary transition-opacity"
+                            className="ml-2 shrink-0 text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-text-primary transition-opacity"
                           >
                             <Pencil className="w-3 h-3" />
                           </button>
@@ -3031,33 +3034,33 @@ export default function Memories() {
         <div className="space-y-4">
           {/* Create collection form */}
           {isAdmin && (
-            <div className={`${GLASS_PANEL} rounded-[18px] p-5 space-y-3`}>
+            <div className={`${GLASS_PANEL} rounded-xl p-5 space-y-3`}>
               <p className="text-xs font-semibold text-text-secondary">New collection</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <input
                   value={newCollectionName}
                   onChange={e => setNewCollectionName(e.target.value)}
                   placeholder="Collection name"
                   aria-label="Collection name"
-                  className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                  className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
                 <input
                   value={newCollectionDesc}
                   onChange={e => setNewCollectionDesc(e.target.value)}
                   placeholder="Description (optional)"
                   aria-label="Collection description"
-                  className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                  className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
-                <button
+                <Button
                   onClick={() => {
                     if (!newCollectionName.trim()) return
                     createCollectionMut.mutate({ name: newCollectionName.trim(), description: newCollectionDesc.trim() || undefined })
                   }}
                   disabled={createCollectionMut.isPending || !newCollectionName.trim()}
-                  className="px-3 py-1.5 bg-accent-blue text-white text-xs font-semibold rounded-[8px] disabled:opacity-50 hover:bg-accent-blue/90 transition-colors"
+
                 >
                   {createCollectionMut.isPending ? 'Creating…' : 'Create'}
-                </button>
+                </Button>
               </div>
               {collectionError && <p className="text-xs text-status-error">{collectionError}</p>}
             </div>
@@ -3065,16 +3068,16 @@ export default function Memories() {
 
           {/* Collections list */}
           {collectionsLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="border border-border-primary rounded-[18px] p-4 animate-pulse">
-                  <div className="h-3.5 w-1/2 rounded bg-white/[0.06] mb-2" />
-                  <div className="h-5 w-16 rounded bg-white/[0.06]" />
+                <div key={i} className="border border-border-primary rounded-xl p-4 animate-pulse">
+                  <div className="h-3.5 w-1/2 rounded bg-foreground/[0.06] mb-2" />
+                  <div className="h-5 w-16 rounded bg-foreground/[0.06]" />
                 </div>
               ))}
             </div>
           ) : !collections?.length ? (
-            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
+            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-xl">
               <Folder className="w-6 h-6 text-text-quaternary/50" />
               <p className="text-xs font-semibold text-text-secondary">No collections yet</p>
               <p className="text-xs text-text-quaternary max-w-xs">
@@ -3082,11 +3085,11 @@ export default function Memories() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {collections.map((col: Collection) => (
                 <div
                   key={col.id}
-                  className={`relative group ${GLASS_PANEL} rounded-[18px] p-5 hover:border-border-focus transition-colors`}
+                  className={`relative group ${GLASS_PANEL} rounded-xl p-5 hover:border-border-focus transition-colors`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
@@ -3097,7 +3100,7 @@ export default function Memories() {
                       <button
                         onClick={() => exportCollection(col)}
                         aria-label="Export collection"
-                        className="opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-text-primary transition-opacity"
+                        className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 text-text-quaternary hover:text-text-primary transition-opacity"
                       >
                         <Download className="w-3.5 h-3.5" />
                       </button>
@@ -3105,7 +3108,7 @@ export default function Memories() {
                         <button
                           onClick={() => { if (window.confirm(`Delete collection "${col.name}"?`)) deleteCollectionMut.mutate(col.id) }}
                           aria-label={`Delete collection ${col.name}`}
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded-[5px] text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-all"
+                          className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 p-1 rounded-sm text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-all"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
@@ -3116,12 +3119,12 @@ export default function Memories() {
                     <p className="text-xs text-text-tertiary truncate mb-2">{col.description}</p>
                   )}
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] rounded-[5px] bg-white/[0.04] text-text-quaternary border border-border-secondary/50 px-1.5 py-0.5">
+                    <span className="text-xs rounded-sm bg-foreground/[0.04] text-text-quaternary border border-border-secondary/50 px-1.5 py-0.5">
                       {col.memory_count ?? 0} {(col.memory_count ?? 0) === 1 ? 'memory' : 'memories'}
                     </span>
                     <button
                       onClick={() => { setFilterCollection(col.id); setActiveTab('memories') }}
-                      className="text-[11px] text-accent-blue hover:underline"
+                      className="text-xs text-accent-blue hover:underline"
                     >
                       View
                     </button>
@@ -3138,13 +3141,13 @@ export default function Memories() {
         <div className="space-y-3">
           {duplicatesLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="border border-border-primary rounded-[18px] p-5 animate-pulse space-y-3">
-                <div className="h-3.5 w-1/3 rounded bg-white/[0.06]" />
-                <div className="h-2.5 w-2/3 rounded bg-white/[0.06]" />
+              <div key={i} className="border border-border-primary rounded-xl p-5 animate-pulse space-y-3">
+                <div className="h-3.5 w-1/3 rounded bg-foreground/[0.06]" />
+                <div className="h-2.5 w-2/3 rounded bg-foreground/[0.06]" />
               </div>
             ))
           ) : !duplicateGroups?.length ? (
-            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
+            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-xl">
               <CheckCircle2 className="w-6 h-6 text-status-success/60" />
               <p className="text-xs font-semibold text-text-secondary">No duplicate memories found</p>
               <p className="text-xs text-text-quaternary max-w-xs">
@@ -3180,7 +3183,7 @@ export default function Memories() {
               return (
                 <div
                   key={groupIdx}
-                  className="rounded-[18px] border border-status-error/20 bg-status-error/5"
+                  className="rounded-xl border border-status-error/20 bg-status-error/5"
                 >
                   {/* Group header */}
                   <div className="flex items-center justify-between gap-3 px-5 py-4">
@@ -3203,14 +3206,14 @@ export default function Memories() {
                       <button
                         onClick={handleMergeAllIntoNewest}
                         aria-label={`Merge all into newest in duplicate group ${groupIdx + 1}`}
-                        className="border border-border-primary rounded-[8px] px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
+                        className="border border-border-primary rounded-md px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
                       >
                         Merge all into newest
                       </button>
                       <button
                         onClick={handleDeleteAllButNewest}
                         aria-label={`Delete all but newest in duplicate group ${groupIdx + 1}`}
-                        className="text-xs text-status-error/60 hover:text-status-error transition-colors border border-status-error/20 rounded-full px-3 py-1 hover:bg-status-error/10"
+                        className="text-xs text-status-error/60 hover:text-status-error transition-colors border border-status-error/20 rounded-md px-3 py-1 hover:bg-status-error/10"
                       >
                         Delete all but newest
                       </button>
@@ -3224,14 +3227,14 @@ export default function Memories() {
                         <div key={mem.id} className="flex items-start justify-between gap-3 px-5 py-3">
                           <div className="min-w-0 flex-1 space-y-0.5">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-[11px] font-semibold text-text-tertiary">
+                              <span className="text-xs font-semibold text-text-tertiary">
                                 {new Date(mem.created_at).toLocaleString()}
                               </span>
-                              <span className={`text-[10px] border rounded-[5px] px-1.5 py-0.5 text-text-quaternary ${GLASS_CHIP}`}>
+                              <span className={`text-xs border rounded-sm px-1.5 py-0.5 text-text-quaternary ${GLASS_CHIP}`}>
                                 {mem.project}
                               </span>
                               {memIdx === 0 && (
-                                <span className="text-[10px] bg-status-success/10 text-status-success border border-status-success/20 px-1.5 py-0.5 rounded-[5px]">
+                                <span className="text-xs bg-status-success/10 text-status-success border border-status-success/20 px-1.5 py-0.5 rounded-sm">
                                   newest
                                 </span>
                               )}
@@ -3247,7 +3250,7 @@ export default function Memories() {
                                   onClick={() => mergeMut.mutate({ keepId: newest.id, mergeId: mem.id })}
                                   disabled={mergeMut.isPending}
                                   aria-label="Merge into newest"
-                                  className="p-1 rounded text-text-quaternary hover:text-accent-blue hover:bg-accent-blue/10 transition-colors disabled:opacity-40"
+                                  className="p-1 rounded text-text-quaternary hover:text-accent-blue hover:bg-action-primary/10 transition-colors disabled:opacity-40"
                                 >
                                   <GitMerge className="w-3.5 h-3.5" />
                                 </button>
@@ -3285,13 +3288,13 @@ export default function Memories() {
         <div className="space-y-3">
           {sessionsLoading ? (
             Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className={`${GLASS_PANEL} rounded-[18px] p-4 space-y-2 animate-pulse`}>
-                <div className="h-3.5 w-1/3 rounded bg-white/[0.06]" />
-                <div className="h-2.5 w-2/3 rounded bg-white/[0.06]" />
+              <div key={i} className={`${GLASS_PANEL} rounded-xl p-4 space-y-2 animate-pulse`}>
+                <div className="h-3.5 w-1/3 rounded bg-foreground/[0.06]" />
+                <div className="h-2.5 w-2/3 rounded bg-foreground/[0.06]" />
               </div>
             ))
           ) : !sessions?.length ? (
-            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
+            <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-xl">
               <Clock className="w-6 h-6 text-text-quaternary/50" />
               <p className="text-xs font-semibold text-text-secondary">No sessions yet</p>
               <p className="text-xs text-text-quaternary max-w-xs">
@@ -3304,7 +3307,7 @@ export default function Memories() {
               return (
               <div
                 key={session.id}
-                className={`group ${GLASS_PANEL} rounded-[18px] overflow-hidden transition-colors hover:border-border-focus`}
+                className={`group ${GLASS_PANEL} rounded-xl overflow-hidden transition-colors hover:border-border-focus`}
               >
                 {/* Card header — clickable to expand */}
                 <div
@@ -3321,21 +3324,21 @@ export default function Memories() {
                       <span className="font-mono text-xs text-text-tertiary truncate">
                         {session.project}
                       </span>
-                      <span className="text-[10px] bg-accent-blue/10 text-accent-blue px-2 py-0.5 rounded-[5px]">
+                      <span className="text-xs bg-action-primary/10 text-accent-blue px-2 py-0.5 rounded-sm">
                         {session.memory_count} {session.memory_count === 1 ? 'memory' : 'memories'}
                       </span>
                       {session.ended_at ? (
-                        <span className={`text-[10px] text-text-quaternary border px-2 py-0.5 rounded-[5px] ${GLASS_CHIP}`}>
+                        <span className={`text-xs text-text-quaternary border px-2 py-0.5 rounded-sm ${GLASS_CHIP}`}>
                           ended
                         </span>
                       ) : (
-                        <span className="text-[10px] bg-status-success/10 text-status-success border border-status-success/20 px-2 py-0.5 rounded-[5px]">
+                        <span className="text-xs bg-status-success/10 text-status-success border border-status-success/20 px-2 py-0.5 rounded-sm">
                           active
                         </span>
                       )}
                     </div>
                     {session.directory && (
-                      <p className="text-[11px] text-text-quaternary font-mono mt-0.5 truncate">
+                      <p className="text-xs text-text-quaternary font-mono mt-0.5 truncate">
                         {session.directory}
                       </p>
                     )}
@@ -3360,7 +3363,7 @@ export default function Memories() {
                               setEditingSessionId(null)
                             }
                           }}
-                          className="w-full bg-white/[0.03] border border-accent-blue/40 rounded-[8px] px-2 py-1 text-[13px] text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue"
+                          className="w-full bg-foreground/[0.03] border border-accent-blue/40 rounded-md px-2 py-1 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue"
                           placeholder="Session summary…"
                         />
                       </div>
@@ -3370,9 +3373,9 @@ export default function Memories() {
                         onClick={e => e.stopPropagation()}
                       >
                         {session.summary ? (
-                          <p className="text-[13px] text-text-tertiary line-clamp-2">{session.summary}</p>
+                          <p className="text-sm text-text-tertiary line-clamp-2">{session.summary}</p>
                         ) : (
-                          <p className="text-[13px] text-text-quaternary italic opacity-0 group-hover:opacity-60 transition-opacity">Add summary…</p>
+                          <p className="text-sm text-text-quaternary italic opacity-0 group-hover:opacity-60 transition-opacity">Add summary…</p>
                         )}
                         <button
                           onClick={e => {
@@ -3390,10 +3393,10 @@ export default function Memories() {
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
                     <div className="text-right">
-                      <p className="text-[11px] text-text-tertiary">
+                      <p className="text-xs text-text-tertiary">
                         {new Date(session.started_at).toLocaleDateString()}
                       </p>
-                      <p className="text-[10px] text-text-quaternary">
+                      <p className="text-xs text-text-quaternary">
                         {new Date(session.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </div>
@@ -3402,24 +3405,24 @@ export default function Memories() {
                       <button
                         onClick={e => { e.stopPropagation(); setDeleteConfirmSessionId(deleteConfirmSessionId === session.id ? null : session.id) }}
                         aria-label={`Delete session ${session.id}`}
-                        className="p-1 rounded-[5px] text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-status-error hover:bg-status-error/10 transition-all"
+                        className="p-1 rounded-sm text-text-quaternary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 hover:text-status-error hover:bg-status-error/10 transition-all"
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
                       {deleteConfirmSessionId === session.id && (
-                        <div className={`absolute right-0 top-7 z-30 ${GLASS_DROPDOWN} rounded-[11px] p-3 min-w-[180px]`}>
-                          <p className="text-[11px] text-text-secondary mb-2">Delete this session?</p>
+                        <div className={`absolute right-0 top-7 z-30 ${GLASS_DROPDOWN} rounded-md p-3 min-w-[180px]`}>
+                          <p className="text-xs text-text-secondary mb-2">Delete this session?</p>
                           <div className="flex gap-2">
                             <button
                               onClick={() => deleteSessionMut.mutate(session.id)}
                               disabled={deleteSessionMut.isPending}
-                              className="flex-1 rounded-full bg-status-error/10 border border-status-error/20 text-[11px] text-status-error hover:bg-status-error/20 py-1 transition-colors disabled:opacity-40"
+                              className="flex-1 rounded-md bg-status-error/10 border border-status-error/20 text-xs text-status-error hover:bg-status-error/20 py-1 transition-colors disabled:opacity-40"
                             >
                               {deleteSessionMut.isPending ? 'Deleting…' : 'Delete'}
                             </button>
                             <button
                               onClick={() => setDeleteConfirmSessionId(null)}
-                              className="flex-1 rounded-full border border-border-primary text-[11px] text-text-quaternary hover:text-text-secondary py-1 transition-colors"
+                              className="flex-1 rounded-md border border-border-primary text-xs text-text-quaternary hover:text-text-secondary py-1 transition-colors"
                             >
                               Cancel
                             </button>
@@ -3445,10 +3448,10 @@ export default function Memories() {
                       {sessionMemoriesLoading ? (
                         Array.from({ length: 3 }).map((_, i) => (
                           <div key={i} className="flex items-start gap-3 py-2.5 border-b border-border-secondary/30 last:border-b-0 animate-pulse">
-                            <div className="h-4 w-16 rounded-[5px] bg-white/[0.06] shrink-0" />
+                            <div className="h-4 w-16 rounded-sm bg-foreground/[0.06] shrink-0" />
                             <div className="flex-1 space-y-1">
-                              <div className="h-3 w-full rounded bg-white/[0.06]" />
-                              <div className="h-3 w-2/3 rounded bg-white/[0.06]" />
+                              <div className="h-3 w-full rounded bg-foreground/[0.06]" />
+                              <div className="h-3 w-2/3 rounded bg-foreground/[0.06]" />
                             </div>
                           </div>
                         ))
@@ -3457,7 +3460,7 @@ export default function Memories() {
                       ) : (
                         sessionMemories.map(mem => (
                           <div key={mem.id} className="flex items-start gap-3 py-2.5 border-b border-border-secondary/20 last:border-b-0">
-                            <span className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-white/[0.04] text-text-quaternary border border-border-secondary/50 shrink-0 mt-0.5">
+                            <span className="rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-foreground/[0.04] text-text-quaternary border border-border-secondary/50 shrink-0 mt-0.5">
                               {mem.type ?? mem.tool}
                             </span>
                             <p className="text-xs text-text-secondary line-clamp-2 flex-1 leading-relaxed">
@@ -3465,7 +3468,7 @@ export default function Memories() {
                               {mem.content.replace(/#+\s/g, '').replace(/\*\*/g, '')}
                             </p>
                             <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-[10px] text-text-tertiary whitespace-nowrap">
+                              <span className="text-xs text-text-tertiary whitespace-nowrap">
                                 {new Date(mem.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                               </span>
                               {isAdmin && !mem.archived_at && (
@@ -3473,7 +3476,7 @@ export default function Memories() {
                                   onClick={e => { e.stopPropagation(); archiveMut.mutate(mem.id) }}
                                   disabled={archiveMut.isPending && archiveMut.variables === mem.id}
                                   aria-label={`Archive memory ${mem.id}`}
-                                  className="p-0.5 rounded text-text-quaternary hover:text-text-secondary hover:bg-white/[0.04] transition-colors disabled:opacity-40"
+                                  className="p-0.5 rounded text-text-quaternary hover:text-text-secondary hover:bg-foreground/[0.04] transition-colors disabled:opacity-40"
                                 >
                                   <ArchiveX className="w-3 h-3" />
                                 </button>

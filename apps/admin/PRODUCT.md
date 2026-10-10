@@ -1,0 +1,7 @@
+# NexusMind admin
+
+Operate surface for managing shared AI memory, projects, users, permissions, agents, factory runs, policies, tasks, SDD artifacts, and organization settings. Preserve the current route structure, permission checks, data contracts and workflows.
+
+The owner selected Audit1 Admin as the visual reference, with its current shadcn New York component design translated to a restrained lime palette. Use Geist, Audit1 neutral light/dark surfaces, an inset workspace, compact forms and consistent data tables. The brand accent is lime #c3d82e; it must not dominate backgrounds or every status. Preserve semantic status colors and real chart data. The landing has its separately approved SmartCoder lime identity and is outside this admin redesign. Reference snapshots: Admin-portal-front e9e01b2a and UI Commons v2.0.670 (47968e54).
+
+Preview at http://127.0.0.1:3005 connects through a loopback-only proxy to the real HTTPS API, with production authentication enforced. Sign in with an existing account or API key. The proxy blocks business writes and labels the workspace “Live data · Read only”; authentication and explicitly listed read-only POST queries remain available. No authenticated data validation is implied until a user signs in. See dev/README.md for setup and limitations. The owner requires seeing the admin before any admin push. Keep all admin changes local until explicit approval. Landing publication has separate authorization.

@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import {
   BarChart3, Coins, Clock, Activity, DatabaseZap, Loader2, Gauge, ArrowUpRight,
-  ArrowDownRight, Minus, Cpu,
+  ArrowDownRight, Minus, Cpu, Building2, FolderKanban, ListTodo, UserRound, Building,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -13,18 +13,18 @@ import {
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { DateRangePicker } from '../components/ui/DateRangePicker'
 import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import { EmptyState } from '../components/ui/EmptyState/EmptyState'
 import { UsageTrendChart, type TrendMetric } from './usage/UsageTrendChart'
 import { RankedBars } from './usage/RankedBars'
-import { CHART_BRIGHT, CHART_DIM, CHART_PRIMARY } from './usage/chartColors'
 import {
   addDaysIso, daysBetween, fillBuckets, formatDuration, todayIso,
 } from './usage/format'
 import type { UsageBucketSize, UsageLevel, UsageSummaryRow } from '../types'
 
 // Same glass recipe used across the admin pages (see Clients.tsx / StatTile).
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 // Radix Select forbids an empty-string item value, so the "All …" options use a
 // sentinel that is translated to `undefined` (omit the filter) before the call.
@@ -39,6 +39,15 @@ const LEVELS: { value: UsageLevel; label: string }[] = [
   { value: 'user', label: 'User' },
   { value: 'org', label: 'Org' },
 ]
+
+const LEVEL_PRESENTATION: Record<UsageLevel, { icon: ReactNode; description: string }> = {
+  project: { icon: <FolderKanban />, description: 'Compare usage by project.' },
+  client: { icon: <Building2 />, description: 'Compare usage by client.' },
+  task: { icon: <ListTodo />, description: 'Compare usage by task.' },
+  user: { icon: <UserRound />, description: 'Compare usage by person.' },
+  org: { icon: <Building />, description: 'Compare totals across the organization.' },
+  model: { icon: <Cpu />, description: 'Compare usage by model.' },
+}
 
 type RangePreset = '7d' | '30d' | '90d' | 'all' | 'custom'
 
@@ -117,12 +126,12 @@ function PanelCard({
   className?: string
 }) {
   return (
-    <section className={cn('rounded-[18px]', GLASS_PANEL, className)}>
+    <section className={cn('min-w-0 w-full max-w-full rounded-xl', GLASS_PANEL, className)}>
       <header className="px-5 py-4 border-b border-border-secondary flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-sm font-semibold text-text-primary">{title}</h2>
         {action}
       </header>
-      <div className="p-5">{children}</div>
+      <div className="min-w-0 p-4 sm:p-5">{children}</div>
     </section>
   )
 }
@@ -235,7 +244,6 @@ export default function Usage() {
           value: totals.tokens_total.toLocaleString(),
           sub: <DeltaChip delta={pctDelta(totals.tokens_total, prevTotals?.tokens_total ?? 0)} />,
           icon: Coins,
-          accent: CHART_PRIMARY,
           sparkline: buckets.map(b => b.tokens_total),
         },
         {
@@ -249,7 +257,6 @@ export default function Usage() {
             </span>
           ),
           icon: ArrowUpRight,
-          accent: CHART_BRIGHT,
           sparkline: buckets.map(b => b.tokens_out),
         },
         {
@@ -257,7 +264,6 @@ export default function Usage() {
           value: formatDuration(totals.duration_ms),
           sub: <DeltaChip delta={pctDelta(totals.duration_ms, prevTotals?.duration_ms ?? 0)} />,
           icon: Clock,
-          accent: CHART_DIM,
           sparkline: buckets.map(b => b.duration_ms),
         },
         {
@@ -265,7 +271,6 @@ export default function Usage() {
           value: totals.event_count.toLocaleString(),
           sub: <DeltaChip delta={pctDelta(totals.event_count, prevTotals?.event_count ?? 0)} />,
           icon: Activity,
-          accent: CHART_PRIMARY,
           sparkline: buckets.map(b => b.event_count),
         },
         {
@@ -283,7 +288,6 @@ export default function Usage() {
             </span>
           ),
           icon: Gauge,
-          accent: CHART_BRIGHT,
           // A ratio has no meaningful per-day series to sparkline; the tile
           // deliberately shows none rather than fabricating one.
           sparkline: undefined as number[] | undefined,
@@ -305,14 +309,14 @@ export default function Usage() {
   const levelLabel = LEVELS.find(l => l.value === level)?.label ?? level
 
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-6">
+    <div className="min-w-0 w-full p-8 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-xl bg-action-primary/12 flex items-center justify-center shrink-0">
             <BarChart3 className="w-5 h-5 text-accent-blue" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">Usage</h1>
+            <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Usage</h1>
             <p className="text-xs text-text-quaternary mt-0.5">
               Token consumption and execution time over time, by project, client, task, user or model.
             </p>
@@ -327,7 +331,7 @@ export default function Usage() {
             <button
               onClick={() => { setBackfillMsg(null); backfillMut.mutate() }}
               disabled={backfillMut.isPending}
-              className="flex items-center gap-1.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white px-3.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground px-3.5 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 h-9 shadow-xs"
             >
               {backfillMut.isPending
                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -347,7 +351,7 @@ export default function Usage() {
       ) : (
         <>
           {/* Filter bar — one row above the charts. */}
-          <div className={`rounded-[18px] p-3.5 ${GLASS_PANEL}`}>
+          <div className={`rounded-xl p-3.5 ${GLASS_PANEL}`}>
             <div className="flex flex-wrap items-center gap-3">
               <SegmentedControl
                 size="sm"
@@ -362,19 +366,19 @@ export default function Usage() {
                 placeholder="Custom"
               />
 
-              <span className="w-px h-6 bg-border-secondary mx-1" aria-hidden="true" />
+              <span className="hidden sm:block w-px h-6 bg-border-secondary mx-1" aria-hidden="true" />
 
               <Select value={clientId} onValueChange={onClientChange}>
                 <SelectTrigger
                   aria-label="Filter by client"
-                  className="w-44 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60"
+                  className="w-full sm:w-44 h-9 text-xs bg-transparent border border-border-primary rounded-md px-3 focus:outline-none focus:border-accent-blue/60"
                 >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={ALL}>All clients</SelectItem>
+                  <SelectItem value={ALL} icon={<Building2 />} description="Usage across every client">All clients</SelectItem>
                   {(clients ?? []).map(c => (
-                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    <SelectItem key={c.id} value={c.id} icon={<Building2 />} indicatorColor={c.status === 'active' ? 'var(--color-status-success)' : c.status === 'paused' ? 'var(--color-status-warning)' : 'var(--muted-foreground)'} description={`${c.slug} · ${c.status}`}>{c.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -382,14 +386,14 @@ export default function Usage() {
               <Select value={projectId} onValueChange={setProjectId}>
                 <SelectTrigger
                   aria-label="Filter by project"
-                  className="w-44 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60"
+                  className="w-full sm:w-44 h-9 text-xs bg-transparent border border-border-primary rounded-md px-3 focus:outline-none focus:border-accent-blue/60"
                 >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={ALL}>All projects</SelectItem>
+                  <SelectItem value={ALL} icon={<FolderKanban />} description="Usage across every project">All projects</SelectItem>
                   {(projects ?? []).map(p => (
-                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    <SelectItem key={p.id} value={p.id} icon={<FolderKanban />} description={p.description || `Usage for ${p.name}`}>{p.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -397,7 +401,7 @@ export default function Usage() {
           </div>
 
           {isError ? (
-            <div className={`rounded-[18px] flex flex-col items-center gap-2 py-14 text-center ${GLASS_PANEL}`}>
+            <div className={`rounded-xl flex flex-col items-center gap-2 py-14 text-center ${GLASS_PANEL}`}>
               <BarChart3 className="w-6 h-6 text-status-error/60" />
               <p className="text-xs font-semibold text-text-secondary">Couldn't load usage</p>
               <p className="text-xs text-text-quaternary max-w-xs">
@@ -405,7 +409,7 @@ export default function Usage() {
               </p>
             </div>
           ) : !isLoading && !hasData ? (
-            <div className={`rounded-[18px] flex flex-col items-center gap-2.5 py-16 text-center ${GLASS_PANEL}`}>
+            <div className={`rounded-xl flex flex-col items-center gap-2.5 py-16 text-center ${GLASS_PANEL}`}>
               <BarChart3 className="w-7 h-7 text-text-quaternary/50" />
               <p className="text-sm font-semibold text-text-secondary">No usage in this range</p>
               <p className="text-xs text-text-quaternary max-w-sm leading-relaxed">
@@ -425,21 +429,21 @@ export default function Usage() {
           ) : (
             <>
               {/* KPI row */}
-              <KpiMarquee role="list" aria-label="Usage statistics">
+              <KpiMarquee compact role="list" aria-label="Usage statistics">
                 {isLoading
                   ? Array.from({ length: 5 }).map((_, i) => (
                       <div key={i} className="w-[232px] flex-none">
-                        <div className={`h-[122px] rounded-[18px] animate-pulse ${GLASS_PANEL}`} />
+                        <div className={`h-10 rounded-lg animate-pulse ${GLASS_PANEL}`} />
                       </div>
                     ))
-                  : statTiles.map(tile => (
+                  : statTiles.map((tile, index) => (
                       <div key={tile.label} className="w-[232px] flex-none">
                         <StatTile
                           label={tile.label}
                           value={tile.value}
                           sub={tile.sub}
                           icon={tile.icon}
-                          accent={tile.accent}
+                          accent={accentFor(index)}
                           sparkline={tile.sparkline}
                         />
                       </div>
@@ -450,7 +454,7 @@ export default function Usage() {
               <PanelCard
                 title="Usage over time"
                 action={
-                  <div className="flex items-center gap-2 flex-wrap">
+                  <div className="min-w-0 flex max-w-full items-center gap-2 flex-wrap">
                     <SegmentedControl
                       size="sm"
                       options={[
@@ -475,7 +479,7 @@ export default function Usage() {
                 }
               >
                 {seriesLoading ? (
-                  <div className="h-[268px] rounded-[12px] bg-white/[0.02] animate-pulse" />
+                  <div className="h-[268px] rounded-xl bg-foreground/[0.02] animate-pulse" />
                 ) : buckets.length === 0 ? (
                   <p className="text-[12.5px] text-text-tertiary text-center py-20">
                     No events in this range to plot.
@@ -486,21 +490,22 @@ export default function Usage() {
               </PanelCard>
 
               {/* Breakdowns */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid min-w-0 grid-cols-1 lg:grid-cols-2 gap-6">
                 <PanelCard
                   title={`Top by ${levelLabel.toLowerCase()}`}
                   action={
                     <Select value={level} onValueChange={v => setLevel(v as UsageLevel)}>
                       <SelectTrigger
                         aria-label="Rollup level"
-                        className="w-32 h-8 text-xs bg-transparent border border-border-primary rounded-[10px] px-3 focus:outline-none focus:border-accent-blue/60"
+                        className="w-32 h-8 text-xs bg-transparent border border-border-primary rounded-lg px-3 focus:outline-none focus:border-accent-blue/60"
                       >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {LEVELS.map(l => (
-                          <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
-                        ))}
+                        {LEVELS.map(l => {
+                          const option = LEVEL_PRESENTATION[l.value]
+                          return <SelectItem key={l.value} value={l.value} icon={option.icon} description={option.description}>{l.label}</SelectItem>
+                        })}
                       </SelectContent>
                     </Select>
                   }
@@ -508,7 +513,7 @@ export default function Usage() {
                   {isLoading ? (
                     <div className="flex flex-col gap-3">
                       {Array.from({ length: 6 }).map((_, i) => (
-                        <div key={i} className="h-[26px] rounded-[6px] bg-white/[0.03] animate-pulse" />
+                        <div key={i} className="h-[26px] rounded-sm bg-foreground/[0.03] animate-pulse" />
                       ))}
                     </div>
                   ) : (
@@ -538,7 +543,7 @@ export default function Usage() {
               </div>
 
               {/* Detail table — the auditable surface behind the charts. */}
-              <div className={`rounded-[18px] overflow-hidden ${GLASS_PANEL}`}>
+              <div className={`min-w-0 w-full max-w-full rounded-xl overflow-hidden ${GLASS_PANEL}`}>
                 <div className="px-5 py-4 border-b border-border-secondary flex items-center justify-between gap-3">
                   <span className="text-sm font-semibold text-text-primary">
                     Detail by {levelLabel.toLowerCase()}
@@ -554,16 +559,16 @@ export default function Usage() {
                   <div className="divide-y divide-border-secondary">
                     {Array.from({ length: 5 }).map((_, i) => (
                       <div key={i} className="px-5 py-3.5 flex items-center gap-4">
-                        <div className="h-3.5 rounded-[5px] bg-white/[0.04] animate-pulse flex-1" />
+                        <div className="h-3.5 rounded-sm bg-foreground/[0.04] animate-pulse flex-1" />
                         {Array.from({ length: 5 }).map((_, j) => (
-                          <div key={j} className="h-3.5 w-16 rounded-[5px] bg-white/[0.04] animate-pulse" />
+                          <div key={j} className="h-3.5 w-16 rounded-sm bg-foreground/[0.04] animate-pulse" />
                         ))}
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
+                  <div className="min-w-0 w-full max-w-full overflow-x-auto">
+                    <table className="admin-data-table w-full min-w-[720px] text-xs">
                       <thead>
                         <tr className="text-text-tertiary border-b border-border-secondary">
                           <th className="text-left font-semibold px-5 py-2.5">{levelLabel}</th>
@@ -581,7 +586,7 @@ export default function Usage() {
                             ? (row.tokens_total / totals.tokens_total) * 100
                             : 0
                           return (
-                            <tr key={row.key_id ?? `${row.key_name}-${i}`} className="hover:bg-white/[0.03] transition-colors">
+                            <tr key={row.key_id ?? `${row.key_name}-${i}`} className="hover:bg-foreground/[0.03] transition-colors">
                               <td className="px-5 py-3 text-text-primary font-medium truncate max-w-xs">{row.key_name}</td>
                               <td className="px-4 py-3 text-right text-text-secondary tabular-nums">{row.tokens_in.toLocaleString()}</td>
                               <td className="px-4 py-3 text-right text-text-secondary tabular-nums">{row.tokens_out.toLocaleString()}</td>
@@ -597,7 +602,7 @@ export default function Usage() {
                       </tbody>
                       {totals && (
                         <tfoot>
-                          <tr className={cn('border-t border-border-secondary text-text-primary font-semibold', 'bg-white/[0.02]')}>
+                          <tr className={cn('border-t border-border-secondary text-text-primary font-semibold', 'bg-foreground/[0.02]')}>
                             <td className="px-5 py-3">Total</td>
                             <td className="px-4 py-3 text-right tabular-nums">{totals.tokens_in.toLocaleString()}</td>
                             <td className="px-4 py-3 text-right tabular-nums">{totals.tokens_out.toLocaleString()}</td>

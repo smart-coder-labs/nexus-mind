@@ -1,403 +1,122 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-
-// Visible keyboard-focus indicator (DESIGN_DIRECTION §6).
-const FOCUS_RING =
-    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring';
-
-/* ========================================
-   TYPES
-   ======================================== */
+import * as React from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
+import { X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export interface ModalProps {
-    open: boolean;
-    onOpenChange: (open: boolean) => void;
-    children: React.ReactNode;
-    size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'full';
-    position?: 'center' | 'right' | 'left' | 'bottom' | 'fullscreen';
+  open: boolean;
+  ariaLabel?: string;
+  onOpenChange: (open: boolean) => void;
+  children: React.ReactNode;
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'full';
+  position?: 'center' | 'right' | 'left' | 'bottom' | 'fullscreen';
 }
 
-/* ========================================
-   STYLES
-   ======================================== */
-
-/* ========================================
-   STYLES & CONFIG
-   ======================================== */
-
-const sizeStyles = {
-    sm: 'max-w-sm',
-    md: 'max-w-md',
-    lg: 'max-w-lg',
-    xl: 'max-w-xl',
-    '2xl': 'max-w-2xl',
-    full: 'max-w-full', // Removed mx-4 to allow edge-to-edge
+const sizes = {
+  sm: 'max-w-sm',
+  md: 'max-w-md',
+  lg: 'max-w-lg',
+  xl: 'max-w-xl',
+  '2xl': 'max-w-2xl',
+  full: 'max-w-full',
 };
 
-interface ModalConfig {
-    wrapper: string;
-    content: string;
-    variant: string;
-}
-
-const modalConfig: Record<string, ModalConfig> = {
-    center: {
-        wrapper: 'items-center justify-center p-4',
-        content: 'rounded-[18px]',
-        variant: 'center',
-    },
-    bottom: {
-        wrapper: 'items-end justify-center',
-        content: 'rounded-t-[18px]',
-        variant: 'bottom',
-    },
-    bottomFull: {
-        wrapper: 'items-end justify-center',
-        content: 'w-full rounded-t-[18px]',
-        variant: 'bottom',
-    },
-    left: {
-        wrapper: 'items-stretch justify-start',
-        content: 'h-full rounded-r-[18px]',
-        variant: 'left',
-    },
-    right: {
-        wrapper: 'items-stretch justify-end',
-        content: 'h-full rounded-l-[18px]',
-        variant: 'right',
-    },
-    fullscreen: {
-        wrapper: 'items-center justify-center',
-        content: 'w-full h-full rounded-none',
-        variant: 'fullscreen',
-    },
+const positions = {
+  center: 'left-1/2 top-1/2 max-h-[min(90dvh,52rem)] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl sm:w-[calc(100%-3rem)]',
+  right: 'inset-y-0 right-0 h-dvh w-[min(44rem,calc(100%-1rem))] rounded-l-2xl',
+  left: 'inset-y-0 left-0 h-dvh w-[min(44rem,calc(100%-1rem))] rounded-r-2xl',
+  bottom: 'bottom-0 left-1/2 max-h-[90dvh] w-full -translate-x-1/2 rounded-t-2xl',
+  fullscreen: 'inset-0 h-dvh w-full rounded-none',
 };
 
-/* ========================================
-   COMPONENT
-   ======================================== */
+export function Modal({ open, ariaLabel, onOpenChange, children, size = 'md', position = 'center' }: ModalProps) {
+  const opener = React.useRef<HTMLElement | null>(null);
+  const [content, setContent] = React.useState<HTMLDivElement | null>(null);
+  const fallbackId = React.useId();
+  const [title, setTitle] = React.useState<string>();
 
-export const Modal: React.FC<ModalProps> = ({
-    open,
-    onOpenChange,
-    children,
-    size = 'md',
-    position = 'center',
-}) => {
-    const [mounted, setMounted] = useState(false);
-    const prefersReducedMotion = useReducedMotion();
+  React.useLayoutEffect(() => {
+    if (!content) return;
+    const heading = content.querySelector<HTMLElement>('h1,h2,h3,[data-slot="dialog-title"]');
+    if (heading) {
+      if (!heading.id) heading.id = fallbackId;
+      setTitle(heading.id);
+    }
+  }, [content, fallbackId]);
 
-    useEffect(() => {
-        setMounted(true);
-        return () => setMounted(false);
-    }, []);
-
-    const contentRef = useRef<HTMLDivElement>(null);
-
-    // Handle Escape key
-    useEffect(() => {
-        const handleEscape = (e: KeyboardEvent) => {
-            if (open && e.key === 'Escape') {
-                onOpenChange(false);
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          data-slot="dialog-overlay"
+          className="fixed inset-0 z-50 bg-black/45 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 duration-200"
+        />
+        <Dialog.Content
+          ref={setContent}
+          data-slot="dialog-content"
+          data-position={position}
+          aria-modal="true"
+          aria-label={ariaLabel}
+          aria-labelledby={ariaLabel ? undefined : title}
+          aria-describedby={undefined}
+          onOpenAutoFocus={() => { opener.current = document.activeElement as HTMLElement; }}
+          onCloseAutoFocus={event => {
+            if (opener.current?.isConnected) {
+              event.preventDefault();
+              opener.current.focus();
             }
-        };
-        document.addEventListener('keydown', handleEscape);
-        return () => document.removeEventListener('keydown', handleEscape);
-    }, [open, onOpenChange]);
-
-    // Focus trap: trap focus inside modal while open
-    useEffect(() => {
-        if (!open) return;
-
-        const container = contentRef.current;
-        if (!container) return;
-
-        const focusableSelector =
-            'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-        const getFocusableElements = (): HTMLElement[] => {
-            if (!container) return [];
-            return Array.from(container.querySelectorAll<HTMLElement>(focusableSelector));
-        };
-
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key !== 'Tab') return;
-
-            const focusable = getFocusableElements();
-            if (focusable.length === 0) {
-                e.preventDefault();
-                // Focus the dialog container itself so focus doesn't escape
-                (e.currentTarget as HTMLElement).focus();
-                return;
-            }
-
-            const first = focusable[0];
-            const last = focusable[focusable.length - 1];
-
-            if (e.shiftKey) {
-                if (document.activeElement === first) {
-                    e.preventDefault();
-                    last.focus();
-                }
-            } else {
-                if (document.activeElement === last) {
-                    e.preventDefault();
-                    first.focus();
-                }
-            }
-        };
-
-        container.addEventListener('keydown', handleKeyDown);
-
-        // Focus the first focusable element on open, or the dialog itself
-        const firstFocusable = getFocusableElements()[0];
-        requestAnimationFrame(() => {
-            if (firstFocusable) {
-                firstFocusable.focus();
-            } else {
-                // If no focusable elements, focus the dialog container (has tabIndex={-1})
-                container.focus();
-            }
-        });
-
-        return () => {
-            container.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [open]);
-
-    // Animation variants
-    const variants: Record<string, any> = {
-        center: {
-            initial: { opacity: 0, scale: 0.95, y: 0 },
-            animate: { opacity: 1, scale: 1, y: 0 },
-            exit: { opacity: 0, scale: 0.95, y: 0 },
-        },
-        bottom: {
-            initial: { opacity: 0, y: '100%' },
-            animate: { opacity: 1, y: '0%' },
-            exit: { opacity: 0, y: '100%' },
-        },
-        left: {
-            initial: { opacity: 0, x: '-100%' },
-            animate: { opacity: 1, x: '0%' },
-            exit: { opacity: 0, x: '-100%' },
-        },
-        right: {
-            initial: { opacity: 0, x: '100%' },
-            animate: { opacity: 1, x: '0%' },
-            exit: { opacity: 0, x: '100%' },
-        },
-        fullscreen: {
-            initial: { opacity: 0 },
-            animate: { opacity: 1 },
-            exit: { opacity: 0 },
-        },
-    };
-
-    // Determine config based on position
-    const positionKey = position === 'bottom' && size === 'full' ? 'bottomFull' : position;
-    const config = modalConfig[positionKey] || modalConfig.center;
-
-    // Respect prefers-reduced-motion (DESIGN_DIRECTION §6): drop transforms, fade only.
-    const resolvedVariants = prefersReducedMotion
-        ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
-        : variants[config.variant];
-    const contentTransition = prefersReducedMotion
-        ? { duration: 0 }
-        : { type: 'spring' as const, stiffness: 300, damping: 30, mass: 0.8 };
-
-    // Prevent scrolling behind modal
-    useEffect(() => {
-        if (open) {
-            document.body.style.overflow = 'hidden';
-        } else {
-            document.body.style.overflow = '';
-        }
-        return () => { document.body.style.overflow = ''; };
-    }, [open]);
-
-    if (!mounted) return null;
-
-    const modalContent = (
-        <AnimatePresence>
-            {open && (
-                <div className={`fixed inset-0 z-50 flex isolate ${config.wrapper}`}>
-                    {/* Overlay con blur */}
-                    <motion.div
-                        className="fixed inset-0 bg-black/50 backdrop-blur-sm"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{
-                            duration: prefersReducedMotion ? 0 : 0.22,
-                            ease: [0.16, 1, 0.3, 1],
-                        }}
-                        onClick={() => onOpenChange(false)}
-                        aria-hidden="true"
-                    />
-
-                    {/* Content */}
-                    <motion.div
-                        ref={contentRef}
-                        className={`w-full ${sizeStyles[size]} border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
-                        initial={resolvedVariants?.initial}
-                        animate={resolvedVariants?.animate}
-                        exit={resolvedVariants?.exit}
-                        transition={contentTransition}
-                        role="dialog"
-                        aria-modal="true"
-                        tabIndex={-1}
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                         {/* Close context could be provided here if needed, but we pass onOpenChange generally */}
-                         <ModalContext.Provider value={{ onClose: () => onOpenChange(false) }}>
-                            {children}
-                         </ModalContext.Provider>
-                    </motion.div>
-                </div>
-            )}
-        </AnimatePresence>
-    );
-
-    return createPortal(modalContent, document.body);
-};
-
-
-const ModalContext = React.createContext<{ onClose: () => void }>({ onClose: () => { } });
-
-/* ========================================
-   SUB-COMPONENTS
-   ======================================== */
-
-export const ModalHeader: React.FC<{
-    children: React.ReactNode;
-    className?: string;
-}> = ({ children, className = '' }) => (
-    <div className={`mb-4 ${className}`}>{children}</div>
-);
-
-export const ModalTitle: React.FC<{
-    children: React.ReactNode;
-    className?: string;
-}> = ({ children, className = '' }) => (
-    <h2 className={`text-[15px] font-semibold text-text-primary ${className}`}>
-        {children}
-    </h2>
-);
-
-export const ModalDescription: React.FC<{
-    children: React.ReactNode;
-    className?: string;
-}> = ({ children, className = '' }) => (
-    <p className={`text-[13px] text-text-secondary mt-2 ${className}`}>
-        {children}
-    </p>
-);
-
-export const ModalContent: React.FC<{
-    children: React.ReactNode;
-    className?: string;
-}> = ({ children, className = '' }) => (
-    <div className={`py-4 ${className}`}>{children}</div>
-);
-
-export const ModalFooter: React.FC<{
-    children: React.ReactNode;
-    className?: string;
-}> = ({ children, className = '' }) => (
-    <div className={`mt-6 flex items-center justify-end gap-3 ${className}`}>
-        {children}
-    </div>
-);
-
-export const ModalClose: React.FC<{
-    children: React.ReactNode;
-    className?: string;
-}> = ({ children, className = '' }) => {
-    const { onClose } = React.useContext(ModalContext);
-    return (
-        <div className={className} onClick={onClose}>
-            {children}
-        </div>
-    );
-};
-
-/* ========================================
-   CLOSE BUTTON ICON
-   ======================================== */
-
-export const ModalCloseButton: React.FC<{ className?: string }> = ({
-    className = '',
-}) => {
-    const { onClose } = React.useContext(ModalContext);
-    const prefersReducedMotion = useReducedMotion();
-    return (
-        <motion.button
-            onClick={onClose}
-            className={`
-        absolute top-4 right-4
-        w-8 h-8
-        flex items-center justify-center
-        rounded-full
-        bg-white/[0.06]
-        border border-white/[0.09]
-        text-text-secondary
-        hover:bg-white/[0.10]
-        hover:text-text-primary
-        transition-apple
-        ${FOCUS_RING}
-        ${className}
-      `}
-            whileHover={prefersReducedMotion ? undefined : { scale: 1.05 }}
-            whileTap={prefersReducedMotion ? undefined : { scale: 0.95 }}
-            aria-label="Close"
+          }}
+          className={cn(
+            'admin-dialog fixed z-50 flex min-h-0 flex-col overflow-hidden border border-border bg-popover text-popover-foreground shadow-[0_24px_80px_-24px_rgba(0,0,0,.48),0_8px_24px_-12px_rgba(0,0,0,.18)] outline-none duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-[.98] data-[state=closed]:zoom-out-[.98]',
+            position === 'center' && 'p-6 sm:p-7',
+            position === 'right' && 'border-y-0 border-r-0 p-6 sm:p-8',
+            position === 'left' && 'border-y-0 border-l-0 p-6 sm:p-8',
+            position === 'bottom' && 'border-x-0 border-b-0 p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]',
+            position === 'fullscreen' && 'p-6 sm:p-8',
+            sizes[size],
+            positions[position],
+          )}
         >
-            <svg
-                width="14"
-                height="14"
-                viewBox="0 0 14 14"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-            >
-                <path
-                    d="M1 1L13 13M1 13L13 1"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                />
-            </svg>
-        </motion.button>
-    );
-};
+          {ariaLabel && <Dialog.Title className="sr-only">{ariaLabel}</Dialog.Title>}
+          {children}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
 
+export const ModalHeader = ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+  <div data-slot="dialog-header" className={cn('admin-dialog-header mb-5 flex shrink-0 flex-col gap-1.5 border-b border-border/70 pb-4 pr-9', className)} {...props}>
+    {children}
+  </div>
+);
 
-/* ========================================
-   USAGE EXAMPLES
-   ======================================== */
+export const ModalTitle = ({ children, className, ...props }: React.ComponentProps<typeof Dialog.Title>) => (
+  <Dialog.Title data-slot="dialog-title" className={cn('text-lg font-semibold tracking-tight leading-snug text-foreground', className)} {...props}>{children}</Dialog.Title>
+);
 
-/*
-const [open, setOpen] = useState(false);
+export const ModalDescription = ({ children, className, ...props }: React.ComponentProps<typeof Dialog.Description>) => (
+  <Dialog.Description data-slot="dialog-description" className={cn('text-sm leading-relaxed text-muted-foreground', className)} {...props}>{children}</Dialog.Description>
+);
 
-<Modal open={open} onOpenChange={setOpen} size="md">
-  <ModalCloseButton />
-  
-  <ModalHeader>
-    <ModalTitle>Modal Title</ModalTitle>
-    <ModalDescription>
-      This is a description of the modal content
-    </ModalDescription>
-  </ModalHeader>
-  
-  <ModalContent>
-    <p>Modal content goes here...</p>
-  </ModalContent>
-  
-  <ModalFooter>
-    <ModalClose>
-      <Button variant="ghost">Cancel</Button>
-    </ModalClose>
-    <Button variant="primary">Confirm</Button>
-  </ModalFooter>
-</Modal>
-*/
+export const ModalContent = ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+  <div data-slot="dialog-body" className={cn('admin-dialog-body min-h-0 py-1', className)} {...props}>{children}</div>
+);
+
+export const ModalFooter = ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+  <div data-slot="dialog-footer" className={cn('admin-dialog-footer mt-5 flex shrink-0 flex-wrap justify-end gap-2 border-t border-border/70 pt-4', className)} {...props}>{children}</div>
+);
+
+export const ModalClose = ({ children, className, ...props }: React.ComponentProps<typeof Dialog.Close>) => (
+  <Dialog.Close className={className} {...props}>{children}</Dialog.Close>
+);
+
+export const ModalCloseButton = ({ className }: { className?: string }) => (
+  <Dialog.Close
+    aria-label="Close"
+    data-slot="dialog-close"
+    className={cn('absolute right-4 top-4 z-10 grid size-8 place-items-center rounded-lg border border-transparent text-muted-foreground outline-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none', className)}
+  >
+    <X className="size-4" />
+  </Dialog.Close>
+);

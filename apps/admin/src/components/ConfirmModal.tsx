@@ -61,7 +61,7 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
     >
       <div
         ref={modalRef}
-        className="relative border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-sm"
+        className="relative border border-border-primary bg-surface-elevated rounded-xl p-6 w-full max-w-sm"
         onClick={e => e.stopPropagation()}
       >
         <button
@@ -76,8 +76,8 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
             36px icon tile, 800-weight title, 12.5px message below it. */}
         <div className="space-y-4 pr-6">
           <div className="flex items-start gap-3">
-            <div className={`w-9 h-9 rounded-[11px] flex items-center justify-center shrink-0 ${
-              danger ? 'bg-status-error/10' : 'bg-accent-blue-tint'
+            <div className={`w-9 h-9 rounded-md flex items-center justify-center shrink-0 ${
+              danger ? 'bg-status-error/10' : 'bg-action-primary-tint'
             }`}>
               {danger
                 ? <AlertTriangle className="w-[17px] h-[17px] text-status-error" />
@@ -85,7 +85,7 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
               }
             </div>
             <div className="flex flex-col gap-0.5 min-w-0 pt-0.5">
-              <p className="text-[14px] font-extrabold text-text-primary">{title}</p>
+              <p className="text-sm font-extrabold text-text-primary">{title}</p>
               <p className="text-[12.5px] text-text-secondary leading-relaxed">{description}</p>
             </div>
           </div>
@@ -95,17 +95,17 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
             <button
               onClick={onClose}
               disabled={loading}
-              className="flex items-center h-[34px] px-[14px] rounded-[9px] text-[12.5px] font-semibold text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40"
+              className="flex items-center h-[34px] px-[14px] rounded-md text-[12.5px] font-semibold text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40"
             >
               Cancel
             </button>
             <button
               onClick={onConfirm}
               disabled={loading}
-              className={`flex items-center h-[34px] px-4 rounded-[9px] text-[12.5px] font-bold text-white transition-colors disabled:opacity-40 ${
+              className={`flex items-center h-[34px] px-4 rounded-md text-[12.5px] font-bold text-white transition-colors disabled:opacity-40 ${
                 danger
                   ? 'bg-status-error hover:opacity-90'
-                  : 'bg-accent-blue hover:bg-accent-blue-hover'
+                  : 'bg-action-primary hover:bg-action-primary-hover'
               }`}
             >
               {loading ? '…' : confirmLabel}

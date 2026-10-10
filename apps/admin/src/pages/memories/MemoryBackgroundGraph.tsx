@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import ForceGraph3D, { type ForceGraphMethods } from 'react-force-graph-3d'
-import { Maximize2, Minimize2, Search, X, RotateCcw } from 'lucide-react'
+import { Search, X, RotateCcw } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext'
 import { createClient } from '../../api/client'
 import {
@@ -220,23 +220,10 @@ export default function MemoryBackgroundGraph({
         )}
       </div>
 
-      {/* Focus toggle */}
-      <button
-        type="button"
-        onClick={onToggleFocus}
-        title="Shortcut: F"
-        aria-pressed={focused}
-        className="fixed right-6 bottom-6 z-[55] flex items-center gap-2 h-[42px] px-4 rounded-[11px] border border-border-primary bg-surface-glass backdrop-blur-md hover:border-white/[0.28] transition-colors shadow-[0_8px_30px_rgba(0,0,0,0.45)]"
-      >
-        {focused ? <Minimize2 className="w-4 h-4 text-text-primary" /> : <Maximize2 className="w-4 h-4 text-text-primary" />}
-        <span className="text-[13.5px] font-semibold text-text-primary">{focused ? 'Exit focus' : 'Focus'}</span>
-        <span className="text-[11px] text-text-quaternary border border-border-primary rounded-[5px] px-1.5 py-px">F</span>
-      </button>
-
       {focused && (
         <>
           {/* Exit hint */}
-          <div className="fixed left-1/2 bottom-6 -translate-x-1/2 z-[54] h-[34px] flex items-center px-[18px] rounded-full border border-white/[0.08] bg-black/[0.4] backdrop-blur-md text-[12.5px] text-text-secondary pointer-events-none">
+          <div className="fixed left-1/2 bottom-6 -translate-x-1/2 z-[54] h-[34px] flex items-center px-[18px] rounded-full border border-border-primary bg-black/[0.4] backdrop-blur-md text-[12.5px] text-text-secondary pointer-events-none">
             Focus mode — memories and their relations · press <span className="text-text-primary font-semibold mx-1">F</span> or double-click to exit
           </div>
 
@@ -246,7 +233,7 @@ export default function MemoryBackgroundGraph({
               <span className="text-[15px] font-extrabold tracking-tight text-text-primary" style={{ textShadow: '0 2px 14px rgba(0,0,0,0.8)' }}>
                 Memory graph
               </span>
-              <div className="flex items-center gap-2 h-10 w-[280px] max-w-full px-3.5 rounded-[11px] border border-border-primary bg-surface-glass backdrop-blur-md">
+              <div className="flex items-center gap-2 h-10 w-[280px] max-w-full px-3.5 rounded-md border border-border-primary bg-surface-glass backdrop-blur-md">
                 <Search className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
                 <input
                   type="text"
@@ -270,7 +257,7 @@ export default function MemoryBackgroundGraph({
                     type="button"
                     onClick={() => setVisibleTypes(prev => prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type])}
                     aria-pressed={active}
-                    className="flex items-center gap-1.5 h-7 px-3 rounded-full border backdrop-blur-md transition-colors"
+                    className="flex items-center gap-1.5 h-7 px-3 rounded-md border backdrop-blur-md transition-colors"
                     style={{
                       borderColor: active ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.08)',
                       background: active ? 'rgba(13,15,20,0.66)' : 'rgba(13,15,20,0.4)',
@@ -285,7 +272,7 @@ export default function MemoryBackgroundGraph({
                 <button
                   type="button"
                   onClick={resetVisibleTypes}
-                  className="flex items-center gap-1.5 h-7 px-3 rounded-full border border-border-primary bg-surface-glass text-text-secondary hover:text-text-primary transition-colors text-xs"
+                  className="flex items-center gap-1.5 h-7 px-3 rounded-md border border-border-primary bg-surface-glass text-text-secondary hover:text-text-primary transition-colors text-xs"
                 >
                   <RotateCcw className="w-3 h-3" />
                   Reset
@@ -296,7 +283,7 @@ export default function MemoryBackgroundGraph({
 
           {/* Node detail card */}
           {selectedNode && (
-            <div className="fixed right-6 top-[88px] z-[56] w-[340px] max-w-[calc(100vw-48px)] rounded-[14px] border border-border-primary bg-[#0f1117]/95 backdrop-blur-xl shadow-[0_16px_50px_rgba(0,0,0,0.55)] p-4 flex flex-col gap-2.5">
+            <div className="fixed right-6 top-[88px] z-[56] w-[340px] max-w-[calc(100vw-48px)] rounded-xl border border-border-primary bg-surface-elevated backdrop-blur-xl shadow-[0_16px_50px_rgba(0,0,0,0.55)] p-4 flex flex-col gap-2.5">
               <div className="flex items-start gap-2.5">
                 <span
                   className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
@@ -309,12 +296,12 @@ export default function MemoryBackgroundGraph({
                   type="button"
                   onClick={() => setSelectedNode(null)}
                   aria-label="Close node detail"
-                  className="shrink-0 w-6 h-6 rounded-[7px] flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                  className="shrink-0 w-6 h-6 rounded-[7px] flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
-              <span className="self-start text-[11.5px] font-semibold px-2.5 py-0.5 rounded-full bg-white/[0.07] text-[#cfd4de]">
+              <span className="self-start text-[11.5px] font-semibold px-2.5 py-0.5 rounded-full bg-foreground/[0.07] text-text-secondary">
                 {selectedNode.type}
               </span>
               {selectedNode.type === 'Memory' && memoryDetail && (

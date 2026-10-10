@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { UsageSummaryRow } from '../../types'
-import { CHART_PRIMARY } from './chartColors'
+import { CountChart } from '@/components/ui/CountChart'
 import { formatDuration } from './format'
 
 export type RankMetric = 'tokens' | 'duration' | 'events'
@@ -59,39 +59,5 @@ export function RankedBars({ rows, metric, limit = 8, emptyLabel }: RankedBarsPr
     return <p className="text-[12.5px] text-text-tertiary text-center py-8">{emptyLabel}</p>
   }
 
-  const max = Math.max(...items.map(i => i.value), 1)
-
-  return (
-    <ul className="flex flex-col gap-3">
-      {items.map(item => {
-        const pct = total > 0 ? (item.value / total) * 100 : 0
-        return (
-          <li key={item.key} className="flex flex-col gap-1.5">
-            <div className="flex items-baseline gap-2.5">
-              <span className="text-[12.5px] text-text-primary truncate min-w-0 flex-1">
-                {item.name}
-              </span>
-              <span className="text-[11px] text-text-quaternary shrink-0 tabular-nums">
-                {pct < 1 && pct > 0 ? '<1' : Math.round(pct)}%
-              </span>
-              <span className="text-[12.5px] font-semibold text-text-secondary shrink-0 tabular-nums">
-                {formatMetric(metric, item.value)}
-              </span>
-            </div>
-            {/* Track + fill. 4px rounded data-end, square at the baseline. */}
-            <div className="h-[6px] rounded-[3px] bg-white/[0.045] overflow-hidden">
-              <div
-                className="h-full rounded-r-[3px]"
-                style={{
-                  width: `${Math.max((item.value / max) * 100, item.value > 0 ? 1.5 : 0)}%`,
-                  backgroundColor: CHART_PRIMARY,
-                  opacity: item.key === '__other__' ? 0.4 : 1,
-                }}
-              />
-            </div>
-          </li>
-        )
-      })}
-    </ul>
-  )
+  return <CountChart data={items.map(item => ({ name: item.name, count: item.value }))} label={`Usage by category · ${metric}`} total={total} valueLabel={metric} formatValue={v => formatMetric(metric, v)} formatTick={metric === 'duration' ? formatDuration : undefined} />
 }

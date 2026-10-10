@@ -4,7 +4,7 @@ import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import {
   Building2, Plus, Users, UserPlus, UserMinus,
-  ChevronDown, Loader2, Archive, Trash2, Settings, Search,
+  ChevronDown, Loader2, Archive, Trash2, Settings, Search, BadgeCheck, PauseCircle, CircleOff, ShieldCheck,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Modal, ModalCloseButton } from '../components/ui/Modal/Modal'
@@ -18,7 +18,18 @@ import { CLIENT_STATUSES } from '../types'
 import type { Client, ClientMember, ClientStatus, Project, User as UserType } from '../types'
 
 // Same glass recipe used across the admin pages (see Projects.tsx / StatTile).
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
+
+const CLIENT_STATUS_PRESENTATION: Record<ClientStatus, { description: string; color: string; icon: React.ReactNode }> = {
+  active: { description: 'Client work is ongoing.', color: 'var(--color-status-success)', icon: <BadgeCheck /> },
+  paused: { description: 'Work is temporarily on hold.', color: 'var(--color-status-warning)', icon: <PauseCircle /> },
+  offboarded: { description: 'Engagement has ended.', color: 'var(--muted-foreground)', icon: <CircleOff /> },
+}
+
+function ClientStatusOption({ status }: { status: ClientStatus }) {
+  const option = CLIENT_STATUS_PRESENTATION[status]
+  return <SelectItem value={status} icon={option.icon} indicatorColor={option.color} description={option.description}>{status}</SelectItem>
+}
 
 // ─── Slug validation — mirrors backend `validate_slug` in models/types.rs ─────
 //
@@ -45,7 +56,7 @@ function slugify(name: string): string {
 const STATUS_BADGE: Record<ClientStatus, string> = {
   active: 'bg-status-success/10 text-status-success border-status-success/20',
   paused: 'bg-status-warning/10 text-status-warning border-status-warning/20',
-  offboarded: 'bg-white/[0.06] text-text-tertiary border-white/[0.09]',
+  offboarded: 'bg-foreground/[0.06] text-text-tertiary border-border-primary',
 }
 
 // ─── Inline Members Panel ─────────────────────────────────────────────────────
@@ -114,10 +125,10 @@ function MembersPanel({
   }
 
   return (
-    <div className="rounded-b-[18px] border border-t-0 border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] px-5 pb-5 pt-4 space-y-4">
+    <div className="rounded-b-[18px] border border-t-0 border-border-primary bg-surface-primary px-5 pb-5 pt-4 space-y-4">
       {/* Members list */}
       <div className="space-y-1">
-        <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
+        <span className="text-xs font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
           Members
         </span>
 
@@ -125,16 +136,16 @@ function MembersPanel({
           <div className="pt-1">
             {Array.from({ length: 2 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3 py-2.5 border-b border-border-secondary/50">
-                <div className="w-8 h-8 rounded-full bg-white/[0.04] animate-pulse shrink-0" />
+                <div className="w-8 h-8 rounded-full bg-foreground/[0.04] animate-pulse shrink-0" />
                 <div className="flex-1 space-y-1.5">
-                  <div className="h-3 rounded-[5px] bg-white/[0.04] animate-pulse w-1/3" />
-                  <div className="h-2.5 rounded-[5px] bg-white/[0.04] animate-pulse w-1/2" />
+                  <div className="h-3 rounded-sm bg-foreground/[0.04] animate-pulse w-1/3" />
+                  <div className="h-2.5 rounded-sm bg-foreground/[0.04] animate-pulse w-1/2" />
                 </div>
               </div>
             ))}
           </div>
         ) : !members?.length ? (
-          <div className="flex flex-col items-center gap-1.5 py-5 text-center border border-dashed border-border-secondary rounded-[11px] mt-2">
+          <div className="flex flex-col items-center gap-1.5 py-5 text-center border border-dashed border-border-secondary rounded-md mt-2">
             <Users className="w-4 h-4 text-text-quaternary/60" />
             <p className="text-xs text-text-tertiary">No members on this client yet.</p>
           </div>
@@ -147,7 +158,7 @@ function MembersPanel({
                   key={member.id}
                   className="flex items-center gap-3 py-2.5 border-b border-border-secondary/50 last:border-b-0"
                 >
-                  <div className="w-8 h-8 rounded-full bg-accent-blue/15 text-accent-blue text-xs font-semibold flex items-center justify-center shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-action-primary/15 text-accent-blue text-xs font-semibold flex items-center justify-center shrink-0">
                     {initial}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -155,10 +166,10 @@ function MembersPanel({
                       {member.name || member.email}
                     </div>
                     {member.name && (
-                      <div className="text-[10px] text-text-quaternary truncate">{member.email}</div>
+                      <div className="text-xs text-text-secondary line-clamp-2">{member.email}</div>
                     )}
                   </div>
-                  <span className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-white/[0.06] border border-white/[0.09] text-text-tertiary shrink-0">
+                  <span className="rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-foreground/[0.06] border border-border-primary text-text-tertiary shrink-0">
                     {member.role}
                   </span>
                   <button
@@ -188,13 +199,13 @@ function MembersPanel({
 
       {/* Add member */}
       <div className="mt-3 pt-3 border-t border-border-secondary/50 space-y-3">
-        <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">Add member</span>
+        <span className="text-xs font-semibold text-text-tertiary tracking-[-0.08px] uppercase">Add member</span>
         <form onSubmit={handleAdd} className="flex items-center gap-2">
           {usersLoading ? (
-            <div className="flex-1 h-9 rounded-[11px] bg-white/[0.04] animate-pulse" />
+            <div className="flex-1 h-9 rounded-md bg-foreground/[0.04] animate-pulse" />
           ) : (
             <Select value={addUserId} onValueChange={setAddUserId}>
-              <SelectTrigger className="flex-1 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60">
+              <SelectTrigger className="flex-1 h-9 text-xs bg-transparent border border-border-primary rounded-md px-3 focus:outline-none focus:border-accent-blue/60">
                 <SelectValue placeholder="Choose user…" />
               </SelectTrigger>
               <SelectContent>
@@ -202,7 +213,7 @@ function MembersPanel({
                   <SelectItem value="_none" disabled>All users already added</SelectItem>
                 ) : (
                   availableUsers.map(u => (
-                    <SelectItem key={u.id} value={u.id}>
+                    <SelectItem key={u.id} value={u.id} icon={<span className="text-[11px] font-semibold uppercase text-primary">{(u.name || u.email).slice(0, 1)}</span>} description={u.email}>
                       {u.name} ({u.email})
                     </SelectItem>
                   ))
@@ -212,12 +223,12 @@ function MembersPanel({
           )}
 
           <Select value={addRole} onValueChange={setAddRole}>
-            <SelectTrigger className="w-32 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
+            <SelectTrigger className="w-32 h-9 text-xs bg-transparent border border-border-primary rounded-md px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {allAvailableRoles.map(r => (
-                <SelectItem key={r} value={r}>{r}</SelectItem>
+                <SelectItem key={r} value={r} icon={<ShieldCheck />} indicatorColor={r === 'admin' ? 'var(--data-amber)' : 'var(--data-blue)'} description={r === 'admin' ? 'Manage organization settings and members.' : 'Work with assigned clients and projects.'}>{r}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -225,7 +236,7 @@ function MembersPanel({
           <button
             type="submit"
             disabled={addMut.isPending || !addUserId}
-            className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+            className="rounded-md bg-action-primary text-action-foreground px-3 py-1.5 text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0 h-9 shadow-xs"
           >
             {addMut.isPending
               ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -438,11 +449,11 @@ export default function Clients() {
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-xl bg-action-primary/12 flex items-center justify-center shrink-0">
             <Building2 className="w-5 h-5 text-accent-blue" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">Clients</h1>
+            <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Clients</h1>
             <p className="text-xs text-text-quaternary mt-0.5">
               Manage consultancy clients and the team members assigned to each.
             </p>
@@ -452,9 +463,9 @@ export default function Clients() {
           <button
             onClick={() => setShowArchived(v => !v)}
             className={cn(
-              'flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+              'flex items-center gap-1.5 text-xs h-9 px-3 py-1.5 rounded-md border transition-colors',
               showArchived
-                ? 'bg-accent-blue/10 border-accent-blue/30 text-accent-blue font-semibold'
+                ? 'bg-action-primary/10 border-accent-blue/30 text-accent-blue font-semibold'
                 : 'border-border-primary text-text-quaternary hover:text-text-tertiary',
             )}
           >
@@ -463,7 +474,7 @@ export default function Clients() {
           </button>
           <button
             onClick={() => setCreateOpen(true)}
-            className="flex items-center gap-1.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white px-3.5 py-1.5 text-xs font-semibold transition-colors"
+            className="flex items-center gap-1.5 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground px-3.5 py-1.5 text-sm font-medium transition-colors h-9 shadow-xs"
           >
             <Plus className="w-3.5 h-3.5" />
             New Client
@@ -471,7 +482,7 @@ export default function Clients() {
         </div>
       </div>
 
-      <KpiMarquee role="list" aria-label="Client statistics">
+      <KpiMarquee compact role="list" aria-label="Client statistics">
         {statTiles.map((tile, i) => (
           <div key={tile.label} className="w-[232px] flex-none">
             <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
@@ -479,10 +490,10 @@ export default function Clients() {
         ))}
       </KpiMarquee>
 
-      <div className={`rounded-[18px] overflow-hidden ${GLASS_PANEL}`}>
+      <div className={`rounded-xl overflow-hidden ${GLASS_PANEL}`}>
         <div className="px-5 py-4 border-b border-border-secondary flex items-center justify-between gap-3 flex-wrap">
           <span className="text-sm font-semibold text-text-primary">Clients</span>
-          <div className="flex items-center gap-2 h-8 w-60 px-3 rounded-[10px] border border-border-primary bg-white/[0.02]">
+          <div className="flex items-center gap-2 h-9 w-full sm:w-60 px-3 rounded-lg border border-border-primary bg-foreground/[0.02]">
             <Search className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
             <input
               type="text"
@@ -490,13 +501,13 @@ export default function Clients() {
               onChange={e => setFilterQuery(e.target.value)}
               placeholder="Filter clients…"
               aria-label="Filter clients"
-              className="flex-1 min-w-0 bg-transparent border-none outline-none text-xs text-text-primary placeholder:text-text-quaternary"
+              className="flex-1 min-w-0 bg-transparent border-none outline-none text-base sm:text-sm text-text-primary placeholder:text-text-quaternary"
             />
           </div>
         </div>
 
         {(deleteMut.isError || archiveMut.isError) && (
-          <div className="mx-4 mt-3 p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[8px]">
+          <div className="mx-4 mt-3 p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
             {((deleteMut.error || archiveMut.error) as Error)?.message ?? 'Action failed'}
           </div>
         )}
@@ -505,10 +516,10 @@ export default function Clients() {
           {clientsLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="p-4 flex items-center gap-3">
-                <div className="w-8 h-8 rounded-[9px] bg-white/[0.04] animate-pulse flex-shrink-0" />
+                <div className="w-8 h-8 rounded-md bg-foreground/[0.04] animate-pulse flex-shrink-0" />
                 <div className="flex-1 space-y-2">
-                  <div className="h-3.5 rounded-[5px] bg-white/[0.04] animate-pulse w-1/3" />
-                  <div className="h-2.5 rounded-[5px] bg-white/[0.04] animate-pulse w-2/3" />
+                  <div className="h-3.5 rounded-sm bg-foreground/[0.04] animate-pulse w-1/3" />
+                  <div className="h-2.5 rounded-sm bg-foreground/[0.04] animate-pulse w-2/3" />
                 </div>
               </div>
             ))
@@ -537,25 +548,25 @@ export default function Clients() {
                 <div key={c.id}>
                   <div
                     className={cn(
-                      'group p-4 flex items-start justify-between gap-4 transition-colors',
-                      isExpanded ? 'bg-accent-blue/10' : 'hover:bg-accent-blue/[0.05]',
-                      isArchived && 'opacity-60',
+                      'group p-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 transition-colors',
+                      isExpanded ? 'bg-action-primary/10' : 'hover:bg-action-primary/[0.05]',
+                      isArchived && 'bg-muted/20',
                     )}
                   >
                     <div className="flex items-center gap-3 flex-1 min-w-0">
-                      <div className="w-8 h-8 rounded-[9px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+                      <div className="w-8 h-8 rounded-md bg-action-primary/12 flex items-center justify-center shrink-0">
                         <Building2 className="w-4 h-4 text-accent-blue" />
                       </div>
                       <div className="min-w-0">
-                        <span className="text-xs font-semibold text-text-primary truncate block">{c.name}</span>
+                        <span className="text-sm font-semibold text-text-primary break-words block">{c.name}</span>
                         <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          <span className="text-[10px] font-mono text-text-quaternary">{c.slug}</span>
-                          <span className={cn('text-[10px] border rounded-[5px] px-1.5 py-0.5', STATUS_BADGE[c.status])}>
+                          <span className="text-xs font-mono text-text-quaternary">{c.slug}</span>
+                          <span className={cn('text-xs border rounded-sm px-1.5 py-0.5', STATUS_BADGE[c.status])}>
                             {c.status}
                           </span>
-                          <span className="text-[10px] text-text-tertiary">{new Date(c.created_at).toLocaleDateString()}</span>
+                          <span className="text-xs text-text-tertiary">{new Date(c.created_at).toLocaleDateString()}</span>
                           {isArchived && (
-                            <span className="text-[10px] bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-[5px] px-1.5 py-0.5">
+                            <span className="text-xs bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-sm px-1.5 py-0.5">
                               archived
                             </span>
                           )}
@@ -563,14 +574,14 @@ export default function Clients() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1 flex-shrink-0">
+                    <div className="flex items-center gap-1 flex-shrink-0 self-end sm:self-auto">
                       {!isArchived && (
                         <>
                           <button
                             onClick={() => openEdit(c)}
                             aria-label={`Edit ${c.name}`}
                             title="Edit client"
-                            className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.10] opacity-0 group-hover:opacity-100 transition-all"
+                            className="p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.10] transition-colors"
                           >
                             <Settings className="w-3 h-3" />
                           </button>
@@ -581,10 +592,10 @@ export default function Clients() {
                             aria-expanded={isExpanded}
                             title={isExpanded ? 'Collapse members' : 'Manage members'}
                             className={cn(
-                              'rounded-full p-1.5 transition-colors flex items-center gap-1',
+                              'rounded-md p-1.5 transition-colors flex items-center gap-1',
                               isExpanded
-                                ? 'text-accent-blue bg-accent-blue/10'
-                                : 'text-text-tertiary hover:text-accent-blue hover:bg-white/[0.06]',
+                                ? 'text-accent-blue bg-action-primary/10'
+                                : 'text-text-tertiary hover:text-accent-blue hover:bg-foreground/[0.06]',
                             )}
                           >
                             <Users className="w-4 h-4" />
@@ -600,7 +611,7 @@ export default function Clients() {
                             aria-label={`Archive client ${c.name}`}
                             title="Archive client"
                             disabled={archiveMut.isPending}
-                            className="p-1.5 rounded-[8px] text-text-quaternary hover:text-status-warning hover:bg-status-warning/10 transition-colors disabled:opacity-40"
+                            className="p-1.5 rounded-md text-text-quaternary hover:text-status-warning hover:bg-status-warning/10 transition-colors disabled:opacity-40"
                           >
                             <Archive className="w-4 h-4" />
                           </button>
@@ -616,7 +627,7 @@ export default function Clients() {
                         aria-label={`Delete client ${c.name}`}
                         title="Delete client"
                         disabled={deleteMut.isPending}
-                        className="p-1.5 rounded-[8px] text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40"
+                        className="p-1.5 rounded-md text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -646,24 +657,24 @@ export default function Clients() {
       {/* Create Client Modal */}
       <Modal open={createOpen} onOpenChange={setCreateOpen}>
         <ModalCloseButton />
-        <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
-          <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
+        <div className="rounded-xl border border-border-primary bg-surface-elevated p-6 w-full max-w-md">
+          <h2 className="text-lg font-semibold text-text-primary mb-1 flex items-center gap-2">
             <Building2 className="w-4 h-4 text-accent-blue" />
             Create Client
           </h2>
-          <p className="text-[10px] text-text-quaternary mb-5">
+          <p className="text-xs text-text-quaternary mb-5">
             Register a new consultancy client to group projects and members.
           </p>
 
           {createError && (
-            <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+            <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
               {createError}
             </div>
           )}
 
           <form onSubmit={handleCreate} className="space-y-4 text-xs">
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+              <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px]">
                 Client Name
               </label>
               <input
@@ -671,13 +682,13 @@ export default function Clients() {
                 placeholder="e.g. Acme Corp"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 required
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+              <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px]">
                 Slug (immutable)
               </label>
               <input
@@ -685,17 +696,17 @@ export default function Clients() {
                 placeholder="e.g. acme-corp"
                 value={effectiveSlug}
                 onChange={e => { setSlug(e.target.value); setSlugTouched(true) }}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary font-mono focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary font-mono focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
               {currentSlugError ? (
-                <p className="text-[10px] text-status-error/80">{currentSlugError}</p>
+                <p className="text-xs text-status-error/80">{currentSlugError}</p>
               ) : (
-                <p className="text-[10px] text-text-quaternary">Lowercase letters, digits and dashes. Cannot be changed later.</p>
+                <p className="text-xs text-text-quaternary">Lowercase letters, digits and dashes. Cannot be changed later.</p>
               )}
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+              <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px]">
                 Status
               </label>
               <Select value={status} onValueChange={v => setStatus(v as ClientStatus)}>
@@ -703,9 +714,7 @@ export default function Clients() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {CLIENT_STATUSES.map(s => (
-                    <SelectItem key={s} value={s}>{s}</SelectItem>
-                  ))}
+                  {CLIENT_STATUSES.map(status => <ClientStatusOption key={status} status={status} />)}
                 </SelectContent>
               </Select>
             </div>
@@ -714,14 +723,14 @@ export default function Clients() {
               <button
                 type="button"
                 onClick={() => setCreateOpen(false)}
-                className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+                className="px-4 py-2 rounded-md border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={createMut.isPending || !!currentSlugError}
-                className="flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-semibold transition-colors disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground font-medium transition-colors disabled:opacity-50 h-9 shadow-xs"
               >
                 <Plus className="w-3.5 h-3.5" />
                 {createMut.isPending ? 'Creating…' : created ? 'Created!' : 'Create Client'}
@@ -735,52 +744,50 @@ export default function Clients() {
       <Modal open={!!editingClientId} onOpenChange={(open) => { if (!open) setEditingClientId(null) }}>
         <ModalCloseButton />
         {editingClient && (
-          <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
-            <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
+          <div className="rounded-xl border border-border-primary bg-surface-elevated p-6 w-full max-w-md">
+            <h2 className="text-lg font-semibold text-text-primary mb-1 flex items-center gap-2">
               <Settings className="w-4 h-4 text-accent-blue" />
               Edit Client
             </h2>
-            <p className="text-[10px] text-text-quaternary mb-5 font-mono">{editingClient.slug}</p>
+            <p className="text-xs text-text-quaternary mb-5 font-mono">{editingClient.slug}</p>
 
             {updateMut.isError && (
-              <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+              <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
                 {(updateMut.error as Error)?.message ?? 'Failed to save client'}
               </div>
             )}
 
             <form onSubmit={handleUpdate} className="space-y-4 text-xs">
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Client Name</label>
+                <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px]">Client Name</label>
                 <input
                   type="text"
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                  className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   required
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Slug (immutable)</label>
+                <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px]">Slug (immutable)</label>
                 <input
                   type="text"
                   value={editingClient.slug}
                   readOnly
                   disabled
-                  className="w-full bg-white/[0.02] border border-border-primary rounded-[11px] px-3 py-2 text-text-quaternary font-mono cursor-not-allowed"
+                  className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-quaternary font-mono cursor-not-allowed shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Status</label>
+                <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px]">Status</label>
                 <Select value={editStatus} onValueChange={v => setEditStatus(v as ClientStatus)}>
                   <SelectTrigger className="h-8 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {CLIENT_STATUSES.map(s => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
+                    {CLIENT_STATUSES.map(status => <ClientStatusOption key={status} status={status} />)}
                   </SelectContent>
                 </Select>
               </div>
@@ -788,7 +795,7 @@ export default function Clients() {
               {/* Projects — assign or clear which projects this client owns */}
               <div className="space-y-2 pt-1">
                 <div className="flex items-center justify-between">
-                  <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
+                  <label className="text-xs font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
                     Projects
                   </label>
                   {setProjectClientMut.isPending && (
@@ -803,21 +810,21 @@ export default function Clients() {
                     value={projectFilter}
                     onChange={e => setProjectFilter(e.target.value)}
                     placeholder="Filter projects…"
-                    className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] pl-7 pr-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                 </div>
 
                 {filteredEditProjects.length === 0 ? (
                   <p className="text-xs text-text-quaternary py-1">No projects found.</p>
                 ) : (
-                  <div className="max-h-52 overflow-y-auto rounded-[8px] border border-border-primary divide-y divide-border-secondary/40">
+                  <div className="max-h-52 overflow-y-auto rounded-md border border-border-primary divide-y divide-border-secondary/40">
                     {filteredEditProjects.map(p => {
                       const isMine = p.client_id === editingClient.id
                       const ownedElsewhere = !isMine && !!p.client_id
                       return (
                         <label
                           key={p.id}
-                          className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-white/[0.04]"
+                          className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-foreground/[0.04]"
                         >
                           <input
                             type="checkbox"
@@ -828,7 +835,7 @@ export default function Clients() {
                           />
                           <span className="text-xs text-text-secondary font-mono truncate">{p.name}</span>
                           {ownedElsewhere && (
-                            <span className="ml-auto text-[10px] text-text-quaternary shrink-0">
+                            <span className="ml-auto text-xs text-text-quaternary shrink-0">
                               {clients?.find(c => c.id === p.client_id)?.name ?? 'other client'}
                             </span>
                           )}
@@ -849,14 +856,14 @@ export default function Clients() {
                 <button
                   type="button"
                   onClick={() => setEditingClientId(null)}
-                  className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+                  className="px-4 py-2 rounded-md border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={updateMut.isPending}
-                  className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+                  className="px-4 py-2 rounded-md bg-action-primary text-action-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 h-9 shadow-xs"
                 >
                   {updateMut.isPending && <Loader2 className="w-3 h-3 animate-spin" />}
                   {updateMut.isPending ? 'Saving…' : 'Save'}

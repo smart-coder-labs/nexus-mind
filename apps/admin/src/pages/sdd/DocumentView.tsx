@@ -72,13 +72,13 @@ export default function DocumentView<R extends RevisionOption>({
       {/* Toolbar: Raw/Preview + revision selector. Deliberately OUTSIDE the panel —
           the panel holds rendered content and nothing editable. */}
       {hasDocument && (
-        <div className="flex items-center justify-between gap-3 mb-2">
-          <div className="bg-white/[0.04] rounded-full p-0.5 flex items-center w-fit">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+          <div className="bg-foreground/[0.04] rounded-md p-0.5 flex items-center w-fit">
             <button
               onClick={() => setViewMode('raw')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
+              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${FOCUS} ${
                 viewMode === 'raw'
-                  ? 'bg-white/[0.08] text-text-primary font-semibold'
+                  ? 'bg-foreground/[0.08] text-text-primary font-semibold'
                   : 'text-text-quaternary hover:text-text-secondary'
               }`}
             >
@@ -86,9 +86,9 @@ export default function DocumentView<R extends RevisionOption>({
             </button>
             <button
               onClick={() => setViewMode('preview')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
+              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${FOCUS} ${
                 viewMode === 'preview'
-                  ? 'bg-white/[0.08] text-text-primary font-semibold'
+                  ? 'bg-foreground/[0.08] text-text-primary font-semibold'
                   : 'text-text-quaternary hover:text-text-secondary'
               }`}
             >
@@ -101,7 +101,7 @@ export default function DocumentView<R extends RevisionOption>({
               value={String(selectedRevision ?? latestRevision)}
               onValueChange={v => onSelectRevision(Number(v))}
             >
-              <SelectTrigger className="w-56 h-8 text-xs" aria-label="Revision">
+              <SelectTrigger className="w-full sm:w-56 h-9 text-sm" aria-label="Revision">
                 <SelectValue placeholder={`rev ${latestRevision}`} />
               </SelectTrigger>
               <SelectContent>
@@ -120,14 +120,14 @@ export default function DocumentView<R extends RevisionOption>({
       <section
         data-testid={testId}
         role="tabpanel"
-        className="mb-6 rounded-[11px] border border-border-secondary p-4 max-h-[50vh] overflow-y-auto"
+        className="mb-6 rounded-md border border-border-secondary p-4 max-h-[50vh] overflow-y-auto"
       >
         {!hasDocument ? (
           <p className="text-xs text-text-quaternary">{emptyMessage}</p>
         ) : viewMode === 'raw' ? (
           <pre
             data-testid={rawTestId}
-            className="text-xs text-text-secondary whitespace-pre-wrap font-mono"
+            className="text-xs text-text-secondary whitespace-pre-wrap [overflow-wrap:anywhere] font-mono"
           >{content}</pre>
         ) : (
           <div className="text-xs text-text-secondary">

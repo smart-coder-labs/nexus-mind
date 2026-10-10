@@ -1,8 +1,11 @@
 import type { HTMLAttributes, ReactNode } from 'react'
 
 export interface KpiMarqueeProps extends HTMLAttributes<HTMLDivElement> {
-  /** The tile elements to render — duplicated internally for the seamless loop. */
+  compact?: boolean
+  /** Convert compact metric cards into floating colored badges on page scroll. Defaults to `compact`. */
+  dockOnScroll?: boolean
+  /** Statistics rendered once in a responsive grid. */
   children: ReactNode
-  /** Extra classes for the outer `overflow:hidden` wrapper (rarely needed; `className` targets the track instead). */
+  /** Extra classes for the outer statistics group (rarely needed; `className` targets the track instead). */
   wrapperClassName?: string
 }

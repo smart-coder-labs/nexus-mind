@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from 'react'
+import { useMemo, useState, useEffect, lazy, Suspense, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
@@ -7,6 +7,9 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { Badge } from '@/components/ui/Badge/Badge'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
+import { Button } from '@/components/ui/shadcn/button'
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/shadcn/popover'
+import { SegmentedControl } from '@/components/ui/SegmentedControl/SegmentedControl'
 import { Switch } from '@/components/ui/Switch/Switch'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
@@ -18,11 +21,17 @@ import type { DailyCount, AgentActivity, HeatmapDay, ContributorStat, Convention
 import { StatTile } from './dashboard/StatTile'
 import { QuickActionsRow, type QuickAction } from './dashboard/QuickActionsRow'
 import { GettingStartedPopover } from './dashboard/GettingStartedPopover'
-import { MemoryHealthCard } from './dashboard/MemoryHealthCard'
-import { MemoryTypesCard } from './dashboard/MemoryTypesCard'
-import { TopProjectsCard } from './dashboard/TopProjectsCard'
 import { accentFor } from './dashboard/colors'
 import { ADMIN_PROFILE, WEBHOOKS_ENABLED, isSectionEnabled, isSectionKeptByProfile } from '../config/disabled-sections'
+
+const MemoryHealthCard = lazy(() => import('./dashboard/MemoryHealthCard').then(module => ({ default: module.MemoryHealthCard })))
+const MemoryTrendChart = lazy(() => import('./dashboard/MemoryTrendChart').then(module => ({ default: module.MemoryTrendChart })))
+const MemoryTypesCard = lazy(() => import('./dashboard/MemoryTypesCard').then(module => ({ default: module.MemoryTypesCard })))
+const TopProjectsCard = lazy(() => import('./dashboard/TopProjectsCard').then(module => ({ default: module.TopProjectsCard })))
+
+function ChartPanel({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<Skeleton className="h-48 rounded-lg" />}>{children}</Suspense>
+}
 
 type CardKey =
   | 'onboarding' | 'quick-actions' | 'recent-activity' | 'memory-trends' | 'memory-types'
@@ -54,12 +63,11 @@ const GS_MINIMIZED_KEY = 'nexusmind-dashboard-gs-minimized'
 // Keyboard focus indicator (design direction §6): 2px --color-focus-ring outline
 // with a 2px offset. Uses outline (not ring) so it isn't clipped by overflow-hidden
 // ancestors. Both aliases are identical now; kept for call-site readability.
-const FOCUS_CANVAS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 const FOCUS_TILE = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Dashboard page.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 function MemoryHeatmap({ data }: { data: HeatmapDay[] }) {
   // Build a map from day-string → count
@@ -87,12 +95,12 @@ function MemoryHeatmap({ data }: { data: HeatmapDay[] }) {
   const maxCount = Math.max(...data.map(d => d.count), 1)
 
   function cellColor(count: number): string {
-    if (count === 0) return 'bg-white/[0.04]'
+    if (count === 0) return 'bg-foreground/[0.04]'
     const intensity = count / maxCount
-    if (intensity < 0.25) return 'bg-accent-blue/20'
-    if (intensity < 0.5)  return 'bg-accent-blue/40'
-    if (intensity < 0.75) return 'bg-accent-blue/60'
-    return 'bg-accent-blue'
+    if (intensity < 0.25) return 'bg-action-primary/20'
+    if (intensity < 0.5)  return 'bg-action-primary/40'
+    if (intensity < 0.75) return 'bg-action-primary/60'
+    return 'bg-action-primary'
   }
 
   return (
@@ -118,7 +126,7 @@ function MemoryHeatmap({ data }: { data: HeatmapDay[] }) {
 
 function UnavailableState() {
   return (
-    <p role="status" className="text-[13px] text-text-tertiary text-center py-4">
+    <p role="status" className="text-sm text-text-tertiary py-2">
       Unavailable for scoped administrators.
     </p>
   )
@@ -149,10 +157,10 @@ function timelineDotClass(action: string): string {
   const variant = timelineActionVariant(action)
   const map: Record<string, string> = {
     success: 'bg-status-success',
-    primary: 'bg-accent-blue',
+    primary: 'bg-action-primary',
     error:   'bg-status-error',
     warning: 'bg-status-warning',
-    default: 'bg-white/[0.20]',
+    default: 'bg-foreground/[0.20]',
   }
   return map[variant]
 }
@@ -190,8 +198,6 @@ export default function Dashboard() {
     try { return JSON.parse(localStorage.getItem(CARDS_STORAGE_KEY) ?? '[]') }
     catch { return [] }
   })
-  const [showCustomize, setShowCustomize] = useState(false)
-  const customizeRef = useRef<HTMLDivElement>(null)
   // Expanded activity rows (rich search events drill down into a result tree)
   const [expandedActivity, setExpandedActivity] = useState<Set<string>>(new Set())
   const toggleActivity = (id: string) =>
@@ -210,18 +216,6 @@ export default function Dashboard() {
     })
   }
   const isVisible = (key: CardKey) => ALL_CARDS.includes(key) && !hiddenCards.includes(key)
-
-  // Close customize dropdown on outside click
-  useEffect(() => {
-    if (!showCustomize) return
-    const handler = (e: MouseEvent) => {
-      if (customizeRef.current && !customizeRef.current.contains(e.target as Node)) {
-        setShowCustomize(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showCustomize])
 
   const { data: dashboardData, isLoading: dashboardLoading, isError: statsError } = useQuery({
     queryKey: ['dashboard', period],
@@ -356,59 +350,29 @@ export default function Dashboard() {
   ] as QuickAction[]).filter(action => !('href' in action) || isSectionEnabled(action.href))
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 space-y-5 max-w-7xl mx-auto">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Dashboard</h1>
-          <p className="text-[13px] text-text-secondary mt-1">
+          <p className="text-sm text-text-secondary mt-1">
             {session?.org.name} — organization overview
           </p>
         </div>
         {hasAdminAccess && (
           <div className="flex flex-col items-end gap-2.5">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 bg-white/[0.04] rounded-full p-0.5">
-                {([7, 30, 90] as const).map(d => (
-                  <button
-                    key={d}
-                    onClick={() => setPeriod(d)}
-                    className={cn(
-                      'text-[11px] px-2 py-0.5 rounded-full transition-colors',
-                      FOCUS_CANVAS,
-                      period === d
-                        ? 'bg-accent-blue/10 text-accent-blue'
-                        : 'text-text-tertiary hover:text-text-secondary'
-                    )}
-                  >
-                    {d}d
-                  </button>
-                ))}
-              </div>
-
-              {/* Customize dropdown */}
-              <div ref={customizeRef} className="relative">
-                <button
-                  onClick={() => setShowCustomize(prev => !prev)}
-                  className={cn('border border-border-primary rounded-full px-2.5 py-1 text-[13px] text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors', FOCUS_CANVAS)}
-                >
-                  <LayoutGrid className="w-3 h-3" /> Customize
-                </button>
-                {showCustomize && (
-                  <div className="absolute right-0 top-full mt-2 border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[12px] p-[5px] min-w-[200px] z-20">
-                    {ALL_CARDS.map(key => (
-                      <label key={key} className="flex items-center justify-between gap-[10px] px-[11px] py-[9px] rounded-[8px] hover:bg-white/[0.06] cursor-pointer">
-                        <span className="text-[12.5px] text-text-secondary capitalize">{key.replace(/-/g, ' ')}</span>
-                        <Switch
-                          size="sm"
-                          checked={isVisible(key)}
-                          onCheckedChange={() => toggleCard(key)}
-                          aria-label={`${isVisible(key) ? 'Hide' : 'Show'} ${key} card`}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <SegmentedControl size="sm" options={[{ value: '7', label: '7d' }, { value: '30', label: '30d' }, { value: '90', label: '90d' }]} value={String(period)} onChange={v => setPeriod(Number(v) as 7 | 30 | 90)} />
+              <Popover>
+                <PopoverTrigger asChild><Button variant="outline" size="sm"><LayoutGrid className="size-4" /> Customize</Button></PopoverTrigger>
+                <PopoverContent align="end" className="max-h-[min(70vh,480px)] w-64 overflow-y-auto p-2" aria-label="Dashboard widgets">
+                  {ALL_CARDS.map(key => (
+                    <label key={key} className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted">
+                      <span className="text-sm capitalize">{key.replace(/-/g, ' ')}</span>
+                      <Switch size="sm" checked={isVisible(key)} onCheckedChange={() => toggleCard(key)} aria-label={`${isVisible(key) ? 'Hide' : 'Show'} ${key} card`} />
+                    </label>
+                  ))}
+                </PopoverContent>
+              </Popover>
             </div>
             {isVisible('quick-actions') && <QuickActionsRow actions={quickActions} />}
           </div>
@@ -419,17 +383,17 @@ export default function Dashboard() {
       {hasAdminAccess && (
         <section aria-label="Organization statistics" className="relative">
           {statsError ? (
-            <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-[13px] text-status-error">
+            <div className="rounded-xl border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error">
               Failed to load statistics. Check your connection and try again.
             </div>
           ) : statsLoading || trendsLoading || usageLoading ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
               {Array.from({ length: 6 }).map((_, i) => (
-                <Skeleton key={i} className="h-[128px] rounded-[18px]" />
+                <Skeleton key={i} className="h-10 rounded-lg" />
               ))}
             </div>
           ) : (
-            <KpiMarquee role="list" aria-label="Key statistics">
+            <KpiMarquee compact role="list" aria-label="Key statistics">
               {statTiles.map((tile, i) => (
                 <div key={tile.id} className="w-[232px] flex-none">
                   <StatTile
@@ -458,7 +422,7 @@ export default function Dashboard() {
             />
           )}
           {isVisible('onboarding') && !dashboardLoading && !isAvailable('onboarding') && (
-            <div className={`mt-4 rounded-[18px] p-5 ${GLASS_PANEL}`}>
+            <div className={`mt-4 rounded-xl p-4 ${GLASS_PANEL}`}>
               <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Getting Started</h2>
               <UnavailableState />
             </div>
@@ -475,7 +439,7 @@ export default function Dashboard() {
 
             {/* Recent Activity (design delta 8) */}
             {isVisible('recent-activity') && (
-              <section aria-label="Recent activity" className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
+              <section aria-label="Recent activity" className={`rounded-xl p-5 ${GLASS_PANEL}`}>
                 <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary mb-4">
                   Recent Activity
                 </h2>
@@ -484,12 +448,12 @@ export default function Dashboard() {
                     {Array.from({ length: 5 }).map((_, i) => (
                       <div key={i} className="flex gap-3">
                         <Skeleton className="w-[15px] h-[15px] rounded-full mt-0.5 shrink-0" />
-                        <Skeleton className="h-9 flex-1 rounded-[8px]" />
+                        <Skeleton className="h-9 flex-1 rounded-md" />
                       </div>
                     ))}
                   </div>
                 ) : !activity || activity.length === 0 ? (
-                  <div className="py-8">
+                  <div>
                     <EmptyState title="No activity yet" description="Actions performed by your team will appear here." />
                   </div>
                 ) : (() => {
@@ -599,9 +563,9 @@ export default function Dashboard() {
                                           <button
                                             type="button"
                                             onClick={() => toggleActivity(entry.id)}
-                                            className={cn('w-full flex items-baseline justify-between gap-3 text-left rounded-[8px]', FOCUS_TILE)}
+                                            className={cn('w-full flex items-baseline justify-between gap-3 text-left rounded-md', FOCUS_TILE)}
                                           >
-                                            <span className="text-[13px] text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
+                                            <span className="text-sm text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
                                               <ChevronRight className={cn('w-3 h-3 text-text-quaternary transition-transform shrink-0', open && 'rotate-90')} />
                                               {displayName !== 'System' && <span className="font-semibold">{displayName}</span>}
                                               <Badge variant={variant} size="sm">{actionLabel}</Badge>
@@ -660,7 +624,7 @@ export default function Dashboard() {
                                                     <div className="flex flex-wrap gap-1 items-center">
                                                       <span className="text-text-quaternary">tags:</span>
                                                       {tags.map(t => (
-                                                        <span key={t} className="px-1.5 py-0.5 rounded-full bg-white/[0.06] text-text-secondary">{t}</span>
+                                                        <span key={t} className="px-1.5 py-0.5 rounded-full bg-foreground/[0.06] text-text-secondary">{t}</span>
                                                       ))}
                                                     </div>
                                                   )}
@@ -681,7 +645,7 @@ export default function Dashboard() {
                                     <li key={entry.id} className="flex items-start gap-3 group">
                                       {dot}
                                       <div className="flex-1 min-w-0 flex items-baseline justify-between gap-3 max-w-2xl">
-                                        <p className="text-[13px] text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
+                                        <p className="text-sm text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
                                           {displayName !== 'System' && <span className="font-semibold">{displayName}</span>}
                                           <Badge variant={variant} size="sm">{actionLabel}</Badge>
                                           {entry.resource_type && <span className="text-text-secondary">{entry.resource_type}</span>}
@@ -712,33 +676,153 @@ export default function Dashboard() {
               </section>
             )}
 
+
+          </div>
+
+          {/* RIGHT column */}
+          <div className="flex flex-col gap-5 min-w-0">
+
+            {/* Agent Activity */}
+            {isVisible('agent-activity') && (
+              <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
+                <div className="flex items-center justify-between mb-3.5">
+                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Agent Activity</h3>
+                  <span className="text-[12px] text-text-tertiary">{period} days</span>
+                </div>
+                {!isAvailable('agent_activity') && !agentActivityLoading ? <UnavailableState /> : agentActivityLoading ? (
+                  <div className="space-y-2">
+                    {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-[52px] rounded-xl" />)}
+                  </div>
+                ) : !agentActivity || agentActivity.length === 0 ? (
+                  <div className="text-sm text-text-tertiary py-2">No agent activity yet</div>
+                ) : (() => {
+                  const maxMemoriesLast7d = Math.max(...(agentActivity as AgentActivity[]).map(a => a.memories_last_7d), 1)
+                  return (
+                    <div className="flex flex-col gap-1.5">
+                      {(agentActivity as AgentActivity[]).map(agent => (
+                        <div key={agent.tool} className="flex items-center gap-3 rounded-xl border border-border-secondary bg-foreground/[0.02] px-3 py-2.5 hover:border-border-primary transition-colors">
+                          <div className="relative w-8 h-8 rounded-lg bg-action-primary/[0.14] flex items-center justify-center shrink-0">
+                            <Code2 className="w-[15px] h-[15px] text-accent-blue" />
+                            <span
+                              className={cn(
+                                'absolute -right-0.5 -bottom-0.5 w-[9px] h-[9px] rounded-full border-2 border-background-tertiary',
+                                agent.memories_last_24h > 0 ? 'bg-status-success' : 'bg-foreground/20'
+                              )}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                            <span className="text-sm font-semibold text-text-primary truncate">{agent.tool}</span>
+                            <span className="text-[11px] text-text-tertiary">Last seen {relativeTime(agent.last_seen)}</span>
+                          </div>
+                          {/* No per-day-per-agent breakdown endpoint exists — the mockup's
+                              7-day bar strip per agent isn't backed by real data, so this
+                              uses the existing relative-to-max weekly bar instead. */}
+                          <div className="w-16 h-1 bg-foreground/[0.06] rounded-full overflow-hidden shrink-0">
+                            <div
+                              className="h-full bg-action-primary/70 rounded-full transition-all duration-500"
+                              style={{ width: `${(agent.memories_last_7d / maxMemoriesLast7d) * 100}%` }}
+                            />
+                          </div>
+                          <span className="w-8 text-right text-sm font-semibold text-text-primary tabular-nums shrink-0">
+                            {agent.memories_last_7d}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+
+            {/* Memory Health (design delta 4) */}
+            {isVisible('memory-health') && (
+              <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
+                <div className="flex items-center justify-between mb-3.5">
+                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Health</h3>
+                  <span className="text-[12px] text-text-tertiary">Last 30 days</span>
+                </div>
+                {dashboardLoading ? <Skeleton className="h-48 rounded-lg" /> : !isAvailable('health') ? <UnavailableState /> : (
+                  <ChartPanel><MemoryHealthCard
+                    total={healthData?.total_memories}
+                    duplicates={healthData?.duplicate_count}
+                    stale={healthData?.stale_count}
+                    untagged={healthData?.untagged_count}
+                  /></ChartPanel>
+                )}
+              </div>
+            )}
+
+            {/* Top Projects (design delta 6) */}
+            {isVisible('top-projects') && (
+              <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
+                <div className="flex items-baseline justify-between mb-3">
+                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Top Projects</h3>
+                  <span className="text-[12px] text-text-tertiary">{trends?.total?.toLocaleString() ?? 0} memories</span>
+                </div>
+                {trendsLoading ? (
+                  <Skeleton className="h-[160px] rounded-md" />
+                ) : (
+                  <ChartPanel><TopProjectsCard projects={trends?.by_project ?? []} /></ChartPanel>
+                )}
+              </div>
+            )}
+
+            {/* Top Contributors (design delta 7) */}
+            {isVisible('contributors') && (
+              <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
+                <div className="flex items-center justify-between mb-3.5">
+                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Top Contributors</h3>
+                  <span className="text-[12px] text-text-tertiary">Last {period} days</span>
+                </div>
+                {!isAvailable('contributors') && !contributorsLoading ? <UnavailableState /> : contributorsLoading ? (
+                  <div className="space-y-3">
+                    {Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} className="animate-pulse bg-foreground/[0.04] rounded-md h-5" />
+                    ))}
+                  </div>
+                ) : contributors && contributors.length > 0 ? (
+                  <div className="space-y-3">
+                    {(contributors as ContributorStat[]).map((c, i) => {
+                      const max = contributors[0].memory_count || 1
+                      const displayName = c.user_name || c.user_email || c.user_id
+                      return (
+                        <div key={c.user_id} className="flex items-center gap-3">
+                          <span className="text-[12px] text-text-tertiary w-4 text-right shrink-0">{i + 1}</span>
+                          <span className="text-[13.5px] text-text-primary truncate flex-1 min-w-0">{displayName}</span>
+                          <div className="w-24 h-1 bg-foreground/[0.06] rounded-full overflow-hidden shrink-0">
+                            <div
+                              className="h-full bg-action-primary rounded-full"
+                              style={{ width: `${(c.memory_count / max) * 100}%` }}
+                            />
+                          </div>
+                          <span className="text-[12px] text-text-tertiary w-8 text-right shrink-0 tabular-nums">{c.memory_count}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm text-text-tertiary">No activity in the last {period} days.</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {hasAdminAccess && (isVisible('memory-trends') || isVisible('memory-types')) && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-stretch">
             {/* Memory Trends sparkline */}
             {isVisible('memory-trends') && (
-              <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
+              <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Trends</h3>
                   <span className="text-[12px] text-text-tertiary">Last {period} days</span>
                 </div>
                 {!trends || !trends.daily_counts || trends.daily_counts.length === 0 ? (
-                  <p className="text-[13px] text-text-tertiary text-center py-4">No data yet</p>
-                ) : (() => {
-                  const ptsN = trends.daily_counts.slice(-period)
-                  const max = Math.max(...ptsN.map((t: DailyCount) => t.count), 1)
-                  const w = 600, h = 130, pad = 4
-                  const pts = ptsN.map((t: DailyCount, i: number, arr: DailyCount[]) => {
-                    const x = pad + (arr.length > 1 ? (i / (arr.length - 1)) : 0.5) * (w - pad * 2)
-                    const y = h - pad - ((t.count / max) * (h - pad * 2))
-                    return `${x},${y}`
-                  }).join(' ')
-                  const firstX = pad
-                  const lastX = w - pad
-                  return (
-                    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-[130px]">
-                      <polyline points={`${firstX},${h - pad} ${pts} ${lastX},${h - pad}`} fill="var(--color-accent-blue)" fillOpacity="0.1" stroke="none" />
-                      <polyline points={pts} fill="none" stroke="var(--color-accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )
-                })()}
+                  <p className="text-sm text-text-tertiary py-2">No data yet</p>
+                ) : (
+                  <ChartPanel><MemoryTrendChart data={trends.daily_counts.slice(-period)} /></ChartPanel>
+                )}
                 <div className="flex items-center justify-between mt-2.5">
                   <span className="text-[12.5px] text-text-tertiary">
                     <strong className="text-text-secondary font-semibold">{trends?.this_week?.toLocaleString() ?? 0}</strong> this week
@@ -754,149 +838,20 @@ export default function Dashboard() {
 
             {/* Memory Types (design delta 5) */}
             {isVisible('memory-types') && (
-              <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
+              <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
                 <div className="flex items-baseline justify-between mb-3">
                   <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Types</h3>
                   <span className="text-[12px] text-text-tertiary">{trends?.total?.toLocaleString() ?? 0} total</span>
                 </div>
                 {trendsLoading ? (
                   <div className="grid grid-cols-2 gap-2.5">
-                    {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-[74px] rounded-[11px]" />)}
+                    {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-[74px] rounded-md" />)}
                   </div>
                 ) : (
-                  <MemoryTypesCard types={trends?.by_type ?? []} total={trends?.total ?? 0} />
+                  <ChartPanel><MemoryTypesCard types={trends?.by_type ?? []} total={trends?.total ?? 0} /></ChartPanel>
                 )}
               </div>
             )}
-          </div>
-
-          {/* RIGHT column */}
-          <div className="flex flex-col gap-5 min-w-0">
-
-            {/* Agent Activity */}
-            {isVisible('agent-activity') && (
-              <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
-                <div className="flex items-center justify-between mb-3.5">
-                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Agent Activity</h3>
-                  <span className="text-[12px] text-text-tertiary">{period} days</span>
-                </div>
-                {!isAvailable('agent_activity') && !agentActivityLoading ? <UnavailableState /> : agentActivityLoading ? (
-                  <div className="space-y-2">
-                    {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-[52px] rounded-[12px]" />)}
-                  </div>
-                ) : !agentActivity || agentActivity.length === 0 ? (
-                  <div className="text-[13px] text-text-tertiary text-center py-4">No agent activity yet</div>
-                ) : (() => {
-                  const maxMemoriesLast7d = Math.max(...(agentActivity as AgentActivity[]).map(a => a.memories_last_7d), 1)
-                  return (
-                    <div className="flex flex-col gap-1.5">
-                      {(agentActivity as AgentActivity[]).map(agent => (
-                        <div key={agent.tool} className="flex items-center gap-3 rounded-[12px] border border-border-secondary bg-white/[0.02] px-3 py-2.5 hover:border-white/[0.14] transition-colors">
-                          <div className="relative w-8 h-8 rounded-[10px] bg-accent-blue/[0.14] flex items-center justify-center shrink-0">
-                            <Code2 className="w-[15px] h-[15px] text-accent-blue" />
-                            <span
-                              className={cn(
-                                'absolute -right-0.5 -bottom-0.5 w-[9px] h-[9px] rounded-full border-2 border-background-tertiary',
-                                agent.memories_last_24h > 0 ? 'bg-status-success' : 'bg-white/20'
-                              )}
-                            />
-                          </div>
-                          <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-                            <span className="text-[13px] font-semibold text-text-primary truncate">{agent.tool}</span>
-                            <span className="text-[11px] text-text-tertiary">Last seen {relativeTime(agent.last_seen)}</span>
-                          </div>
-                          {/* No per-day-per-agent breakdown endpoint exists — the mockup's
-                              7-day bar strip per agent isn't backed by real data, so this
-                              uses the existing relative-to-max weekly bar instead. */}
-                          <div className="w-16 h-1 bg-white/[0.06] rounded-full overflow-hidden shrink-0">
-                            <div
-                              className="h-full bg-accent-blue/70 rounded-full transition-all duration-500"
-                              style={{ width: `${(agent.memories_last_7d / maxMemoriesLast7d) * 100}%` }}
-                            />
-                          </div>
-                          <span className="w-8 text-right text-[13px] font-semibold text-text-primary tabular-nums shrink-0">
-                            {agent.memories_last_7d}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )
-                })()}
-              </div>
-            )}
-
-            {/* Memory Health (design delta 4) */}
-            {isVisible('memory-health') && (
-              <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
-                <div className="flex items-center justify-between mb-3.5">
-                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Health</h3>
-                  <span className="text-[12px] text-text-tertiary">Last 30 days</span>
-                </div>
-                {!isAvailable('health') && !dashboardLoading ? <UnavailableState /> : (
-                  <MemoryHealthCard
-                    total={healthData?.total_memories}
-                    duplicates={healthData?.duplicate_count}
-                    stale={healthData?.stale_count}
-                    untagged={healthData?.untagged_count}
-                  />
-                )}
-              </div>
-            )}
-
-            {/* Top Projects (design delta 6) */}
-            {isVisible('top-projects') && (
-              <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
-                <div className="flex items-baseline justify-between mb-3">
-                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Top Projects</h3>
-                  <span className="text-[12px] text-text-tertiary">{trends?.total?.toLocaleString() ?? 0} memories</span>
-                </div>
-                {trendsLoading ? (
-                  <Skeleton className="h-[160px] rounded-[11px]" />
-                ) : (
-                  <TopProjectsCard projects={trends?.by_project ?? []} />
-                )}
-              </div>
-            )}
-
-            {/* Top Contributors (design delta 7) */}
-            {isVisible('contributors') && (
-              <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
-                <div className="flex items-center justify-between mb-3.5">
-                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Top Contributors</h3>
-                  <span className="text-[12px] text-text-tertiary">Last {period} days</span>
-                </div>
-                {!isAvailable('contributors') && !contributorsLoading ? <UnavailableState /> : contributorsLoading ? (
-                  <div className="space-y-3">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                      <div key={i} className="animate-pulse bg-white/[0.04] rounded-[8px] h-5" />
-                    ))}
-                  </div>
-                ) : contributors && contributors.length > 0 ? (
-                  <div className="space-y-3">
-                    {(contributors as ContributorStat[]).map((c, i) => {
-                      const max = contributors[0].memory_count || 1
-                      const displayName = c.user_name || c.user_email || c.user_id
-                      return (
-                        <div key={c.user_id} className="flex items-center gap-3">
-                          <span className="text-[12px] text-text-tertiary w-4 text-right shrink-0">{i + 1}</span>
-                          <span className="text-[13.5px] text-text-primary truncate flex-1 min-w-0">{displayName}</span>
-                          <div className="w-24 h-1 bg-white/[0.06] rounded-full overflow-hidden shrink-0">
-                            <div
-                              className="h-full bg-accent-blue rounded-full"
-                              style={{ width: `${(c.memory_count / max) * 100}%` }}
-                            />
-                          </div>
-                          <span className="text-[12px] text-text-tertiary w-8 text-right shrink-0 tabular-nums">{c.memory_count}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-[13px] text-text-tertiary">No activity in the last {period} days.</p>
-                )}
-              </div>
-            )}
-          </div>
         </div>
       )}
 
@@ -905,13 +860,13 @@ export default function Dashboard() {
       {hasAdminAccess && (isVisible('usage') || isVisible('heatmap') || isVisible('conventions')) && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {isVisible('usage') && (
-            <div className={`rounded-[18px] p-5 space-y-3 ${GLASS_PANEL}`}>
+            <div className={`rounded-xl p-5 space-y-3 ${GLASS_PANEL}`}>
               <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Usage</p>
               {usageLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <div key={i} className="flex items-center justify-between animate-pulse">
-                    <div className="h-3 w-24 rounded-[8px] bg-white/[0.04]" />
-                    <div className="h-3 w-10 rounded-[8px] bg-white/[0.04]" />
+                    <div className="h-3 w-24 rounded-md bg-foreground/[0.04]" />
+                    <div className="h-3 w-10 rounded-md bg-foreground/[0.04]" />
                   </div>
                 ))
               ) : !isAvailable('usage') ? <UnavailableState /> : usageStats ? (
@@ -925,21 +880,21 @@ export default function Dashboard() {
                   ] as const).map(({ icon: Icon, label, value }) => (
                     <div key={label} className="flex items-center gap-3">
                       <Icon className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
-                      <span className="text-[13px] text-text-secondary flex-1">{label}</span>
-                      <span className="text-[13px] font-semibold text-text-primary tabular-nums">
+                      <span className="text-sm text-text-secondary flex-1">{label}</span>
+                      <span className="text-sm font-semibold text-text-primary tabular-nums">
                         {value.toLocaleString()}
                       </span>
                     </div>
                   ))}
                 </>
               ) : (
-                <div className="text-[13px] text-text-tertiary text-center py-4">No data yet</div>
+                <div className="text-sm text-text-tertiary py-2">No data yet</div>
               )}
             </div>
           )}
 
           {isVisible('heatmap') && (
-            <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
+            <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Activity</h3>
                 <span className="text-[12px] text-text-tertiary">Last {period} days</span>
@@ -947,11 +902,11 @@ export default function Dashboard() {
               {!isAvailable('heatmap') && !dashboardLoading ? <UnavailableState /> : heatmapData ? (
                 <MemoryHeatmap data={heatmapData} />
               ) : (
-                <div className="h-[78px] bg-white/[0.04] animate-pulse rounded-[8px]" />
+                <div className="h-[78px] bg-foreground/[0.04] animate-pulse rounded-md" />
               )}
               {isAvailable('heatmap') && <div className="flex items-center gap-1 mt-3">
                 <span className="text-[12px] text-text-tertiary">Less</span>
-                {(['bg-white/[0.04]', 'bg-accent-blue/20', 'bg-accent-blue/40', 'bg-accent-blue/60', 'bg-accent-blue'] as const).map((c, i) => (
+                {(['bg-foreground/[0.04]', 'bg-action-primary/20', 'bg-action-primary/40', 'bg-action-primary/60', 'bg-action-primary'] as const).map((c, i) => (
                   <div key={i} className={`w-[10px] h-[10px] rounded-[2px] ${c}`} />
                 ))}
                 <span className="text-[12px] text-text-tertiary">More</span>
@@ -960,21 +915,21 @@ export default function Dashboard() {
           )}
 
           {isVisible('conventions') && (
-            <div className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
+            <div className={`rounded-xl p-5 ${GLASS_PANEL}`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Conventions</h3>
-                <a href="/conventions" className={cn('text-[12px] text-accent-blue hover:text-accent-blue/80 transition-colors rounded-[8px]', FOCUS_TILE)}>
+                <a href="/conventions" className={cn('text-[12px] text-accent-blue hover:text-accent-blue/80 transition-colors rounded-md', FOCUS_TILE)}>
                   View all →
                 </a>
               </div>
               {!isAvailable('conventions') && !dashboardLoading ? <UnavailableState /> : conventionStats.map(cat => (
                 <div key={cat.category} className="flex items-center justify-between py-1.5 border-b border-border-secondary/20 last:border-0">
-                  <span className="text-[13px] text-text-secondary capitalize">{cat.category}</span>
+                  <span className="text-sm text-text-secondary capitalize">{cat.category}</span>
                   <span className="text-[12px] text-text-tertiary">{cat.count}</span>
                 </div>
               ))}
               {isAvailable('conventions') && conventionStats.length === 0 && (
-                <p className="text-[13px] text-text-tertiary">No conventions yet. <a href="/conventions" className={cn('text-accent-blue rounded-[8px]', FOCUS_TILE)}>Add one →</a></p>
+                <p className="text-sm text-text-tertiary">No conventions yet. <a href="/conventions" className={cn('text-accent-blue rounded-md', FOCUS_TILE)}>Add one →</a></p>
               )}
             </div>
           )}
@@ -983,11 +938,11 @@ export default function Dashboard() {
 
       {!hasAdminAccess && (
         <div className="space-y-4 max-w-2xl">
-          <div className={`rounded-[18px] p-6 ${GLASS_PANEL}`}>
+          <div className={`rounded-xl p-6 ${GLASS_PANEL}`}>
             <p className="text-[15px] font-semibold text-text-primary mb-1">
               Welcome, {session?.user.name}
             </p>
-            <p className="text-[13px] text-text-tertiary">
+            <p className="text-sm text-text-tertiary">
               {session?.org.name} · <span className="capitalize">{session?.user.role}</span>
             </p>
           </div>
@@ -1001,9 +956,9 @@ export default function Dashboard() {
               <Link
                 key={item.label}
                 to={item.href}
-                className="border border-border-primary rounded-[18px] p-4 hover:bg-white/[0.04] transition-colors group"
+                className="border border-border-primary rounded-xl p-4 hover:bg-foreground/[0.04] transition-colors group"
               >
-                <p className="text-[13px] font-semibold text-text-primary group-hover:text-accent-blue transition-colors">{item.label}</p>
+                <p className="text-sm font-semibold text-text-primary group-hover:text-accent-blue transition-colors">{item.label}</p>
                 <p className="text-[11px] text-text-quaternary mt-0.5">{item.description}</p>
               </Link>
             ))}

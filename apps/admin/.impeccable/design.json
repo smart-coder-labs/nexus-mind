@@ -1,0 +1,345 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-10T03:54:36.993Z",
+  "title": "Design System: NexusMind Admin — Audit1 Lime",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Action Lime",
+        "canonical": "#c3d82e",
+        "tonalRamp": [
+          "#1d2409",
+          "#3c451b",
+          "#49541a",
+          "#5e6c16",
+          "#809213",
+          "#a6bc1b",
+          "#c3d82e",
+          "#cde45a",
+          "#ddef8b",
+          "#edf7c2",
+          "#f7fce8"
+        ]
+      },
+      "primary-foreground": {
+        "role": "primary",
+        "displayName": "Deep Lime Ink",
+        "canonical": "#1d2409",
+        "tonalRamp": [
+          "#1d2409",
+          "#3c451b",
+          "#49541a",
+          "#5e6c16",
+          "#809213",
+          "#a6bc1b",
+          "#c3d82e",
+          "#cde45a",
+          "#ddef8b",
+          "#edf7c2",
+          "#f7fce8"
+        ]
+      },
+      "brand-link-light": {
+        "role": "primary",
+        "displayName": "Olive Link",
+        "canonical": "#5e6c16",
+        "tonalRamp": [
+          "#1d2409",
+          "#3c451b",
+          "#49541a",
+          "#5e6c16",
+          "#809213",
+          "#a6bc1b",
+          "#c3d82e",
+          "#cde45a",
+          "#ddef8b",
+          "#edf7c2",
+          "#f7fce8"
+        ]
+      },
+      "background-light": {
+        "role": "neutral",
+        "displayName": "Neutral Surfaces",
+        "canonical": "oklch(1 0 0)",
+        "tonalRamp": [
+          "oklch(.145 0 0)",
+          "oklch(.205 0 0)",
+          "oklch(.269 0 0)",
+          "oklch(.556 0 0)",
+          "oklch(.708 0 0)",
+          "oklch(.922 0 0)",
+          "oklch(.97 0 0)",
+          "oklch(.985 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "data-blue": {
+        "role": "data",
+        "displayName": "Operational Blue",
+        "canonical": "#285f91",
+        "themeValues": {
+          "light": "#285f91",
+          "dark": "#9bc8ed"
+        }
+      },
+      "data-teal": {
+        "role": "data",
+        "displayName": "Knowledge Teal",
+        "canonical": "#286f68",
+        "themeValues": {
+          "light": "#286f68",
+          "dark": "#82cbbf"
+        }
+      },
+      "data-amber": {
+        "role": "data",
+        "displayName": "Review Amber",
+        "canonical": "#805b0d",
+        "themeValues": {
+          "light": "#805b0d",
+          "dark": "#e6c16d"
+        }
+      },
+      "data-rose": {
+        "role": "data",
+        "displayName": "Insight Rose",
+        "canonical": "#984c5c",
+        "themeValues": {
+          "light": "#984c5c",
+          "dark": "#e0a0ad"
+        }
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Compact dashboard page heading."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Base interface text."
+      },
+      "card-title": {
+        "displayName": "Card Title",
+        "purpose": "Shared panel title."
+      },
+      "control": {
+        "displayName": "Control",
+        "purpose": "Action and navigation labels."
+      },
+      "data": {
+        "displayName": "Data",
+        "purpose": "Table copy."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Small supporting labels."
+      },
+      "metric": {
+        "displayName": "Metric",
+        "purpose": "Compact 12px semibold summary badges with tabular numerals."
+      }
+    },
+    "shadows": [
+      {
+        "name": "control-xs",
+        "value": "0 1px 2px #0000000d",
+        "purpose": "Subtle control elevation."
+      },
+      {
+        "name": "card-sm",
+        "value": "0 1px 3px #0000001a, 0 1px 2px #0000000f",
+        "purpose": "Cards and KPI tiles."
+      }
+    ],
+    "motion": [
+      {
+        "name": "sidebar",
+        "value": "200ms ease-in-out",
+        "purpose": "Sidebar size and position."
+      },
+      {
+        "name": "entrance",
+        "value": "220ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Existing fade, scale and short-slide utilities."
+      },
+      {
+        "name": "badge",
+        "value": "160ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Custom badge entrance."
+      },
+      {
+        "name": "sheet-open",
+        "value": "500ms ease-in-out",
+        "purpose": "Sheet opening."
+      },
+      {
+        "name": "sheet-close",
+        "value": "300ms ease-in-out",
+        "purpose": "Sheet closing."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "page-gutter-max",
+        "value": "640px"
+      },
+      {
+        "name": "kpi-three-columns",
+        "value": "700px"
+      },
+      {
+        "name": "desktop-sidebar",
+        "value": "768px"
+      },
+      {
+        "name": "topbar-nowrap",
+        "value": "1024px"
+      },
+      {
+        "name": "kpi-six-columns",
+        "value": "1280px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Default-size primary variant; runtime component includes loading and disabled behavior.",
+      "html": "<button class=\"ds-button-primary\" type=\"button\">Save changes</button>",
+      "css": ".ds-button-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:8px;font-family:'Geist Variable',sans-serif;font-size:14px;font-weight:500;line-height:20px;white-space:nowrap;cursor:pointer;transition:color 150ms,background-color 150ms;background:var(--complementary,#c3d82e);color:var(--complementary-foreground,#1d2409);box-shadow:0 1px 2px #0000000d;}.ds-button-primary:hover{background:color-mix(in srgb,var(--complementary,#c3d82e) 90%,transparent);}.ds-button-primary:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#5e6c16) 50%,transparent)}.ds-button-primary:disabled{opacity:.5;pointer-events:none}"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Default-size outline variant; runtime component includes loading and disabled behavior.",
+      "html": "<button class=\"ds-button-outline\" type=\"button\">Cancel</button>",
+      "css": ".ds-button-outline{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:8px;font-family:'Geist Variable',sans-serif;font-size:14px;font-weight:500;line-height:20px;white-space:nowrap;cursor:pointer;transition:color 150ms,background-color 150ms;border:1px solid var(--border,oklch(.922 0 0));background:var(--background,#fff);color:var(--foreground,oklch(.145 0 0));box-shadow:0 1px 2px #0000000d;}.ds-button-outline:hover{background:var(--accent,oklch(.97 0 0));color:var(--accent-foreground,oklch(.205 0 0));}.ds-button-outline:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#5e6c16) 50%,transparent)}.ds-button-outline:disabled{opacity:.5;pointer-events:none}:host-context(.dark) .ds-button-outline{background:color-mix(in srgb,var(--input,oklch(1 0 0 / 15%)) 30%,transparent);border-color:var(--input,oklch(1 0 0 / 15%))}:host-context(.dark) .ds-button-outline:hover{background:color-mix(in srgb,var(--input,oklch(1 0 0 / 15%)) 50%,transparent)}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Default-size secondary variant; runtime component includes loading and disabled behavior.",
+      "html": "<button class=\"ds-button-secondary\" type=\"button\">Details</button>",
+      "css": ".ds-button-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:8px;font-family:'Geist Variable',sans-serif;font-size:14px;font-weight:500;line-height:20px;white-space:nowrap;cursor:pointer;transition:color 150ms,background-color 150ms;background:var(--secondary,oklch(.97 0 0));color:var(--secondary-foreground,oklch(.205 0 0));box-shadow:0 1px 2px #0000000d;}.ds-button-secondary:hover{background:color-mix(in srgb,var(--secondary,oklch(.97 0 0)) 80%,transparent);}.ds-button-secondary:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#5e6c16) 50%,transparent)}.ds-button-secondary:disabled{opacity:.5;pointer-events:none}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Default-size ghost variant; runtime component includes loading and disabled behavior.",
+      "html": "<button class=\"ds-button-ghost\" type=\"button\">Options</button>",
+      "css": ".ds-button-ghost{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:8px;font-family:'Geist Variable',sans-serif;font-size:14px;font-weight:500;line-height:20px;white-space:nowrap;cursor:pointer;transition:color 150ms,background-color 150ms;background:transparent;color:var(--foreground,oklch(.145 0 0));}.ds-button-ghost:hover{background:var(--accent,oklch(.97 0 0));color:var(--accent-foreground,oklch(.205 0 0));}.ds-button-ghost:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#5e6c16) 50%,transparent)}.ds-button-ghost:disabled{opacity:.5;pointer-events:none}:host-context(.dark) .ds-button-ghost:hover{background:color-mix(in srgb,var(--accent,oklch(.269 0 0)) 50%,transparent)}"
+    },
+    {
+      "name": "Link Button",
+      "kind": "button",
+      "refersTo": "button-link",
+      "description": "Default-size link variant; runtime component includes loading and disabled behavior.",
+      "html": "<button class=\"ds-button-link\" type=\"button\">View details</button>",
+      "css": ".ds-button-link{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:8px;font-family:'Geist Variable',sans-serif;font-size:14px;font-weight:500;line-height:20px;white-space:nowrap;cursor:pointer;transition:color 150ms,background-color 150ms;background:transparent;color:var(--brand-link,#5e6c16);text-underline-offset:4px;}.ds-button-link:hover{text-decoration:underline;}.ds-button-link:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#5e6c16) 50%,transparent)}.ds-button-link:disabled{opacity:.5;pointer-events:none}"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Default-size destructive variant; runtime component includes loading and disabled behavior.",
+      "html": "<button class=\"ds-button-destructive\" type=\"button\">Delete</button>",
+      "css": ".ds-button-destructive{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:8px;font-family:'Geist Variable',sans-serif;font-size:14px;font-weight:500;line-height:20px;white-space:nowrap;cursor:pointer;transition:color 150ms,background-color 150ms;background:var(--destructive,oklch(.577 .245 27.325));color:white;box-shadow:0 1px 2px #0000000d;}.ds-button-destructive:hover{background:color-mix(in srgb,var(--destructive,oklch(.577 .245 27.325)) 90%,transparent);}.ds-button-destructive:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#5e6c16) 50%,transparent)}.ds-button-destructive:disabled{opacity:.5;pointer-events:none}:host-context(.dark) .ds-button-destructive{background:color-mix(in srgb,var(--destructive,oklch(.704 .191 22.216)) 60%,transparent)}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Shared field with theme-aware focus and invalid states.",
+      "html": "<label class=\"ds-field-label\" for=\"ds-name\">Name</label><input id=\"ds-name\" class=\"ds-field\" placeholder=\"Project name\"/>",
+      "css": ".ds-field-label{display:block;font:500 14px/20px 'Geist Variable',sans-serif;margin-bottom:6px;color:var(--foreground,oklch(.145 0 0))}.ds-field{width:100%;height:36px;padding:4px 12px;border:1px solid var(--input,oklch(.922 0 0));border-radius:8px;background:transparent;color:var(--foreground,oklch(.145 0 0));font:400 16px/24px 'Geist Variable',sans-serif;box-shadow:0 1px 2px #0000000d;transition:color 150ms,box-shadow 150ms}.ds-field::placeholder{color:var(--muted-foreground,oklch(.556 0 0))}.ds-field:focus-visible{outline:none;border-color:var(--ring,#5e6c16);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#5e6c16) 50%,transparent)}.ds-field[aria-invalid=true]{border-color:var(--destructive,oklch(.577 .245 27.325))}.ds-field:disabled{opacity:.5;pointer-events:none}@media(min-width:768px){.ds-field{font-size:14px}}@media(pointer:coarse){.ds-field{font-size:16px}}:host-context(.dark) .ds-field{background:color-mix(in srgb,var(--input,oklch(1 0 0 / 15%)) 30%,transparent)}"
+    },
+    {
+      "name": "Current Navigation",
+      "kind": "nav",
+      "refersTo": "navigation-active",
+      "description": "Expanded current-page link in the neutral sidebar.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-link\" href=\"#dashboard\" aria-current=\"page\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" rx=\"1\"/><rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1\"/></svg>Dashboard</a></nav>",
+      "css": ".ds-nav{padding:12px;background:var(--sidebar,oklch(.985 0 0))}.ds-nav-link{display:flex;align-items:center;gap:8px;height:32px;padding:8px 12px;border:1px solid color-mix(in srgb,var(--primary,#c3d82e) 35%,transparent);border-radius:8px;background:color-mix(in srgb,var(--primary,#c3d82e) 5%,transparent);color:var(--brand-link,#5e6c16);font:500 14px/20px 'Geist Variable',sans-serif;text-decoration:none;transform:scale(1.05);transition:color 150ms}.ds-nav-link:focus-visible{outline:2px solid var(--ring,#5e6c16);outline-offset:2px}"
+    },
+    {
+      "name": "Success Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Custom semantic badge; not a Radix primitive.",
+      "html": "<span class=\"ds-badge\">Active</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid color-mix(in srgb,var(--color-status-success,#27713f) 20%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-status-success,#27713f) 10%,transparent);color:var(--color-status-success,#27713f);font:500 12px/16px 'Geist Variable',sans-serif}"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Shared neutral card with shallow elevation.",
+      "html": "<section class=\"ds-card\"><h3 class=\"ds-card-title\">Recent activity</h3><p class=\"ds-card-copy\">Your workspace activity appears here.</p></section>",
+      "css": ".ds-card{padding:24px;border:1px solid var(--border,oklch(.922 0 0));border-radius:14px;background:var(--card,#fff);color:var(--card-foreground,oklch(.145 0 0));box-shadow:0 1px 3px #0000001a,0 1px 2px #0000000f;font-family:'Geist Variable',sans-serif}.ds-card-title{margin:0 0 6px;font-size:16px;font-weight:600;line-height:1}.ds-card-copy{margin:0;color:var(--muted-foreground,oklch(.556 0 0));font-size:14px;line-height:20px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Audit1 operational clarity",
+    "overview": "NexusMind admin adopts the owner-selected Audit1 Admin visual system: Geist typography, neutral light and dark surfaces, an inset workspace, compact shadcn New York controls, and restrained lime actions. Audit1’s purple brand roles are translated to lime while its neutral material and component geometry remain the reference.\n\nThe source authority is Admin-portal-front e9e01b2a and its consumed UI Commons v2.0.670 (47968e54). Local implementation tokens live in src/styles/audit1-theme.css, with compatibility aliases and shell treatments in src/index.css. This system applies to the admin; the landing retains its separately approved identity.",
+    "keyCharacteristics": [
+      "Neutral inset shell with a collapsible sidebar and mobile sheet. Native navigation scrolling stays enabled: hide the scrollbar in the icon rail and use a thin, subdued scrollbar in expanded/mobile navigation, clearer on hover or keyboard focus.",
+      "Self-hosted Geist Variable and compact, readable operational hierarchy.",
+      "Lime actions with dark ink; independently meaningful semantic statuses.",
+      "Thin borders, modest shadows, and subtle workspace grid and radial washes.",
+      "Compact neutral count badges with always-visible supporting details. Analytical charts share the Audit1 shadcn/Recharts wrapper and theme-aware lime/slate series.",
+      "Categorical metric accents use lime, blue, teal, amber, and rose; semantic status remains independent."
+    ],
+    "rules": [
+      {
+        "name": "The Action Ink Rule",
+        "body": "Pair solid lime actions with primary foreground. Use the theme-aware brand-link role for readable text emphasis on neutral surfaces.",
+        "section": "colors"
+      },
+      {
+        "name": "The Semantic Pair Rule",
+        "body": "Choose surface, foreground, border, and focus roles together; theme changes must preserve their relationship.",
+        "section": "colors"
+      },
+      {
+        "name": "The Geist Interface Rule",
+        "body": "Use the self-hosted Geist variable family for interface text. Keep the existing monospace stack for code and identifiers.",
+        "section": "typography"
+      },
+      {
+        "name": "The Quiet Depth Rule",
+        "body": "Use borders and shallow shadows for ordinary panels; stronger elevation and scrims belong to overlays.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Data Summary Rule",
+        "body": "Keep primary counts visible in compact neutral badges. Keep secondary details visible; metrics have no collapse control. Use shadcn chart primitives, real data, and theme-aware series. Do not derive health percentages from overlapping counts. Lay out compact summaries in a container-responsive grid with equal-height cells per row and 8px gaps; six summaries use three columns from 640px and six from 1200px of content width. Keep disabled-account text at normal contrast. Invitation panels retain 16px viewport margins, internal scrolling and readable mobile fields.",
+        "section": "components"
+      },
+      {
+        "name": "The Categorical Color Rule",
+        "body": "Use stable lime, blue, teal, amber, and rose accents for metric categories; keep semantic status colors separate.",
+        "section": "colors"
+      }
+    ],
+    "dos": [
+      "Do use primary with primary-foreground for filled lime actions.",
+      "Do preserve separate success, warning, error, and information colors with text labels.",
+      "Do extend shared shadcn primitives and compatibility wrappers before adding route-specific visual rules.",
+      "Do preserve keyboard focus, labels, dialog semantics, permission filtering, and reduced-motion support.",
+      "Do preserve real chart data and existing workflow semantics."
+    ],
+    "donts": [
+      "Don't restore the obsolete Heebo, black-sidebar, or landing-derived admin system.",
+      "Don't use white text or icons on the lime primary fill.",
+      "Don't turn every status, panel, or icon into a lime accent.",
+      "Don't assume every domain control is Radix or promote an isolated legacy measurement into a global rule."
+    ]
+  }
+}

@@ -1,15 +1,17 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { createClient, loginWithEmail, loginWithApiKey } from '../api/client'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { LoginBackground } from './login/LoginBackground'
 
 type Mode = 'email' | 'apikey' | 'forgot'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 export default function Login() {
+  const loginRootRef = useRef<HTMLDivElement>(null)
   const [mode, setMode] = useState<Mode>('email')
 
   const [email, setEmail] = useState('')
@@ -96,22 +98,23 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-background-primary flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <div ref={loginRootRef} className="login-screen relative isolate flex min-h-screen items-center justify-center overflow-hidden bg-background-primary p-4">
+      <LoginBackground eventRootRef={loginRootRef} />
+      <div className="relative z-10 w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-base font-semibold text-text-primary">NexusMind</h1>
           <p className="text-xs text-text-quaternary mt-0.5">Enterprise Memory Control Plane</p>
         </div>
 
-        <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-8 space-y-6">
+        <div className="border border-border-primary bg-surface-primary rounded-xl p-8 space-y-6">
           {/* Mode toggle */}
-          <div className="flex rounded-[11px] border border-border-primary overflow-hidden text-xs">
+          <div className="flex rounded-md border border-border-primary overflow-hidden text-xs">
             <button
               type="button"
               onClick={() => { setMode('email'); setError('') }}
               className={`flex-1 py-2 transition-colors ${
                 mode === 'email'
-                  ? 'bg-accent-blue/10 text-accent-blue font-semibold'
+                  ? 'bg-action-primary/10 text-accent-blue font-semibold'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
@@ -122,7 +125,7 @@ export default function Login() {
               onClick={() => { setMode('apikey'); setError('') }}
               className={`flex-1 py-2 transition-colors border-l border-border-primary ${
                 mode === 'apikey'
-                  ? 'bg-accent-blue/10 text-accent-blue font-semibold'
+                  ? 'bg-action-primary/10 text-accent-blue font-semibold'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >

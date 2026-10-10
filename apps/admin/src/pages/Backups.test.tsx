@@ -84,6 +84,14 @@ describe('Backups page', () => {
     mockDownload.mockResolvedValue(new Blob(['{}'], { type: 'application/json' }))
   })
 
+  it('shows a load failure without claiming there are no backups', async () => {
+    mockList.mockRejectedValue(new Error('Server unavailable'))
+    renderWithProviders(<Backups />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Server unavailable')
+    expect(screen.queryByText(/No backups yet/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
   it('renders a row per backup with formatted size and relative time', async () => {
     renderWithProviders(<Backups />)
 

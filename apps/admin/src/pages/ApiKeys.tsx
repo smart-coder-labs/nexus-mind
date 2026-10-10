@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useMemo, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow, differenceInDays, isPast } from 'date-fns'
@@ -21,7 +22,7 @@ function toDate(iso: string): Date {
 
 function RelativeTime({ iso }: { iso: string | null }) {
   if (!iso)
-    return <span className="text-[13px] text-text-tertiary">Never</span>
+    return <span className="text-sm text-text-tertiary">Never</span>
 
   const days = differenceInDays(new Date(), toDate(iso))
   const colorClass =
@@ -30,7 +31,7 @@ function RelativeTime({ iso }: { iso: string | null }) {
     'text-text-tertiary'
 
   return (
-    <span className={`text-[13px] ${colorClass}`} title={iso}>
+    <span className={`text-sm ${colorClass}`} title={iso}>
       {formatDistanceToNow(toDate(iso), { addSuffix: true })}
     </span>
   )
@@ -69,32 +70,32 @@ function SkeletonRow() {
       {/* User cell */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="animate-pulse w-7 h-7 rounded-full bg-white/[0.04] shrink-0" />
+          <div className="animate-pulse w-7 h-7 rounded-full bg-foreground/[0.04] shrink-0" />
           <div className="space-y-1.5">
-            <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-24" />
-            <div className="animate-pulse h-3 bg-white/[0.04] rounded-[8px] w-32" />
+            <div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-24" />
+            <div className="animate-pulse h-3 bg-foreground/[0.04] rounded-md w-32" />
           </div>
         </div>
       </td>
       {/* Label */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-28" />
+        <div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-28" />
       </td>
       {/* Last used */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-20" />
+        <div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-20" />
       </td>
       {/* Created */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-20" />
+        <div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-20" />
       </td>
       {/* Expires */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-16" />
+        <div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-16" />
       </td>
       {/* Action */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-6 bg-white/[0.04] rounded-[8px] w-14 ml-auto" />
+        <div className="animate-pulse h-6 bg-foreground/[0.04] rounded-md w-14 ml-auto" />
       </td>
     </tr>
   )
@@ -177,13 +178,13 @@ function CreateKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px]">
+      <div className="w-full max-w-md rounded-xl border border-border-primary bg-surface-elevated ">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">New API Key</h2>
           <button
             onClick={onClose}
-            className={`rounded-full p-1 text-text-tertiary hover:text-text-secondary hover:bg-white/[0.06] transition-colors ${FOCUS_CANVAS}`}
+            className={`rounded-full p-1 text-text-tertiary hover:text-text-secondary hover:bg-foreground/[0.06] transition-colors ${FOCUS_CANVAS}`}
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -193,7 +194,7 @@ function CreateKeyModal({
         {/* Form */}
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
           {error && (
-            <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-3 py-2 text-[13px] text-status-error">
+            <div className="rounded-md border border-status-error/20 bg-status-error/5 px-3 py-2 text-sm text-status-error">
               {error}
             </div>
           )}
@@ -208,7 +209,7 @@ function CreateKeyModal({
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               placeholder="e.g. CI/CD pipeline"
-              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary ${FOCUS_CANVAS}`}
+              className={`rounded-md bg-foreground/[0.04] border border-border-primary text-sm text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary ${FOCUS_CANVAS}`}
               required
             />
           </div>
@@ -218,15 +219,15 @@ function CreateKeyModal({
             <label className="block text-[12px] font-medium text-text-secondary mb-1">
               Role
             </label>
-            <select
+            <StyledSelect
               value={form.role}
               onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full ${FOCUS_CANVAS}`}
+              className={`rounded-md bg-foreground/[0.04] border border-border-primary text-sm text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full ${FOCUS_CANVAS}`}
             >
               <option value="admin">admin</option>
               <option value="member">member</option>
               <option value="viewer">viewer</option>
-            </select>
+            </StyledSelect>
           </div>
 
           {/* Expiry */}
@@ -239,7 +240,7 @@ function CreateKeyModal({
               value={form.expires_at}
               onChange={(e) => setForm((f) => ({ ...f, expires_at: e.target.value }))}
               min={new Date().toISOString().slice(0, 10)}
-              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full ${FOCUS_CANVAS}`}
+              className={`rounded-md bg-foreground/[0.04] border border-border-primary text-sm text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full ${FOCUS_CANVAS}`}
             />
           </div>
 
@@ -253,7 +254,7 @@ function CreateKeyModal({
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               placeholder="What is this key for?"
               rows={2}
-              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary resize-none ${FOCUS_CANVAS}`}
+              className={`rounded-md bg-foreground/[0.04] border border-border-primary text-sm text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary resize-none ${FOCUS_CANVAS}`}
             />
           </div>
 
@@ -262,14 +263,14 @@ function CreateKeyModal({
             <button
               type="button"
               onClick={onClose}
-              className={`flex-1 rounded-full border border-border-primary px-4 py-1.5 text-[13px] text-text-secondary hover:bg-white/[0.04] transition-colors ${FOCUS_CANVAS}`}
+              className={`flex-1 rounded-full border border-border-primary px-4 py-1.5 text-sm text-text-secondary hover:bg-foreground/[0.04] transition-colors ${FOCUS_CANVAS}`}
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={createMut.isPending}
-              className={`flex-1 rounded-full bg-accent-blue px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-accent-blue-hover transition-colors disabled:opacity-40 ${FOCUS_CANVAS}`}
+              className={`flex-1 rounded-full bg-action-primary px-4 py-1.5 text-sm font-semibold text-action-foreground hover:bg-action-primary-hover transition-colors disabled:opacity-40 ${FOCUS_CANVAS}`}
             >
               {createMut.isPending ? 'Creating…' : 'Create Key'}
             </button>
@@ -299,13 +300,13 @@ function CreatedKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px]">
+      <div className="w-full max-w-md rounded-xl border border-border-primary bg-surface-elevated ">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">Key Created</h2>
           <button
             onClick={onClose}
-            className={`rounded-full p-1 text-text-tertiary hover:text-text-secondary hover:bg-white/[0.06] transition-colors ${FOCUS_CANVAS}`}
+            className={`rounded-full p-1 text-text-tertiary hover:text-text-secondary hover:bg-foreground/[0.06] transition-colors ${FOCUS_CANVAS}`}
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -314,7 +315,7 @@ function CreatedKeyModal({
 
         <div className="px-5 py-4 space-y-4">
           {/* Warning */}
-          <div className="rounded-[11px] bg-status-warning/10 border border-status-warning/30 p-3 text-[13px] text-status-warning leading-relaxed">
+          <div className="rounded-md bg-status-warning/10 border border-status-warning/30 p-3 text-sm text-status-warning leading-relaxed">
             Save this key now — it won't be shown again.
           </div>
 
@@ -325,13 +326,13 @@ function CreatedKeyModal({
             <div className="relative flex items-center gap-2">
               <code
                 ref={codeRef}
-                className="flex-1 font-mono text-[13px] bg-white/[0.06] rounded-[11px] px-3 py-2 break-all text-text-primary select-all"
+                className="flex-1 font-mono text-sm bg-foreground/[0.06] rounded-md px-3 py-2 break-all text-text-primary select-all"
               >
                 {created.key}
               </code>
               <button
                 onClick={handleCopy}
-                className={`shrink-0 p-1.5 rounded-[8px] transition-colors ${FOCUS_CANVAS}`}
+                className={`shrink-0 p-1.5 rounded-md transition-colors ${FOCUS_CANVAS}`}
                 aria-label="Copy key"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5 text-text-quaternary hover:text-text-primary" />}
@@ -341,7 +342,7 @@ function CreatedKeyModal({
 
           <button
             onClick={onClose}
-            className={`w-full rounded-full bg-accent-blue px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-accent-blue-hover transition-colors ${FOCUS_CANVAS}`}
+            className={`w-full rounded-full bg-action-primary px-4 py-1.5 text-sm font-semibold text-action-foreground hover:bg-action-primary-hover transition-colors ${FOCUS_CANVAS}`}
           >
             Done
           </button>
@@ -402,7 +403,7 @@ export default function ApiKeys() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">API Keys</h1>
-          <p className="mt-1 text-[13px] text-text-secondary">
+          <p className="mt-1 text-sm text-text-secondary">
             All active API keys in this organization.
           </p>
         </div>
@@ -412,7 +413,7 @@ export default function ApiKeys() {
             <button
               onClick={() => bulkRevokeExpiredMut.mutate(expiredKeys.map((k: any) => k.id))}
               disabled={bulkRevokeExpiredMut.isPending}
-              className={`border border-status-error/40 text-status-error rounded-full px-3 py-1.5 text-[13px] hover:bg-status-error/10 transition-colors disabled:opacity-40 flex items-center gap-1.5 ${FOCUS_CANVAS}`}
+              className={`border border-status-error/40 text-status-error rounded-full px-3 py-1.5 text-sm hover:bg-status-error/10 transition-colors disabled:opacity-40 flex items-center gap-1.5 ${FOCUS_CANVAS}`}
             >
               <Trash2 className="w-3 h-3" />
               {bulkRevokeExpiredMut.isPending ? 'Revoking…' : `Revoke ${expiredKeys.length} expired`}
@@ -421,7 +422,7 @@ export default function ApiKeys() {
 
           <button
             onClick={() => setShowCreateModal(true)}
-            className={`flex items-center gap-1.5 rounded-full bg-accent-blue px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-accent-blue-hover transition-colors ${FOCUS_CANVAS}`}
+            className={`flex items-center gap-1.5 rounded-full bg-action-primary px-3 py-1.5 text-sm font-semibold text-action-foreground hover:bg-action-primary-hover transition-colors ${FOCUS_CANVAS}`}
           >
             <Plus className="w-3.5 h-3.5" />
             New Key
@@ -431,22 +432,22 @@ export default function ApiKeys() {
 
       {/* Error notifications */}
       {revokeError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-[13px] text-status-error">
+        <div className="rounded-md border border-status-error/20 bg-status-error/5 px-4 py-3 text-sm text-status-error">
           {revokeError}
         </div>
       )}
       {bulkError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-[13px] text-status-error">
+        <div className="rounded-md border border-status-error/20 bg-status-error/5 px-4 py-3 text-sm text-status-error">
           {bulkError}
         </div>
       )}
 
       {/* Table */}
-      <div className="rounded-[18px] border border-border-primary overflow-hidden">
+      <div className="rounded-xl border border-border-primary overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-[13px]">
+          <table className="admin-data-table w-full text-sm">
             <thead>
-              <tr className="border-b border-border-primary bg-white/[0.03]">
+              <tr className="border-b border-border-primary bg-foreground/[0.03]">
                 <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">User</th>
                 <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Label</th>
                 <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Last used</th>
@@ -463,8 +464,8 @@ export default function ApiKeys() {
                   <td colSpan={6} className="px-4 py-16 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <KeyIcon />
-                      <p className="text-[13px] font-semibold text-text-tertiary">No active API keys</p>
-                      <p className="text-[13px] text-text-tertiary">
+                      <p className="text-sm font-semibold text-text-tertiary">No active API keys</p>
+                      <p className="text-sm text-text-tertiary">
                         API keys created by organization members will appear here.
                       </p>
                     </div>
@@ -475,23 +476,23 @@ export default function ApiKeys() {
               {keys?.map((key) => (
                 <tr
                   key={key.id}
-                  className="border-b border-border-primary last:border-0 hover:bg-white/[0.04] transition-colors"
+                  className="border-b border-border-primary last:border-0 hover:bg-foreground/[0.04] transition-colors"
                 >
                   {/* User cell */}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-full bg-accent-blue/15 border border-accent-blue/20 text-accent-blue text-[13px] font-semibold flex items-center justify-center shrink-0">
+                      <div className="w-7 h-7 rounded-full bg-action-primary/15 border border-accent-blue/20 text-accent-blue text-sm font-semibold flex items-center justify-center shrink-0">
                         {key.user_name?.charAt(0).toUpperCase() ?? '?'}
                       </div>
                       <div>
-                        <div className="text-[13px] text-text-primary font-semibold">{key.user_name}</div>
-                        <div className="text-[13px] text-text-tertiary mt-0.5">{key.user_email}</div>
+                        <div className="text-sm text-text-primary font-semibold">{key.user_name}</div>
+                        <div className="text-sm text-text-tertiary mt-0.5">{key.user_email}</div>
                       </div>
                     </div>
                   </td>
 
                   {/* Label cell */}
-                  <td className="px-4 py-3 text-[13px] text-text-secondary">
+                  <td className="px-4 py-3 text-sm text-text-secondary">
                     {key.label}
                   </td>
 
@@ -506,7 +507,7 @@ export default function ApiKeys() {
                   </td>
 
                   {/* Created cell */}
-                  <td className="px-4 py-3 text-text-tertiary text-[13px]">
+                  <td className="px-4 py-3 text-text-tertiary text-sm">
                     {toDate(key.created_at).toLocaleDateString()}
                   </td>
 
@@ -520,7 +521,7 @@ export default function ApiKeys() {
                     <button
                       onClick={() => handleRevoke(key)}
                       disabled={revokeMut.isPending}
-                      className={`text-[13px] border border-status-error/30 rounded-[8px] px-3 py-1 text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-50 ${FOCUS_CANVAS}`}
+                      className={`text-sm border border-status-error/30 rounded-md px-3 py-1 text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-50 ${FOCUS_CANVAS}`}
                       aria-label={`Revoke key for ${key.user_name}`}
                     >
                       Revoke

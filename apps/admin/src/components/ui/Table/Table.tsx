@@ -1,11 +1,12 @@
 import * as React from "react";
-import { cn } from '../../../lib/utils';;
+import { Checkbox as PrimitiveCheckbox } from '../shadcn/checkbox';
+import { Table as PrimitiveTable, TableHeader, TableBody, TableHead, TableCell, TableRow } from '../shadcn/table';
+import { cn } from '../../../lib/utils';
 import { motion, useReducedMotion } from "framer-motion";
 import {
     ArrowUpDown,
     ChevronLeft,
     ChevronRight,
-    Check,
 } from "lucide-react";
 
 // Visible keyboard-focus indicator (DESIGN_DIRECTION §6).
@@ -86,7 +87,7 @@ export function Table<T>({
         }
     };
 
-    const totalPages = Math.ceil(data.length / pageSize);
+    const totalPages = Math.max(1, Math.ceil(data.length / pageSize));
 
     const paginatedData = data.slice(
         (page - 1) * pageSize,
@@ -94,32 +95,37 @@ export function Table<T>({
     );
 
     const rowPadding =
-        density === "compact" ? "py-2" : "py-3";
+        density === "compact" ? "py-1.5" : "py-2";
 
     return (
-        <div className="overflow-hidden border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px]">
+        <div className="overflow-hidden border border-border-primary bg-surface-primary rounded-xl">
             {/* TABLE */}
-            <table className="w-full border-collapse text-left">
-                <thead className="bg-white/[0.03] border-b border-white/[0.07]">
-                    <tr>
+            <div className="overflow-x-auto">
+            <PrimitiveTable data-density={density} className="admin-data-table w-full border-collapse text-left">
+                <TableHeader>
+                    <TableRow>
                         {selectable && (
-                            <th className="w-10 px-4">
+                            <TableHead className="w-10 px-2">
                                 <Checkbox
-                                    checked={selectedRows.size === data.length}
+                                    label="Select all rows"
+                                    disabled={data.length === 0}
+                                    checked={data.length > 0 && selectedRows.size === data.length}
                                     onCheckedChange={toggleAll}
                                 />
-                            </th>
+                            </TableHead>
                         )}
 
                         {columns.map((col) => (
-                            <th
+                            <TableHead
                                 key={String(col.key)}
+                                style={col.width ? { width: col.width } : undefined}
+                                aria-sort={col.sortable ? (sortKey === col.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none") : undefined}
                                 className={cn(
-                                    "px-4 py-3 text-[10.5px] font-bold text-text-tertiary uppercase tracking-[0.08em] select-none whitespace-nowrap",
-                                    col.width && `w-[${col.width}]`
+                                    "h-10 px-2 text-sm font-medium text-foreground select-none whitespace-nowrap"
                                 )}
                             >
-                                <button
+                                {col.sortable ? <button
+                                    type="button"
                                     className={cn(
                                         "rounded-[4px]",
                                         FOCUS_RING,
@@ -142,22 +148,22 @@ export function Table<T>({
                                             )}
                                         />
                                     )}
-                                </button>
-                            </th>
+                                </button> : col.header}
+                            </TableHead>
                         ))}
-                    </tr>
-                </thead>
+                    </TableRow>
+                </TableHeader>
 
-                <tbody>
+                <TableBody>
                     {paginatedData.length === 0 && (
-                        <tr>
-                            <td
+                        <TableRow>
+                            <TableCell
                                 colSpan={columns.length + (selectable ? 1 : 0)}
                                 className="py-10 text-center text-text-tertiary"
                             >
                                 No results found.
-                            </td>
-                        </tr>
+                            </TableCell>
+                        </TableRow>
                     )}
 
                     {paginatedData.map((row, index) => {
@@ -172,56 +178,61 @@ export function Table<T>({
                                 className={cn(
                                     "border-b border-border-secondary transition-colors",
                                     striped && index % 2 === 1
-                                        ? "bg-white/[0.02]"
+                                        ? "bg-foreground/[0.02]"
                                         : "",
                                     hoverable &&
-                                    "hover:bg-accent-blue/[0.05] cursor-pointer"
+                                    "hover:bg-action-primary/[0.05]",
+                                    onRowClick && "cursor-pointer"
                                 )}
                                 onClick={() => onRowClick?.(row)}
                             >
                                 {selectable && (
-                                    <td className="px-4">
+                                    <TableCell className="px-4">
                                         <Checkbox
+                                            label={`Select row ${globalIndex + 1}`}
                                             checked={selectedRows.has(globalIndex)}
                                             onCheckedChange={() => toggleRow(globalIndex)}
                                         />
-                                    </td>
+                                    </TableCell>
                                 )}
 
                                 {columns.map((col) => (
-                                    <td
+                                    <TableCell
                                         key={String(col.key)}
                                         className={cn(
-                                            "px-4 text-[13px] text-text-secondary",
+                                            "px-2 text-sm text-text-secondary",
                                             rowPadding
                                         )}
                                     >
                                         {col.render
                                             ? col.render(row[col.key], row)
                                             : (row[col.key] as any)}
-                                    </td>
+                                    </TableCell>
                                 ))}
                             </motion.tr>
                         );
                     })}
-                </tbody>
-            </table>
+                </TableBody>
+            </PrimitiveTable>
+            </div>
 
             {/* PAGINATION */}
-            <div className="flex items-center justify-between px-4 py-3 bg-white/[0.03] border-t border-white/[0.07]">
+            <div className="flex items-center justify-between px-4 py-3 bg-foreground/[0.03] border-t border-border-primary">
                 <p className="text-xs text-text-tertiary">
                     Page {page} of {totalPages}
                 </p>
 
                 <div className="flex items-center gap-2">
                     <PaginationButton
-                        disabled={page === 1}
+                        label="Previous page"
+                        disabled={page <= 1 || !onPageChange}
                         onClick={() => onPageChange?.(page - 1)}
                     >
                         <ChevronLeft className="w-4 h-4" />
                     </PaginationButton>
                     <PaginationButton
-                        disabled={page === totalPages}
+                        label="Next page"
+                        disabled={page >= totalPages || !onPageChange}
                         onClick={() => onPageChange?.(page + 1)}
                     >
                         <ChevronRight className="w-4 h-4" />
@@ -237,21 +248,25 @@ export function Table<T>({
 /* -------------------------------------------------------------------------- */
 
 function PaginationButton({
+    label,
     disabled,
     children,
     onClick,
 }: {
+    label: string;
     disabled?: boolean;
     children: React.ReactNode;
     onClick?: () => void;
 }) {
     return (
         <button
+            type="button"
+            aria-label={label}
             disabled={disabled}
             onClick={onClick}
             className={cn(
-                "p-2 rounded-[9px] border border-white/[0.09] text-text-tertiary transition-all",
-                "hover:border-white/[0.25] hover:text-text-primary",
+                "p-2 rounded-md border border-border-primary text-text-tertiary transition-all",
+                "hover:border-border-primary hover:text-text-primary",
                 FOCUS_RING,
                 "disabled:opacity-40 disabled:cursor-not-allowed"
             )}
@@ -261,42 +276,6 @@ function PaginationButton({
     );
 }
 
-function Checkbox({
-    checked,
-    onCheckedChange,
-    disabled,
-}: {
-    checked: boolean;
-    onCheckedChange?: () => void;
-    disabled?: boolean;
-}) {
-    return (
-        <button
-            type="button"
-            role="checkbox"
-            aria-checked={checked}
-            aria-disabled={disabled || undefined}
-            data-state={checked ? "checked" : "unchecked"}
-            onClick={() => {
-                if (disabled) return;
-                onCheckedChange?.();
-            }}
-            onKeyDown={(event) => {
-                if (disabled) return;
-                if (event.key === " " || event.key === "Enter") {
-                    event.preventDefault();
-                    onCheckedChange?.();
-                }
-            }}
-            className={cn(
-                "h-4 w-4 rounded-[5px] border border-white/[0.09] bg-white/[0.03] flex items-center justify-center",
-                "data-[state=checked]:bg-accent-blue data-[state=checked]:border-accent-blue",
-                "transition-colors",
-                FOCUS_RING,
-                disabled && "opacity-50 cursor-not-allowed"
-            )}
-        >
-            {checked && <Check className="h-3 w-3 text-white" />}
-        </button>
-    );
+function Checkbox({ label,checked,onCheckedChange,disabled }:{label:string;checked:boolean;onCheckedChange?:()=>void;disabled?:boolean}) {
+ return <PrimitiveCheckbox aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} onClick={event=>event.stopPropagation()} />;
 }

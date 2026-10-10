@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
@@ -121,7 +122,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={newKey ? 'User invited' : 'Invite user'}
@@ -129,7 +130,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
     >
       <div
         ref={modalRef}
-        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md space-y-5"
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto border border-border-primary bg-surface-elevated rounded-xl p-6 w-full max-w-md space-y-5 shadow-lg"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -148,7 +149,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             <p className="text-xs text-text-tertiary">
               User created. Share this API key — it will only be shown once.
             </p>
-            <div className="flex items-center gap-2 border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] px-3 py-2">
+            <div className="flex items-center gap-2 border border-border-primary bg-surface-primary rounded-md px-3 py-2">
               <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
               <button
                 onClick={handleCopy}
@@ -159,7 +160,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             </div>
             <button
               onClick={handleClose}
-              className="w-full py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors"
+              className="w-full py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium transition-colors h-9 shadow-xs"
             >
               Done
             </button>
@@ -171,7 +172,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               { id: 'email', label: 'Email', type: 'email',    placeholder: 'sarah@acme.com' },
             ].map(f => (
               <div key={f.id} className="space-y-1.5">
-                <label htmlFor={`invite-${f.id}`} className="text-[10px] text-text-quaternary">{f.label}</label>
+                <label htmlFor={`invite-${f.id}`} className="text-xs font-medium text-text-secondary">{f.label}</label>
                 <input
                   id={`invite-${f.id}`}
                   type={f.type}
@@ -179,18 +180,18 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                   onChange={set(f.id)}
                   placeholder={f.placeholder}
                   required
-                  className="w-full bg-white/[0.03] border border-white/[0.09] rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                  className="h-9 w-full bg-transparent dark:bg-input/30 border border-input rounded-md px-3 py-2 text-base md:text-sm text-text-primary placeholder:text-muted-foreground focus:outline-none transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 />
               </div>
             ))}
 
             <div className="space-y-1.5">
-              <label htmlFor="invite-role" className="text-[10px] text-text-quaternary">Role</label>
-              <select
+              <label htmlFor="invite-role" className="text-xs font-medium text-text-secondary">Role</label>
+              <StyledSelect
                 id="invite-role"
                 value={form.role}
                 onChange={set('role')}
-                className="w-full bg-white/[0.03] border border-white/[0.09] rounded-[8px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="h-9 w-full bg-transparent dark:bg-input/30 border border-input rounded-md px-3 py-2 text-base md:text-sm text-text-primary focus:outline-none transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
@@ -200,13 +201,13 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                     {r.display_name}
                   </option>
                 ))}
-              </select>
+              </StyledSelect>
             </div>
 
             {/* Project access section */}
             <div className="space-y-2">
-              <label className="text-[10px] text-text-quaternary">Project Access</label>
-              <div className="flex gap-5">
+              <label className="text-xs font-medium text-text-secondary">Project Access</label>
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
                 {(['all', 'specific'] as const).map(opt => (
                   <Radio
                     key={opt}
@@ -220,7 +221,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               </div>
 
               {projectAccess === 'specific' && (
-                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] p-2">
+                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary bg-surface-primary rounded-md p-2">
                   {!projects?.length ? (
                     <p className="text-[10px] text-text-quaternary">No projects found.</p>
                   ) : (
@@ -249,14 +250,14 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.10] border border-white/[0.09] text-xs text-text-secondary hover:text-text-primary transition-colors"
+                className="flex-1 py-2 rounded-md bg-foreground/[0.06] hover:bg-foreground/[0.10] border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading || !isValidEmail(form.email)}
-                className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-40 transition-colors"
+                className="flex-1 py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium disabled:opacity-40 transition-colors h-9 shadow-xs"
               >
                 {loading ? 'Inviting…' : 'Invite'}
               </button>

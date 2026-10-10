@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useMemo, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -14,17 +15,17 @@ import type { AgentEventSettings, OrgSettings, Webhook, CreateWebhookRequest, We
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to keep pages independent.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 // Top-level card surface per the Settings mockup: glass panel + 16px radius + 22px padding.
-const CARD = `${GLASS_PANEL} rounded-[16px] p-[22px]`
+const CARD = `${GLASS_PANEL} rounded-xl p-[22px]`
 
-const PRIMARY_BTN = 'h-10 px-4 rounded-[11px] bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-bold disabled:opacity-40 transition-colors shrink-0'
-const NEUTRAL_BTN = 'h-[38px] px-4 rounded-[10px] bg-white/[0.06] border border-white/[0.09] text-[13px] font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.10] transition-colors disabled:opacity-40'
-const NEUTRAL_BTN_SM = 'h-8 px-3 rounded-[9px] bg-white/[0.06] border border-white/[0.09] text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.10] transition-colors disabled:opacity-40 flex items-center gap-1.5'
+const PRIMARY_BTN = 'h-9 px-4 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium disabled:opacity-40 transition-colors shrink-0'
+const NEUTRAL_BTN = 'h-9 px-4 rounded-md bg-foreground/[0.06] border border-border-primary text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-foreground/[0.10] transition-colors disabled:opacity-40'
+const NEUTRAL_BTN_SM = 'h-8 px-3 rounded-md bg-foreground/[0.06] border border-border-primary text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-foreground/[0.10] transition-colors disabled:opacity-40 inline-flex shrink-0 whitespace-nowrap items-center gap-1.5'
 
-const inputCls = 'w-full h-10 px-3.5 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
-const selectCls = 'h-10 px-3.5 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none'
+const inputCls = 'w-full h-9 px-3 py-1 rounded-md border border-input bg-transparent dark:bg-input/30 text-foreground text-base md:text-sm placeholder:text-muted-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] transition-[color,box-shadow]'
+const selectCls = 'h-9 px-3 rounded-md border border-border-primary bg-foreground/[0.03] text-text-primary text-base md:text-sm focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none'
 
 // ── Memory Templates ──────────────────────────────────────────────────────────
 
@@ -54,8 +55,8 @@ function saveTemplates(templates: MemoryTemplate[]) {
 }
 
 const TYPE_BADGE_CLS: Record<TemplateType, string> = {
-  auto:       'bg-accent-blue/10 text-accent-blue border-accent-blue/25',
-  manual:     'bg-white/[0.06] text-text-secondary border-border-secondary/60',
+  auto:       'bg-action-primary/10 text-accent-blue border-accent-blue/25',
+  manual:     'bg-foreground/[0.06] text-text-secondary border-border-secondary/60',
   summary:    'bg-status-success/10 text-status-success border-status-success/25',
   reflection: 'bg-status-warning/10 text-status-warning border-status-warning/25',
 }
@@ -114,13 +115,13 @@ function MemoryTemplatesSection() {
     setEditingId(null)
   }
 
-  const formInputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  const formInputCls = 'w-full bg-transparent border border-border-primary rounded-md px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
 
   return (
     <div className={`${CARD} flex flex-col gap-4`}>
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-[16px] font-bold text-text-primary">Memory templates</h2>
+          <h2 className="text-base font-semibold text-text-primary">Memory templates</h2>
           <p className="text-[12.5px] text-text-tertiary mt-0.5">Reusable templates that pre-fill content when creating memories.</p>
         </div>
         {!showForm && (
@@ -135,11 +136,11 @@ function MemoryTemplatesSection() {
       {templates.length > 0 && !showForm && (
         <div className="space-y-2">
           {templates.map(t => (
-            <div key={t.id} className="flex items-start gap-3 p-3 rounded-[11px] border border-white/[0.07] bg-white/[0.02]">
+            <div key={t.id} className="flex items-start gap-3 p-3 rounded-md border border-border-primary bg-foreground/[0.02]">
               <div className="flex-1 min-w-0 space-y-1">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xs font-semibold text-text-primary">{t.name}</span>
-                  <span className={`text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 ${TYPE_BADGE_CLS[t.type]}`}>
+                  <span className={`text-[10px] font-semibold border rounded-sm px-1.5 py-0.5 ${TYPE_BADGE_CLS[t.type]}`}>
                     {t.type}
                   </span>
                 </div>
@@ -149,14 +150,14 @@ function MemoryTemplatesSection() {
                 <button
                   onClick={() => openEdit(t)}
                   aria-label={`Edit template ${t.name}`}
-                  className="p-1.5 rounded-[8px] text-text-quaternary hover:text-text-secondary hover:bg-white/[0.10] transition-colors"
+                  className="p-1.5 rounded-md text-text-quaternary hover:text-text-secondary hover:bg-foreground/[0.10] transition-colors"
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => handleDelete(t.id)}
                   aria-label={`Delete template ${t.name}`}
-                  className="p-1.5 rounded-[8px] text-text-quaternary hover:text-status-error hover:bg-white/[0.10] transition-colors"
+                  className="p-1.5 rounded-md text-text-quaternary hover:text-status-error hover:bg-foreground/[0.10] transition-colors"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -167,7 +168,7 @@ function MemoryTemplatesSection() {
       )}
 
       {templates.length === 0 && !showForm && (
-        <div className="flex flex-col items-center gap-1.5 py-6 px-6 rounded-[12px] border-[1.5px] border-dashed border-white/[0.1]">
+        <div className="flex flex-col items-center gap-1.5 py-6 px-6 rounded-xl border-[1.5px] border-dashed border-border-primary">
           <p className="text-[13.5px] font-bold text-text-secondary">No templates yet</p>
           <p className="text-xs text-text-quaternary">Add a template to speed up memory creation.</p>
         </div>
@@ -176,7 +177,7 @@ function MemoryTemplatesSection() {
       {/* Create / Edit form */}
       {showForm && (
         <div className="space-y-3">
-          <p className="text-xs font-semibold text-text-secondary">
+          <p className="text-xs font-medium text-text-secondary">
             {editingId ? 'Edit template' : 'New template'}
           </p>
           <div className="space-y-1.5">
@@ -190,15 +191,15 @@ function MemoryTemplatesSection() {
           </div>
           <div className="space-y-1.5">
             <label className="text-xs text-text-tertiary">Type</label>
-            <select
+            <StyledSelect
               value={formType}
               onChange={e => setFormType(e.target.value as TemplateType)}
-              className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full"
+              className="bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             >
               {TEMPLATE_TYPES.map(t => (
                 <option key={t} value={t}>{t}</option>
               ))}
-            </select>
+            </StyledSelect>
           </div>
           <div className="space-y-1.5">
             <label className="text-xs text-text-tertiary">Content</label>
@@ -207,7 +208,7 @@ function MemoryTemplatesSection() {
               onChange={e => setFormContent(e.target.value)}
               placeholder="Template content that will pre-fill the memory..."
               rows={5}
-              className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px]"
+              className="w-full bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px] shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -222,7 +223,7 @@ function MemoryTemplatesSection() {
               type="button"
               onClick={handleSave}
               disabled={!formName.trim() || !formContent.trim()}
-              className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+              className="rounded-md bg-action-primary text-action-foreground px-3 py-1.5 text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity h-9 shadow-xs"
             >
               {editingId ? 'Save changes' : 'Add template'}
             </button>
@@ -271,7 +272,7 @@ function WebhookDeliveryPanel({ webhookId, client }: { webhookId: string; client
     return (
       <div className="space-y-1.5 mt-2">
         {[0, 1, 2].map(i => (
-          <div key={i} className="h-5 bg-white/[0.06] animate-pulse rounded-[5px]" />
+          <div key={i} className="h-5 bg-foreground/[0.06] animate-pulse rounded-sm" />
         ))}
       </div>
     )
@@ -304,7 +305,7 @@ function WebhookDeliveryPanel({ webhookId, client }: { webhookId: string; client
                 <button
                   onClick={() => retryMut.mutate(d.id)}
                   disabled={retryMut.isPending && retryMut.variables === d.id}
-                  className="text-[10px] border border-border-primary rounded-full px-1.5 py-0.5 text-text-secondary hover:text-text-primary disabled:opacity-40 transition-colors"
+                  className="text-[10px] border border-border-primary rounded-md px-1.5 py-0.5 text-text-secondary hover:text-text-primary disabled:opacity-40 transition-colors"
                   aria-label={`Retry delivery ${d.id}`}
                 >
                   {retryMut.isPending && retryMut.variables === d.id ? '…' : 'Retry'}
@@ -715,30 +716,30 @@ export default function Settings() {
   }
 
   return (
-    <div className="p-8 max-w-[1280px] mx-auto">
+    <div className="p-4 sm:p-8 max-w-[1280px] mx-auto">
       {/* Header */}
       <div className="flex items-center gap-3.5 mb-6">
-        <div className="w-11 h-11 rounded-[13px] bg-white/[0.06] flex items-center justify-center shrink-0">
+        <div className="w-11 h-11 rounded-xl bg-foreground/[0.06] flex items-center justify-center shrink-0">
           <SettingsIcon className="w-[22px] h-[22px] text-text-secondary" strokeWidth={1.7} />
         </div>
         <div>
-          <h1 className="text-[26px] font-extrabold tracking-[-0.02em] text-text-primary">Settings</h1>
-          <p className="text-[13px] text-text-tertiary mt-0.5">Organization and account configuration.</p>
+          <h1 className="text-[22px] font-semibold tracking-[-0.3px] text-text-primary">Settings</h1>
+          <p className="text-sm text-text-tertiary mt-0.5">Organization and account configuration.</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-[190px_minmax(0,1fr)] gap-6 items-start">
+      <div className="grid grid-cols-1 md:grid-cols-[190px_minmax(0,1fr)] gap-6 items-start">
         {/* Section nav */}
-        <nav className="sticky top-6 flex flex-col gap-0.5">
+        <nav className="md:sticky md:top-6 flex flex-wrap md:flex-col gap-1">
           {NAV_ITEMS.map(item => (
             <button
               key={item.id}
               type="button"
               onClick={() => setActiveSection(item.id)}
               className={cn(
-                'flex items-center gap-2.5 px-3 py-2 rounded-[9px] text-[13px] text-left transition-colors border-l-2',
+                'flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-left transition-colors border',
                 activeSection === item.id
-                  ? 'font-bold text-text-primary bg-white/[0.06] border-accent-blue'
+                  ? 'font-medium text-text-primary bg-muted border-border'
                   : 'font-medium text-text-tertiary border-transparent hover:text-text-primary',
               )}
             >
@@ -756,16 +757,16 @@ export default function Settings() {
               {/* My profile */}
               <div className={CARD}>
                 <div className="flex items-center gap-3 mb-4.5">
-                  <div className="w-11 h-11 rounded-full bg-accent-blue/20 flex items-center justify-center text-accent-blue text-base font-extrabold shrink-0">
+                  <div className="w-11 h-11 rounded-full bg-action-primary/20 flex items-center justify-center text-accent-blue text-base font-extrabold shrink-0">
                     {(session?.user?.name || session?.user?.email || '?').charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <h2 className="text-[16px] font-bold text-text-primary">My profile</h2>
+                    <h2 className="text-base font-semibold text-text-primary">My profile</h2>
                     <p className="text-[12.5px] text-text-tertiary">{session?.user?.email}</p>
                   </div>
                 </div>
                 <div className="flex items-end gap-2.5">
-                  <div className="flex-1 max-w-[380px] flex flex-col gap-1.5">
+                  <div className="min-w-0 flex-1 max-w-[380px] flex flex-col gap-1.5">
                     <label htmlFor="display-name" className="text-[12.5px] font-semibold text-text-secondary">Display name</label>
                     <input
                       id="display-name"
@@ -790,11 +791,11 @@ export default function Settings() {
               {/* Password */}
               <div className={CARD}>
                 <div className="mb-4">
-                  <h2 className="text-[16px] font-bold text-text-primary">Password</h2>
+                  <h2 className="text-base font-semibold text-text-primary">Password</h2>
                   <p className="text-[12.5px] text-text-tertiary mt-0.5">Minimum {minPasswordLength} characters per organization policy.</p>
                 </div>
                 <form onSubmit={handleChangePassword} className="space-y-4">
-                  <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                  <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))' }}>
                     <div className="space-y-1.5">
                       <label htmlFor="current-password" className="text-[12.5px] font-semibold text-text-secondary">Current password</label>
                       <input
@@ -848,7 +849,7 @@ export default function Settings() {
               {/* My API key */}
               <div className={CARD}>
                 <div className="mb-3.5">
-                  <h2 className="text-[16px] font-bold text-text-primary">My API key</h2>
+                  <h2 className="text-base font-semibold text-text-primary">My API key</h2>
                   <p className="text-[12.5px] text-text-tertiary mt-0.5">
                     Your session is managed via a secure HttpOnly cookie. The API key is only used for agent/programmatic access.
                   </p>
@@ -862,7 +863,7 @@ export default function Settings() {
                 {newKey ? (
                   <div className="space-y-3">
                     <p className="text-xs text-text-tertiary">New key — copy it now, it won't be shown again.</p>
-                    <div className="flex items-center gap-2 rounded-[11px] px-3.5 py-2.5 border border-white/[0.07] bg-[#0a0c11] font-mono">
+                    <div className="flex items-center gap-2 rounded-md px-3.5 py-2.5 border border-border-primary bg-background-primary font-mono">
                       <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
                       <button
                         onClick={() => { navigator.clipboard.writeText(newKey); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
@@ -914,8 +915,8 @@ export default function Settings() {
           {activeSection === 'org' && (
             <>
               <div className={CARD}>
-                <h2 className="text-[16px] font-bold text-text-primary mb-4">Organization</h2>
-                <div className="grid gap-3.5 mb-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+                <h2 className="text-base font-semibold text-text-primary mb-4">Organization</h2>
+                <div className="grid gap-3.5 mb-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))' }}>
                   <div className="space-y-1.5">
                     <label htmlFor="org-name" className="text-[12.5px] font-semibold text-text-secondary">Name</label>
                     <input
@@ -955,10 +956,10 @@ export default function Settings() {
                   </div>
                 )}
                 {isAdmin && (
-                  <div className="pt-4 border-t border-white/[0.06] space-y-1.5">
+                  <div className="pt-4 border-t border-border-primary space-y-1.5">
                     <label className="text-[12.5px] font-semibold text-text-secondary">Logo URL</label>
                     <div className="flex items-end gap-2.5">
-                      <div className="flex-1 max-w-[440px]">
+                      <div className="min-w-0 flex-1 max-w-[440px]">
                         <input
                           value={logoUrl}
                           onChange={e => setLogoUrl(e.target.value)}
@@ -978,7 +979,7 @@ export default function Settings() {
                     {logoUrl && (
                       <img
                         src={logoUrl}
-                        className="w-8 h-8 rounded-full object-cover border border-white/[0.09] mt-2"
+                        className="w-8 h-8 rounded-full object-cover border border-border-primary mt-2"
                         alt="org logo preview"
                       />
                     )}
@@ -989,7 +990,7 @@ export default function Settings() {
               {isAdmin && (
                 <div className={CARD}>
                   <div className="mb-3.5">
-                    <h2 className="text-[16px] font-bold text-text-primary">Announcement banner</h2>
+                    <h2 className="text-base font-semibold text-text-primary">Announcement banner</h2>
                     <p className="text-[12.5px] text-text-tertiary mt-0.5">
                       Shown above the admin UI for all users. Leave blank to hide the banner.
                     </p>
@@ -997,12 +998,12 @@ export default function Settings() {
 
                   {announcementText.trim() && (
                     <div className={cn(
-                      'w-full px-4 py-2.5 mb-3.5 rounded-[10px] text-xs flex items-center gap-2',
+                      'w-full px-4 py-2.5 mb-3.5 rounded-lg text-xs flex items-center gap-2',
                       announcementType === 'error'
                         ? 'bg-status-error/10 text-status-error border border-status-error/20'
                         : announcementType === 'warning'
                         ? 'bg-status-warning/10 text-status-warning border border-status-warning/20'
-                        : 'bg-accent-blue/10 text-accent-blue border border-accent-blue/20',
+                        : 'bg-action-primary/10 text-accent-blue border border-accent-blue/20',
                     )}>
                       <AlertCircle className="w-3 h-3 shrink-0" />
                       <span>{announcementText}</span>
@@ -1013,11 +1014,11 @@ export default function Settings() {
                     value={announcementText}
                     onChange={e => setAnnouncementText(e.target.value)}
                     placeholder="e.g. Scheduled maintenance on Saturday 2 AM UTC. Expect ~30 min downtime."
-                    className="w-full min-h-[72px] px-3.5 py-3 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] leading-[1.55] placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors"
+                    className="w-full min-h-[72px] px-3.5 py-3 rounded-md border border-input bg-transparent dark:bg-input/30 text-text-primary text-sm leading-[1.55] placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
 
                   <div className="flex items-center gap-2.5 mt-3.5 flex-wrap">
-                    <div className="inline-flex items-center p-[3px] rounded-[10px] border border-white/[0.08] bg-[#0d0f14]/70">
+                    <div className="inline-flex items-center p-[3px] rounded-lg border border-border-primary bg-surface-primary">
                       {(['info', 'warning', 'error'] as const).map(level => {
                         const dotColor = level === 'error' ? '#f87171' : level === 'warning' ? '#facc15' : '#7aa2ff'
                         const active = announcementType === level
@@ -1027,8 +1028,8 @@ export default function Settings() {
                             type="button"
                             onClick={() => setAnnouncementType(level)}
                             className={cn(
-                              'flex items-center gap-1.5 px-3.5 py-1.5 rounded-[8px] text-[12px] font-semibold transition-colors',
-                              active ? 'bg-white/[0.07] text-text-primary' : 'text-text-tertiary hover:text-text-secondary',
+                              'flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-semibold transition-colors',
+                              active ? 'bg-foreground/[0.07] text-text-primary' : 'text-text-tertiary hover:text-text-secondary',
                             )}
                           >
                             <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
@@ -1063,14 +1064,14 @@ export default function Settings() {
               )}
 
               {isAdmin && (
-                <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+                <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))' }}>
                   <div className={CARD}>
                     <h2 className="text-[15px] font-bold text-text-primary">Data retention</h2>
                     <p className="text-[12.5px] text-text-tertiary mt-0.5 mb-3.5 leading-[1.5]">
                       Automatically delete memories older than the selected period. "Never" keeps all memories.
                     </p>
                     <div className="flex items-center gap-2.5">
-                      <select
+                      <StyledSelect
                         value={retentionDays ?? ''}
                         onChange={(e) => setRetentionDays(e.target.value ? parseInt(e.target.value) : null)}
                         className={`${selectCls} flex-1`}
@@ -1081,7 +1082,7 @@ export default function Settings() {
                         <option value="90">90 days</option>
                         <option value="180">180 days</option>
                         <option value="365">1 year</option>
-                      </select>
+                      </StyledSelect>
                       <button
                         onClick={() => updateRetentionMut.mutate(retentionDays)}
                         disabled={updateRetentionMut.isPending}
@@ -1138,7 +1139,7 @@ export default function Settings() {
               {isAdmin && (
                 <div className={CARD}>
                   <div className="mb-3.5">
-                    <h2 className="text-[16px] font-bold text-text-primary">Agent instructions</h2>
+                    <h2 className="text-base font-semibold text-text-primary">Agent instructions</h2>
                     <p className="text-[12.5px] text-text-tertiary mt-0.5">
                       System-level instructions added to every agent's context for this organization.
                       Use this to set team conventions, coding standards, or custom behavior.
@@ -1149,7 +1150,7 @@ export default function Settings() {
                     onChange={e => setCustomInstructions(e.target.value)}
                     rows={5}
                     placeholder="e.g. Always use TypeScript strict mode. Prefer functional components. Follow our naming conventions…"
-                    className="w-full min-h-[120px] px-3.5 py-3 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] leading-[1.6] font-mono placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors"
+                    className="w-full min-h-[120px] px-3.5 py-3 rounded-md border border-input bg-transparent dark:bg-input/30 text-text-primary text-sm leading-[1.6] font-mono placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                   <div className="flex items-center gap-3 mt-3.5">
                     <button
@@ -1167,7 +1168,7 @@ export default function Settings() {
               {isAdmin && (
                 <div className={CARD}>
                   <div className="mb-2.5">
-                    <h2 className="text-[16px] font-bold text-text-primary">
+                    <h2 className="text-base font-semibold text-text-primary">
                       Agent events
                       {eventSaved && <span className="ml-2 text-status-success text-[10px] font-normal align-middle">Saved</span>}
                     </h2>
@@ -1186,7 +1187,7 @@ export default function Settings() {
                       const { Icon, color, bg } = EVENT_ICONS[key]
                       return (
                         <div key={key} className="flex items-center gap-3.5 py-3.5 first:pt-0 last:pb-0">
-                          <div className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: bg }}>
+                          <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: bg }}>
                             <Icon className="w-4 h-4" style={{ color }} strokeWidth={1.7} />
                           </div>
                           <div className="flex-1 min-w-0">
@@ -1213,9 +1214,9 @@ export default function Settings() {
           {activeSection === 'integrations' && isAdmin && (
             <>
               {WEBHOOKS_ENABLED && <div className={CARD}>
-                <div className="flex items-center justify-between gap-3 mb-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3.5">
                   <div>
-                    <h2 className="text-[16px] font-bold text-text-primary">Webhooks</h2>
+                    <h2 className="text-base font-semibold text-text-primary">Webhooks</h2>
                     <p className="text-[12.5px] text-text-tertiary mt-0.5">GitHub endpoints for this organization.</p>
                   </div>
                   {!showAddWebhook && !webhooksLoading && (
@@ -1228,15 +1229,15 @@ export default function Settings() {
 
                 {webhooksLoading && (
                   <div className="space-y-3">
-                    <div className="animate-pulse h-16 bg-white/[0.06] rounded-[14px]" />
-                    <div className="animate-pulse h-16 bg-white/[0.06] rounded-[14px]" />
+                    <div className="animate-pulse h-16 bg-foreground/[0.06] rounded-xl" />
+                    <div className="animate-pulse h-16 bg-foreground/[0.06] rounded-xl" />
                   </div>
                 )}
 
                 {!webhooksLoading && webhooks.length > 0 && (
                   <div className="space-y-3">
                     {webhooks.map(wh => (
-                      <div key={wh.id} className="border border-white/[0.07] rounded-[14px] p-4 space-y-3">
+                      <div key={wh.id} className="border border-border-primary rounded-xl p-4 space-y-3">
                         <div className="flex items-center justify-between gap-3">
                           <p className="text-xs font-semibold text-text-primary truncate">{wh.name}</p>
                           <Switch
@@ -1252,7 +1253,7 @@ export default function Settings() {
                           {wh.events.map(ev => (
                             <span
                               key={ev}
-                              className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-white/[0.06] border border-white/[0.07] text-text-tertiary"
+                              className="rounded-sm px-1.5 py-0.5 text-[10px] font-semibold bg-foreground/[0.06] border border-border-primary text-text-tertiary"
                             >
                               {ev}
                             </span>
@@ -1271,13 +1272,13 @@ export default function Settings() {
                             <button
                               onClick={() => handleTestWebhook(wh.id)}
                               disabled={!!testStates[wh.id]?.testing}
-                              className="border border-white/[0.09] rounded-[8px] px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-40"
+                              className="border border-border-primary rounded-md px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-40"
                             >
                               {testStates[wh.id]?.testing ? 'Testing…' : 'Test'}
                             </button>
                             <button
                               onClick={() => handleDeleteWebhook(wh.id, wh.name)}
-                              className="text-xs border border-status-error/20 rounded-full px-3 py-1 text-status-error/60 hover:text-status-error transition-colors"
+                              className="text-xs border border-status-error/20 rounded-md px-3 py-1 text-status-error/60 hover:text-status-error transition-colors"
                             >
                               Delete
                             </button>
@@ -1304,7 +1305,7 @@ export default function Settings() {
                 )}
 
                 {!webhooksLoading && webhooks.length === 0 && !showAddWebhook && (
-                  <div className="flex flex-col items-center gap-1.5 py-6 px-6 rounded-[12px] border-[1.5px] border-dashed border-white/[0.1]">
+                  <div className="flex flex-col items-center gap-1.5 py-6 px-6 rounded-xl border-[1.5px] border-dashed border-border-primary">
                     <p className="text-[13.5px] font-bold text-text-secondary">No webhooks configured</p>
                     <p className="text-xs text-text-quaternary">Add a webhook to receive GitHub events.</p>
                   </div>
@@ -1393,7 +1394,7 @@ export default function Settings() {
               </div>}
 
               <div className={CARD}>
-                <h2 className="text-[16px] font-bold text-text-primary mb-1">Org data export</h2>
+                <h2 className="text-base font-semibold text-text-primary mb-1">Org data export</h2>
                 <p className="text-[12.5px] text-text-tertiary mb-4">
                   Download your organization's data as JSON for backup or migration.
                 </p>
@@ -1409,7 +1410,7 @@ export default function Settings() {
                   <button
                     onClick={handleExportAllData}
                     disabled={exportingAll}
-                    className="h-9 px-4 rounded-[10px] bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-bold transition-colors flex items-center gap-1.5 disabled:opacity-40"
+                    className="h-9 px-4 rounded-lg bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-bold transition-colors flex items-center gap-1.5 disabled:opacity-40 shadow-xs"
                   >
                     <Download className="w-3 h-3" />
                     {exportingAll ? 'Preparing…' : 'Export all data'}
@@ -1417,18 +1418,18 @@ export default function Settings() {
                 </div>
               </div>
 
-              <div className="rounded-[16px] border border-status-error/25 bg-gradient-to-br from-status-error/[0.05] via-status-error/[0.01] to-transparent backdrop-blur-[12px] p-[22px]">
-                <h2 className="text-[16px] font-bold text-status-error/90 mb-2">Danger zone</h2>
-                <div className="flex items-center justify-between gap-3 py-3.5 border-b border-status-error/10">
+              <div className="rounded-xl border border-status-error/25 bg-gradient-to-br from-status-error/[0.05] via-status-error/[0.01] to-transparent p-[22px]">
+                <h2 className="text-base font-semibold text-status-error/90 mb-2">Danger zone</h2>
+                <div className="flex flex-wrap items-center justify-between gap-3 py-3.5 border-b border-status-error/10">
                   <div className="min-w-0">
                     <p className="text-[13.5px] font-bold text-text-primary">Export all data</p>
                     <p className="text-xs text-text-tertiary mt-0.5">All memories, users, and audit logs as JSON.</p>
                   </div>
-                  <button onClick={handleExportAll} className="border border-white/[0.09] rounded-[9px] px-3.5 py-2 text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors shrink-0">
+                  <button onClick={handleExportAll} className="border border-border-primary rounded-md px-3.5 py-2 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors shrink-0">
                     Export
                   </button>
                 </div>
-                <div className="flex items-center justify-between gap-3 py-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3 py-3.5">
                   <div className="min-w-0">
                     <p className="text-[13.5px] font-bold text-text-primary">Org config</p>
                     <p className="text-xs text-text-tertiary mt-0.5">Settings, webhooks, and project list as JSON.</p>
@@ -1436,13 +1437,13 @@ export default function Settings() {
                   <div className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={handleImportConfig}
-                      className="border border-white/[0.09] rounded-[9px] px-3.5 py-2 text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors flex items-center gap-1.5"
+                      className="border border-border-primary rounded-md px-3.5 py-2 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors flex items-center gap-1.5"
                     >
                       <Upload className="w-3 h-3" /> Import
                     </button>
                     <button
                       onClick={() => client.exportOrgConfig().then(blob => downloadBlob(blob, 'nexusmind-config.json'))}
-                      className="border border-white/[0.09] rounded-[9px] px-3.5 py-2 text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors flex items-center gap-1.5"
+                      className="border border-border-primary rounded-md px-3.5 py-2 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors flex items-center gap-1.5"
                     >
                       <Download className="w-3 h-3" /> Export
                     </button>

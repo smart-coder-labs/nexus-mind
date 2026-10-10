@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Loader2, RotateCcw, Share2, X } from 'lucide-react'
@@ -254,17 +255,17 @@ export default function MemoryGraphTab() {
     <div className="space-y-4">
       {/* Controls bar */}
       <div className="flex items-start gap-3 flex-wrap">
-        <select
+        <StyledSelect
           value={selectedProject}
           onChange={e => setSelectedProject(e.target.value)}
-          className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
+          className="bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
           aria-label="Select project"
         >
           <option value="">Select project…</option>
           {activeProjects.map(p => (
             <option key={p.id} value={p.name}>{p.name}</option>
           ))}
-        </select>
+        </StyledSelect>
 
         {someDataAvailable && (
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -293,7 +294,7 @@ export default function MemoryGraphTab() {
           <button
             type="button"
             onClick={handleResetFilters}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border border-border-primary text-text-quaternary hover:text-text-secondary transition-colors"
+            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] border border-border-primary text-text-quaternary hover:text-text-secondary transition-colors"
             aria-label="Reset graph filters"
           >
             <RotateCcw className="w-2.5 h-2.5" />
@@ -303,27 +304,27 @@ export default function MemoryGraphTab() {
       </div>
 
       {!selectedProject && (
-        <div className="border border-border-primary rounded-[18px] p-10 text-center">
+        <div className="border border-border-primary rounded-xl p-10 text-center">
           <Share2 className="w-5 h-5 text-text-quaternary/40 mx-auto mb-2" />
           <p className="text-xs text-text-quaternary">Select a project to visualize its memory graph.</p>
         </div>
       )}
 
       {selectedProject && isInitialLoading && (
-        <div className="border border-border-primary rounded-[18px] flex items-center justify-center py-20">
+        <div className="border border-border-primary rounded-xl flex items-center justify-center py-20">
           <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
         </div>
       )}
 
       {selectedProject && isError && (
-        <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
+        <div className="border border-status-error/20 rounded-md px-4 py-3 text-xs text-status-error/80">
           {(primaryError as Error)?.message ?? 'Failed to load memory graph.'}
         </div>
       )}
 
       {selectedProject && !isInitialLoading && !isError && someDataAvailable && (
         mergedNodes.length === 0 ? (
-          <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
+          <div className="border border-border-primary rounded-xl p-10 text-center space-y-2">
             <Share2 className="w-6 h-6 text-text-quaternary/40 mx-auto" />
             <p className="text-xs font-semibold text-text-secondary">No graph data</p>
             <p className="text-xs text-text-quaternary">
@@ -331,9 +332,9 @@ export default function MemoryGraphTab() {
             </p>
           </div>
         ) : (
-          <div className="relative border border-border-primary rounded-[18px] overflow-hidden" style={{ height: 600 }}>
+          <div className="relative border border-border-primary rounded-xl overflow-hidden" style={{ height: 600 }}>
             {/* Stats bar */}
-            <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-white/[0.02] text-[10px] text-text-quaternary">
+            <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-foreground/[0.02] text-[10px] text-text-quaternary">
               <span>{graphData.nodes.length} nodes visible</span>
               <span>·</span>
               <span>{graphData.links.length} edges visible</span>
@@ -387,7 +388,7 @@ export default function MemoryGraphTab() {
 
             {/* Detail panel — slides in over the right side when a node is selected */}
             {selectedNode && (
-              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] border-l border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] flex flex-col overflow-hidden">
+              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] border-l border-border-primary bg-surface-elevated flex flex-col overflow-hidden">
                 {/* Panel header */}
                 <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary shrink-0">
                   <div className="min-w-0 flex-1">
@@ -430,7 +431,7 @@ export default function MemoryGraphTab() {
                         {memoryDetail.type && (
                           <div>
                             <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Type</p>
-                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-text-secondary">
+                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-foreground/[0.06] text-text-secondary">
                               {memoryDetail.type}
                             </span>
                           </div>
@@ -440,7 +441,7 @@ export default function MemoryGraphTab() {
                             <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Tags</p>
                             <div className="flex flex-wrap gap-1">
                               {memoryDetail.tags.map(t => (
-                                <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/[0.06] text-text-tertiary">
+                                <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-foreground/[0.06] text-text-tertiary">
                                   {t}
                                 </span>
                               ))}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, lazy, Suspense } from 'react'
+import { useEffect, useMemo, lazy, Suspense } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Network } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
@@ -81,7 +81,6 @@ export default function Graph() {
     'knowledge',
     { version: STORAGE_VERSION },
   )
-  const [graphFocused, setGraphFocused] = useState(false)
 
   // A persisted 'code' tab must not resurrect for a user who lost `code:read`.
   const activeTab: GraphSource = canReadCode ? storedTab : 'knowledge'
@@ -180,9 +179,9 @@ export default function Graph() {
     return (
       <div className="p-8 max-w-6xl mx-auto">
         <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Graph</h1>
-        <p className="text-[13px] text-text-secondary mt-1">Project-scoped knowledge graph.</p>
+        <p className="text-sm text-text-secondary mt-1">Project-scoped knowledge graph.</p>
         {tabs && <div className="mt-4 w-fit">{tabs}</div>}
-        <div className="mt-10 border border-border-primary rounded-[18px] p-10 text-center space-y-2">
+        <div className="mt-10 border border-border-primary rounded-xl p-10 text-center space-y-2">
           <Network className="w-6 h-6 text-text-quaternary/40 mx-auto" />
           <p className="text-xs font-semibold text-text-secondary">No projects yet</p>
           <p className="text-xs text-text-quaternary">Create a project to visualize its memory graph.</p>
@@ -192,11 +191,8 @@ export default function Graph() {
   }
 
   return (
-    // Full-bleed: the graph canvas spans the whole window and runs UNDER the
-    // floating glass sidebar (z-30), exactly like the design. In focus mode
-    // the page raises its own z-index above the sidebar — the inner overlay's
-    // z-[100] alone can't outrank it (bounded by this stacking context).
-    <div className={`fixed inset-0 overflow-hidden bg-[#07080c] ${graphFocused ? 'z-[100]' : 'z-10'}`}>
+    // Stay inside the admin workspace so navigation and graph controls never overlap.
+    <div className="relative isolate min-h-[620px] h-[calc(100dvh-96px)] overflow-hidden rounded-xl border border-border-primary bg-background-primary">
       <Suspense fallback={
         <div className="absolute inset-0 flex items-center justify-center">
           <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
@@ -214,7 +210,6 @@ export default function Graph() {
             onSelectProject={setSelectedProjectId}
             projectsLoading={projectsLoading}
             tabs={tabs}
-            onFocusedChange={setGraphFocused}
             emptyTitle={selectedProjectId ? 'No data for this project' : 'Select a project'}
             emptyDescription={selectedProjectId
               ? 'This project family has no memories, code, or audit events yet.'
@@ -231,7 +226,6 @@ export default function Graph() {
             title="Graph"
             subtitle="Repository code graph — files, modules, and the symbols they define."
             tabs={tabs}
-            onFocusedChange={setGraphFocused}
           />
         )}
       </Suspense>

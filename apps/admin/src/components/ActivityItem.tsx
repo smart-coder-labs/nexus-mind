@@ -41,7 +41,7 @@ export function ActivityItem({ entry, userName }: ActivityItemProps) {
 
   return (
     <div className="flex items-center gap-3 py-3">
-      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-blue-tint text-accent-blue flex items-center justify-center text-xs font-bold">
+      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-action-primary-tint text-accent-blue flex items-center justify-center text-xs font-bold">
         {initials}
       </div>
       <div className="flex-1 min-w-0">

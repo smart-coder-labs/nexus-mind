@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button } from '../../../components/ui/Button'
@@ -20,19 +21,19 @@ export function ResolveWithAgentDialog({ target, resolvers, pending, error, onCl
         <ModalTitle>Resolve with agent</ModalTitle>
       </ModalHeader>
       <ModalContent className="space-y-4">
-        <p className="text-[13px] text-text-secondary">Hand this finding to an issue resolver. It fixes <span className="text-text-primary">only</span> this, nothing else in the repository.</p>
-        <div className="rounded-[11px] border border-border-primary bg-white/[0.02] px-3 py-2 text-[13px] text-text-primary">{target.title}</div>
+        <p className="text-sm text-text-secondary">Hand this finding to an issue resolver. It fixes <span className="text-text-primary">only</span> this, nothing else in the repository.</p>
+        <div className="rounded-md border border-border-primary bg-foreground/[0.02] px-3 py-2 text-sm text-text-primary">{target.title}</div>
         {target.issue
           ? <p className="text-[12px] text-text-tertiary">Linked issue <span className="font-mono text-text-secondary">{target.issue.repository}#{target.issue.number}</span>. The pull request will close it.</p>
           : <p className="text-[12px] text-text-tertiary">No GitHub issue is linked, so the finding itself becomes the task.</p>}
         {resolvers.length === 0
-          ? <p className="text-[13px] text-status-warning">No issue resolver is enabled. <Link to="/factory" className={TEXT_LINK}>Create or enable one in Agents</Link>, then come back.</p>
+          ? <p className="text-sm text-status-warning">No issue resolver is enabled. <Link to="/factory" className={TEXT_LINK}>Create or enable one in Agents</Link>, then come back.</p>
           : (
             <label className="block">
               <span className="text-[12px] font-medium text-text-secondary">Resolver agent</span>
-              <select value={agentId} onChange={e => setAgentId(e.target.value)} className={SELECT_CLASS}>
+              <StyledSelect value={agentId} onChange={e => setAgentId(e.target.value)} className={SELECT_CLASS}>
                 {resolvers.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
+              </StyledSelect>
             </label>
           )}
         {error && <p role="alert" className="text-[12px] text-status-error">{error}</p>}

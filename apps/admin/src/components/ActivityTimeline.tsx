@@ -32,10 +32,10 @@ function timelineDotClass(action: string): string {
   const variant = timelineActionVariant(action)
   const map: Record<string, string> = {
     success: 'bg-status-success',
-    primary: 'bg-accent-blue',
+    primary: 'bg-action-primary',
     error: 'bg-status-error',
     warning: 'bg-status-warning',
-    default: 'bg-white/[0.20]',
+    default: 'bg-foreground/[0.20]',
   }
   return map[variant]
 }
@@ -92,7 +92,7 @@ export function ActivityTimeline({
         {Array.from({ length: 5 }).map((_, i) => (
           <div key={i} className="flex gap-3">
             <Skeleton className="w-[15px] h-[15px] rounded-full mt-0.5 shrink-0" />
-            <Skeleton className="h-9 flex-1 rounded-[8px]" />
+            <Skeleton className="h-9 flex-1 rounded-md" />
           </div>
         ))}
       </div>
@@ -271,7 +271,7 @@ export function ActivityTimeline({
                                       <div className="flex flex-wrap gap-1 items-center">
                                         <span className="text-text-quaternary">tags:</span>
                                         {tags.map(t => (
-                                          <span key={t} className="px-1.5 py-0.5 rounded-full bg-white/[0.06] text-text-secondary">{t}</span>
+                                          <span key={t} className="px-1.5 py-0.5 rounded-full bg-foreground/[0.06] text-text-secondary">{t}</span>
                                         ))}
                                       </div>
                                     )}
