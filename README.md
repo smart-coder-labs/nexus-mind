@@ -1,15 +1,6 @@
-# NexusMind
-
-<p align="center">
+<h1 align="center">
   <img src=".github/assets/nexusmind-banner.svg" alt="NexusMind: open-source, self-hosted shared memory for AI coding agents, with Claude Code, Cursor, and MCP support." width="100%" />
-</p>
-
-<p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="docs/RUNNING.md">Documentation</a> ·
-  <a href="https://github.com/smart-coder-labs/nexusmind-mcp">MCP server</a>
-</p>
+</h1>
 
 <p align="center">
   <a href="https://github.com/smart-coder-labs/nexus-mind/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/smart-coder-labs/nexus-mind/actions/workflows/ci.yml/badge.svg?branch=main"></a>
@@ -17,18 +8,17 @@
   <img alt="Rust and TypeScript" src="https://img.shields.io/badge/Rust%20%2B%20TypeScript-stack-informational">
 </p>
 
-<details open>
-<summary><strong>Explore NexusMind</strong></summary>
+<p align="center"><strong><em>Persistent, shared memory for AI coding agents.</em></strong><br />Give Claude Code, Cursor, and MCP clients one searchable, auditable context layer for your team.</p>
 
-- [Why shared memory](#why-shared-memory)
-- [What you can do](#what-you-can-do)
-- [Quick start](#quick-start)
-- [Connect an AI coding agent](#connect-an-ai-coding-agent)
-- [How it works](#how-it-works)
-- [Development](#development)
-- [Related projects](#related-projects)
+<hr />
 
-</details>
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-you-can-do">Features</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="docs/RUNNING.md">Documentation</a> ·
+  <a href="https://github.com/smart-coder-labs/nexusmind-mcp">MCP server</a>
+</p>
 
 ## Why shared memory
 
