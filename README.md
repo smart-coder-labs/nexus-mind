@@ -1,8 +1,7 @@
 # NexusMind
 
 <p align="center">
-  <strong>Persistent, shared memory for AI coding agents.</strong><br />
-  Give Claude Code, Cursor, and other MCP clients one searchable, auditable context layer for your team.
+  <img src=".github/assets/nexusmind-banner.svg" alt="NexusMind: open-source, self-hosted shared memory for AI coding agents, with Claude Code, Cursor, and MCP support." width="100%" />
 </p>
 
 <p align="center">
