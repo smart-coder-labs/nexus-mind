@@ -132,6 +132,24 @@ The last line is the summary. For each arm it gives `tasks`, `accepted`, `accept
 
 **Budget.** A docs task costs one `sonnet` run for the baseline. For the specialist it costs two `opus` steps and one `haiku` run, and each accepted-so-far attempt adds one `opus` judge call. A tests task's specialist arm implements on `sonnet` instead, and each arm adds one commands pod (install, tests, at most 10 mutants and the seeded faults, each command under 300 s). A UI task's specialist arm implements on `sonnet` too, and each arm adds one commands pod (install, build, lint, tests and screenshots, each command under 300 s). All of it runs on the Claude subscription.
 
+## Running unattended
+
+One Claude subscription window fits only a few tasks (both arms plus the judge), and the binary stops at the first usage limit or API error, printing `stopped_at`. `scripts/factory/run_specialist_evals.mjs` runs the sets unattended and resumes after each limit.
+- **Where it runs.** Copy it and the sets into the worker container and start it with `nohup`. It needs only `node`.
+- **Sets.** `<dir>` holds one `.jsonl` per set, run in name order: `10-docs.jsonl`, `20-tests.jsonl`, `30-ui.jsonl`. The folder is read again after each set, so a set added later is picked up.
+- **Limits.** On `stopped_at` it waits (`--retry-secs`, 1800 by default) and runs the remaining tasks, for up to `--max-wait-hours` (14).
+- **Restarts.** A task already in `<set>.results.jsonl` is not run again, so a restarted runner continues where it was. The exception is a task whose newest outcome is an attempt error (`error:<code>`, such as a pod that never became ready): it runs again, up to 3 attempts in all. The summary counts each task and arm's newest outcome. Hidden files such as macOS `._*` are ignored.
+- **Keep it on the persistent volume.** Use `<dir>` = `/data/factory-evals`. A deploy replaces the pod, which wipes `/tmp` and kills the runner.
+- **Keep it running.** `scripts/factory/ensure_eval_runner.sh` is installed on the Oracle host as `/usr/local/bin/nexusmind-ensure-eval-runner` and runs every 15 minutes from root's crontab. It starts the runner when it isn't running and some set has no `.done`.
+  - To pause, create `<dir>/STOP`.
+  - To retire it, remove the cron line.
+- **Output.** Per set: `<set>.results.jsonl`, `<set>.summary.json` (the binary's summary over every resumed run) and `<set>.done`. `runner.log` records each step.
+
+```sh
+node run_specialist_evals.mjs --org <org_id> --dir /data/factory-evals
+node run_specialist_evals.mjs --self-test
+```
+
 ## Turning a specialist on
 
 A specialist runs in production only when the worker's `FACTORY_SPECIALISTS` names it, as in `FACTORY_SPECIALISTS=docs` or `FACTORY_SPECIALISTS=docs,tests`. It is off by default, so the generic resolver is unchanged until the eval shows a win. Even when it is on, a specialist applies only to Claude Code issue-resolver runs whose issue labels give its class (`gateway::class_from_labels`).
