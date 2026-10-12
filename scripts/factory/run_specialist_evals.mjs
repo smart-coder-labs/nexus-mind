@@ -6,11 +6,12 @@
 // or an API error) and prints `stopped_at`. One subscription window only fits
 // a few tasks, so this runner waits and resumes from that task until every set
 // is finished. Results are appended per set, and a task already in the results
-// is never run again, so the runner can also be restarted (for example after a
-// deploy replaced the pod) and continues where it was.
+// is never run again (unless it only errored), so the runner can be restarted
+// and continues where it was. Keep <dir> on the persistent volume (/data):
+// a deploy replaces the pod and wipes its /tmp.
 //
 // Usage, in the worker container:
-//   node run_specialist_evals.mjs --org <org_id> --dir /tmp/evals \
+//   node run_specialist_evals.mjs --org <org_id> --dir /data/factory-evals \
 //     [--retry-secs 1800] [--max-wait-hours 14] [--bin /app/factory-specialist-eval]
 //   node run_specialist_evals.mjs --self-test
 //
@@ -27,6 +28,10 @@ const ARMS = ['baseline', 'specialist']
 // A run that fails without `stopped_at` (a bad task, a crash) is retried this
 // many times, then the set is skipped so one broken set never blocks the rest.
 const MAX_OTHER_FAILURES = 2
+// An attempt that could not finish (`error:<code>`: a pod that never became
+// ready, a sandbox failure) says nothing about the specialist, so its task is
+// run again, at most this many times in all; after that the error stands.
+const MAX_ERROR_ATTEMPTS = 3
 
 function args(argv) {
   const out = { retrySecs: 1800, maxWaitHours: 14, bin: '/app/factory-specialist-eval' }
@@ -46,16 +51,33 @@ function args(argv) {
 const readLines = path =>
   existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(line => line.trim()) : []
 
-/** Tasks of a set that have no outcome yet. The eval reports a task only once
- * every arm finished it, so one outcome line means the task is done. */
+const errored = outcome => (outcome.reasons || []).some(reason => reason.startsWith('error:'))
+
+/** The newest outcome of each task and arm: a rerun replaces an errored one. */
+export function latest(outcomes) {
+  const byKey = new Map()
+  for (const outcome of outcomes) byKey.set(`${outcome.id}\u0000${outcome.arm}`, outcome)
+  return [...byKey.values()]
+}
+
+/** Tasks of a set still to run. The eval reports a task only once every arm
+ * finished it, so a task with outcomes is done, unless one of its newest
+ * outcomes is an error and it has not used up its error attempts. */
 export function remaining(taskLines, outcomes) {
-  const done = new Set(outcomes.map(outcome => outcome.id))
-  return taskLines.filter(line => !done.has(JSON.parse(line).id))
+  const current = latest(outcomes)
+  return taskLines.filter(line => {
+    const id = JSON.parse(line).id
+    const mine = current.filter(outcome => outcome.id === id)
+    if (!mine.length) return true
+    const attempts = outcomes.filter(outcome => outcome.id === id && errored(outcome)).length
+    return mine.some(errored) && attempts < MAX_ERROR_ATTEMPTS
+  })
 }
 
 /** The eval's summary (`specialist_eval::summarize`) over every outcome of a
  * set, including those from earlier resumed runs. */
-export function summarize(outcomes) {
+export function summarize(all) {
+  const outcomes = latest(all)
   const arm = name => {
     const of = outcomes.filter(outcome => outcome.arm === name)
     if (!of.length) return null
@@ -186,6 +208,14 @@ function selfTest() {
   assert(tie.specialist_beats_baseline === true, 'same acceptance, cheaper specialist wins')
   const worse = summarize([...done, outcome('t-2', 'baseline', true, 1), outcome('t-2', 'specialist', false, 1)])
   assert(worse.specialist_beats_baseline === false, 'lower acceptance loses')
+  const failed = { ...outcome('t-2', 'baseline', false, 0), reasons: ['error:pod_not_ready'] }
+  const withError = [...done, failed, outcome('t-2', 'specialist', true, 1)]
+  assert(remaining(tasks, withError).some(line => line.includes('t-2')), 'an errored task is run again')
+  const retried = [...withError, outcome('t-2', 'baseline', true, 1), outcome('t-2', 'specialist', true, 1)]
+  assert(!remaining(tasks, retried).some(line => line.includes('t-2')), 'a rerun replaces the error')
+  assert(summarize(retried).arms[0].tasks === 2, 'the summary counts the newest outcome only')
+  const stuck = [...done, failed, failed, failed, outcome('t-2', 'specialist', true, 1)]
+  assert(!remaining(tasks, stuck).some(line => line.includes('t-2')), 'the error stands after 3 attempts')
   const unknown = summarize([outcome('t-1', 'baseline', true, null), outcome('t-1', 'specialist', true, 1)])
   assert(unknown.arms[0].cost_per_accepted_change === null, 'an unknown cost is not summed')
   assert(unknown.specialist_beats_baseline === false, 'a tie with an unknown cost does not win')

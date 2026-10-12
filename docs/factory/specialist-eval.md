@@ -138,11 +138,15 @@ One Claude subscription window fits only a few tasks (both arms plus the judge),
 - **Where it runs.** Copy it and the sets into the worker container and start it with `nohup`. It needs only `node`.
 - **Sets.** `<dir>` holds one `.jsonl` per set, run in name order: `10-docs.jsonl`, `20-tests.jsonl`, `30-ui.jsonl`. The folder is read again after each set, so a set added later is picked up.
 - **Limits.** On `stopped_at` it waits (`--retry-secs`, 1800 by default) and runs the remaining tasks, for up to `--max-wait-hours` (14).
-- **Restarts.** A task already in `<set>.results.jsonl` is never run again, so restarting the runner, for example after a deploy replaced the pod, continues where it was. Hidden files such as macOS `._*` are ignored.
+- **Restarts.** A task already in `<set>.results.jsonl` is not run again, so a restarted runner continues where it was. The exception is a task whose newest outcome is an attempt error (`error:<code>`, such as a pod that never became ready): it runs again, up to 3 attempts in all. The summary counts each task and arm's newest outcome. Hidden files such as macOS `._*` are ignored.
+- **Keep it on the persistent volume.** Use `<dir>` = `/data/factory-evals`. A deploy replaces the pod, which wipes `/tmp` and kills the runner.
+- **Keep it running.** `scripts/factory/ensure_eval_runner.sh` is installed on the Oracle host as `/usr/local/bin/nexusmind-ensure-eval-runner` and runs every 15 minutes from root's crontab. It starts the runner when it isn't running and some set has no `.done`.
+  - To pause, create `<dir>/STOP`.
+  - To retire it, remove the cron line.
 - **Output.** Per set: `<set>.results.jsonl`, `<set>.summary.json` (the binary's summary over every resumed run) and `<set>.done`. `runner.log` records each step.
 
 ```sh
-node run_specialist_evals.mjs --org <org_id> --dir /tmp/evals
+node run_specialist_evals.mjs --org <org_id> --dir /data/factory-evals
 node run_specialist_evals.mjs --self-test
 ```
 
