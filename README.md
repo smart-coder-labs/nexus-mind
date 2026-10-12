@@ -24,6 +24,12 @@
 
 <p align="center"><sub>From saved decision to reusable project context — preview uses fictional sample data.</sub></p>
 
+## Dark and light mode
+
+| Dark mode | Light mode |
+|:---:|:---:|
+| [<img alt="NexusMind sample workspace in dark mode; all content and metrics are fictional." src=".github/assets/nexusmind-preview.png" width="100%">](.github/assets/nexusmind-preview.png) | [<img alt="NexusMind sample workspace in light mode; all content and metrics are fictional." src=".github/assets/nexusmind-preview-light.png" width="100%">](.github/assets/nexusmind-preview-light.png) |
+
 <details open>
 <summary><strong>Explore NexusMind</strong></summary>
 
