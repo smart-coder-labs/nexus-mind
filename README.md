@@ -1,152 +1,116 @@
-# NexusMind
+<h1 align="center">
+  <img src=".github/assets/nexusmind-banner.svg" alt="NexusMind: open-source, self-hosted shared memory for AI coding agents, with Claude Code, Cursor, and MCP support." width="100%" />
+</h1>
 
-**Centralized memory control plane for AI-powered engineering teams.**
+<p align="center">
+  <a href="https://github.com/smart-coder-labs/nexus-mind/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/smart-coder-labs/nexus-mind/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Rust and TypeScript" src="https://img.shields.io/badge/Rust%20%2B%20TypeScript-stack-informational">
+</p>
 
-Every developer gets an API key. Their AI tools store decisions and context. You see everything from a single admin panel — with a full audit trail.
+<p align="center"><strong><em>Persistent, shared memory for AI coding agents.</em></strong><br />Give Claude Code, Cursor, and MCP clients one searchable, auditable context layer for your team.</p>
 
----
+<hr />
 
-## What it does
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-you-can-do">Features</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="docs/RUNNING.md">Documentation</a> ·
+  <a href="https://github.com/smart-coder-labs/nexusmind-mcp">MCP server</a>
+</p>
 
-- **Team memory**: Claude Code, Cursor, Copilot, and any MCP-compatible tool writes to a shared memory store
-- **Multi-tenant**: Multiple orgs, isolated by API key — one deployment serves many teams
-- **Admin panel**: Browse memories, manage users, inspect audit logs — no SQL required
-- **Audit trail**: Every store, search, and delete is logged with user, tool, and timestamp
-- **MCP-native**: Ships with a Model Context Protocol server — Claude Code connects in 30 seconds
+## Why shared memory
 
----
+AI coding assistants are useful, but project decisions and conventions often get trapped in separate chats. NexusMind is an open-source, self-hosted memory layer for AI agents: capture team knowledge once, then search and reuse it from compatible coding tools and projects.
 
-## Quickstart (2 commands)
+Use it as persistent memory for Claude Code, Cursor, and MCP-compatible clients. Keep technical decisions, conventions, findings, and project context in one place, with an admin interface and an audit trail.
+
+## What you can do
+
+- **Share context across agents.** Store and retrieve memories through the Model Context Protocol (MCP), so compatible assistants can work from the same team knowledge.
+- **Find relevant decisions.** Search memories by project, tag, or content instead of repeating the same discovery in every conversation.
+- **See how knowledge connects.** Explore related memories and projects in a knowledge graph.
+- **Keep teams in control.** Manage users, roles, API keys, and audit events from the admin panel.
+- **Run it yourself.** Start the backend and admin panel with Docker Compose; data is stored in SQLite by default.
+
+## Quick start
+
+Start a local demo with Docker Compose:
 
 ```bash
-docker compose up -d
-./scripts/reset-demo.sh   # seeds demo data, prints admin key
+make demo
 ```
 
-Open **http://localhost:3000** and log in with the key printed by the script.
+Open **http://localhost:3000** and sign in with the demo key printed by the command (`nm_demo_acme_admin`).
 
-Full setup guide: [docs/RUNNING.md](docs/RUNNING.md)
+> **Heads-up:** the demo setup rebuilds and reseeds `apps/backend/data/nexusmind.db`. Run it in a disposable local checkout, not against a database with data you need to keep.
 
----
+For a manual development setup, environment requirements, and the MCP inspector, see [Running NexusMind locally](docs/RUNNING.md).
 
-## Demo (Claude Code)
+## Connect an AI coding agent
+
+Build the MCP server and set a demo member key:
 
 ```bash
 make mcp-build
 export NEXUSMIND_API_KEY=nm_demo_acme_sarah
-# Open Claude Code from this repo — .mcp.json is picked up automatically
 ```
 
-Ask Claude: *"Store a memory: we use snake_case for all REST endpoints. Tag it as convention."*
+Open Claude Code from the repository root. The included MCP configuration starts NexusMind with three tools:
 
-Switch to the admin panel → Memory Browser — the entry appears instantly.
+| Tool | Use it to |
+| --- | --- |
+| `store_memory` | Save a decision, convention, finding, or project note. |
+| `search_memory` | Find relevant shared context. |
+| `list_memories` | Browse recent memories and filter by project. |
 
----
+For example, ask your coding agent: **“Remember that all REST endpoints use snake_case, and tag it as a convention.”** Search for that decision later from another compatible agent.
 
-## Stack
+## How it works
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | Rust + Axum 0.7 + SQLite (rusqlite bundled) |
-| Admin panel | React 19 + Vite 5 + Tailwind CSS v4 + TanStack Query v5 |
-| MCP server | TypeScript + `@modelcontextprotocol/sdk` |
-| Auth | API key per user, scoped to org |
-| Deployment | Docker Compose (single-file, no external deps) |
-
----
-
-## Architecture
-
-```
-Claude Code / Cursor / any MCP client
-        │  stdio
-        ▼
-   MCP Server (apps/mcp)          API key auth
-        │  HTTP
-        ▼
-   Backend REST API (apps/backend)
-        │
-        ▼
-   SQLite (apps/backend/data/nexusmind.db)
-        │
-        ▼
-   Admin Panel (apps/admin)       read-only queries + management
+```mermaid
+flowchart LR
+  Agent[Claude Code, Cursor, or MCP client] <-->|stdio| MCP[MCP server]
+  MCP <-->|HTTP API and API key| API[Backend REST API]
+  API <--> DB[(SQLite)]
+  Admin[Admin panel] <-->|HTTP API| API
 ```
 
----
+The MCP server connects coding agents to the backend. The admin panel uses the same API to manage team access, browse knowledge, and review activity.
 
-## Project layout
+## Technology
 
-```
-apps/
-  backend/   # Rust + Axum API — multi-tenant, audit trail, health
-  admin/     # React admin panel — users, memories, audit log, settings
-  mcp/       # TypeScript MCP server — store_memory, search_memory, list_memories
-scripts/
-  reset-demo.sh   # wipe + reseed demo data
-  test-mcp.sh     # smoke test: store → search → delete
-docs/
-  RUNNING.md      # full local + Docker setup guide
-```
-
----
-
-## MCP tools
-
-| Tool | Description |
-|------|-------------|
-| `store_memory` | Save a decision, convention, finding, or any project context |
-| `search_memory` | Semantic search across your team's memories |
-| `list_memories` | Browse recent memories, filter by project or tool |
-
----
-
-## Demo keys (after reset-demo.sh)
-
-| Org | User | Role | Key |
-|-----|------|------|-----|
-| Acme Corp | Admin | admin | `nm_demo_acme_admin` |
-| Acme Corp | Sarah Chen | member | `nm_demo_acme_sarah` |
-| Acme Corp | Marcus Johnson | member | `nm_demo_acme_marcus` |
-| TechStartup | Admin | admin | `nm_demo_techstartup_admin` |
-| DevShop | Admin | admin | `nm_demo_devshop_admin` |
-
----
+| Component | Technology |
+| --- | --- |
+| Backend API | Rust, Axum, SQLite |
+| Admin panel | React, TypeScript, Vite |
+| Agent integration | TypeScript, Model Context Protocol |
+| Local deployment | Docker Compose |
 
 ## Development
 
 ```bash
-# Backend tests
-make test
-
-# Backend (dev server)
+# Backend
 make backend
 
-# Admin panel (dev server)
+# Admin panel (in another terminal)
 cd apps/admin && npm install && npm run dev
 
-# MCP smoke test
-NEXUSMIND_API_KEY=nm_demo_acme_sarah make mcp-test
+# MCP server
+make mcp-build
 
-# Full reset
-make reset-demo
+# MCP smoke test (backend must be running)
+NEXUSMIND_API_KEY=nm_demo_acme_sarah make mcp-test
 ```
 
-CI runs on every push — backend build + tests + clippy, admin build, MCP smoke test.
+See [docs/RUNNING.md](docs/RUNNING.md) for prerequisites, ports, demo setup, and additional workflows.
 
----
+## Related projects
 
-## License
-
-MIT
-
----
-
-## Related repositories
-
-- **[nexusmind-mcp](https://github.com/smart-coder-labs/nexusmind-mcp)** — the MCP server (`@smart-coder-labs/nexusmind-mcp`) that connects Claude Code, Cursor, and other MCP-compatible tools to this backend.
-- **[nexusmind-claude-plugin](https://github.com/smart-coder-labs/nexusmind-claude-plugin)** — the Claude Code plugin that bundles the MCP server, hooks, and skills.
+- [nexusmind-mcp](https://github.com/smart-coder-labs/nexusmind-mcp) — standalone MCP server package for connecting coding agents to NexusMind.
+- [nexusmind-claude-plugin](https://github.com/smart-coder-labs/nexusmind-claude-plugin) — Claude Code plugin with the MCP server, hooks, and skills.
 
 ## License
 
-[MIT](LICENSE) © Smart Coder Labs
+[MIT](LICENSE)
