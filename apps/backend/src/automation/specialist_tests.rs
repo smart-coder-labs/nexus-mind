@@ -521,6 +521,28 @@ pub fn interpret(plan: &PodPlan, runs: &[CommandRun]) -> Vec<CheckOutcome> {
     checks
 }
 
+/// Codes of a checks pod that failed as infrastructure, not as a verdict on the
+/// change. Shared with the UI checks.
+pub(crate) const CHECKS_INSTALL_FAILED: &str = "checks_install_failed";
+pub(crate) const CHECKS_POD_FAILED: &str = "checks_pod_failed";
+
+/// The infrastructure failure of a checks pod run, if any: the dependencies
+/// did not install (the registry, the proxy, a missing package manager), or a
+/// command that judges the change lost its exit status. The change cannot cause
+/// either: the path checks keep manifests and lockfiles out of it, so an install
+/// is the repository's own. Scored as `tests_pass`, the eval counted a flaky
+/// `npm ci` as the specialist's failure and never ran it again; as an error, the
+/// eval retries the attempt and production blocks the run with the code, never
+/// publishing it. A test run that exits non-zero stays a `tests_pass` failure.
+pub fn infra_failure(plan: &PodPlan, runs: &[CommandRun]) -> Option<&'static str> {
+    plan.steps.iter().zip(runs).find_map(|(step, run)| match (step, run.exit_code) {
+        (PodStep::Install(_), Some(0)) => None,
+        (PodStep::Install(_), _) => Some(CHECKS_INSTALL_FAILED),
+        (PodStep::Tests(_), None) => Some(CHECKS_POD_FAILED),
+        _ => None,
+    })
+}
+
 /// Why the pod cannot be planned.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PlanError {
@@ -690,6 +712,9 @@ pub(crate) async fn run_checks(
         .map_err(|error| super::sandboxed::failure_code(env.run_id, &error))?;
     if runs.len() != plan.commands.len() {
         return Err("tests_checks_incomplete".into());
+    }
+    if let Some(code) = infra_failure(&plan, &runs) {
+        return Err(code.into());
     }
     Ok(interpret(&plan, &runs))
 }
@@ -892,6 +917,20 @@ mod tests {
         assert_eq!(by_name(&missing, "tests_pass").details[0], "install in apps/admin (npm ci --no-audit --no-fund): command not found (exit 127)");
         let unrunnable = not_runnable("tests_runner_unknown: x".into());
         assert!(unrunnable.iter().all(|check| !check.passed && !check.advisory));
+    }
+
+    #[test]
+    fn an_install_or_a_lost_status_is_infrastructure_but_failing_tests_are_not() {
+        let plan = prepare(&admin(), &paths(&["apps/admin/src/lib/range.test.ts"]), &[]).unwrap();
+        // `npm ci` exited 1 in the pod (tests-v2-07 of the 2026-10-14 eval).
+        assert_eq!(infra_failure(&plan, &[run(Some(1)), run(Some(1))]), Some("checks_install_failed"));
+        assert_eq!(infra_failure(&plan, &[run(Some(127)), run(Some(1))]), Some("checks_install_failed"));
+        assert_eq!(infra_failure(&plan, &[run(None)]), Some("checks_install_failed"));
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(None)]), Some("checks_pod_failed"));
+        // The change's own tests failing is a verdict on the change.
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(Some(1)), run(Some(99)), run(Some(99)), run(Some(99))]), None);
+        // A mutant run that lost its status only goes unjudged.
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(Some(0)), run(None), run(Some(1)), run(Some(1))]), None);
     }
 
     #[test]

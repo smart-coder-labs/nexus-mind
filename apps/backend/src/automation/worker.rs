@@ -3776,10 +3776,20 @@ async fn open_partial_pr(
     Ok(json!({"partial_pull_request":pr}))
 }
 
+/// What the implementation step ran with, for the repair round.
+struct SpecialistImplementation<'a> {
+    prompt: &'a str,
+    max_turns: u64,
+    wall_time: Duration,
+}
+
 /// The end of a specialist run (F4): the specialist's checks and frontier
-/// review on the finished change, then its outcome folded into the resolver's.
+/// review on the finished change, with one repair round when the review
+/// rejects it (the implementation step again, told the reasons, then the
+/// checks and review again), then its outcome folded into the resolver's.
 /// A no-op answer (an issue comment) has nothing to check or review; a failed
 /// outcome only gets the plan's cost. A stopped run stops here too.
+#[allow(clippy::too_many_arguments)]
 async fn specialist_finish(
     env: &super::specialist_run::StepEnv<'_>,
     store: &SqliteStore,
@@ -3787,21 +3797,36 @@ async fn specialist_finish(
     runtime_config: &serde_json::Value,
     spec: &'static crate::factory::specialists::Specialist,
     planned: &super::specialist_run::Planned,
+    implementation: SpecialistImplementation<'_>,
     outcome: &mut (String, serde_json::Value),
 ) {
     if outcome.0 != "succeeded" || super::specialist_run::is_no_op(&outcome.1) {
         super::specialist_run::apply(spec, planned, None, outcome);
         return;
     }
-    let review_model = || {
-        select_step_model(store, claim, runtime_config, spec, crate::factory::specialists::Step::Review).model
+    let mut rounds = super::specialist_run::LiveRounds {
+        env,
+        spec,
+        config: runtime_config,
+        plan: &planned.plan,
+        routes: &planned.routes,
+        seeded: &[],
+        implementation_prompt: implementation.prompt,
+        max_turns: implementation.max_turns,
+        wall_time: implementation.wall_time,
+        review_model: || {
+            select_step_model(store, claim, runtime_config, spec, crate::factory::specialists::Step::Review).model
+        },
+        repair_model: || {
+            select_step_model(store, claim, runtime_config, spec, crate::factory::specialists::Step::Repair).model
+        },
     };
     let finished = tokio::select! {
         _ = run_stop_signal(store, claim) => Err("cancelled_by_operator".to_string()),
-        finished = super::specialist_run::verify_and_review(env, spec, runtime_config, &planned.plan, &planned.routes, &[], review_model) => finished,
+        finished = super::specialist_run::review_with_repair(&mut rounds) => finished,
     };
     match finished {
-        Ok(finished) => super::specialist_run::apply(spec, planned, Some(&finished), outcome),
+        Ok(reviewed) => super::specialist_run::apply(spec, planned, Some(&reviewed), outcome),
         Err(code) => {
             super::specialist_run::apply(spec, planned, None, outcome);
             let status = if code == "cancelled_by_operator" { "cancelled" } else { "blocked_runtime" };
@@ -4140,7 +4165,12 @@ async fn resolve_issue_worktree(
             }
         }
         if let Some((spec, plan)) = planned.as_ref() {
-            specialist_finish(&step_env, &store, &claim, &runtime_config, spec, plan, &mut outcome).await;
+            let implementation = SpecialistImplementation {
+                prompt: &prompt,
+                max_turns,
+                wall_time: Duration::from_secs(wall_time),
+            };
+            specialist_finish(&step_env, &store, &claim, &runtime_config, spec, plan, implementation, &mut outcome).await;
         }
         if outcome.0 == "succeeded" {
             match publish_template_output(&store, &claim, &workdir, &outcome.1).await {
@@ -5430,7 +5460,12 @@ async fn execute_claim(
         break outcome;
     };
     if let Some((spec, plan)) = planned.as_ref() {
-        specialist_finish(&step_env, store, claim, &runtime_config, spec, plan, &mut outcome).await;
+        let implementation = SpecialistImplementation {
+            prompt: &prompt,
+            max_turns: max_turns_num,
+            wall_time: Duration::from_secs(wall_time),
+        };
+        specialist_finish(&step_env, store, claim, &runtime_config, spec, plan, implementation, &mut outcome).await;
     }
     if outcome.0 == "succeeded"
         && matches!(
@@ -7969,11 +8004,11 @@ mod tests {
             config: json!({}),
         };
         let runtime_config = json!({"issue": {"labels": ["documentation"]}});
-        let models: Vec<String> = [Step::Plan, Step::Implement, Step::Review]
+        let models: Vec<String> = [Step::Plan, Step::Implement, Step::Review, Step::Repair]
             .into_iter()
             .map(|step| select_step_model(&store, &claim, &runtime_config, &DOCS, step).model)
             .collect();
-        assert_eq!(models, ["opus", "haiku", "opus"]);
+        assert_eq!(models, ["opus", "sonnet", "opus", "sonnet"]);
         let db = store.conn();
         let conn = db.lock().unwrap();
         assert_eq!(crate::factory::gateway::frontier_runs_today(&conn, &org.id).unwrap(), 2);
@@ -7989,7 +8024,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             steps,
-            [("plan", "docs"), ("implement", "docs"), ("review", "docs")].map(|(a, b)| (a.to_string(), b.to_string()))
+            [("plan", "docs"), ("implement", "docs"), ("review", "docs"), ("repair", "docs")]
+                .map(|(a, b)| (a.to_string(), b.to_string()))
         );
         drop(conn);
         // Without a specialist the generic choice is unchanged: docs run on haiku.

@@ -52,13 +52,18 @@ pub(crate) const REVIEW_MAX_TURNS: u64 = 60;
 
 /// Transcript offsets of the steps within the run's range. The resolver's own
 /// invocation and its retries use `seq_base + retry * 100_000` (at most 3).
+/// The repair round's review runs with `REPAIR_ROUND_SEQ_SHIFT` added, so it
+/// lands at 900_000, past the first review.
 fn seq_offset(step: Step) -> i64 {
     match step {
         Step::Plan => 700_000,
         Step::Implement => 0,
+        Step::Repair => 400_000,
         Step::Review => 800_000,
     }
 }
+
+const REPAIR_ROUND_SEQ_SHIFT: i64 = 100_000;
 
 /// Tools of a code-writing step: the resolver's.
 pub(crate) const WRITE_TOOLS: &str = "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*";
@@ -342,20 +347,234 @@ pub(crate) async fn check_checkout(
     .map_err(|_| "specialist_checks_failed_to_run".to_string())
 }
 
-/// Applies the specialist's outcome to a resolver outcome: the plan and review
-/// costs fold into the result event (so telemetry and economics see every step),
-/// and a failed check or a rejecting review blocks publication. Nothing changes
-/// for an outcome that did not succeed, beyond the cost folding.
+/// Codes of a review whose request failed (see `result_error`): the review
+/// found nothing, so a repair has nothing to fix.
+const REVIEW_REQUEST_FAILURES: &[&str] = &["claude_usage_limited", "claude_api_error"];
+
+/// The reasons a repair round would fix, when the round gets one: the checks
+/// passed and the review read the change and rejected it for stated reasons.
+/// A failed check is already a precise, deterministic answer and is final; an
+/// unreadable verdict or a failed review request says nothing about the change.
+pub(crate) fn repair_reasons(finished: &Finished) -> Option<&[String]> {
+    let review = finished.review.as_ref().filter(|review| !review.accept)?;
+    let review_failed = review
+        .reasons
+        .iter()
+        .any(|reason| reason.starts_with("verdict_unreadable") || REVIEW_REQUEST_FAILURES.contains(&reason.as_str()));
+    let checks_passed = finished.checks.as_ref().is_some_and(|checks| checks.passed);
+    (checks_passed && !review_failed && !review.reasons.is_empty()).then_some(review.reasons.as_slice())
+}
+
+/// The repair round's implementation step.
+#[derive(Clone, Debug)]
+pub(crate) struct RepairStep {
+    pub model: String,
+    /// `None` when the step returned no result at all.
+    pub event: Option<Value>,
+    /// The step could not finish (a code); the run stops with it.
+    pub error: Option<String>,
+}
+
+/// The checks and review of a change, with at most one repair round between
+/// two of them.
+#[derive(Clone, Debug)]
+pub(crate) struct Reviewed {
+    /// One round, or two when the first review rejected and the repair ran.
+    /// The last round's verdict is final.
+    pub rounds: Vec<Finished>,
+    pub repair: Option<RepairStep>,
+    /// The repair round could not finish (a code): the run stops with it, and
+    /// every step that ran still bills.
+    pub error: Option<String>,
+}
+
+impl Reviewed {
+    pub fn single(finished: Finished) -> Self {
+        Self { rounds: vec![finished], repair: None, error: None }
+    }
+
+    pub fn last(&self) -> &Finished {
+        self.rounds.last().expect("a review has at least one round")
+    }
+
+    pub fn accepted(&self) -> bool {
+        self.error.is_none() && self.last().accepted()
+    }
+
+    /// The model steps after the plan and the first implementation, in order:
+    /// `(step, model, result event)`.
+    pub fn billed(&self) -> Vec<(Step, &str, &Value)> {
+        fn review(finished: &Finished) -> Option<(Step, &str, &Value)> {
+            let model = finished.review_model.as_deref().unwrap_or_default();
+            finished.review_event.as_ref().map(|event| (Step::Review, model, event))
+        }
+        let mut billed: Vec<(Step, &str, &Value)> = review(&self.rounds[0]).into_iter().collect();
+        if let Some(repair) = &self.repair {
+            billed.extend(repair.event.as_ref().map(|event| (Step::Repair, repair.model.as_str(), event)));
+        }
+        billed.extend(self.rounds.iter().skip(1).filter_map(review));
+        billed
+    }
+}
+
+/// The two halves of a specialist's finish, so the repair round is driven the
+/// same way in production, in the eval and in tests.
+#[allow(async_fn_in_trait)]
+pub(crate) trait Rounds {
+    /// The checks and review of the change in the checkout; `repaired` is the
+    /// round after the repair.
+    async fn verify_and_review(&mut self, repaired: bool) -> Result<Finished, String>;
+    /// The implementation step once more, told the review's reasons.
+    async fn repair(&mut self, reasons: &[String]) -> RepairStep;
+}
+
+/// Checks and reviews the change; when the review rejects it for stated
+/// reasons (see `repair_reasons`), implements once more with those reasons and
+/// checks and reviews again. One round only: the eval showed that a strict
+/// review with no way back turns every slip into a failure, but an open loop
+/// would trade the frontier review's judgment for an unbounded run. `Err` only
+/// when the first round could not run, as before.
+pub(crate) async fn review_with_repair(rounds: &mut impl Rounds) -> Result<Reviewed, String> {
+    let first = rounds.verify_and_review(false).await?;
+    let Some(reasons) = repair_reasons(&first).map(<[String]>::to_vec) else {
+        return Ok(Reviewed::single(first));
+    };
+    let repair = rounds.repair(&reasons).await;
+    if let Some(code) = repair.error.clone() {
+        return Ok(Reviewed { rounds: vec![first], repair: Some(repair), error: Some(code) });
+    }
+    match rounds.verify_and_review(true).await {
+        Ok(mut second) => {
+            // A repair that undid the whole change leaves nothing to publish.
+            if second.checks.is_none() {
+                second.review = Some(Verdict { accept: false, reasons: vec!["repair_left_no_change".into()] });
+            }
+            Ok(Reviewed { rounds: vec![first, second], repair: Some(repair), error: None })
+        }
+        Err(code) => Ok(Reviewed { rounds: vec![first], repair: Some(repair), error: Some(code) }),
+    }
+}
+
+/// The real rounds: the checks and review in this checkout, and the repair as
+/// a writing step in its own pod (slot `<slot>-repair`).
+pub(crate) struct LiveRounds<'a, 'e, R: Fn() -> String, M: Fn() -> String> {
+    pub env: &'a StepEnv<'e>,
+    pub spec: &'static Specialist,
+    pub config: &'a Value,
+    pub plan: &'a str,
+    pub routes: &'a [String],
+    pub seeded: &'a [SeededFault],
+    /// The first implementation's prompt; the repair's extends it.
+    pub implementation_prompt: &'a str,
+    pub max_turns: u64,
+    pub wall_time: Duration,
+    /// Called only when a review runs (it records `model.selected` in production).
+    pub review_model: R,
+    /// Called only when the repair runs.
+    pub repair_model: M,
+}
+
+impl<R: Fn() -> String, M: Fn() -> String> Rounds for LiveRounds<'_, '_, R, M> {
+    async fn verify_and_review(&mut self, repaired: bool) -> Result<Finished, String> {
+        let shifted = StepEnv { seq_base: self.env.seq_base + REPAIR_ROUND_SEQ_SHIFT, ..*self.env };
+        let env = if repaired { &shifted } else { self.env };
+        verify_and_review(env, self.spec, self.config, self.plan, self.routes, self.seeded, || (self.review_model)()).await
+    }
+
+    async fn repair(&mut self, reasons: &[String]) -> RepairStep {
+        let model = (self.repair_model)();
+        let prompt = specialists::repair_prompt(self.implementation_prompt, reasons);
+        let failed = |model: String, code: &str| RepairStep { model, event: None, error: Some(code.to_string()) };
+        let Ok(baseline) = RepairBaseline::commit(self.env.workdir).await else {
+            return failed(model, "repair_baseline_failed");
+        };
+        let result = run_step(self.env, Step::Repair, &prompt, &model, true, self.max_turns, self.wall_time).await;
+        let restored = baseline.restore().await;
+        let event = match result {
+            Ok(event) => event,
+            Err(error) => return failed(model, &super::sandboxed::failure_code(self.env.run_id, &error)),
+        };
+        let error = result_error(&event)
+            .map(str::to_string)
+            .or_else(|| restored.is_err().then(|| "repair_baseline_failed".to_string()));
+        RepairStep { model, event: Some(event), error }
+    }
+}
+
+/// The first round's change, committed for the length of the repair step. A
+/// sandboxed writing step sends its diff against a baseline the pod built from
+/// the checkout as it was (the change included), and the worker applies it
+/// after resetting the checkout to `HEAD`; without this commit the first
+/// round's change would be wiped and only the repair's edits kept. Restoring
+/// moves `HEAD` and the index back and leaves every file as the repair left it,
+/// so the change is again the uncommitted diff the publishing path expects.
+/// Dropped without a restore (the run was cancelled mid-step), it restores
+/// synchronously.
+struct RepairBaseline {
+    workdir: std::path::PathBuf,
+    head: Option<String>,
+}
+
+impl RepairBaseline {
+    async fn commit(workdir: &Path) -> anyhow::Result<Self> {
+        let output = Command::new("git").current_dir(workdir).args(["rev-parse", "HEAD"]).output().await?;
+        if !output.status.success() {
+            anyhow::bail!("git_rev_parse_failed")
+        }
+        let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let baseline = Self { workdir: workdir.to_path_buf(), head: Some(head) };
+        for args in [
+            &["add", "-A"][..],
+            // No hooks, signing or identity from the repository or the host.
+            &[
+                "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=nexusmind",
+                "-c", "user.email=factory@nexusmind.invalid", "commit", "-q", "--no-verify", "--allow-empty",
+                "-m", "specialist repair baseline",
+            ][..],
+        ] {
+            let status = Command::new("git").current_dir(workdir).args(args).status().await?;
+            if !status.success() {
+                // `baseline` drops here and puts `HEAD` back.
+                anyhow::bail!("git_commit_failed")
+            }
+        }
+        Ok(baseline)
+    }
+
+    async fn restore(mut self) -> anyhow::Result<()> {
+        let Some(head) = self.head.take() else { return Ok(()) };
+        let status = Command::new("git").current_dir(&self.workdir).args(["reset", "-q", &head]).status().await?;
+        if !status.success() {
+            anyhow::bail!("git_reset_failed")
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RepairBaseline {
+    fn drop(&mut self) {
+        if let Some(head) = self.head.take() {
+            let _ = std::process::Command::new("git").current_dir(&self.workdir).args(["reset", "-q", &head]).status();
+        }
+    }
+}
+
+/// Applies the specialist's outcome to a resolver outcome: the cost of every
+/// other step (plan, reviews, repair) folds into the result event (so telemetry
+/// and economics see every step), and a failed check or a rejecting final
+/// review blocks publication, as does a repair round that could not finish.
+/// Nothing changes for an outcome that did not succeed, beyond the cost folding.
 pub(crate) fn apply(
     spec: &Specialist,
     planned: &Planned,
-    finished: Option<&Finished>,
+    reviewed: Option<&Reviewed>,
     outcome: &mut (String, Value),
 ) {
     let mut extra = vec![&planned.event];
-    if let Some(event) = finished.and_then(|f| f.review_event.as_ref()) {
-        extra.push(event);
+    if let Some(reviewed) = reviewed {
+        extra.extend(reviewed.billed().into_iter().map(|(_, _, event)| event));
     }
+    let finished = reviewed.map(Reviewed::last);
     if let Some(event) = outcome.1.get("result").filter(|r| crate::factory::telemetry::run_result_event(r).is_some()) {
         let combined = specialists::combine_result_events(event, &extra);
         outcome.1["result"] = combined;
@@ -373,8 +592,15 @@ pub(crate) fn apply(
         "review": finished.and_then(|f| f.review.clone()),
         "review_model": finished.and_then(|f| f.review_model.clone()),
         "screenshots": finished.map(|f| f.screenshots.iter().map(|s| s.file.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+        "repair": reviewed.and_then(|r| r.repair.as_ref().map(|repair| json!({
+            "model": repair.model,
+            "first_review": r.rounds[0].review,
+        }))),
     });
-    if let Some(finished) = finished.filter(|f| !f.accepted()) {
+    if let Some(code) = reviewed.and_then(|r| r.error.as_deref()) {
+        let result = outcome.1.get("result").cloned();
+        *outcome = ("blocked_runtime".into(), json!({"code": code, "result": result, "specialist": summary}));
+    } else if let Some(finished) = finished.filter(|f| !f.accepted()) {
         let code = if finished.checks.as_ref().is_some_and(|c| !c.passed) {
             "specialist_checks_failed"
         } else {
@@ -525,7 +751,7 @@ mod tests {
             ..Default::default()
         };
         let mut outcome = succeeded();
-        apply(&specialists::DOCS, &planned(), Some(&finished), &mut outcome);
+        apply(&specialists::DOCS, &planned(), Some(&Reviewed::single(finished)), &mut outcome);
         assert_eq!(outcome.0, "succeeded");
         assert!((outcome.1["result"]["total_cost_usd"].as_f64().unwrap() - 1.0).abs() < 1e-9);
         assert_eq!(outcome.1["specialist"]["id"], "docs");
@@ -543,7 +769,7 @@ mod tests {
             ..Default::default()
         };
         let mut outcome = succeeded();
-        apply(&specialists::DOCS, &planned(), Some(&rejected), &mut outcome);
+        apply(&specialists::DOCS, &planned(), Some(&Reviewed::single(rejected)), &mut outcome);
         assert_eq!((outcome.0.as_str(), outcome.1["code"].as_str()), ("blocked_policy", Some("specialist_review_rejected")));
         assert_eq!(outcome.1["specialist"]["review"]["reasons"][0], "invented field");
         let metrics = crate::factory::telemetry::run_metrics(&outcome.1);
@@ -551,8 +777,204 @@ mod tests {
 
         let failing = Finished { checks: Some(CheckReport { passed: false, checks: vec![] }), ..Default::default() };
         let mut outcome = succeeded();
-        apply(&specialists::DOCS, &planned(), Some(&failing), &mut outcome);
+        apply(&specialists::DOCS, &planned(), Some(&Reviewed::single(failing)), &mut outcome);
         assert_eq!(outcome.1["code"], "specialist_checks_failed");
+    }
+
+    /// Rounds scripted in order; records what ran and what the repair was told.
+    struct FakeRounds {
+        rounds: Vec<Result<Finished, String>>,
+        repair: RepairStep,
+        calls: Vec<String>,
+    }
+
+    impl Rounds for FakeRounds {
+        async fn verify_and_review(&mut self, repaired: bool) -> Result<Finished, String> {
+            self.calls.push(format!("review(repaired={repaired})"));
+            self.rounds.remove(0)
+        }
+        async fn repair(&mut self, reasons: &[String]) -> RepairStep {
+            self.calls.push(format!("repair({})", reasons.join("; ")));
+            self.repair.clone()
+        }
+    }
+
+    fn round(checks_pass: bool, verdict: Option<(bool, &str)>, review_cost: f64) -> Finished {
+        Finished {
+            changed: vec![ChangedFile { filename: "docs/a.md".into(), status: "added".into(), previous_filename: None }],
+            checks: Some(CheckReport { passed: checks_pass, checks: vec![] }),
+            review: verdict.map(|(accept, reason)| Verdict {
+                accept,
+                reasons: if reason.is_empty() { vec![] } else { vec![reason.into()] },
+            }),
+            review_model: verdict.map(|_| "opus".into()),
+            review_event: verdict.map(|_| json!({"type": "result", "total_cost_usd": review_cost})),
+            ..Default::default()
+        }
+    }
+
+    fn repair_step(error: Option<&str>) -> RepairStep {
+        RepairStep {
+            model: "sonnet".into(),
+            event: Some(json!({"type": "result", "result": "{\"title\":\"t2\"}", "total_cost_usd": 0.2})),
+            error: error.map(str::to_string),
+        }
+    }
+
+    async fn drive(rounds: Vec<Result<Finished, String>>, repair: RepairStep) -> (Result<Reviewed, String>, Vec<String>) {
+        let mut fake = FakeRounds { rounds, repair, calls: Vec::new() };
+        let reviewed = review_with_repair(&mut fake).await;
+        (reviewed, fake.calls)
+    }
+
+    fn applied(reviewed: &Reviewed) -> (String, Value) {
+        let mut outcome = succeeded();
+        apply(&specialists::DOCS, &planned(), Some(reviewed), &mut outcome);
+        outcome
+    }
+
+    fn cost(outcome: &(String, Value)) -> f64 {
+        crate::factory::telemetry::run_metrics(&outcome.1).cost_usd.unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_accepted_first_round_needs_no_repair() {
+        let (reviewed, calls) = drive(vec![Ok(round(true, Some((true, "")), 0.4))], repair_step(None)).await;
+        let reviewed = reviewed.unwrap();
+        assert_eq!(calls, ["review(repaired=false)"]);
+        assert!(reviewed.accepted() && reviewed.repair.is_none());
+        let outcome = applied(&reviewed);
+        assert_eq!(outcome.0, "succeeded");
+        assert!(outcome.1["specialist"]["repair"].is_null());
+        assert!((cost(&outcome) - 1.0).abs() < 1e-9, "implement 0.1 + plan 0.5 + review 0.4");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_change_is_repaired_once_and_the_second_verdict_accepts_it() {
+        let (reviewed, calls) = drive(
+            vec![Ok(round(true, Some((false, "docs/a.md:3 invents `run_fast`")), 0.4)), Ok(round(true, Some((true, "")), 0.3))],
+            repair_step(None),
+        )
+        .await;
+        let reviewed = reviewed.unwrap();
+        assert_eq!(calls, ["review(repaired=false)", "repair(docs/a.md:3 invents `run_fast`)", "review(repaired=true)"]);
+        assert!(reviewed.accepted());
+        let steps: Vec<(Step, &str)> = reviewed.billed().iter().map(|(step, model, _)| (*step, *model)).collect();
+        assert_eq!(steps, [(Step::Review, "opus"), (Step::Repair, "sonnet"), (Step::Review, "opus")]);
+        let outcome = applied(&reviewed);
+        assert_eq!(outcome.0, "succeeded");
+        assert!((cost(&outcome) - 1.5).abs() < 1e-9, "implement, plan, both reviews and the repair all bill");
+        assert_eq!(outcome.1["specialist"]["repair"]["model"], "sonnet");
+        assert_eq!(outcome.1["specialist"]["repair"]["first_review"]["reasons"][0], "docs/a.md:3 invents `run_fast`");
+        assert_eq!(outcome.1["specialist"]["review"]["accept"], true);
+    }
+
+    #[tokio::test]
+    async fn a_second_rejection_is_final() {
+        let (reviewed, calls) = drive(
+            vec![Ok(round(true, Some((false, "wrong field")), 0.4)), Ok(round(true, Some((false, "still wrong")), 0.3))],
+            repair_step(None),
+        )
+        .await;
+        let reviewed = reviewed.unwrap();
+        assert_eq!(calls.len(), 3, "one repair round only: {calls:?}");
+        assert!(!reviewed.accepted());
+        let outcome = applied(&reviewed);
+        assert_eq!((outcome.0.as_str(), outcome.1["code"].as_str()), ("blocked_policy", Some("specialist_review_rejected")));
+        assert_eq!(outcome.1["specialist"]["review"]["reasons"][0], "still wrong");
+        assert!((cost(&outcome) - 1.5).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn checks_failing_after_the_repair_block_without_a_second_review() {
+        let (reviewed, calls) =
+            drive(vec![Ok(round(true, Some((false, "wrong field")), 0.4)), Ok(round(false, None, 0.0))], repair_step(None)).await;
+        let reviewed = reviewed.unwrap();
+        assert_eq!(calls.len(), 3);
+        let outcome = applied(&reviewed);
+        assert_eq!(outcome.1["code"], "specialist_checks_failed");
+        assert!((cost(&outcome) - 1.2).abs() < 1e-9, "the first review and the repair still bill");
+    }
+
+    #[tokio::test]
+    async fn failing_checks_or_a_review_that_said_nothing_get_no_repair() {
+        for first in [
+            round(false, None, 0.0),
+            round(true, Some((false, "verdict_unreadable:max_turns")), 0.4),
+            round(true, Some((false, "verdict_unreadable:no_json")), 0.4),
+            round(true, Some((false, "claude_usage_limited")), 0.0),
+            round(true, Some((false, "claude_api_error")), 0.0),
+            round(true, Some((false, "")), 0.4),
+        ] {
+            let (reviewed, calls) = drive(vec![Ok(first.clone())], repair_step(None)).await;
+            assert_eq!(calls, ["review(repaired=false)"], "{first:?}");
+            assert!(!reviewed.unwrap().accepted());
+        }
+        // A first round that could not run is an error, as before.
+        let (reviewed, calls) = drive(vec![Err("checks_install_failed".into())], repair_step(None)).await;
+        assert_eq!((reviewed.unwrap_err().as_str(), calls.len()), ("checks_install_failed", 1));
+    }
+
+    #[tokio::test]
+    async fn a_repair_that_cannot_finish_stops_the_run_but_bills_what_ran() {
+        let (reviewed, calls) =
+            drive(vec![Ok(round(true, Some((false, "wrong field")), 0.4))], repair_step(Some("claude_usage_limited"))).await;
+        let reviewed = reviewed.unwrap();
+        assert_eq!(calls.len(), 2, "no second review after a failed repair");
+        let outcome = applied(&reviewed);
+        assert_eq!((outcome.0.as_str(), outcome.1["code"].as_str()), ("blocked_runtime", Some("claude_usage_limited")));
+        assert!((cost(&outcome) - 1.2).abs() < 1e-9);
+        // The second round's checks could not run (an infrastructure failure).
+        let (reviewed, _) = drive(
+            vec![Ok(round(true, Some((false, "wrong field")), 0.4)), Err("checks_install_failed".into())],
+            repair_step(None),
+        )
+        .await;
+        assert_eq!(applied(&reviewed.unwrap()).1["code"], "checks_install_failed");
+        // A repair that removed the whole change is not accepted.
+        let empty = Finished { changed: vec![], ..Default::default() };
+        let (reviewed, _) = drive(vec![Ok(round(true, Some((false, "wrong field")), 0.4)), Ok(empty)], repair_step(None)).await;
+        assert_eq!(applied(&reviewed.unwrap()).1["specialist"]["review"]["reasons"][0], "repair_left_no_change");
+    }
+
+    #[tokio::test]
+    async fn the_repair_baseline_keeps_the_first_rounds_change_under_a_reset_to_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git").current_dir(dir.path()).args(args).status().unwrap();
+            assert!(status.success(), "{args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.path().join("README.md"), "# Old\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "base"]);
+        let head = |dir: &Path| {
+            String::from_utf8(std::process::Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout)
+                .unwrap()
+        };
+        let base = head(dir.path());
+        // The first round's change: a modified and a new file.
+        std::fs::write(dir.path().join("README.md"), "# New\n").unwrap();
+        std::fs::write(dir.path().join("guide.md"), "first\n").unwrap();
+        let baseline = RepairBaseline::commit(dir.path()).await.unwrap();
+        // What the sandbox write consumer does with the repair's diff.
+        crate::factory::workspace::reset_and_apply(
+            dir.path(),
+            b"diff --git a/guide.md b/guide.md\n--- a/guide.md\n+++ b/guide.md\n@@ -1 +1 @@\n-first\n+repaired\n",
+        )
+        .await
+        .unwrap();
+        baseline.restore().await.unwrap();
+        assert_eq!(head(dir.path()), base, "HEAD is back at the base");
+        assert_eq!(std::fs::read_to_string(dir.path().join("README.md")).unwrap(), "# New\n");
+        assert_eq!(std::fs::read_to_string(dir.path().join("guide.md")).unwrap(), "repaired\n");
+        let changed: Vec<(String, String)> =
+            checkout_changes(dir.path()).await.unwrap().into_iter().map(|f| (f.filename, f.status)).collect();
+        assert_eq!(changed, [("README.md".into(), "modified".into()), ("guide.md".into(), "added".into())]);
+        // Dropped without a restore (a cancelled run), it still puts HEAD back.
+        let dropped = RepairBaseline::commit(dir.path()).await.unwrap();
+        drop(dropped);
+        assert_eq!(head(dir.path()), base);
     }
 
     #[test]

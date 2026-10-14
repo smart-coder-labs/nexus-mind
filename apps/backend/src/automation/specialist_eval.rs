@@ -547,15 +547,30 @@ impl SandboxEvalRunner {
         let _ = tokio::fs::remove_file(workdir.join(SCRATCHPAD)).await;
         match plan {
             Some(plan) if !attempt.no_op => {
-                let finished =
-                    super::specialist_run::verify_and_review(&env, spec, &config, &plan, &routes, &task.seeded_faults, || {
-                        claude_model(spec.review_tier).to_string()
-                    })
-                .await
-                .map_err(|code| anyhow::anyhow!(code))?;
-                if let (Some(model), Some(event)) = (&finished.review_model, &finished.review_event) {
-                    attempt.steps.push(StepUsage::from_event(Step::Review.as_str(), model, event));
+                // Exactly as the worker finishes a specialist run: checks,
+                // review, and one repair round after a rejecting review.
+                let mut rounds = super::specialist_run::LiveRounds {
+                    env: &env,
+                    spec,
+                    config: &config,
+                    plan: &plan,
+                    routes: &routes,
+                    seeded: &task.seeded_faults,
+                    implementation_prompt: &prompt,
+                    max_turns: self.max_turns,
+                    wall_time: self.wall_time,
+                    review_model: || claude_model(spec.review_tier).to_string(),
+                    repair_model: || claude_model(spec.implement_tier).to_string(),
+                };
+                let reviewed =
+                    super::specialist_run::review_with_repair(&mut rounds).await.map_err(|code| anyhow::anyhow!(code))?;
+                for (step, model, event) in reviewed.billed() {
+                    attempt.steps.push(StepUsage::from_event(step.as_str(), model, event));
                 }
+                if let Some(code) = &reviewed.error {
+                    anyhow::bail!(code.clone())
+                }
+                let finished = reviewed.rounds.into_iter().last().unwrap_or_default();
                 attempt.review = finished.review;
                 attempt.checks = finished.checks;
                 attempt.screenshots = finished.screenshots;
