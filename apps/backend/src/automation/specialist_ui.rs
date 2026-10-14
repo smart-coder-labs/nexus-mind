@@ -644,6 +644,19 @@ fn failure(what: &str, run: &CommandRun) -> Option<String> {
     }
 }
 
+/// The infrastructure failure of a UI checks pod run, if any: the install
+/// failed or a build, lint or test command lost its exit status. As for the
+/// tests checks (see `specialist_tests::infra_failure`), the change cannot
+/// touch a manifest or lockfile, so this is an attempt error, not `ui_build`.
+pub fn infra_failure(plan: &UiPlan, runs: &[CommandRun]) -> Option<&'static str> {
+    plan.steps.iter().zip(runs).find_map(|(step, run)| match (step, run.exit_code) {
+        (PodStep::Install(_), Some(0)) => None,
+        (PodStep::Install(_), _) => Some(tests::CHECKS_INSTALL_FAILED),
+        (PodStep::Build(_) | PodStep::Lint(_) | PodStep::Tests(_), None) => Some(tests::CHECKS_POD_FAILED),
+        _ => None,
+    })
+}
+
 /// Turns the pod's runs into `ui_build`, `ui_lint`, `ui_tests` and
 /// `ui_screenshots`, and the checked images.
 pub fn interpret(plan: &UiPlan, runs: &[CommandRun]) -> (Vec<CheckOutcome>, Vec<Screenshot>) {
@@ -867,6 +880,9 @@ pub(crate) async fn run_checks(
     if runs.len() != plan.commands.len() {
         return Err("ui_checks_incomplete".into());
     }
+    if let Some(code) = infra_failure(&plan, &runs) {
+        return Err(code.into());
+    }
     Ok(interpret(&plan, &runs))
 }
 
@@ -1009,6 +1025,16 @@ mod tests_ui {
         assert_eq!(config["shots"].as_array().unwrap().len(), 4, "/tasks at two viewports, light and dark");
         assert!(plan.files.iter().any(|(p, c)| p == SCRIPT_PATH && c.starts_with(b"'use strict'")));
         assert_eq!(plan.skipped, [("ui_lint", "skipped: no `lint` script".to_string())]);
+    }
+
+    #[test]
+    fn an_install_or_a_lost_status_is_infrastructure_but_a_broken_build_is_not() {
+        let plan = prepare(&admin(), &paths(&["apps/admin/src/pages/Tasks.tsx"]), &[]).unwrap();
+        // install, build, test, screenshots.
+        assert_eq!(infra_failure(&plan, &[run(Some(1)), run(Some(99)), run(Some(1)), run(Some(99))]), Some("checks_install_failed"));
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(None)]), Some("checks_pod_failed"));
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(Some(2)), run(Some(1)), run(Some(99))]), None);
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(Some(0)), run(Some(0)), run(None)]), None, "the screenshots judge their own run");
     }
 
     #[test]

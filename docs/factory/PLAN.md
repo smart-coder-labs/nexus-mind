@@ -1,6 +1,6 @@
 # NexusMind Software Factory — Implementation Plan
 
-Status: **F0 and F1 in production; F2 built (pending deploy)** · Owner: cesar · Last updated: 2026-10-03
+Status: **F0–F3 in production; F4 specialists built and evaluated once, iterating** · Owner: cesar · Last updated: 2026-10-14
 
 Source documents:
 
@@ -277,7 +277,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - Codex: built but not in use, by owner decision (no API key).
     - The OpenAI API key for Codex (and a spend limit on its project).
     - Credentials for the first Slack and Sentry sources.
-    - Human labels for OD-5.
+    - ~~Human labels for OD-5.~~ Done: 153 labels; the owner's risk rubric replaced the docs/tests-only merge floor (ADR 225771a4).
 
 ### F4: Specialists (2–4 weeks)
 
@@ -295,19 +295,27 @@ Also in this phase:
 - **Exit:** each specialist beats baseline on the frozen eval.
 - **Status (2026-10-07): specialist framework, documentation, tests and UI specialists, and intake built (ADRs 2dbeafe1, ac04cc9b, 94ced31c, 0dfbde60). The local Qwen lane is dropped (D9).**
   - **Specialists (#310): off by default (`FACTORY_SPECIALISTS`).**
-    - **How a run works.** Opus plans read-only, Haiku implements with the plan (this is the resolver's normal invocation), the docs checks run, and then Opus reviews and can reject the change.
+    - **How a run works.** Opus plans read-only, Sonnet implements with the plan (this is the resolver's normal invocation), the docs checks run, and then Opus reviews and can reject the change. Haiku implemented until 2026-10-14 (see the first eval below).
     - **Models and the cap.** Each step is its own `--model` invocation with its own `model.selected` event, so the frontier cap counts the Opus steps.
     - **Docs checks.** Every changed path must be documentation, and links and anchors must resolve. Identifiers the docs name are an *advisory* check, which the review weighs.
     - **Frozen eval.** `factory-specialist-eval` compares the specialist with the baseline; see [specialist-eval.md](specialist-eval.md). The frozen docs set (10 tasks, base fd3fb40) lives outside the repo. It has not been run yet.
     - **Tests specialist (ADR 94ced31c): built, off by default (`FACTORY_SPECIALISTS=tests`).** JS/TS only (vitest or jest), sandboxed runs only. Opus plans and reviews, Sonnet implements. Only test files may change and none may be removed. One commands pod installs, runs the changed tests (`tests_pass`), then reruns them against up to 10 deterministic mutants of the code they import (`mutation_score`: at least 60% killed; advisory when there is nothing to mutate). The frozen tests set (8 tasks on `apps/admin`, base 3fed74e, one seeded fault each) lives outside the repo and has not been run yet.
     - **UI specialist (ADR 0dfbde60): built, off by default (`FACTORY_SPECIALISTS=ui`).** Small UI changes in one frontend package (nexus-mind only; Kasymir stays advisory), sandboxed runs only. Opus plans (naming the routes the change shows on) and reviews, Sonnet implements. Only UI files under the package's `src/` may change, at most 3 deleted (`ui_paths_only`). One commands pod installs, then runs the package's `typecheck`/`build` (`ui_build`), `lint` (`ui_lint`) and tests (`ui_tests`), then serves the build and screenshots up to 3 routes at a phone and a desktop viewport (`ui_screenshots`, at most 6 images) with the API answered from the app's fixture file; see [ui-fixtures.md](ui-fixtures.md). The review opens the screenshots. A page that throws or renders blank blocks; a missing fixture file or an unservable route is advisory. The admin app has its fixture file. The frozen UI set (6 tasks on `apps/admin`, base 3607961) lives outside the repo and has not been run yet.
+  - **First frozen eval (2026-10-14, all Claude):**
+    - **Docs:** baseline 6/10, specialist 0/10. Its own Opus review rejected every Haiku-written change for real factual errors, and with no way back a strict review turns every slip into a failure.
+    - **Tests (harder set v2):** 5/8 on each arm. The specialist's tests-v2-07 failed only because `npm ci` exited 1 in the checks pod; it was scored as `checks:tests_pass` and never retried. tests-v2-05 was invalid: it targeted `apps/admin/src/auth/`, so the merge floor rejected its test file as a security path.
+  - **Iteration after the eval:**
+    - **Docs implements on Sonnet** (owner decision, 2026-10-14).
+    - **One repair round, every specialist** (production and the eval's specialist arm). When the review rejects a change whose checks passed, for stated reasons, the implementation step runs once more (`repair` step, the implementation's tier, its own `model.selected` event) with the reasons appended as untrusted data; then the checks and the review run again, and the second verdict is final. Failed checks, an unreadable verdict or a failed review request get no repair. Every step's cost is combined.
+    - **Checks pod infrastructure is an error, not a rejection.** A failed install (`npm ci`, pnpm, yarn) or a lost command status in the tests or UI checks pod is `checks_install_failed` / `checks_pod_failed`: production blocks the run with the code and never publishes it, and the eval runner retries `error:` attempts. A test run that exits non-zero is still `tests_pass`.
+    - tests-v2-05 replaced with a task outside the risky paths.
   - **Intake:**
     - **OD-7 resolved: `factory::redact`.** Before any Gmail, Notion, Drive or transcript text becomes a task (and so before it reaches a model), emails, phone numbers, Colombian ids, Luhn-checked cards, bank accounts and IBANs, addresses, and secrets are replaced with numbered placeholders. Person names are kept.
     - **Sources.** Gmail (label `factory`), Notion (a `factory` tag or a configured database), Drive/Meet transcripts (a configured folder), local `.txt`, and admin upload (`POST /v1/factory/intake/transcripts`, `factory_policy:write`). Tokens come from connectors bound to each source kind.
     - **Fix: manual.** Gmail and all transcript sources are always untrusted and `fix: manual`: they never auto-start.
     - **Migration v87** widens the source kinds; a table rebuild with foreign keys off keeps items linked.
   - **Open:**
-    - Running the docs, tests and UI evals in the cluster. The UI screenshot path (Playwright from a commands pod, images over stdout) has run only outside the cluster.
+    - Rerunning the docs and tests evals with this iteration, and running the UI eval in the cluster. The UI screenshot path (Playwright from a commands pod, images over stdout) has run only outside the cluster.
     - OAuth credentials per provider: Gmail `gmail.readonly`; Notion an internal integration token shared with the pages or database; Drive `drive.readonly` or a token scoped to the folder.
     - Admin UI for the new sources.
 
