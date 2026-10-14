@@ -11,7 +11,8 @@
 //! `<slot>-plan` / `<slot>-review`, so they never collide with the run's agent
 //! pod). The alternative, one invocation with a plan/review "sandwich" in the
 //! prompt, cannot change model mid-session and would bill the whole run at the
-//! frontier, defeating the pattern.
+//! frontier, defeating the pattern. The repair round (see `review_with_repair`)
+//! is one more writing invocation in its own pod (slot `<slot>-repair`).
 
 use std::path::Path;
 use std::time::Duration;

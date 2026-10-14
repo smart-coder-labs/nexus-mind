@@ -5,7 +5,8 @@
 //!
 //! - **baseline**: today's generic resolver, its fixed prompt on the standard tier;
 //! - **specialist**: plan (frontier), implement (the specialist's tier), checks,
-//!   review (frontier), exactly as the worker runs it.
+//!   review (frontier), and one repair round after a rejecting review,
+//!   exactly as the worker runs it.
 //!
 //! An attempt is **accepted** only when its change passes the merge gate's path
 //! and risk floor, the specialist's deterministic checks (applied to both arms,
