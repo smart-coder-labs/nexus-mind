@@ -397,6 +397,8 @@ impl Reviewed {
         self.rounds.last().expect("a review has at least one round")
     }
 
+    /// What `apply` decides; only the tests ask it directly.
+    #[cfg(test)]
     pub fn accepted(&self) -> bool {
         self.error.is_none() && self.last().accepted()
     }
