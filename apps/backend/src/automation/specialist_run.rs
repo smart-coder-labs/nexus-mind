@@ -488,11 +488,11 @@ impl<R: Fn() -> String, M: Fn() -> String> Rounds for LiveRounds<'_, '_, R, M> {
         let model = (self.repair_model)();
         let prompt = specialists::repair_prompt(self.implementation_prompt, reasons);
         let failed = |model: String, code: &str| RepairStep { model, event: None, error: Some(code.to_string()) };
-        let Ok(baseline) = RepairBaseline::commit(self.env.workdir).await else {
+        let Ok(baseline) = RepairBaseline::commit(self.env.workdir) else {
             return failed(model, "repair_baseline_failed");
         };
         let result = run_step(self.env, Step::Repair, &prompt, &model, true, self.max_turns, self.wall_time).await;
-        let restored = baseline.restore().await;
+        let restored = baseline.restore();
         let event = match result {
             Ok(event) => event,
             Err(error) => return failed(model, &super::sandboxed::failure_code(self.env.run_id, &error)),
@@ -511,53 +511,72 @@ impl<R: Fn() -> String, M: Fn() -> String> Rounds for LiveRounds<'_, '_, R, M> {
 /// round's change would be wiped and only the repair's edits kept. Restoring
 /// moves `HEAD` and the index back and leaves every file as the repair left it,
 /// so the change is again the uncommitted diff the publishing path expects.
-/// Dropped without a restore (the run was cancelled mid-step), it restores
-/// synchronously.
+///
+/// Cancellation: every git command here runs synchronously, with no `.await`
+/// between spawning it and reaping it, so dropping the run's future can never
+/// leave a `git commit` running that lands after the restore. A guard dropped
+/// without a restore (the run was cancelled during the repair step) restores
+/// synchronously. The restore resets to the recorded original sha (never
+/// `HEAD~1`) and then checks that `HEAD` is that sha; when it is not, the
+/// repair fails with `repair_baseline_failed` and the run never publishes.
 struct RepairBaseline {
     workdir: std::path::PathBuf,
     head: Option<String>,
 }
 
+/// Runs git to completion in `workdir`, with no hooks, signing or identity
+/// from the repository or the host.
+fn git_sync(workdir: &Path, args: &[&str]) -> anyhow::Result<std::process::Output> {
+    let output = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=nexusmind",
+            "-c", "user.email=factory@nexusmind.invalid",
+        ])
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("git_{}_failed", args.first().copied().unwrap_or("command"))
+    }
+    Ok(output)
+}
+
+fn git_head(workdir: &Path) -> anyhow::Result<String> {
+    Ok(String::from_utf8_lossy(&git_sync(workdir, &["rev-parse", "HEAD"])?.stdout).trim().to_string())
+}
+
+/// Puts `HEAD` and the index back on `head`, keeping the files, and proves it.
+fn reset_to(workdir: &Path, head: &str) -> anyhow::Result<()> {
+    git_sync(workdir, &["reset", "-q", head])?;
+    if git_head(workdir)? != head {
+        anyhow::bail!("repair_baseline_not_restored")
+    }
+    Ok(())
+}
+
 impl RepairBaseline {
-    async fn commit(workdir: &Path) -> anyhow::Result<Self> {
-        let output = Command::new("git").current_dir(workdir).args(["rev-parse", "HEAD"]).output().await?;
-        if !output.status.success() {
-            anyhow::bail!("git_rev_parse_failed")
-        }
-        let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Synchronous on purpose (see the type's doc): a git add and commit of a
+    // checkout are short, and an await here would make them cancellable.
+    fn commit(workdir: &Path) -> anyhow::Result<Self> {
+        let head = git_head(workdir)?;
         let baseline = Self { workdir: workdir.to_path_buf(), head: Some(head) };
-        for args in [
-            &["add", "-A"][..],
-            // No hooks, signing or identity from the repository or the host.
-            &[
-                "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=nexusmind",
-                "-c", "user.email=factory@nexusmind.invalid", "commit", "-q", "--no-verify", "--allow-empty",
-                "-m", "specialist repair baseline",
-            ][..],
-        ] {
-            let status = Command::new("git").current_dir(workdir).args(args).status().await?;
-            if !status.success() {
-                // `baseline` drops here and puts `HEAD` back.
-                anyhow::bail!("git_commit_failed")
-            }
-        }
+        // On an error `baseline` drops and puts `HEAD` back.
+        git_sync(workdir, &["add", "-A"])?;
+        git_sync(workdir, &["commit", "-q", "--no-verify", "--allow-empty", "-m", "specialist repair baseline"])?;
         Ok(baseline)
     }
 
-    async fn restore(mut self) -> anyhow::Result<()> {
+    fn restore(mut self) -> anyhow::Result<()> {
         let Some(head) = self.head.take() else { return Ok(()) };
-        let status = Command::new("git").current_dir(&self.workdir).args(["reset", "-q", &head]).status().await?;
-        if !status.success() {
-            anyhow::bail!("git_reset_failed")
-        }
-        Ok(())
+        reset_to(&self.workdir, &head)
     }
 }
 
 impl Drop for RepairBaseline {
     fn drop(&mut self) {
         if let Some(head) = self.head.take() {
-            let _ = std::process::Command::new("git").current_dir(&self.workdir).args(["reset", "-q", &head]).status();
+            let _ = reset_to(&self.workdir, &head);
         }
     }
 }
@@ -612,7 +631,32 @@ pub(crate) fn apply(
         let result = outcome.1.get("result").cloned();
         *outcome = ("blocked_policy".into(), json!({"code": code, "result": result, "specialist": summary}));
     } else if outcome.1.is_object() {
+        if let Some(repair) = reviewed.and_then(|r| r.repair.as_ref()).and_then(|r| r.event.as_ref()) {
+            publish_repair_summary(outcome, repair);
+        }
         outcome.1["specialist"] = summary;
+    }
+}
+
+/// After an accepted repair, the PR describes the change the repair left: the
+/// repair step's `title` and `summary`, each where its structured result has a
+/// non-empty one, over the first implementation's. Every other field of the
+/// first result (its contract) stays.
+fn publish_repair_summary(outcome: &mut (String, Value), repair: &Value) {
+    let repaired = super::worker::structured_result(repair);
+    let mut published = super::worker::structured_result(&outcome.1);
+    if !published.is_object() {
+        published = json!({});
+    }
+    let mut changed = false;
+    for field in ["title", "summary"] {
+        if let Some(text) = repaired.get(field).and_then(Value::as_str).filter(|t| !t.trim().is_empty()) {
+            published[field] = json!(text);
+            changed = true;
+        }
+    }
+    if changed && outcome.1.get("result").is_some_and(Value::is_object) {
+        outcome.1["result"]["result"] = json!(published.to_string());
     }
 }
 
@@ -870,6 +914,10 @@ mod tests {
         assert_eq!(outcome.1["specialist"]["repair"]["model"], "sonnet");
         assert_eq!(outcome.1["specialist"]["repair"]["first_review"]["reasons"][0], "docs/a.md:3 invents `run_fast`");
         assert_eq!(outcome.1["specialist"]["review"]["accept"], true);
+        // The PR describes the repaired change: the repair's title, and round 1's
+        // summary where the repair gave none.
+        let published = crate::automation::worker::structured_result(&outcome.1);
+        assert_eq!((published["title"].as_str(), published["summary"].as_str()), (Some("t2"), Some("s")));
     }
 
     #[tokio::test]
@@ -885,6 +933,7 @@ mod tests {
         let outcome = applied(&reviewed);
         assert_eq!((outcome.0.as_str(), outcome.1["code"].as_str()), ("blocked_policy", Some("specialist_review_rejected")));
         assert_eq!(outcome.1["specialist"]["review"]["reasons"][0], "still wrong");
+        assert_eq!(crate::automation::worker::structured_result(&outcome.1["result"])["title"], "t");
         assert!((cost(&outcome) - 1.5).abs() < 1e-9);
     }
 
@@ -959,7 +1008,7 @@ mod tests {
         // The first round's change: a modified and a new file.
         std::fs::write(dir.path().join("README.md"), "# New\n").unwrap();
         std::fs::write(dir.path().join("guide.md"), "first\n").unwrap();
-        let baseline = RepairBaseline::commit(dir.path()).await.unwrap();
+        let baseline = RepairBaseline::commit(dir.path()).unwrap();
         // What the sandbox write consumer does with the repair's diff.
         crate::factory::workspace::reset_and_apply(
             dir.path(),
@@ -967,7 +1016,7 @@ mod tests {
         )
         .await
         .unwrap();
-        baseline.restore().await.unwrap();
+        baseline.restore().unwrap();
         assert_eq!(head(dir.path()), base, "HEAD is back at the base");
         assert_eq!(std::fs::read_to_string(dir.path().join("README.md")).unwrap(), "# New\n");
         assert_eq!(std::fs::read_to_string(dir.path().join("guide.md")).unwrap(), "repaired\n");
@@ -975,9 +1024,20 @@ mod tests {
             checkout_changes(dir.path()).await.unwrap().into_iter().map(|f| (f.filename, f.status)).collect();
         assert_eq!(changed, [("README.md".into(), "modified".into()), ("guide.md".into(), "added".into())]);
         // Dropped without a restore (a cancelled run), it still puts HEAD back.
-        let dropped = RepairBaseline::commit(dir.path()).await.unwrap();
+        let dropped = RepairBaseline::commit(dir.path()).unwrap();
         drop(dropped);
         assert_eq!(head(dir.path()), base);
+        // A commit that lands after the baseline's (a late writer) does not
+        // survive the restore: it resets to the recorded sha, not `HEAD~1`.
+        let late = RepairBaseline::commit(dir.path()).unwrap();
+        git(&["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "late"]);
+        late.restore().unwrap();
+        assert_eq!(head(dir.path()), base);
+        assert_eq!(std::fs::read_to_string(dir.path().join("guide.md")).unwrap(), "repaired\n");
+        // A restore that cannot put HEAD back is an error, so the run fails closed.
+        let lost = RepairBaseline { workdir: dir.path().to_path_buf(), head: Some("0".repeat(40)) };
+        assert!(lost.restore().is_err());
+        assert_eq!(head(dir.path()), base, "a failed restore leaves HEAD where it was");
     }
 
     #[test]
