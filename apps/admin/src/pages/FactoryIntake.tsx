@@ -11,6 +11,7 @@ import { Input } from '../components/ui/Input'
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
 import { cn } from '../lib/utils'
 import type {
+  AutonomousAgentDefinition,
   AutonomousAgentConnector,
   FactoryIntakeItem,
   FactoryIntakeKind,
@@ -82,6 +83,20 @@ const EMPTY: Draft = {
   query: 'is:unresolved level:[error,fatal]',
 }
 
+function nextStepFor(reason: string): string {
+  if (reason === 'resolver_not_ready') return 'Validate the resolver’s current revision in Factory → Agents, then enable it. Come back here and retry this item.'
+  if (reason.startsWith('class_not_auto_startable:')) return 'Automatic start held this class for a person. Review the request below, then you can explicitly start it with the configured resolver.'
+  if (reason === 'decision_model_hold') return 'The decision model asked for a person to review this request. Read the task before choosing whether to start it.'
+  if (reason === 'daily_start_cap_reached') return 'The automatic daily start limit was reached. You can start this item after reviewing it and confirming below.'
+  if (reason === 'restricted_data_needs_a_person') return 'This source is marked Restricted and cannot be sent to an autonomous resolver. Change the source privacy only if the data is safe to process.'
+  if (reason === 'repository_not_private') return 'External intake can run only against a private GitHub repository. Update the resolver repository before retrying.'
+  if (reason === 'repository_unreadable') return 'Check that the server GitHub connection can read the resolver’s configured repository.'
+  if (reason === 'github_unavailable' || reason === 'issue_create_failed') return 'GitHub could not complete the request. Check the server connection, then retry.'
+  if (reason === 'decision_model_unavailable' || reason === 'decision_model_error') return 'The decision service is unavailable. You can review this item and explicitly start it once the resolver is ready.'
+  if (reason === 'human_confirmed') return 'A person confirmed this start. Follow the run and review its pull request before merging.'
+  return 'Review the request and source details. If it is safe and useful, explicitly start the configured resolver.'
+}
+
 function draftFrom(source: FactoryIntakeSource): Draft {
   const text = (key: string) => (typeof source.config[key] === 'string' ? (source.config[key] as string) : '')
   const reactors = Array.isArray(source.config.allowed_reactors) ? (source.config.allowed_reactors as string[]) : []
@@ -143,11 +158,14 @@ export default function FactoryIntake() {
   const permissions = session?.user.permissions ?? []
   const canRead = permissions.includes('factory_policy:read')
   const canWrite = permissions.includes('factory_policy:write')
+  const canRunAgents = permissions.includes('autonomous_agent:run')
+  const canManageAgents = permissions.includes('autonomous_agent:enable')
   // Storing a new token creates a connector, which needs its own permission.
   const canAddToken = permissions.includes('autonomous_agent:manage_connectors')
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [reviewItem, setReviewItem] = useState<FactoryIntakeItem | null>(null)
 
   const sources = useQuery({ queryKey: ['factory-intake-sources'], queryFn: () => client.listFactoryIntakeSources(), enabled: canRead })
   const items = useQuery({ queryKey: ['factory-intake-items'], queryFn: () => client.listFactoryIntakeItems(50), enabled: canRead })
@@ -155,6 +173,11 @@ export default function FactoryIntake() {
   const watchdog = useQuery({ queryKey: ['factory-watchdog'], queryFn: () => client.getFactoryWatchdog(), enabled: canRead })
   const connectors = useQuery({ queryKey: ['autonomous-connectors'], queryFn: () => client.listAutonomousAgentConnectors(), enabled: canWrite })
   const agents = useQuery({ queryKey: ['autonomous-agents'], queryFn: () => client.listAutonomousAgents(), enabled: canWrite })
+  const reviewTask = useQuery({
+    queryKey: ['task', reviewItem?.nexus_task_id],
+    queryFn: () => client.getTask(reviewItem!.nexus_task_id!),
+    enabled: !!reviewItem?.nexus_task_id,
+  })
 
   const resolvers = (agents.data ?? []).filter(agent => agent.template_key === 'github_issue_resolver' && agent.status !== 'archived')
   // Only tokens stored for this kind of intake (and, for Sentry, this host) are accepted.
@@ -201,6 +224,21 @@ export default function FactoryIntake() {
     onSuccess: refresh,
   })
   const remove = useMutation({ mutationFn: (id: string) => client.deleteFactoryIntakeSource(id), onSuccess: refresh })
+  const startItem = useMutation({
+    mutationFn: (item: FactoryIntakeItem) => client.startFactoryIntakeItem(item.task_id),
+    onSuccess: () => {
+      setReviewItem(null)
+      void queryClient.invalidateQueries({ queryKey: ['factory-intake-items'] })
+    },
+  })
+  const validateResolver = useMutation({
+    mutationFn: (id: string) => client.validateAutonomousAgent(id),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['autonomous-agents'] }) },
+  })
+  const enableResolver = useMutation({
+    mutationFn: (id: string) => client.enableAutonomousAgent(id),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['autonomous-agents'] }) },
+  })
 
   if (!canRead) {
     return <PermissionDenied title="Intake" permission="factory_policy:read" what="see where the factory takes work from" />
@@ -210,6 +248,15 @@ export default function FactoryIntake() {
   const startNew = () => setDraft({ ...EMPTY, connector: secretsFor(EMPTY)[0]?.id ?? NEW_TOKEN, resolver: resolvers[0]?.id ?? '' })
   const itemCount = (sourceId: string) => (items.data ?? []).filter(item => item.source_id === sourceId).length
   const sourceName = (item: FactoryIntakeItem) => sources.data?.find(source => source.id === item.source_id)?.name
+  const sourceForItem = (item: FactoryIntakeItem) => sources.data?.find(source => source.id === item.source_id)
+  const resolverForItem = (item: FactoryIntakeItem): AutonomousAgentDefinition | undefined => {
+    const resolverId = sourceForItem(item)?.resolver_definition_id
+    return (agents.data ?? []).find(agent => agent.id === resolverId)
+  }
+  const resolverReadyForItem = (item: FactoryIntakeItem) => {
+    const resolver = resolverForItem(item)
+    return resolver?.status === 'enabled' && resolver.validation_status === 'valid'
+  }
 
   return (
     <div className="p-6 md:p-8 min-w-0 max-w-7xl mx-auto space-y-6">
@@ -243,7 +290,7 @@ export default function FactoryIntake() {
                     <KindIcon kind={source.kind} />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="break-words text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{source.name}</p>
+                    <p className="break-words text-base font-semibold tracking-[-0.2px] text-text-primary">{source.name}</p>
                     <p className="text-[12px] text-text-tertiary">{KIND_LABEL[source.kind]}</p>
                   </div>
                   {!source.enabled ? (
@@ -298,7 +345,7 @@ export default function FactoryIntake() {
                 <KindIcon kind="github" />
               </span>
               <div className="min-w-0">
-                <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">GitHub issues</p>
+                <p className="text-base font-semibold tracking-[-0.2px] text-text-primary">GitHub issues</p>
                 <p className="mt-0.5 text-sm text-text-secondary">Reach the factory through the issue resolver agent. No source needed.</p>
               </div>
             </li>
@@ -319,6 +366,7 @@ export default function FactoryIntake() {
                   <th scope="col" className="px-4 py-2.5 font-medium">From</th>
                   <th scope="col" className="px-4 py-2.5 font-medium">Task class</th>
                   <th scope="col" className="px-4 py-2.5 font-medium">Decision</th>
+                  <th scope="col" className="px-4 py-2.5 font-medium">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -339,9 +387,18 @@ export default function FactoryIntake() {
                         <div className="space-y-0.5">
                           <span className="block text-text-primary">Waiting for a person</span>
                           <span className="block text-[12px] text-text-secondary">{startReason(item.start_reason)}</span>
-                          <code className="block font-mono text-[11px] text-text-tertiary">{item.start_reason}</code>
+                          <code className="block font-mono text-xs text-text-tertiary">{item.start_reason}</code>
                         </div>
                       )}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2.5">
+                      <Button size="sm" variant="secondary" onClick={() => {
+                        setReviewItem(item)
+                        startItem.reset()
+                        validateResolver.reset()
+                        enableResolver.reset()
+                        if (canWrite) void agents.refetch()
+                      }}>{item.start_decision === 'started' ? 'Details' : 'Review'}</Button>
                     </td>
                   </tr>
                 ))}
@@ -351,7 +408,73 @@ export default function FactoryIntake() {
         </section>
       )}
 
-      <WatchdogCard watchdog={watchdog.data ?? null} loading={watchdog.isLoading} failed={watchdog.isError} onRetry={() => watchdog.refetch()} hooks={hooks} canWrite={canWrite} />
+      <Modal open={reviewItem !== null} onOpenChange={open => { if (!open) { setReviewItem(null); startItem.reset(); validateResolver.reset(); enableResolver.reset() } }} size="xl" position="right">
+        {reviewItem && (() => {
+          const source = sourceForItem(reviewItem)
+          const resolver = resolverForItem(reviewItem)
+          const ready = resolverReadyForItem(reviewItem)
+          const restricted = source?.privacy_class === 'restricted'
+          const alreadyStarted = reviewItem.start_decision === 'started'
+          const canStart = canWrite && canRunAgents && !alreadyStarted && !!source && !!resolver && ready && !restricted && !!reviewItem.nexus_task_id
+          const reasonText = reviewItem.start_reason === 'resolver_not_ready' && ready
+            ? 'The resolver is now ready. This item stayed in backlog; review it and start it here.'
+            : nextStepFor(reviewItem.start_reason)
+          return (
+            <div className="flex min-h-full flex-col">
+              <ModalHeader className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <ModalTitle>{alreadyStarted ? 'Intake run details' : 'Review intake item'}</ModalTitle>
+                  <ModalDescription>External text is untrusted. Starting creates a GitHub issue and queues the selected resolver.</ModalDescription>
+                </div>
+                <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={() => { setReviewItem(null); startItem.reset(); validateResolver.reset(); enableResolver.reset() }} />
+              </ModalHeader>
+              <ModalContent className="flex-1 space-y-5">
+                <div className="rounded-lg border border-border-primary bg-foreground/[0.03] p-4">
+                  <p className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">Automatic decision</p>
+                  <p className="mt-1 font-medium text-text-primary">{alreadyStarted ? 'Resolver queued' : 'Waiting for a person'}</p>
+                  <p className="mt-1 text-sm text-text-secondary">{reasonText}</p>
+                  <code className="mt-2 block break-all font-mono text-xs text-text-tertiary">{reviewItem.start_reason}</code>
+                </div>
+                <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
+                  <dt className="text-text-tertiary">Source</dt><dd className="break-words text-text-primary">{source?.name ?? 'Removed source'} · {reviewItem.source_ref}</dd>
+                  <dt className="text-text-tertiary">Task class</dt><dd className="text-text-primary">{taskClassLabel(reviewItem.task_class)}</dd>
+                  <dt className="text-text-tertiary">Repository</dt><dd className="break-all font-mono text-text-primary">{reviewItem.repository}</dd>
+                  <dt className="text-text-tertiary">Resolver</dt><dd className="text-text-primary">{resolver?.name ?? 'Unavailable'}</dd>
+                  <dt className="text-text-tertiary">Resolver status</dt><dd className="text-text-primary">{resolver ? `${resolver.status} · ${resolver.validation_status}` : 'Could not confirm'}</dd>
+                  {source && <><dt className="text-text-tertiary">Data privacy</dt><dd className="text-text-primary">{PRIVACY_LABEL[source.privacy_class]}</dd></>}
+                </dl>
+                {reviewItem.nexus_task_id && <div className="space-y-2 rounded-lg border border-border-primary p-4">
+                  <p className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">Request to review</p>
+                  {reviewTask.isLoading ? <p className="text-sm text-text-secondary">Loading task…</p> : reviewTask.isError ? <InlineAlert>Could not load the task text.</InlineAlert> : reviewTask.data && <>
+                    <h3 className="break-words text-sm font-semibold text-text-primary">{reviewTask.data.title}</h3>
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-text-secondary">{reviewTask.data.description || 'No description was provided.'}</pre>
+                  </>}
+                </div>}
+                {!alreadyStarted && resolver && !ready && (
+                  <div className="rounded-md border border-status-warning/30 bg-status-warning/[0.08] px-3.5 py-3 text-sm text-text-secondary">
+                    Validate the resolver’s current revision and enable it in <a className={LINK_CLASS} href="/factory/agents">Factory → Agents</a>. Then return here to start this saved item.
+                  </div>
+                )}
+                {!alreadyStarted && resolver && !ready && resolver.validation_status !== 'valid' && canManageAgents && <Button size="sm" variant="secondary" disabled={validateResolver.isPending} loading={validateResolver.isPending} onClick={() => validateResolver.mutate(resolver.id)}>Validate resolver now</Button>}
+                {!alreadyStarted && resolver?.validation_status === 'valid' && resolver.status !== 'enabled' && canManageAgents && <Button size="sm" variant="secondary" disabled={enableResolver.isPending} loading={enableResolver.isPending} onClick={() => enableResolver.mutate(resolver.id)}>Enable resolver</Button>}
+                {restricted && <p className="text-sm text-status-warning">Restricted data cannot be sent to the autonomous resolver.</p>}
+                {!alreadyStarted && canWrite && !canRunAgents && <p className="text-sm text-status-warning">Your role needs the autonomous_agent:run permission to start this resolver.</p>}
+                {alreadyStarted && reviewItem.issue_number && <a className={LINK_CLASS} href={`https://github.com/${reviewItem.repository}/issues/${reviewItem.issue_number}`} target="_blank" rel="noreferrer">Open GitHub issue #{reviewItem.issue_number}</a>}
+                {alreadyStarted && reviewItem.run_id && <p className="text-[12px] text-text-tertiary">Run ID: <code className="font-mono">{reviewItem.run_id}</code></p>}
+                {!alreadyStarted && <p className="text-[12px] leading-relaxed text-text-tertiary">Confirm only if this request is safe and belongs in the configured repository. The resolver may open a pull request; a person must still review and merge it.</p>}
+                {startItem.isError && <InlineAlert>{`Could not start the resolver: ${message(startItem.error)}.`}</InlineAlert>}
+                {(validateResolver.isError || enableResolver.isError) && <InlineAlert>{`Could not update the resolver: ${message(validateResolver.error ?? enableResolver.error)}.`}</InlineAlert>}
+              </ModalContent>
+              {!alreadyStarted && <ModalFooter className="border-t border-border-primary pt-4">
+                <Button size="sm" variant="secondary" onClick={() => { setReviewItem(null); startItem.reset() }}>Close</Button>
+                <Button size="sm" disabled={!canStart || startItem.isPending} loading={startItem.isPending} onClick={() => startItem.mutate(reviewItem)}>Create GitHub issue and start resolver</Button>
+              </ModalFooter>}
+            </div>
+          )
+        })()}
+      </Modal>
+
+      <WatchdogCard watchdog={watchdog.data ?? null} loading={watchdog.isLoading} failed={watchdog.isError} onRetry={() => watchdog.refetch()} hooks={hooks} canWrite={canWrite} canManageConnectors={canAddToken} />
 
       <SourceEditor
         draft={draft}
@@ -569,6 +692,7 @@ function WatchdogCard({
   onRetry,
   hooks,
   canWrite,
+  canManageConnectors,
 }: {
   watchdog: FactoryWatchdog | null
   loading: boolean
@@ -576,12 +700,16 @@ function WatchdogCard({
   onRetry: () => void
   hooks: AutonomousAgentConnector[]
   canWrite: boolean
+  canManageConnectors: boolean
 }) {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const [connector, setConnector] = useState<string | null>(null)
   const [hour, setHour] = useState<number | null>(null)
+  const [showAddConnector, setShowAddConnector] = useState(false)
+  const [connectorName, setConnectorName] = useState('Factory notifications')
+  const [connectorToken, setConnectorToken] = useState('')
   const selected = connector ?? watchdog?.slack_connector_id ?? ''
   const dailyHour = hour ?? watchdog?.daily_hour_utc ?? 13
   const save = useMutation({
@@ -589,6 +717,21 @@ function WatchdogCard({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['factory-watchdog'] }),
   })
   const enabled = !!watchdog?.enabled && !!watchdog.slack_connector_id
+  const addConnector = useMutation({
+    mutationFn: () => client.putAutonomousAgentConnector({
+      kind: 'slack',
+      name: connectorName.trim(),
+      secret: connectorToken.trim(),
+      metadata: {},
+      scopes: ['chat:write'],
+    }),
+    onSuccess: created => {
+      setConnector(created.id)
+      setConnectorToken('')
+      setShowAddConnector(false)
+      queryClient.invalidateQueries({ queryKey: ['autonomous-connectors'] })
+    },
+  })
 
   return (
     <section aria-labelledby="watchdog-title" className="space-y-3 border-t border-border-primary pt-8">
@@ -596,7 +739,7 @@ function WatchdogCard({
         <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-text-secondary" aria-hidden="true" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 id="watchdog-title" className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Slack notifications</h2>
+            <h2 id="watchdog-title" className="text-base font-semibold tracking-[-0.2px] text-text-primary">Slack notifications</h2>
             {!loading && !failed && (
               <Badge role="none" size="sm" variant={enabled ? 'success' : 'default'}>{enabled ? 'On' : 'Off'}</Badge>
             )}
@@ -612,7 +755,7 @@ function WatchdogCard({
       {failed && <InlineAlert onRetry={onRetry}>Could not load the notification settings.</InlineAlert>}
       {canWrite && (
         <div className={cn(PANEL_CLASS, 'grid items-end gap-4 sm:grid-cols-[minmax(0,1fr)_12rem_auto]')}>
-          <Field id="watchdog-connector" label="Slack webhook" hint={hooks.length === 0 ? 'Add a Slack webhook connector in Autonomous agents first.' : undefined}>
+          <Field id="watchdog-connector" label="Slack bot connector" hint={hooks.length === 0 ? 'Create a Slack bot connector here. It needs the chat:write scope.' : undefined}>
             <StyledSelect id="watchdog-connector" className={SELECT_CLASS} value={selected} onChange={event => setConnector(event.target.value)}>
               <option value="">Choose a Slack connector</option>
               {hooks.map(hook => <option key={hook.id} value={hook.id}>{hook.name}</option>)}
@@ -622,8 +765,24 @@ function WatchdogCard({
             <Input id="watchdog-hour" type="number" min={0} max={23} value={dailyHour} onChange={event => setHour(Math.min(23, Math.max(0, Number(event.target.value) || 0)))} />
           </Field>
           <div className="flex gap-2 sm:pb-0">
+            {canManageConnectors && <Button size="sm" variant="secondary" onClick={() => setShowAddConnector(value => !value)}>{showAddConnector ? 'Cancel' : 'Add Slack bot'}</Button>}
             {enabled && <Button size="sm" variant="secondary" disabled={save.isPending} onClick={() => save.mutate(false)}>Turn off</Button>}
             <Button size="sm" disabled={!selected || save.isPending} onClick={() => save.mutate(true)}>{enabled ? 'Save' : 'Turn on'}</Button>
+          </div>
+        </div>
+      )}
+      {showAddConnector && canManageConnectors && (
+        <div className={cn(PANEL_CLASS, 'grid gap-4 sm:grid-cols-2')}>
+          <p className="text-sm text-text-secondary sm:col-span-2">Create a Slack app bot token (xoxb-…) with the <code>chat:write</code> bot token scope, install it in your workspace, and paste it here.</p>
+          <Field id="watchdog-connector-name" label="Connector name">
+            <Input id="watchdog-connector-name" value={connectorName} onChange={event => setConnectorName(event.target.value)} />
+          </Field>
+          <Field id="watchdog-connector-token" label="Slack bot token (xoxb-…)" hint="Stored encrypted as a connector secret.">
+            <Input id="watchdog-connector-token" type="password" autoComplete="off" value={connectorToken} onChange={event => setConnectorToken(event.target.value)} />
+          </Field>
+          <div className="flex items-center gap-3 sm:col-span-2">
+            <Button size="sm" disabled={addConnector.isPending || !connectorName.trim() || !connectorToken.trim()} onClick={() => addConnector.mutate()}>{addConnector.isPending ? 'Saving…' : 'Save Slack connector'}</Button>
+            {addConnector.isError && <span role="alert" className="text-sm text-status-danger">Could not create the connector: {message(addConnector.error)}.</span>}
           </div>
         </div>
       )}

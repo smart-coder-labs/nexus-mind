@@ -156,12 +156,12 @@ describe('FactoryIntake', () => {
     expect(screen.queryByLabelText(/slack bot token/i)).not.toBeInTheDocument()
   })
 
-  it('turns Slack notifications on with a Slack webhook connector', async () => {
+  it('turns Slack notifications on with a Slack bot connector', async () => {
     renderPage(['factory_policy:read', 'factory_policy:write'])
     const user = userEvent.setup()
     const card = await screen.findByRole('region', { name: 'Slack notifications' })
     expect(within(card).getByRole('button', { name: 'Turn on' })).toBeDisabled()
-    await user.click(within(card).getByLabelText('Slack webhook'))
+    await user.click(within(card).getByLabelText('Slack bot connector'))
     expect(screen.getByRole('option', { name: 'Team channel' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'intake: Bugs' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('option', { name: 'Team channel' }))

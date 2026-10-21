@@ -405,6 +405,35 @@ pub fn list_items(conn: &Connection, org_id: &str, limit: i64) -> Result<Vec<Int
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+pub fn get_item(conn: &Connection, org_id: &str, task_id: &str) -> Result<Option<IntakeItem>> {
+    conn.query_row(
+        "SELECT task_id,source_id,source_ref,nexus_task_id,task_class,origin_trust,repository,start_decision,
+                start_reason,jev_json,issue_number,run_id,created_at
+           FROM factory_intake_items WHERE org_id=?1 AND task_id=?2",
+        params![org_id, task_id],
+        |row| {
+            let jev: Option<String> = row.get(9)?;
+            Ok(IntakeItem {
+                task_id: row.get(0)?,
+                source_id: row.get(1)?,
+                source_ref: row.get(2)?,
+                nexus_task_id: row.get(3)?,
+                task_class: row.get(4)?,
+                origin_trust: row.get(5)?,
+                repository: row.get(6)?,
+                start_decision: row.get(7)?,
+                start_reason: row.get(8)?,
+                jev: jev.and_then(|j| serde_json::from_str(&j).ok()),
+                issue_number: row.get(10)?,
+                run_id: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Creates the backlog factory task (labelled `factory`, its class, and
 /// `untrusted` for untrusted text) and the item, still undecided, in one
 /// transaction: a failure later never makes the next poll create it again.
