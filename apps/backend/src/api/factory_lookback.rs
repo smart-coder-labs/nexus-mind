@@ -57,7 +57,16 @@ fn viewer_user_id(auth: &AuthContext) -> Option<&str> {
 
 fn tokens(text: &str) -> std::collections::BTreeSet<String> {
     const STOP: &[&str] = &[
-        "about", "after", "again", "also", "and", "are", "como", "con", "cuando", "de", "del", "desde", "do", "el", "en", "for", "from", "have", "how", "into", "la", "las", "los", "mais", "más", "not", "para", "pero", "por", "que", "qué", "this", "that", "the", "then", "there", "these", "they", "this", "una", "uno", "was", "when", "with", "without", "you",
+        "about", "add", "added", "adding", "adds", "after", "again", "also", "and", "are",
+        "arregla", "arreglar", "arreglado", "bug", "bugfix", "bugfixes", "bugs", "como", "con", "corregir", "corregido",
+        "cuando", "de", "del", "desde", "do", "el", "en", "error", "errors", "errores", "for", "from",
+        "fix", "fixed", "fixes", "have", "how", "implement", "implementa", "implementacion", "implementación", "implementado", "implementar",
+        "implemented", "implementing", "implements",
+        "into", "issue", "issues", "la", "las", "los", "mais", "más", "not", "para", "pero", "por",
+        "problema", "problemas", "que", "qué", "reparar", "reparado", "tarea", "tareas", "task", "tasks", "this", "that", "the",
+        "then", "there", "these", "they", "this", "una", "uno", "update", "updated", "updates", "updating",
+        "actualiza", "actualizado", "actualizar", "agrega", "agregado", "agregar", "añade", "añadido", "añadir",
+        "solucion", "solución", "solucionar", "was", "when", "with", "without", "you",
     ];
     let normalized = text.to_lowercase();
     normalized
@@ -221,6 +230,16 @@ mod tests {
         other.project = "other-project".into();
         let tasks = vec![task("t1", "Fix oauth timeout", "done"), other];
         let memories = vec![memory("m1", "bugfix", "OAuth timeout", "Retry policy")];
+        assert!(build_recommendations(&tasks, &memories).is_empty());
+    }
+
+    #[test]
+    fn generic_issue_and_edit_words_do_not_drive_recommendations() {
+        let tasks = vec![
+            task("t1", "Fix bug issue task error update add implement", "done"),
+            task("t2", "Fix bug issue task error update add implement", "done"),
+        ];
+        let memories = vec![memory("m1", "bugfix", "Fix bugfix issue", "Task error after update")];
         assert!(build_recommendations(&tasks, &memories).is_empty());
     }
 }

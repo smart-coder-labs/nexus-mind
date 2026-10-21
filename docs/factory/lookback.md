@@ -12,6 +12,11 @@ across visible projects. Stop words and terms shorter than three characters are
 ignored. The response includes matched terms, task IDs/titles and the memory ID
 so a person can inspect why it was suggested.
 
+Generic task words and edit verbs in English and Spanish (for example, `fix`,
+`bug`, `error`, `issue`, `task`, `update`, `add`, `implement`, `arreglar`,
+`problema`, `solucion`, and `actualizar`) are ignored so they cannot drive a
+recommendation. Domain terms such as `oauth` and `timeout` remain eligible.
+
 The endpoint requires both `task:read` and `memory:read`. It scans up to 500
 visible completed tasks and 500 visible bugfix memories, returns at most 20
 recommendations, and reports whether either source was truncated. It does not
