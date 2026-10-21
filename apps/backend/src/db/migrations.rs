@@ -152,6 +152,15 @@ pub fn run_v89(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Lease timestamp for reclaiming eval runs abandoned by a restarted worker.
+pub fn run_v89(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 89 { return Ok(()); }
+    conn.execute_batch("ALTER TABLE factory_eval_runs ADD COLUMN lease_updated_at TEXT;
+        PRAGMA user_version = 89;")?;
+    Ok(())
+}
+
 /// Migration v87: factory F4 intake kinds (plan D13). Adds `gmail`, `notion`
 /// and `drive` to `factory_intake_sources.kind`. SQLite can't ALTER a CHECK,
 /// so the table is rebuilt (same proven pattern as run_v70); ids are preserved

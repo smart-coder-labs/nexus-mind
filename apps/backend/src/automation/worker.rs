@@ -7534,9 +7534,11 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
     crate::factory::otel::init_from_env();
     // Eval outcomes live on the PVC and are appended atomically by the runner;
     // requeue a run interrupted by a worker/container restart so it resumes.
+    // This startup reclaim assumes the current one-worker replica deployment;
+    // if that changes, gate reclaims by worker identity/lease instead.
     if let Ok(conn) = store.conn().lock() {
         if let Err(error) = conn.execute(
-            "UPDATE factory_eval_runs SET status='queued',started_at=NULL,error=NULL WHERE status='running'",
+            "UPDATE factory_eval_runs SET status='queued',started_at=NULL,lease_updated_at=NULL,error=NULL WHERE status='running'",
             [],
         ) {
             tracing::warn!("Could not recover interrupted factory eval runs: {error}");
