@@ -1572,6 +1572,67 @@ export interface FactoryEconomics {
   accepted_changes_tracked: boolean
 }
 
+/**
+ * Frozen specialist evaluation contract for the Factory admin page.
+ * The backend discovers source JSONL files in its persistent eval directory;
+ * these shapes deliberately do not expose that filesystem path to the browser.
+ */
+export type FactoryEvaluationStatus = 'queued' | 'running' | 'complete' | 'failed'
+export type FactoryEvaluationSetStatus = 'ready' | 'missing'
+
+export interface FactoryEvaluationArmSummary {
+  arm: 'baseline' | 'specialist'
+  tasks: number
+  accepted: number
+  acceptance_rate: number
+  cost_usd: number | null
+  cost_per_accepted_change: number | null
+  judge_cost_usd: number
+}
+
+export interface FactoryEvaluationSummary {
+  arms: FactoryEvaluationArmSummary[]
+  specialist_beats_baseline: boolean | null
+}
+
+export interface FactoryEvaluationSet {
+  /** Stable dataset key, e.g. `docs`, `tests`, or `ui`. */
+  id: string
+  name: string
+  status: FactoryEvaluationSetStatus
+  task_count: number | null
+  completed_tasks: number
+  base_commit: string | null
+  summary: FactoryEvaluationSummary | null
+}
+
+export interface FactoryEvaluationRun {
+  id: string
+  status: FactoryEvaluationStatus
+  set_ids: string[]
+  started_at: string | null
+  updated_at: string
+  finished_at: string | null
+  error: string | null
+  /** Latest per-set results as read from the runner's JSONL outputs. */
+  sets: FactoryEvaluationSet[]
+}
+
+/** GET /v1/factory/evaluations returns discovered frozen sets and run history. */
+export interface FactoryEvaluationsResponse {
+  sets: FactoryEvaluationSet[]
+  runs: FactoryEvaluationRun[]
+}
+
+/** POST /v1/factory/evaluations starts or resumes the selected frozen sets. */
+export interface StartFactoryEvaluationRequest {
+  set_ids: string[]
+}
+
+export interface StartFactoryEvaluationResponse {
+  run: FactoryEvaluationRun
+}
+
 /** The per-organization identity sandboxed agents use to call NexusMind. */
 export interface FactoryBot {
   user_id: string

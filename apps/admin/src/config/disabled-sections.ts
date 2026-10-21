@@ -71,6 +71,7 @@ const ONLY_CONTEXT_HIDDEN: readonly string[] = [
   '/factory/policies',
   '/factory/decision-model',
   '/factory/settings',
+  '/factory/evaluations',
   '/api-keys',
   '/agents',
   '/policies',

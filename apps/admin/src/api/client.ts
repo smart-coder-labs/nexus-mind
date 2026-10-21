@@ -135,6 +135,10 @@ import type {
   FactoryWatchdog,
   ShadowReport,
   FactoryPolicy,
+  FactoryEvaluationsResponse,
+  FactoryEvaluationRun,
+  StartFactoryEvaluationRequest,
+  StartFactoryEvaluationResponse,
 } from '../types'
 import { isPublicRoute } from '../auth/public-routes'
 
@@ -1468,6 +1472,27 @@ export class NexusMindClient {
 
   getFactoryEconomics(days = 30): Promise<FactoryEconomics> {
     return this.request(`/v1/factory/economics?days=${days}`)
+  }
+
+  /**
+   * Read the frozen datasets and evaluation history. Backend contract required:
+   * GET /v1/factory/evaluations -> { sets: [...], runs: [...] }.
+   */
+  listFactoryEvaluations(): Promise<FactoryEvaluationsResponse> {
+    return this.request('/v1/factory/evaluations')
+  }
+
+  /**
+   * Start or resume evaluation sets via the backend-owned runner. Contract:
+   * POST /v1/factory/evaluations { set_ids } -> { run }.
+   */
+  startFactoryEvaluations(input: StartFactoryEvaluationRequest): Promise<StartFactoryEvaluationResponse> {
+    return this.request('/v1/factory/evaluations', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  /** Read one run, including per-set summaries and status. */
+  getFactoryEvaluation(id: string): Promise<FactoryEvaluationRun> {
+    return this.request(`/v1/factory/evaluations/${encodeURIComponent(id)}`)
   }
 
   decideFactoryMerge(subject: string, approve: boolean, reason?: string): Promise<{ id: string; merges_after: string | null }> {

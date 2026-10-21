@@ -37,6 +37,7 @@ import {
   Flag,
   Scale,
   SlidersHorizontal,
+  FlaskConical,
   ChevronDown,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -194,6 +195,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Autonomy policies', href: '/factory/policies',       icon: ShieldCheck,       adminOnly: true, requiredPermission: 'factory_policy:read' },
       { label: 'Decision model',    href: '/factory/decision-model', icon: Scale,             adminOnly: true, requiredPermission: 'factory_policy:read' },
       { label: 'Factory settings',  href: '/factory/settings',       icon: SlidersHorizontal, adminOnly: true, requiredPermission: 'autonomous_agent:read' },
+      { label: 'Evaluaciones',      href: '/factory/evaluations',    icon: FlaskConical,      adminOnly: true, requiredPermission: 'factory_policy:read' },
     ],
   },
   {
