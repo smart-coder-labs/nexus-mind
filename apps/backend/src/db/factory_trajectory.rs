@@ -45,16 +45,7 @@ pub fn record_run_outcome(
         .and_then(|value| value.pointer("/checks/passed"))
         .and_then(Value::as_bool);
     let code = result.get("code").and_then(Value::as_str);
-    let outcome = if review_accepted == Some(true) && checks_passed != Some(false) {
-        "accepted"
-    } else if review_accepted == Some(false)
-        || checks_passed == Some(false)
-        || matches!(code, Some("specialist_review_rejected" | "specialist_checks_failed"))
-    {
-        "rejected"
-    } else {
-        "unknown"
-    };
+    let outcome = specialist_outcome(review_accepted, checks_passed, code);
 
     let verification_report: Option<String> = conn
         .query_row(
@@ -82,6 +73,23 @@ pub fn record_run_outcome(
     Ok(())
 }
 
+fn specialist_outcome(
+    review_accepted: Option<bool>,
+    checks_passed: Option<bool>,
+    code: Option<&str>,
+) -> &'static str {
+    if review_accepted == Some(true) && checks_passed == Some(true) {
+        "accepted"
+    } else if review_accepted == Some(false)
+        || checks_passed == Some(false)
+        || matches!(code, Some("specialist_review_rejected" | "specialist_checks_failed"))
+    {
+        "rejected"
+    } else {
+        "unknown"
+    }
+}
+
 /// Append a human's accepted/rejected label and optional diff statistics. This
 /// stores metadata only, never source text or diffs, and never affects a run.
 pub fn record_human_feedback(
@@ -95,13 +103,14 @@ pub fn record_human_feedback(
     if !matches!(outcome, "accepted" | "rejected") {
         anyhow::bail!("invalid_trajectory_outcome");
     }
-    let run_exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2)",
+    let status: Option<String> = conn.query_row(
+        "SELECT status FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
         params![org_id, run_id],
         |row| row.get(0),
-    )?;
-    if !run_exists {
-        return Ok(None);
+    ).optional()?;
+    let Some(status) = status else { return Ok(None) };
+    if !matches!(status.as_str(), "succeeded" | "partial" | "failed" | "blocked_policy" | "blocked_runtime" | "budget_exhausted" | "dead_letter") {
+        anyhow::bail!("run_not_terminal");
     }
     let data = json!({"human_edit": edit});
     let id = uuid::Uuid::new_v4().to_string();
@@ -171,8 +180,8 @@ mod tests {
         crate::db::queries::create_automation_run(&conn, "automation-1", &org.id, None, &user.id, "profile-v1", 0).unwrap();
         conn.execute(
             "INSERT INTO autonomous_agent_runs
-             (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,budget_json)
-             VALUES ('run-1',?1,'d1','r1','automation-1','manual','occ-1','{}')",
+             (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,budget_json,status)
+             VALUES ('run-1',?1,'d1','r1','automation-1','manual','occ-1','{}','succeeded')",
             [&org.id],
         ).unwrap();
         (conn, org.id, user.id, "run-1".into())
@@ -194,6 +203,8 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].outcome.as_deref(), Some("accepted"));
         assert_eq!(entries[0].data["verification_report"]["passed"], true);
+        assert_eq!(specialist_outcome(Some(true), None, None), "unknown");
+        assert_eq!(specialist_outcome(None, Some(true), None), "unknown");
     }
 
     #[test]
@@ -214,6 +225,9 @@ mod tests {
         assert_eq!(entries[1].outcome.as_deref(), Some("accepted"));
         assert_eq!(entries[1].data["human_edit"]["changed_files"][0], "src/lib.rs");
         assert!(conn.execute("UPDATE factory_trajectory_entries SET outcome='accepted' WHERE id=?1", [&entries[0].id]).is_err());
+        assert!(conn.execute("DELETE FROM factory_trajectory_entries WHERE id=?1", [&entries[0].id]).is_err());
+        conn.execute("DELETE FROM autonomous_agent_runs WHERE id=?1", [&run]).unwrap();
+        assert!(list_for_run(&conn, &org, &run).unwrap().is_empty(), "parent retention deletes cascade through the audit table");
     }
 
     #[test]
@@ -222,5 +236,7 @@ mod tests {
         assert!(list_for_run(&conn, "another-org", &run).unwrap().is_empty());
         assert!(record_human_feedback(&conn, &org, "missing", &user, "accepted", None).unwrap().is_none());
         assert!(record_human_feedback(&conn, &org, &run, &user, "unknown", None).is_err());
+        conn.execute("UPDATE autonomous_agent_runs SET status='running' WHERE id=?1", [&run]).unwrap();
+        assert!(record_human_feedback(&conn, &org, &run, &user, "accepted", None).is_err());
     }
 }

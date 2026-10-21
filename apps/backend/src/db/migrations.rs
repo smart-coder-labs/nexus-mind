@@ -172,7 +172,7 @@ pub fn run_v91(conn: &Connection) -> Result<()> {
         run_id TEXT NOT NULL REFERENCES autonomous_agent_runs(id) ON DELETE CASCADE,
         entry_kind TEXT NOT NULL CHECK(entry_kind IN ('run_outcome','human_feedback')),
         outcome TEXT CHECK(outcome IN ('accepted','rejected','unknown')),
-        actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        actor_user_id TEXT,
         data_json TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -182,6 +182,13 @@ pub fn run_v91(conn: &Connection) -> Result<()> {
         ON factory_trajectory_entries(org_id, run_id, created_at);
     CREATE TRIGGER IF NOT EXISTS factory_trajectory_no_update
         BEFORE UPDATE ON factory_trajectory_entries BEGIN
+            SELECT RAISE(ABORT, 'factory trajectory entries are append-only');
+        END;
+    CREATE TRIGGER IF NOT EXISTS factory_trajectory_no_direct_delete
+        BEFORE DELETE ON factory_trajectory_entries
+        WHEN EXISTS (SELECT 1 FROM organizations WHERE id=OLD.org_id)
+         AND EXISTS (SELECT 1 FROM autonomous_agent_runs WHERE id=OLD.run_id)
+        BEGIN
             SELECT RAISE(ABORT, 'factory trajectory entries are append-only');
         END;
     PRAGMA user_version = 91;")?;

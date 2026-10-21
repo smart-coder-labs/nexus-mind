@@ -72,16 +72,21 @@ pub async fn record_human_feedback(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
-    let entry = factory_trajectory::record_human_feedback(
+    let entry = match factory_trajectory::record_human_feedback(
         &conn,
         &auth.org_id,
         &run_id,
         &auth.user_id,
         &input.outcome,
         input.human_edit.as_ref(),
-    )
-    .map_err(internal)?
-    .ok_or_else(|| error(StatusCode::NOT_FOUND, "not_found", "Autonomous run not found"))?;
+    ) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => return Err(error(StatusCode::NOT_FOUND, "not_found", "Autonomous run not found")),
+        Err(error_value) if error_value.to_string() == "run_not_terminal" => {
+            return Err(error(StatusCode::CONFLICT, "run_not_terminal", "Human feedback requires a completed, blocked, or failed run"));
+        }
+        Err(error_value) => return Err(internal(error_value)),
+    };
     Ok((StatusCode::CREATED, Json(entry)))
 }
 
