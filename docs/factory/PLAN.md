@@ -329,6 +329,7 @@ Also in this phase:
 - Build a trajectory store of accepted and rejected runs, with verification data and human edits.
 - Add a lookback workflow (recommendations only) that clusters recurrences against NexusMind `bugfix` memories.
 - LoRA/QLoRA only if the evals show a persistent behavioral gap.
+- **Status (2026-10-21): first audit-only slice in review.** Migration v91 adds append-only trajectory entries: rows cannot be updated or directly deleted, while deletion of their parent run or org cascades through them for retention/account cleanup. Finished runs record the explicit specialist review/check verdict (otherwise `unknown`) and snapshot the verification report when available. An owner can append an accepted/rejected assessment plus changed file paths and diff counts; the API never stores human patch contents. Read access is org-scoped. These entries are not read by routing, policy or execution. This slice does not automatically detect post-run edits or final PR acceptance, and it does not widen autonomy.
 
 **Horizon:** 2026-10-04 → 2026-12-13, per the architecture doc. No GPU is needed before F4.
 

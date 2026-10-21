@@ -7756,6 +7756,17 @@ fn record_run_telemetry(
     ) {
         tracing::warn!(run = %claim.run.id, "Could not record run telemetry: {error:#}");
     }
+    // Trajectory snapshots are audit data only. A storage failure is logged
+    // and cannot affect the completed run or its policy outcome.
+    if let Err(error) = crate::db::factory_trajectory::record_run_outcome(
+        conn,
+        &claim.org_id,
+        &claim.run.id,
+        status,
+        result,
+    ) {
+        tracing::warn!(run = %claim.run.id, "Could not record factory trajectory: {error:#}");
+    }
     if crate::factory::otel::enabled() {
         // A missing or unreadable choice only leaves the tier off the span.
         let (tier, request_model) =
