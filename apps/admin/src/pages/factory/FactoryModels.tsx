@@ -124,7 +124,9 @@ export default function FactoryModels() {
   const chatGptSelected = draft ? roles.some(({ key }) => draft[key].provider === 'chatgpt_plan') : false
   const hasDisconnectedProvider = draft ? roles.some(({ key }) => {
     const provider = draft[key].provider
-    return provider === 'chatgpt_plan' ? config.data?.credentials.chatgpt_plan !== 'connected' : config.data?.credentials[provider] !== 'configured'
+    return provider === 'chatgpt_plan'
+      ? config.data?.credentials.chatgpt_plan === 'not_connected'
+      : config.data?.credentials[provider] === 'unknown'
   }) : false
 
   return <div className="mx-auto min-w-0 max-w-5xl space-y-6 p-6 md:p-8">
@@ -154,11 +156,11 @@ export default function FactoryModels() {
 
       {!config.data.execution_ready && <p className="flex gap-2 rounded-lg border border-status-warning/25 bg-status-warning/[0.08] p-4 text-sm text-text-primary" role="status">
         <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden="true" />
-        <span>Estas asignaciones todavía no están habilitadas para ejecutar en el runtime. Una tarea no debe cambiarse silenciosamente a Claude ni a otro proveedor.</span>
+        <span>Guardar preferencias no cambia todavía el proveedor que usa el runtime. Estas asignaciones no están habilitadas para ejecutar; si el proveedor seleccionado no está conectado, la ejecución debe bloquearse. No se hará fallback silencioso a Claude ni a otro proveedor.</span>
       </p>}
       {chatGptSelected && <p className="flex gap-2 rounded-lg border border-status-warning/25 bg-status-warning/[0.08] p-4 text-sm text-text-primary" role="status">
         <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden="true" />
-        <span>ChatGPT plan OAuth aún no está conectado. La asignación puede guardarse, pero cualquier ejecución que la use debe quedar bloqueada hasta conectar OAuth. No hay flujo de autorización activo aquí.</span>
+        <span>ChatGPT plan OAuth aún no está conectado y el runtime tampoco está integrado. La asignación puede guardarse, pero una conexión OAuth por sí sola no habilitaría ejecuciones. No hay flujo de autorización activo aquí.</span>
       </p>}
       {!chatGptSelected && hasDisconnectedProvider && <p className="flex gap-2 rounded-lg border border-status-warning/25 bg-status-warning/[0.08] p-4 text-sm text-text-primary" role="status">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden="true" />

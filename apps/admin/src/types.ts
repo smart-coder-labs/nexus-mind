@@ -1645,9 +1645,9 @@ export interface FactoryModelRole {
 export type FactoryModelRoles = Record<FactoryModelRoleName, FactoryModelRole>
 
 export interface FactoryModelCredentials {
-  anthropic: 'configured' | 'missing' | 'unknown'
-  openai_api: 'configured' | 'missing' | 'unknown'
-  chatgpt_plan: 'connected' | 'not_connected'
+  anthropic: 'unknown'
+  openai_api: 'unknown'
+  chatgpt_plan: 'not_connected'
 }
 
 /** GET /v1/factory/model-config; credential values are status only, never secrets. */
