@@ -5,8 +5,37 @@ on:
     branches: [main]
 
 jobs:
+  changes:
+    name: Detect changed applications
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      admin: ${{ steps.filter.outputs.admin }}
+      backoffice: ${{ steps.filter.outputs.backoffice }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - '.github/workflows/ci.yml'
+              - 'apps/backend/**'
+              - 'scripts/reset-demo.sh'
+              - 'scripts/test-mcp.sh'
+            admin:
+              - '.github/workflows/ci.yml'
+              - 'apps/admin/**'
+            backoffice:
+              - '.github/workflows/ci.yml'
+              - 'apps/backoffice/**'
+
   backend:
     name: Backend (Rust)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       # Full history: `migration::git_history` has a calibration test that runs
@@ -38,6 +67,8 @@ jobs:
 
   admin:
     name: Admin Panel (React)
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +93,8 @@ jobs:
 
   backoffice:
     name: Backoffice (React)
+    needs: changes
+    if: needs.changes.outputs.backoffice == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,8 +116,9 @@ jobs:
 
   e2e:
     name: E2E Smoke Test
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
-    needs: [backend]
+    needs: [changes, backend]
     steps:
       - uses: actions/checkout@v4
 
