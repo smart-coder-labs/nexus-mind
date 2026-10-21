@@ -100,6 +100,7 @@ jobs:
           SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
           SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
           SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           set -euo pipefail
           : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
@@ -118,6 +119,10 @@ jobs:
           # the deployment so the freshly built :main-arm64 digest is pulled
           # (imagePullPolicy: Always). Recreate strategy => brief (~40s) downtime.
           scp $SSHOPTS deploy/oracle/k8s/nexusmind.yaml "$REMOTE:/tmp/nexusmind.yaml"
+          if [ -n "$SENTRY_DSN" ]; then
+            printf '{"stringData":{"SENTRY_DSN":"%s"}}' "$SENTRY_DSN" | \
+              ssh $SSHOPTS "$REMOTE" 'kubectl -n nexusmind patch secret nexusmind-env --type=merge --patch-file=/dev/stdin'
+          fi
           ssh $SSHOPTS "$REMOTE" '
             set -e
             kubectl apply -f /tmp/nexusmind.yaml
@@ -143,6 +148,8 @@ jobs:
         run: cd apps/admin && npm ci && npm run build
         env:
           VITE_API_URL: https://api.nexusmind.smartcoderlabs.com
+          VITE_SENTRY_DSN: ${{ vars.VITE_SENTRY_DSN_ADMIN }}
+          VITE_SENTRY_ENVIRONMENT: production
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
@@ -168,6 +175,8 @@ jobs:
         env:
           PUBLIC_SUPABASE_URL: ${{ secrets.PUBLIC_SUPABASE_URL }}
           PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.PUBLIC_SUPABASE_ANON_KEY }}
+          PUBLIC_SENTRY_DSN: ${{ vars.PUBLIC_SENTRY_DSN_LANDING }}
+          PUBLIC_SENTRY_ENVIRONMENT: production
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
@@ -192,6 +201,8 @@ jobs:
         run: cd apps/backoffice && npm ci && npm run build
         env:
           VITE_API_URL: https://api.nexusmind.smartcoderlabs.com
+          VITE_SENTRY_DSN: ${{ vars.VITE_SENTRY_DSN_BACKOFFICE }}
+          VITE_SENTRY_ENVIRONMENT: production
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3

@@ -39,12 +39,10 @@ fn env(name: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "factory_egress=info".into()),
-        )
-        .init();
+    let log_level = tracing_subscriber::EnvFilter::try_from_default_env()
+        .map(|filter| filter.to_string())
+        .unwrap_or_else(|_| "factory_egress=info".to_string());
+    let _sentry = nexusmind::observability::init(&log_level);
 
     let signing_key = env("FACTORY_PROXY_SIGNING_KEY")
         .ok_or_else(|| anyhow::anyhow!("FACTORY_PROXY_SIGNING_KEY is required"))?;

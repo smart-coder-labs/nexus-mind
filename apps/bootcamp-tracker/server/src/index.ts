@@ -1,6 +1,6 @@
+import { Sentry } from './instrument';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 
 import topicsRouter from './routes/topics';
 import subtopicsRouter from './routes/subtopics';
@@ -9,8 +9,6 @@ import remindersRouter from './routes/reminders';
 import sessionsRouter from './routes/sessions';
 import statsRouter from './routes/stats';
 import searchRouter from './routes/search';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -30,6 +28,8 @@ app.use('/api/search', searchRouter);
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+Sentry.setupExpressErrorHandler(app);
 
 app.listen(PORT, () => {
   console.log(`Bootcamp Tracker server running on http://localhost:${PORT}`);

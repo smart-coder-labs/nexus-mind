@@ -15,6 +15,7 @@ Technical documentation covering product, architecture, API, and engineering pro
 | 7 | [CURSOR_PLUGIN.md](./CURSOR_PLUGIN.md) | Cursor integration |
 | 8 | [CODEX_PLUGIN.md](./CODEX_PLUGIN.md) | Codex integration |
 | 9 | [REPOSITORY_CONFIG.md](./REPOSITORY_CONFIG.md) | `.nexusmind.yaml` reference: project routing, agent profiles, resolution rules, examples |
+| 10 | [SENTRY.md](./SENTRY.md) | Sentry integration and deployment variables |
 
 ## Architecture Decision Records
 

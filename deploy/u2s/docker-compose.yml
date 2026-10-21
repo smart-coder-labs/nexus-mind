@@ -6,6 +6,7 @@
 # Requires a .env file next to this compose (written by the deploy workflow):
 #   GHCR_OWNER=<lowercase github owner>
 #   SUPERUSER_KEY=<secret>
+#   SENTRY_DSN=<optional backend error reporting DSN>
 #   U2S_ADMIN_EMAIL=<admin email>     # consumed by bootstrap-u2s.sh only
 #   U2S_ADMIN_NAME=<admin name>       # consumed by bootstrap-u2s.sh only
 #
@@ -35,6 +36,8 @@ services:
       # Auth for the superuser-only endpoints (POST/GET /v1/orgs). Also gates the
       # one-time single-org bootstrap. Never baked into the image — env only.
       SUPERUSER_KEY: ${SUPERUSER_KEY}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: production
       # ⚠️  SECURITY DEBT — REMOVE THIS ONCE THE BOX IS BEHIND TLS. ⚠️
       # This box is served over PLAIN HTTP on a bare IP (http://<ip>:3000).
       # Browsers silently DROP a `Secure` cookie on an insecure origin, so with
