@@ -21,15 +21,12 @@ jobs:
         with:
           filters: |
             backend:
-              - '.github/workflows/ci.yml'
               - 'apps/backend/**'
               - 'scripts/reset-demo.sh'
               - 'scripts/test-mcp.sh'
             admin:
-              - '.github/workflows/ci.yml'
               - 'apps/admin/**'
             backoffice:
-              - '.github/workflows/ci.yml'
               - 'apps/backoffice/**'
 
   backend:
