@@ -4,7 +4,7 @@
 use crate::store::sqlite::SqliteStore;
 use rusqlite::OptionalExtension;
 const EVAL_DIR: &str = "/data/factory-evals";
-const LEASE_SECONDS: i64 = 120;
+const LEASE_SECONDS: i64 = 300;
 
 /// Claim at most one queued run and launch it out of the worker's claim loop.
 /// The database transition is conditional, so overlapping worker ticks cannot

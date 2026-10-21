@@ -182,6 +182,18 @@ pub async fn get_run(State(store): State<SqliteStore>, Extension(auth): Extensio
     let db = store.conn();
     let conn = db.lock().map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Database lock error"))?;
     require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
-    list_for_org(&conn, &auth.org_id).map_err(internal)?.into_iter().find(|run| run.id == id).map(Json)
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "eval_run_not_found", "Eval run not found"))
+    let row = conn.query_row("SELECT id,set_ids_json,status,error,started_at,COALESCE(finished_at,started_at,created_at),finished_at,summary_json
+        FROM factory_eval_runs WHERE id=?1 AND org_id=?2", rusqlite::params![id, auth.org_id], |row| {
+        let id: String = row.get(0)?;
+        let set_ids: Vec<String> = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
+        let summaries = result_summaries(row.get(7)?);
+        let dir = run_dir(&id);
+        let sets = set_ids.iter().map(|set_id| {
+            let summary = if set_ids.len() == 1 && summaries.get("arms").is_some() { Some(summaries.clone()) }
+                else { summaries.get(set_id).cloned() };
+            dataset_info(set_id, &dir, summary)
+        }).collect();
+        Ok(EvalRun { id, set_ids, status: row.get(2)?, error: row.get(3)?, started_at: row.get(4)?, updated_at: row.get(5)?, finished_at: row.get(6)?, sets })
+    }).optional().map_err(internal)?;
+    row.map(Json).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "eval_run_not_found", "Eval run not found"))
 }
