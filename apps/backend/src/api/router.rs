@@ -10,7 +10,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
     admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
-    clients, code, context, conventions, docs, factory, github_auth, harnesses, health, internal, memory,
+    clients, code, context, conventions, docs, factory, factory_model_config, github_auth, harnesses, health, internal, memory,
     middleware as api_mw, migrations as migrations_api, policy, rate_limit, sdd, search, sessions,
     tasks, usage, users, webhooks,
 };
