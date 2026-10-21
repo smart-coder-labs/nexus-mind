@@ -126,11 +126,14 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Implement a `VerificationReport` builder that unifies the existing scanners, tests and DAST into one gate.
 - Harden `recover`: only resume with the original authorization and an owned worktree, and never repeat completed writes.
 - **Exit:** 100% of generated code runs isolated; the gate produces reports for all golden tasks.
-- **Status (2026-10-02): in production, one exit item open.** Every template runs in ephemeral k3s task pods by default (`FACTORY_ISOLATION_DEFAULT=sandbox`); the adversarial drill passed in production. As built (see `openspec/changes/archive/2026-10-02-factory-f1-sandbox`):
+- **Status (2026-10-02): in production; golden reports done for nexus-mind, kasymir pending (GitHub Packages quota).** Every template runs in ephemeral k3s task pods by default (`FACTORY_ISOLATION_DEFAULT=sandbox`); the adversarial drill passed in production. As built (see `openspec/changes/archive/2026-10-02-factory-f1-sandbox`):
   - Containers are Kubernetes pods (user namespaces, PSA restricted, read-only root, no ServiceAccount token, `prlimit` process cap) rather than podman/colima; OD-3 is resolved by that.
   - The credential broker is the egress proxy: pods hold only short-lived HMAC run tokens, and the proxy injects the Claude and NexusMind credentials. GitHub writes stay in the worker (the pod never receives a GitHub token) instead of going through the proxy.
   - Repository code (tests, verification, scanners) runs in a separate commands pod with a registry-only token.
-  - **Open:** the gate has produced reports for real sandboxed runs, but the golden task set (kept outside the repo, F0) has not yet been replayed through the sandbox to produce reports for all golden tasks.
+  - **Golden replay (2026-10-02, `factory-golden-replay`, reports under run `golden-v1`):** each task's `merge_sha` is checked out by the worker and its repository's JS commands run in a commands pod (no agent, nothing published).
+    - nexus-mind, 30/30 reported. The 10 tasks with executable evidence all passed (`npm ci` plus admin `test` or backoffice `build`), with 0 failures and 0 replay errors. 20 touch only Rust, so they are reported as `no_verification_evidence`, because the sandbox image has node/npm only.
+    - Two fixes came out of the replay. Private npm tarballs now go through the proxy's `ghpkg` route via a rewritten lockfile (#288), and the replay runs one task pod at a time, because the node's CPU requests (99%) leave room for a single sandbox pod.
+  - **Open:** kasymir-app-ui (20 tasks) is pending. `npm ci` reaches GitHub Packages through the proxy, but GitHub answers `403 Account has reached its billing limit` for the private scopes' owner. Rerun those tasks once the Packages quota is raised or resets. Rust tasks need a Rust toolchain in the sandbox image before they can produce evidence.
 
 ### F2: Code intelligence, "Bibliotecario" (2–3 weeks)
 
