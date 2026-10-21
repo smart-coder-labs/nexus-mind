@@ -10,7 +10,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
     admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
-    clients, code, context, conventions, docs, factory, factory_evals, factory_model_config, github_auth, harnesses, health, internal, memory,
+    clients, code, context, conventions, docs, factory, factory_evals, factory_lookback, factory_model_config, github_auth, harnesses, health, internal, memory,
     middleware as api_mw, migrations as migrations_api, policy, rate_limit, sdd, search, sessions,
     tasks, usage, users, webhooks,
 };
@@ -215,6 +215,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/factory/tasks", post(factory::submit_factory_task))
         .route("/v1/factory/evaluations", get(factory_evals::list_runs).post(factory_evals::start_run))
         .route("/v1/factory/evaluations/:id", get(factory_evals::get_run))
+        .route("/v1/factory/lookback", get(factory_lookback::recommendations))
         .route(
             "/v1/factory/intake/sources",
             get(factory::list_intake_sources).post(factory::create_intake_source),
