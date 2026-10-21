@@ -151,7 +151,7 @@ pub async fn start_run(
         source_files.push(file);
     }
     let active: Option<String> = conn.query_row("SELECT id FROM factory_eval_runs WHERE status IN ('queued','running') LIMIT 1", [], |row| row.get(0)).optional().map_err(internal)?;
-    if let Some(id) = active { return Err(api_error(StatusCode::CONFLICT, "eval_already_active", format!("Eval run {id} is already queued or running"))); }
+    if active.is_some() { return Err(api_error(StatusCode::CONFLICT, "eval_already_active", "An evaluation is already queued or running")); }
 
     let id = Uuid::new_v4().to_string();
     let runs_dir = source_dir.join("runs");
