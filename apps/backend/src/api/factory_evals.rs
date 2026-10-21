@@ -48,12 +48,16 @@ pub struct StartEvalResponse { pub run: EvalRun }
 pub struct StartEval { pub set_ids: Vec<String> }
 
 fn staged_set(dir: &FsPath, id: &str) -> Option<String> {
+    let canonical_dir = dir.canonicalize().ok()?;
     let entries = std::fs::read_dir(dir).ok()?;
     let mut matches = entries.filter_map(Result::ok).filter_map(|entry| {
+        if !entry.file_type().ok()?.is_file() { return None; }
         let name = entry.file_name().to_string_lossy().into_owned();
-        (entry.path().is_file() && name.ends_with(".jsonl") && !name.ends_with(".results.jsonl")
-            && !name.starts_with('.') && (name == format!("{id}.jsonl") || name.ends_with(&format!("-{id}.jsonl"))))
-            .then_some(name)
+        let matches_id = name.ends_with(".jsonl") && !name.ends_with(".results.jsonl")
+            && !name.starts_with('.') && (name == format!("{id}.jsonl") || name.ends_with(&format!("-{id}.jsonl")));
+        if !matches_id { return None; }
+        let canonical_file = entry.path().canonicalize().ok()?;
+        canonical_file.starts_with(&canonical_dir).then_some(name)
     });
     let first = matches.next()?;
     if matches.next().is_some() { None } else { Some(first) }
@@ -136,7 +140,8 @@ pub async fn start_run(
     set_ids.sort(); set_ids.dedup();
     let source_dir = FsPath::new(EVAL_DIR);
     let runner_path = source_dir.join("run.mjs");
-    if !runner_path.is_file() {
+    let canonical_source = source_dir.canonicalize().map_err(internal)?;
+    if !runner_path.is_file() || !runner_path.canonicalize().is_ok_and(|path| path.starts_with(&canonical_source)) {
         return Err(api_error(StatusCode::CONFLICT, "eval_runner_unavailable", "The frozen eval runner is not installed on the worker volume"));
     }
     let runner_source = std::fs::read_to_string(&runner_path).map_err(internal)?;
@@ -155,7 +160,16 @@ pub async fn start_run(
 
     let id = Uuid::new_v4().to_string();
     let runs_dir = source_dir.join("runs");
-    std::fs::create_dir_all(&runs_dir).map_err(internal)?;
+    match std::fs::symlink_metadata(&runs_dir) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err(api_error(StatusCode::CONFLICT, "eval_run_storage_invalid", "The eval run storage path is not a safe directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&runs_dir).map_err(internal)?,
+        Err(error) => return Err(internal(error)),
+    }
+    let canonical_runs_dir = runs_dir.canonicalize().map_err(internal)?;
+    if !canonical_runs_dir.starts_with(&canonical_source) {
+        return Err(api_error(StatusCode::CONFLICT, "eval_run_storage_invalid", "The eval run storage path escapes its root"));
+    }
     let staging_dir = runs_dir.join(format!(".{id}.staging"));
     let final_dir = run_dir(&id);
     std::fs::create_dir(&staging_dir).map_err(internal)?;
