@@ -161,7 +161,10 @@ pub fn resolver_ready(conn: &Connection, org_id: &str, resolver_definition_id: &
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions d
            JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
-          WHERE d.id=?1 AND d.org_id=?2 AND d.status='enabled' AND r.validation_status='valid')",
+          WHERE d.id=?1 AND d.org_id=?2 AND d.status='enabled'
+            AND (SELECT v.status FROM autonomous_agent_validations v
+                  WHERE v.org_id=d.org_id AND v.definition_id=d.id AND v.revision_id=r.id
+                  ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid')",
         params![resolver_definition_id, org_id],
         |row| row.get(0),
     )?)
@@ -721,8 +724,15 @@ mod tests {
         conn.execute(
             "INSERT INTO autonomous_agent_revisions
                (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by)
-             VALUES ('rev-1','def-1',1,'{\"repository\":\"acme/app\"}','h','{}','{}','valid',?1)",
+             VALUES ('rev-1','def-1',1,'{\"repository\":\"acme/app\"}','h','{}','{}','pending',?1)",
             params![user],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_validations
+               (id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by)
+             VALUES ('validation-1',?1,'def-1','rev-1','h','valid','{\"valid\":true}',?2)",
+            params![org, user],
         )
         .unwrap();
         "def-1".into()
