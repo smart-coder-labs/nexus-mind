@@ -7532,6 +7532,16 @@ async fn reconcile_github_triggers(store: &SqliteStore) {
 pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::task::JoinHandle<()> {
     // Run spans go to OTLP only when an endpoint is configured; otherwise inert.
     crate::factory::otel::init_from_env();
+    // Eval outcomes live on the PVC and are appended atomically by the runner;
+    // requeue a run interrupted by a worker/container restart so it resumes.
+    if let Ok(conn) = store.conn().lock() {
+        if let Err(error) = conn.execute(
+            "UPDATE factory_eval_runs SET status='queued',started_at=NULL,error=NULL WHERE status='running'",
+            [],
+        ) {
+            tracing::warn!("Could not recover interrupted factory eval runs: {error}");
+        }
+    }
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(
             config.autonomous_agent_poll_seconds.max(5),
@@ -7572,6 +7582,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             if ticks == 1 || ticks.is_multiple_of(20) {
                 super::sandboxed::gc_task_pods().await;
             }
+            // Admin-launched frozen specialist evals use the same worker and
+            // persistent runner volume as the previous Oracle cron handoff.
+            super::factory_evals::spawn_one(store.clone());
             let claim = {
                 let db = store.conn();
                 let Ok(conn) = db.lock() else {

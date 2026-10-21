@@ -13,6 +13,7 @@
 // Usage, in the worker container:
 //   node run_specialist_evals.mjs --org <org_id> --dir /data/factory-evals \
 //     [--retry-secs 1800] [--max-wait-hours 14] [--bin /app/factory-specialist-eval]
+//     [--set docs] [--set tests] [--set ui]
 //   node run_specialist_evals.mjs --self-test
 //
 // <dir> holds the sets, run in name order: `10-docs.jsonl`, `20-tests.jsonl`…
@@ -34,7 +35,7 @@ const MAX_OTHER_FAILURES = 2
 const MAX_ERROR_ATTEMPTS = 3
 
 function args(argv) {
-  const out = { retrySecs: 1800, maxWaitHours: 14, bin: '/app/factory-specialist-eval' }
+  const out = { retrySecs: 1800, maxWaitHours: 14, bin: '/app/factory-specialist-eval', setIds: [] }
   for (let i = 0; i < argv.length; i++) {
     const [key, value] = [argv[i], argv[i + 1]]
     if (key === '--self-test') out.selfTest = true
@@ -43,6 +44,7 @@ function args(argv) {
     else if (key === '--retry-secs') (out.retrySecs = Number(value)), i++
     else if (key === '--max-wait-hours') (out.maxWaitHours = Number(value)), i++
     else if (key === '--bin') (out.bin = value), i++
+    else if (key === '--set') (out.setIds.push(value)), i++
     else throw new Error(`unknown argument ${key}`)
   }
   return out
@@ -147,11 +149,18 @@ async function main() {
   // The folder is read again after every set, so a set added while the runner
   // works is picked up without a restart. A set is attempted once per runner.
   const attempted = new Set()
+  const eligible = () => readdirSync(opts.dir)
+    .filter(name => name.endsWith('.jsonl') && !name.endsWith('.results.jsonl') && !name.startsWith('.'))
+    .filter(name => !opts.setIds.length || opts.setIds.some(id => name === `${id}.jsonl` || name.endsWith(`-${id}.jsonl`)))
   const nextSet = () =>
-    readdirSync(opts.dir)
-      .filter(name => name.endsWith('.jsonl') && !name.endsWith('.results.jsonl') && !name.startsWith('.'))
+    eligible()
       .sort()
       .find(set => !attempted.has(set) && !existsSync(join(opts.dir, set.replace(/\.jsonl$/, '.done'))))
+  if (opts.setIds.length) {
+    const found = new Set(eligible().map(name => opts.setIds.find(id => name === `${id}.jsonl` || name.endsWith(`-${id}.jsonl`))))
+    const missing = opts.setIds.filter(id => !found.has(id))
+    if (missing.length) throw new Error(`unknown or missing eval set(s): ${missing.join(', ')}`)
+  }
   log('start')
   for (let set = nextSet(); set; set = nextSet()) {
     attempted.add(set)

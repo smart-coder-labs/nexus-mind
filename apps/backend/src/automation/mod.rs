@@ -1,6 +1,7 @@
 pub mod codex;
 pub mod connectors;
 pub mod factory_intake;
+pub mod factory_evals;
 pub mod golden_replay;
 pub mod image_gen;
 pub mod linkedin;

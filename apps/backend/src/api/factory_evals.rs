@@ -1,0 +1,157 @@
+//! Control plane for starting the frozen specialist eval sets.
+//! Inputs and the restart-safe runner live on the worker's persistent PVC.
+
+use axum::{extract::{Path, State}, http::StatusCode, Extension, Json};
+use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::{api::helpers::{require_explicit_permission, AppJson}, models::types::{ApiError, AuthContext}, store::sqlite::SqliteStore};
+
+const EVAL_DIR: &str = "/data/factory-evals";
+const ALLOWED_SETS: [&str; 3] = ["docs", "tests", "ui"];
+type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
+    (status, Json(ApiError { error: message.into(), code: code.to_owned() }))
+}
+fn internal(error: impl std::fmt::Display) -> (StatusCode, Json<ApiError>) {
+    api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", error.to_string())
+}
+
+#[derive(Clone, Serialize)]
+pub struct EvaluationSet {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub task_count: Option<usize>,
+    pub completed_tasks: usize,
+    pub base_commit: Option<String>,
+    pub summary: Option<serde_json::Value>,
+}
+#[derive(Serialize)]
+pub struct EvalRun {
+    pub id: String,
+    pub set_ids: Vec<String>,
+    pub status: String,
+    pub error: Option<String>,
+    pub started_at: Option<String>,
+    pub updated_at: String,
+    pub finished_at: Option<String>,
+    pub sets: Vec<EvaluationSet>,
+}
+#[derive(Serialize)]
+pub struct EvaluationsResponse { pub sets: Vec<EvaluationSet>, pub runs: Vec<EvalRun> }
+#[derive(Serialize)]
+pub struct StartEvalResponse { pub run: EvalRun }
+#[derive(Deserialize)]
+pub struct StartEval { pub set_ids: Vec<String> }
+
+fn staged_set(id: &str) -> Option<String> {
+    let entries = std::fs::read_dir(EVAL_DIR).ok()?;
+    let mut matches = entries.filter_map(Result::ok).filter_map(|entry| {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        (entry.path().is_file() && name.ends_with(".jsonl") && !name.ends_with(".results.jsonl")
+            && !name.starts_with('.') && (name == format!("{id}.jsonl") || name.ends_with(&format!("-{id}.jsonl"))))
+            .then_some(name)
+    });
+    let first = matches.next()?;
+    if matches.next().is_some() { None } else { Some(first) }
+}
+fn summary_for_file(file: &str) -> Option<serde_json::Value> {
+    let stem = file.strip_suffix(".jsonl")?;
+    std::fs::read_to_string(format!("{EVAL_DIR}/{stem}.summary.json")).ok().and_then(|json| serde_json::from_str(&json).ok())
+}
+fn dataset_info(id: &str, summary: Option<serde_json::Value>) -> EvaluationSet {
+    let Some(file) = staged_set(id) else { return EvaluationSet { id: id.to_owned(), name: set_name(id), status: "missing".into(), task_count: None, completed_tasks: 0, base_commit: None, summary: None } };
+    let path = format!("{EVAL_DIR}/{file}");
+    let lines = std::fs::read_to_string(&path).unwrap_or_default();
+    let tasks: Vec<serde_json::Value> = lines.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    let bases: std::collections::HashSet<String> = tasks.iter().filter_map(|task| task.get("base_sha").and_then(|v| v.as_str()).map(str::to_owned)).collect();
+    let mut latest: std::collections::HashMap<(String, String), bool> = std::collections::HashMap::new();
+    for outcome in std::fs::read_to_string(format!("{EVAL_DIR}/{}.results.jsonl", file.trim_end_matches(".jsonl"))).unwrap_or_default()
+        .lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()) {
+        let (Some(task), Some(arm)) = (outcome.get("id").and_then(|v| v.as_str()), outcome.get("arm").and_then(|v| v.as_str())) else { continue };
+        let failed = outcome.get("reasons").and_then(|v| v.as_array()).is_some_and(|reasons|
+            reasons.iter().filter_map(|v| v.as_str()).any(|reason| reason.starts_with("error:")));
+        latest.insert((task.to_owned(), arm.to_owned()), !failed);
+    }
+    let task_ids: std::collections::HashSet<String> = latest.keys().map(|(task, _)| task.clone()).collect();
+    let completed_tasks = task_ids.iter().filter(|task|
+        latest.get(&(task.to_string(), "baseline".to_owned())) == Some(&true)
+            && latest.get(&(task.to_string(), "specialist".to_owned())) == Some(&true)
+    ).count();
+    EvaluationSet {
+        id: id.to_owned(), name: set_name(id), status: "ready".into(), task_count: Some(tasks.len()), completed_tasks,
+        base_commit: (bases.len() == 1).then(|| bases.into_iter().next()).flatten(), summary,
+    }
+}
+fn set_name(id: &str) -> String { match id { "docs" => "Docs", "tests" => "Tests", "ui" => "UI", _ => id }.to_owned() }
+fn result_summaries(json: Option<String>) -> serde_json::Value {
+    json.and_then(|value| serde_json::from_str(&value).ok()).unwrap_or(serde_json::Value::Null)
+}
+fn list_for_org(conn: &rusqlite::Connection, org: &str) -> anyhow::Result<Vec<EvalRun>> {
+    let mut stmt = conn.prepare("SELECT id,set_ids_json,status,error,started_at,COALESCE(finished_at,started_at,created_at),finished_at,summary_json
+        FROM factory_eval_runs WHERE org_id=?1 ORDER BY created_at DESC LIMIT 100")?;
+    let rows = stmt.query_map([org], |row| {
+        let id: String = row.get(0)?;
+        let set_ids: Vec<String> = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
+        let summaries = result_summaries(row.get(7)?);
+        let sets = set_ids.iter().map(|set_id| {
+            let summary = if set_ids.len() == 1 && summaries.get("arms").is_some() { Some(summaries.clone()) }
+                else { summaries.get(set_id).cloned() };
+            dataset_info(set_id, summary)
+        }).collect();
+        Ok(EvalRun { id, set_ids, status: row.get(2)?, error: row.get(3)?, started_at: row.get(4)?, updated_at: row.get(5)?, finished_at: row.get(6)?, sets })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub async fn list_runs(State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>) -> ApiResult<Json<EvaluationsResponse>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Database lock error"))?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    let sets = ALLOWED_SETS.iter().map(|id| dataset_info(id, summary_for_file(&staged_set(id).unwrap_or_default()))).collect();
+    Ok(Json(EvaluationsResponse { sets, runs: list_for_org(&conn, &auth.org_id).map_err(internal)? }))
+}
+
+/// Queue selected frozen sets. Only the three known IDs are accepted; no path,
+/// process arguments, org IDs or task payloads are supplied by the caller.
+pub async fn start_run(
+    State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, AppJson(input): AppJson<StartEval>,
+) -> ApiResult<(StatusCode, Json<StartEvalResponse>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Database lock error"))?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    if input.set_ids.is_empty() || input.set_ids.iter().any(|id| !ALLOWED_SETS.contains(&id.as_str())) {
+        return Err(api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_eval_sets", "set_ids must contain one or more of docs, tests, ui"));
+    }
+    let mut set_ids = input.set_ids;
+    set_ids.sort(); set_ids.dedup();
+    let runner_path = std::path::Path::new(EVAL_DIR).join("run.mjs");
+    if !runner_path.is_file() {
+        return Err(api_error(StatusCode::CONFLICT, "eval_runner_unavailable", "The frozen eval runner is not installed on the worker volume"));
+    }
+    let runner_source = std::fs::read_to_string(&runner_path).map_err(internal)?;
+    if !runner_source.contains("key === '--set'") {
+        return Err(api_error(StatusCode::CONFLICT, "eval_runner_update_required", "The persistent runner must be updated to support selecting docs, tests, and UI sets"));
+    }
+    for id in &set_ids {
+        if staged_set(id).is_none() { return Err(api_error(StatusCode::CONFLICT, "eval_set_unavailable", format!("Eval set {id} is not staged or has an ambiguous filename"))); }
+    }
+    let active: Option<String> = conn.query_row("SELECT id FROM factory_eval_runs WHERE status IN ('queued','running') LIMIT 1", [], |row| row.get(0)).optional().map_err(internal)?;
+    if let Some(id) = active { return Err(api_error(StatusCode::CONFLICT, "eval_already_active", format!("Eval run {id} is already queued or running"))); }
+
+    let id = Uuid::new_v4().to_string();
+    let set_json = serde_json::to_string(&set_ids).map_err(internal)?;
+    conn.execute("INSERT INTO factory_eval_runs(id,org_id,created_by,set_ids_json,status) VALUES(?1,?2,?3,?4,'queued')", rusqlite::params![id, auth.org_id, auth.user_id, set_json]).map_err(internal)?;
+    let run = list_for_org(&conn, &auth.org_id).map_err(internal)?.into_iter().find(|run| run.id == id).expect("inserted eval run is queryable");
+    Ok((StatusCode::ACCEPTED, Json(StartEvalResponse { run })))
+}
+
+pub async fn get_run(State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Path(id): Path<String>) -> ApiResult<Json<EvalRun>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Database lock error"))?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    list_for_org(&conn, &auth.org_id).map_err(internal)?.into_iter().find(|run| run.id == id).map(Json)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "eval_run_not_found", "Eval run not found"))
+}
