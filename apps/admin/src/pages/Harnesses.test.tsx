@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../test/render'
+import { chooseSelectOption } from '../test/select'
 import Harnesses from './Harnesses'
+
+async function chooseHarnessFormat(dialog: HTMLElement, label: string) {
+  fireEvent.click(within(dialog).getByLabelText(/format/i))
+  fireEvent.click(await screen.findByRole('option', { name: label }))
+}
 
 async function sha256For(content: string): Promise<string> {
   const bytes = new TextEncoder().encode(content)
@@ -183,20 +190,21 @@ beforeEach(() => {
 describe('Harnesses page', () => {
   it('lists harnesses and filters by target', async () => {
     renderWithProviders(<Harnesses />)
+    const user = userEvent.setup()
 
     await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
     expect(screen.getByText('sha256:abc')).toBeInTheDocument()
     expect(screen.getAllByText(/owner user/i).length).toBeGreaterThan(0)
 
-    fireEvent.change(screen.getByLabelText(/target filter/i), { target: { value: 'claude' } })
+    await chooseSelectOption(user, screen.getByLabelText(/target filter/i), 'Claude')
 
     await waitFor(() => expect(listHarnessesMock).toHaveBeenLastCalledWith({ target: 'claude' }))
 
-    await screen.findByRole('option', { name: /owner user/i })
     const ownerFilter = screen.getByRole('combobox', { name: /owner filter/i })
-    expect(within(ownerFilter).getByRole('option', { name: /owner user/i })).toHaveAttribute('value', 'user-owner-1')
-    fireEvent.change(ownerFilter, { target: { value: 'user-owner-1' } })
-    await waitFor(() => expect(ownerFilter).toHaveValue('user-owner-1'))
+    await user.click(ownerFilter)
+    expect(await screen.findByRole('option', { name: /owner user/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('option', { name: /owner user/i }))
+    await waitFor(() => expect(ownerFilter).toHaveTextContent(/owner user/i))
 
     await waitFor(() => expect(listHarnessesMock).toHaveBeenCalledWith({ target: 'claude', owner_user_id: 'user-owner-1' }))
   })
@@ -206,23 +214,26 @@ describe('Harnesses page', () => {
     await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
 
     const targetFilter = screen.getByRole('combobox', { name: /target filter/i })
-    expect(within(targetFilter).getByRole('option', { name: 'Cursor' })).toHaveAttribute('value', 'cursor')
-    expect(within(targetFilter).queryByRole('option', { name: /opencode/i })).not.toBeInTheDocument()
+    await userEvent.setup().click(targetFilter)
+    expect(await screen.findByRole('option', { name: 'Cursor' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /opencode/i })).not.toBeInTheDocument()
   })
 
   it('builds typed format manifests from templates and file metadata', async () => {
     renderWithProviders(<Harnesses />)
+    const user = userEvent.setup()
     await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: /publish version for claude base/i }))
     const publishDialog = await screen.findByRole('dialog', { name: /publish harness version/i })
+    await user.click(within(publishDialog).getByLabelText(/format/i))
 
     for (const label of ['Agent Markdown', 'Skill Markdown', 'Command Markdown', 'Hook Script', 'Output Style', 'Claude Code Plugin', 'Theme JSON']) {
-      expect(within(publishDialog).getByRole('option', { name: label })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: label })).toBeInTheDocument()
     }
 
     fireEvent.change(within(publishDialog).getByLabelText(/version/i), { target: { value: '1.1.0' } })
-    fireEvent.change(within(publishDialog).getByLabelText(/format/i), { target: { value: 'hook' } })
+    await user.click(screen.getByRole('option', { name: 'Hook Script' }))
     expect(within(publishDialog).getByText(/executable hook/i)).toBeInTheDocument()
     const file = new File(['#!/bin/sh\nexit 0'], 'pre-commit.sh', { type: 'text/x-shellscript' })
     fireEvent.change(within(publishDialog).getByLabelText(/upload files/i), { target: { files: [file] } })
@@ -274,7 +285,7 @@ describe('Harnesses page', () => {
     fireEvent.click(screen.getByRole('button', { name: /publish version for claude base/i }))
     const publishDialog = await screen.findByRole('dialog', { name: /publish harness version/i })
     fireEvent.change(within(publishDialog).getByLabelText(/version/i), { target: { value: '1.1.2' } })
-    fireEvent.change(within(publishDialog).getByLabelText(/format/i), { target: { value: 'theme' } })
+    await chooseHarnessFormat(publishDialog, 'Theme JSON')
     const themeJson = '{"name":"Café ☕"}'
     fireEvent.change(within(publishDialog).getByLabelText(/plugin or theme json content/i), { target: { value: themeJson } })
     await waitFor(() => expect(within(publishDialog).getByRole('button', { name: /^publish$/i })).toBeEnabled())
@@ -300,7 +311,7 @@ describe('Harnesses page', () => {
     fireEvent.click(screen.getByRole('button', { name: /publish version for claude base/i }))
     const publishDialog = await screen.findByRole('dialog', { name: /publish harness version/i })
     fireEvent.change(within(publishDialog).getByLabelText(/version/i), { target: { value: '1.2.0' } })
-    fireEvent.change(within(publishDialog).getByLabelText(/format/i), { target: { value: 'skill' } })
+    await chooseHarnessFormat(publishDialog, 'Skill Markdown')
     const skill = new File(['---\nname: reviewer\n---'], 'SKILL.md', { type: 'text/markdown' })
     Object.defineProperty(skill, 'webkitRelativePath', { value: 'reviewer/SKILL.md' })
     const notes = new File(['# Notes'], 'README.md', { type: 'text/markdown' })
@@ -341,7 +352,7 @@ describe('Harnesses page', () => {
     fireEvent.click(screen.getByRole('button', { name: /publish version for claude base/i }))
     const publishDialog = await screen.findByRole('dialog', { name: /publish harness version/i })
     fireEvent.change(within(publishDialog).getByLabelText(/version/i), { target: { value: '1.2.1' } })
-    fireEvent.change(within(publishDialog).getByLabelText(/format/i), { target: { value: 'claude_code_plugin' } })
+    await chooseHarnessFormat(publishDialog, 'Claude Code Plugin')
 
     const pluginJson = '{"name":"reviewer","version":"1.0.0"}'
     const plugin = new File([pluginJson], 'reviewer.json', { type: 'application/json' })
@@ -368,7 +379,7 @@ describe('Harnesses page', () => {
     fireEvent.click(screen.getByRole('button', { name: /publish version for claude base/i }))
     const publishDialog = await screen.findByRole('dialog', { name: /publish harness version/i })
     fireEvent.change(within(publishDialog).getByLabelText(/version/i), { target: { value: '1.2.2' } })
-    fireEvent.change(within(publishDialog).getByLabelText(/format/i), { target: { value: 'hook' } })
+    await chooseHarnessFormat(publishDialog, 'Hook Script')
 
     const one = new File(['#!/bin/sh\nexit 0'], 'pre-commit.sh', { type: 'text/x-shellscript' })
     const two = new File(['#!/bin/sh\necho second'], 'post-commit.sh', { type: 'text/x-shellscript' })
@@ -392,14 +403,14 @@ describe('Harnesses page', () => {
     fireEvent.click(screen.getByRole('button', { name: /publish version for claude base/i }))
     const publishDialog = await screen.findByRole('dialog', { name: /publish harness version/i })
     fireEvent.change(within(publishDialog).getByLabelText(/version/i), { target: { value: '1.3.0' } })
-    fireEvent.change(within(publishDialog).getByLabelText(/format/i), { target: { value: 'claude_code_plugin' } })
+    await chooseHarnessFormat(publishDialog, 'Claude Code Plugin')
     fireEvent.change(within(publishDialog).getByLabelText(/plugin or theme json content/i), { target: { value: '{invalid' } })
     await waitFor(() => expect(within(publishDialog).getByRole('button', { name: /^publish$/i })).toBeEnabled())
     fireEvent.click(within(publishDialog).getByRole('button', { name: /^publish$/i }))
     expect(await within(publishDialog).findByText(/plugin and theme content must be valid json object/i)).toBeInTheDocument()
     expect(publishHarnessVersionMock).not.toHaveBeenCalled()
 
-    fireEvent.change(within(publishDialog).getByLabelText(/format/i), { target: { value: 'theme' } })
+    await chooseHarnessFormat(publishDialog, 'Theme JSON')
     fireEvent.change(within(publishDialog).getByLabelText(/plugin or theme json content/i), { target: { value: '[]' } })
     await waitFor(() => expect(within(publishDialog).getByRole('button', { name: /^publish$/i })).toBeEnabled())
     fireEvent.click(within(publishDialog).getByRole('button', { name: /^publish$/i }))
@@ -417,9 +428,12 @@ describe('Harnesses page', () => {
     fireEvent.change(within(createDialog).getByLabelText(/slug/i), { target: { value: 'team-open-code' } })
 
     // Creation is format-aware: the seven format templates are selectable up front.
+    const formatTrigger = within(createDialog).getByLabelText(/format/i)
+    fireEvent.click(formatTrigger)
     for (const label of ['Agent Markdown', 'Skill Markdown', 'Command Markdown', 'Hook Script', 'Output Style', 'Claude Code Plugin', 'Theme JSON']) {
-      expect(within(createDialog).getByRole('option', { name: label })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: label })).toBeInTheDocument()
     }
+    fireEvent.keyDown(formatTrigger, { key: 'Escape' })
 
     // Wait for the initial (agent) manifest integrity metadata to be prepared.
     await waitFor(() => {
