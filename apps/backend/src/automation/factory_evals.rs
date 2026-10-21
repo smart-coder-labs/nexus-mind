@@ -70,7 +70,7 @@ pub fn spawn_one(store: SqliteStore) {
                         "UPDATE factory_eval_runs SET lease_updated_at=datetime('now') WHERE id=?1 AND status='running'",
                         [&heartbeat_id],
                     ) { tracing::warn!(eval_id = %heartbeat_id, "Factory eval lease refresh failed: {err}"); }
-                }
+                };
             }
         });
         let mut command = tokio::process::Command::new("node");
