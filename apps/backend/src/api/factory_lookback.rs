@@ -242,4 +242,14 @@ mod tests {
         let memories = vec![memory("m1", "bugfix", "Fix bugfix issue", "Task error after update")];
         assert!(build_recommendations(&tasks, &memories).is_empty());
     }
+
+    #[test]
+    fn domain_terms_remain_matchable_after_generic_stopword_filtering() {
+        let kept = tokens("oauth timeout fix bug issue task update add implement");
+        assert!(kept.contains("oauth"));
+        assert!(kept.contains("timeout"));
+        for generic in ["fix", "bug", "issue", "task", "update", "add", "implement"] {
+            assert!(!kept.contains(generic));
+        }
+    }
 }
