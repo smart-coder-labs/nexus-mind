@@ -6,6 +6,7 @@ import { useAuth } from '../auth/AuthContext'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ConfirmModal } from '../components/ConfirmModal'
 import { cn } from '../lib/utils'
 import type { FactoryEvaluationRun, FactoryEvaluationSet } from '../types'
 import { InlineAlert, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading } from './factory/govern/ui'
@@ -85,6 +86,7 @@ export default function FactoryEvaluations() {
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const [selected, setSelected] = useState<string[]>([])
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const evaluations = useQuery({
     queryKey: ['factory-evaluations'],
     queryFn: () => client.listFactoryEvaluations(),
@@ -136,7 +138,7 @@ export default function FactoryEvaluations() {
           </div>
         )}
         {canWrite && <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => start.mutate()} disabled={!selected.length || start.isPending || !ready.length}><Play className="mr-2 h-4 w-4" aria-hidden="true" />{start.isPending ? 'Iniciando…' : 'Iniciar / reanudar'}</Button>
+          <Button onClick={() => setConfirmOpen(true)} disabled={!selected.length || start.isPending || !ready.length}><Play className="mr-2 h-4 w-4" aria-hidden="true" />{start.isPending ? 'Iniciando…' : 'Iniciar / reanudar'}</Button>
           <span className="text-xs text-text-tertiary">La ejecución la controla el backend y puede continuar tras límites del proveedor.</span>
         </div>}
       </section>
@@ -150,6 +152,15 @@ export default function FactoryEvaluations() {
         <SectionHeading id="history-title" title="Ejecuciones recientes" description="Estado del runner y conjuntos solicitados." />
         {evaluations.isLoading ? <div className={cn(PANEL_CLASS, 'h-20 animate-pulse')} aria-label="Cargando ejecuciones" /> : (evaluations.data?.runs.length ?? 0) ? <ul className={cn(PANEL_CLASS, 'm-0 list-none divide-y divide-border-secondary p-0')}>{evaluations.data!.runs.map(run => <RunRow key={run.id} run={run} />)}</ul> : <EmptyState icon={<Activity />} title="Sin ejecuciones" description="Las ejecuciones iniciadas aparecerán aquí." />}
       </section>
+      <ConfirmModal
+        open={confirmOpen}
+        title="Iniciar evaluaciones congeladas"
+        description={`Esto ejecutará ${selected.map(id => sets.find(set => set.id === id)?.name ?? id).join(', ')} y consumirá cuota de Claude. La estimación de costo es desconocida. ¿Quieres continuar?`}
+        confirmLabel="Iniciar evaluaciones"
+        loading={start.isPending}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={() => { setConfirmOpen(false); start.mutate() }}
+      />
     </div>
   )
 }

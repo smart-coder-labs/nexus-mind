@@ -1633,6 +1633,38 @@ export interface StartFactoryEvaluationResponse {
   run: FactoryEvaluationRun
 }
 
+/** Provider/modmin config. Tokens are never returned by this API. */
+export type FactoryModelProvider = 'anthropic' | 'openai_api' | 'chatgpt_plan'
+export type FactoryModelRoleName = 'planner' | 'reviewer' | 'implementer'
+
+export interface FactoryModelRole {
+  provider: FactoryModelProvider
+  model: string
+}
+
+export type FactoryModelRoles = Record<FactoryModelRoleName, FactoryModelRole>
+
+export interface FactoryModelCredentials {
+  anthropic: 'configured' | 'missing' | 'unknown'
+  openai_api: 'configured' | 'missing' | 'unknown'
+  chatgpt_plan: 'connected' | 'not_connected'
+}
+
+/** GET /v1/factory/model-config; credential values are status only, never secrets. */
+export interface FactoryModelConfig {
+  roles: FactoryModelRoles
+  credentials: FactoryModelCredentials
+  /** False while selected providers are not wired into the runtime; do not fall back implicitly. */
+  execution_ready: boolean
+  updated_by: string | null
+  updated_at: string | null
+}
+
+/** PUT /v1/factory/model-config accepts role assignments only. */
+export interface UpdateFactoryModelConfigRequest {
+  roles: FactoryModelRoles
+}
+
 /** The per-organization identity sandboxed agents use to call NexusMind. */
 export interface FactoryBot {
   user_id: string

@@ -139,6 +139,8 @@ import type {
   FactoryEvaluationRun,
   StartFactoryEvaluationRequest,
   StartFactoryEvaluationResponse,
+  FactoryModelConfig,
+  UpdateFactoryModelConfigRequest,
 } from '../types'
 import { isPublicRoute } from '../auth/public-routes'
 
@@ -1493,6 +1495,16 @@ export class NexusMindClient {
   /** Read one run, including per-set summaries and status. */
   getFactoryEvaluation(id: string): Promise<FactoryEvaluationRun> {
     return this.request(`/v1/factory/evaluations/${encodeURIComponent(id)}`)
+  }
+
+  /** GET /v1/factory/model-config (factory_policy:read); never returns tokens. */
+  getFactoryModelConfig(): Promise<FactoryModelConfig> {
+    return this.request('/v1/factory/model-config')
+  }
+
+  /** PUT /v1/factory/model-config (factory_policy:write); sends role assignments only. */
+  putFactoryModelConfig(input: UpdateFactoryModelConfigRequest): Promise<FactoryModelConfig> {
+    return this.request('/v1/factory/model-config', { method: 'PUT', body: JSON.stringify(input) })
   }
 
   decideFactoryMerge(subject: string, approve: boolean, reason?: string): Promise<{ id: string; merges_after: string | null }> {
