@@ -115,7 +115,7 @@ pub fn spawn_one(store: SqliteStore) {
             }
         }
         let summary_value = if set_ids.len() == 1 {
-            summaries.iter().find(|(name, _)| name == &set_ids[0] || name.ends_with(&format!("-{}", set_ids[0]))).map(|(_, value)| value.clone()).unwrap_or(serde_json::Value::Null)
+            summaries.iter().find(|(name, _)| name.as_str() == set_ids[0].as_str() || name.ends_with(&format!("-{}", set_ids[0]))).map(|(_, value)| value.clone()).unwrap_or(serde_json::Value::Null)
         } else {
             serde_json::Value::Object(summaries)
         };
