@@ -72,7 +72,9 @@ const NODE_PATH: &str = "NODE_PATH=/usr/local/lib/node_modules:/usr/lib/node_mod
 const BROWSERS_PATH: &str = "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright";
 
 /// Runs a package script and leaves a marker when it passes.
-const RUN_MARKED: &str = r#"marker=$1; cd "$2" || exit 96; shift 2; "$@" && : > "$marker""#;
+/// The marker's folder is created here: nothing else may have written to it
+/// yet (with no screenshots planned, no file goes into the pod's /tmp/nm-ui).
+const RUN_MARKED: &str = r#"marker=$1; cd "$2" || exit 96; shift 2; "$@" && mkdir -p "${marker%/*}" && : > "$marker""#;
 /// Runs only after the build passed (exit 99 otherwise).
 const AFTER_BUILD: &str = r#"marker=$1; cd "$2" || exit 96; shift 2; [ -e "$marker" ] || exit 99; exec "$@""#;
 
@@ -1241,5 +1243,27 @@ mod tests_ui {
         assert_eq!(server_of(&json!({"devDependencies": {"vite": "5"}})), Some(Server::Vite));
         assert_eq!(server_of(&json!({"dependencies": {"next": "15", "vite": "5"}})), Some(Server::Next));
         assert_eq!(server_of(&json!({"dependencies": {"react-scripts": "5"}})), None);
+    }
+
+    #[test]
+    fn a_passing_build_leaves_its_marker_even_in_a_folder_nothing_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("nm-ui/built");
+        let marker = marker.to_str().unwrap();
+        let workdir = dir.path().to_str().unwrap();
+        let run = |script: &str, tail: &[&str]| {
+            std::process::Command::new("sh")
+                .args(["-c", script, "sh", marker, workdir])
+                .args(tail)
+                .status()
+                .unwrap()
+                .code()
+        };
+        assert_eq!(run(AFTER_BUILD, &["true"]), Some(99), "nothing runs before the build passed");
+        assert_eq!(run(RUN_MARKED, &["false"]), Some(1));
+        assert!(!std::path::Path::new(marker).exists(), "a failed build leaves no marker");
+        assert_eq!(run(RUN_MARKED, &["true"]), Some(0));
+        assert!(std::path::Path::new(marker).exists());
+        assert_eq!(run(AFTER_BUILD, &["true"]), Some(0));
     }
 }
