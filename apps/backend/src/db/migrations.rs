@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 90;
+pub const LATEST_USER_VERSION: i32 = 91;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -103,6 +103,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v88(conn)?;
     run_v89(conn)?;
     run_v90(conn)?;
+    run_v91(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -157,6 +158,33 @@ pub fn run_v90(conn: &Connection) -> Result<()> {
     if version >= 90 { return Ok(()); }
     conn.execute_batch("ALTER TABLE factory_eval_runs ADD COLUMN lease_updated_at TEXT;
         PRAGMA user_version = 90;")?;
+    Ok(())
+}
+
+/// F5 trajectory audit: append-only run outcomes and human feedback. This is
+/// observational data only; no policy or execution path reads it.
+pub fn run_v91(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 91 { return Ok(()); }
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS factory_trajectory_entries (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES autonomous_agent_runs(id) ON DELETE CASCADE,
+        entry_kind TEXT NOT NULL CHECK(entry_kind IN ('run_outcome','human_feedback')),
+        outcome TEXT CHECK(outcome IN ('accepted','rejected','unknown')),
+        actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        data_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_factory_trajectory_run_outcome
+        ON factory_trajectory_entries(org_id, run_id, entry_kind) WHERE entry_kind='run_outcome';
+    CREATE INDEX IF NOT EXISTS idx_factory_trajectory_run_created
+        ON factory_trajectory_entries(org_id, run_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS factory_trajectory_no_update
+        BEFORE UPDATE ON factory_trajectory_entries BEGIN
+            SELECT RAISE(ABORT, 'factory trajectory entries are append-only');
+        END;
+    PRAGMA user_version = 91;")?;
     Ok(())
 }
 
