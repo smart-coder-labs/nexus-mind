@@ -8,6 +8,7 @@ import type { AuthSession, FactoryPolicy } from '../types'
 import FactoryPolicies from './FactoryPolicies'
 import { SandboxBotPanel } from './factory/SandboxBotPanel'
 import type { NexusMindClient } from '../api/client'
+import { chooseSelectOption } from '../test/select'
 
 const api = vi.hoisted(() => ({
   listFactoryPolicies: vi.fn(),
@@ -98,16 +99,16 @@ describe('FactoryPolicies', () => {
   it('starts a policy for the action whose row was used', async () => {
     renderPage(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: 'Add a policy for deploy' }))
-    expect(screen.getByLabelText('Action')).toHaveValue('deploy')
+    expect(screen.getByLabelText('Action')).toHaveTextContent('deploy')
   })
 
   it('creates a new policy at version 1', async () => {
     api.putFactoryPolicy.mockResolvedValue({ ...docsMerge, version: 1 })
     renderPage(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: /new policy/i }))
-    await userEvent.selectOptions(screen.getByLabelText('Action'), 'merge')
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Action'), 'merge')
     await userEvent.click(screen.getByRole('radio', { name: /the decision model decides/i }))
-    await userEvent.selectOptions(screen.getByLabelText('Task class'), 'docs')
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Task class'), 'Docs')
     await userEvent.type(screen.getByLabelText('Allow condition 1'), 'docs/tests paths only')
     await userEvent.click(screen.getByRole('button', { name: 'Save as v1' }))
     expect(api.putFactoryPolicy).toHaveBeenCalledWith({
@@ -156,7 +157,7 @@ describe('FactoryPolicies', () => {
   it('warns that a project-scoped merge policy holds every merge until runs carry a project', async () => {
     renderPage(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: /new policy/i }))
-    await userEvent.selectOptions(screen.getByLabelText('Action'), 'merge')
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Action'), 'merge')
     expect(screen.queryByText(/holds every autonomous merge/i)).not.toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('Project'), 'web')
     expect(screen.getByText(/holds every autonomous merge/i)).toBeInTheDocument()

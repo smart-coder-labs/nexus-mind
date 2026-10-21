@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import FactoryIntake from './FactoryIntake'
 import type { FactoryIntakeItem, FactoryIntakeSource } from '../types'
+import { chooseSelectOption } from '../test/select'
 
 const api = vi.hoisted(() => ({
   listFactoryIntakeSources: vi.fn(),
@@ -110,12 +111,13 @@ describe('FactoryIntake', () => {
     expect(save).toBeDisabled()
     await user.type(screen.getByLabelText('Name'), 'Bugs')
     await user.type(screen.getByLabelText('NexusMind project for the tasks'), 'app')
-    await user.selectOptions(screen.getByLabelText(/issue resolver/i), 'def-1')
-    expect(within(screen.getByLabelText(/issue resolver/i)).queryByRole('option', { name: 'Reviewer' })).not.toBeInTheDocument()
+    await user.click(screen.getByLabelText(/issue resolver/i))
+    expect(screen.queryByRole('option', { name: 'Reviewer' })).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('option', { name: 'App resolver' }))
     await user.type(screen.getByLabelText('Channel ID'), 'C0123ABCD')
     await user.type(screen.getByLabelText(/who can send a message/i), 'ULEAD0001, UOPS00002')
     expect(within(screen.getByLabelText('Token')).queryByRole('option', { name: 'QA login' })).not.toBeInTheDocument()
-    await user.selectOptions(screen.getByLabelText('Token'), '__new__')
+    await chooseSelectOption(user, screen.getByLabelText('Token'), 'Paste a new token')
     expect(save).toBeDisabled()
     await user.type(screen.getByLabelText(/slack bot token/i), 'xoxb-secret')
     await user.click(save)
@@ -156,10 +158,11 @@ describe('FactoryIntake', () => {
     renderPage(['factory_policy:read', 'factory_policy:write'])
     const user = userEvent.setup()
     const card = await screen.findByRole('region', { name: 'Slack notifications' })
-    await waitFor(() => expect(within(card).getByRole('option', { name: 'Team channel' })).toBeInTheDocument())
-    expect(within(card).queryByRole('option', { name: 'intake: Bugs' })).not.toBeInTheDocument()
     expect(within(card).getByRole('button', { name: 'Turn on' })).toBeDisabled()
-    await user.selectOptions(within(card).getByLabelText('Slack webhook'), 'conn-hook')
+    await user.click(within(card).getByLabelText('Slack webhook'))
+    expect(screen.getByRole('option', { name: 'Team channel' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'intake: Bugs' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('option', { name: 'Team channel' }))
     await user.click(within(card).getByRole('button', { name: 'Turn on' }))
     await waitFor(() => expect(api.putFactoryWatchdog).toHaveBeenCalledWith({ slack_connector_id: 'conn-hook', enabled: true, daily_hour_utc: 13 }))
   })
