@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 89;
+pub const LATEST_USER_VERSION: i32 = 90;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -102,6 +102,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v87(conn)?;
     run_v88(conn)?;
     run_v89(conn)?;
+    run_v90(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -149,15 +150,13 @@ pub fn run_v89(conn: &Connection) -> Result<()> {
     PRAGMA user_version = 89;")?;
     Ok(())
 }
-    Ok(())
-}
 
 /// Lease timestamp for reclaiming eval runs abandoned by a restarted worker.
-pub fn run_v89(conn: &Connection) -> Result<()> {
+pub fn run_v90(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version >= 89 { return Ok(()); }
+    if version >= 90 { return Ok(()); }
     conn.execute_batch("ALTER TABLE factory_eval_runs ADD COLUMN lease_updated_at TEXT;
-        PRAGMA user_version = 89;")?;
+        PRAGMA user_version = 90;")?;
     Ok(())
 }
 
