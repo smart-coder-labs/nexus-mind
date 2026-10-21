@@ -161,7 +161,10 @@ pub fn resolver_ready(conn: &Connection, org_id: &str, resolver_definition_id: &
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions d
            JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
-          WHERE d.id=?1 AND d.org_id=?2 AND d.status='enabled' AND r.validation_status='valid')",
+          WHERE d.id=?1 AND d.org_id=?2 AND d.status='enabled'
+            AND (SELECT v.status FROM autonomous_agent_validations v
+                  WHERE v.org_id=d.org_id AND v.definition_id=d.id AND v.revision_id=r.id
+                  ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid')",
         params![resolver_definition_id, org_id],
         |row| row.get(0),
     )?)
@@ -403,6 +406,35 @@ pub fn list_items(conn: &Connection, org_id: &str, limit: i64) -> Result<Vec<Int
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn get_item(conn: &Connection, org_id: &str, task_id: &str) -> Result<Option<IntakeItem>> {
+    conn.query_row(
+        "SELECT task_id,source_id,source_ref,nexus_task_id,task_class,origin_trust,repository,start_decision,
+                start_reason,jev_json,issue_number,run_id,created_at
+           FROM factory_intake_items WHERE org_id=?1 AND task_id=?2",
+        params![org_id, task_id],
+        |row| {
+            let jev: Option<String> = row.get(9)?;
+            Ok(IntakeItem {
+                task_id: row.get(0)?,
+                source_id: row.get(1)?,
+                source_ref: row.get(2)?,
+                nexus_task_id: row.get(3)?,
+                task_class: row.get(4)?,
+                origin_trust: row.get(5)?,
+                repository: row.get(6)?,
+                start_decision: row.get(7)?,
+                start_reason: row.get(8)?,
+                jev: jev.and_then(|j| serde_json::from_str(&j).ok()),
+                issue_number: row.get(10)?,
+                run_id: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// Creates the backlog factory task (labelled `factory`, its class, and
@@ -692,8 +724,15 @@ mod tests {
         conn.execute(
             "INSERT INTO autonomous_agent_revisions
                (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by)
-             VALUES ('rev-1','def-1',1,'{\"repository\":\"acme/app\"}','h','{}','{}','valid',?1)",
+             VALUES ('rev-1','def-1',1,'{\"repository\":\"acme/app\"}','h','{}','{}','pending',?1)",
             params![user],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_validations
+               (id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by)
+             VALUES ('validation-1',?1,'def-1','rev-1','h','valid','{\"valid\":true}',?2)",
+            params![org, user],
         )
         .unwrap();
         "def-1".into()

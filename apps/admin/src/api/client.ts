@@ -1460,6 +1460,10 @@ export class NexusMindClient {
     return this.request(`/v1/factory/intake/items?limit=${limit}`)
   }
 
+  startFactoryIntakeItem(taskId: string): Promise<FactoryIntakeItem> {
+    return this.request(`/v1/factory/intake/items/${encodeURIComponent(taskId)}/start`, { method: 'POST' })
+  }
+
   getFactoryWatchdog(): Promise<FactoryWatchdog | null> {
     return this.request('/v1/factory/watchdog')
   }

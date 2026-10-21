@@ -226,6 +226,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
                 .delete(factory::delete_intake_source),
         )
         .route("/v1/factory/intake/items", get(factory::list_intake_items))
+        .route("/v1/factory/intake/items/:task_id/start", post(factory::start_intake_item))
         .route("/v1/factory/intake/transcripts", post(factory::upload_transcript))
         .route("/v1/factory/watchdog", get(factory::get_watchdog).put(factory::put_watchdog))
         .route("/v1/factory/shadow/report", get(factory::shadow_report))
