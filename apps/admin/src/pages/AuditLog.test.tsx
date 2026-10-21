@@ -40,8 +40,11 @@ describe('AuditLog', () => {
     })
 
     // Select the "store" action in the action filter dropdown
-    const actionSelect = screen.getAllByRole('combobox')[1] // second select is action
-    fireEvent.change(actionSelect, { target: { value: 'store' } })
+    const actionSelect = screen.getAllByRole('combobox')[1]
+    actionSelect.focus()
+    fireEvent.keyDown(actionSelect, { key: 'ArrowDown' })
+    const storeOption = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.trim() === 'store')!
+    fireEvent.click(storeOption)
 
     // Click Apply
     const applyButton = screen.getByRole('button', { name: /apply/i })
@@ -62,7 +65,10 @@ describe('AuditLog', () => {
 
     // Apply an action filter first
     const actionSelect = screen.getAllByRole('combobox')[1]
-    fireEvent.change(actionSelect, { target: { value: 'delete' } })
+    actionSelect.focus()
+    fireEvent.keyDown(actionSelect, { key: 'ArrowDown' })
+    const deleteOption = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.trim() === 'delete')!
+    fireEvent.click(deleteOption)
     const applyButton = screen.getByRole('button', { name: /apply/i })
     fireEvent.click(applyButton)
 

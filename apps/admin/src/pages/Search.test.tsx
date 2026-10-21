@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../test/render'
 import Search from './Search'
 import type { GlobalSearchResult, Memory, SddChangeSummary } from '../types'
@@ -98,6 +99,7 @@ describe('Search — full profile keeps every facet', () => {
     typeQuery()
     // The type filter only renders once a search has results.
     await waitFor(() => expect(screen.getByRole('combobox', { name: /filter by result type/i })).toBeInTheDocument())
+    await userEvent.setup().click(screen.getByRole('combobox', { name: /filter by result type/i }))
     for (const label of ['Memories', 'Users', 'Projects', 'Policies', 'Conventions', 'SDD']) {
       expect(screen.getByRole('option', { name: new RegExp(`^${label}`) }), label).toBeInTheDocument()
     }

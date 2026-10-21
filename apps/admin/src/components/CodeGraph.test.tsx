@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from '../test/render'
+import userEvent from '@testing-library/user-event'
 import type { CodeProject } from '../types'
 
 // Mock WebGL-based library — jsdom has no real canvas/WebGL
@@ -59,10 +60,10 @@ describe('CodeGraph', () => {
     })
     renderGraph()
 
-    const select = (await screen.findByLabelText('Select repository')) as HTMLSelectElement
-    const optionTexts = Array.from(select.options).map(o => o.text)
-    expect(optionTexts).toContain('my-repo')
-    expect(optionTexts).not.toContain('never-indexed')
+    const select = await screen.findByLabelText('Select repository')
+    await userEvent.setup().click(select)
+    expect(await screen.findByRole('option', { name: 'my-repo' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'never-indexed' })).not.toBeInTheDocument()
   })
 
   it('renders the empty state when the repository has no indexed symbols', async () => {
