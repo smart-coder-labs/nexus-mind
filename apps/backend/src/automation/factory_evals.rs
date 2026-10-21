@@ -34,7 +34,7 @@ pub fn spawn_one(store: SqliteStore) {
             Err(err) => { tracing::error!("Factory eval queue read failed: {err}"); return }
         };
         let Some((id, org_id, set_ids_json)) = queued else { return };
-        let set_ids: Vec<String> = match serde_json::from_str(&set_ids_json) {
+        let set_ids: Vec<String> = match serde_json::from_str::<Vec<String>>(&set_ids_json) {
             Ok(ids) if !ids.is_empty() && ids.iter().all(|id| ["docs", "tests", "ui"].contains(&id.as_str())) => ids,
             _ => {
                 let _ = tx.execute("UPDATE factory_eval_runs SET status='failed',error='invalid stored eval set selection',finished_at=datetime('now') WHERE id=?1", [&id]);
@@ -109,7 +109,7 @@ pub fn spawn_one(store: SqliteStore) {
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
                 if let Some(set) = name.strip_suffix(".summary.json").and_then(|set| set_ids.iter().find(|id| set == id.as_str() || set.ends_with(&format!("-{id}")))) {
                     if let Ok(contents) = std::fs::read_to_string(path) {
-                        if let Ok(value) = serde_json::from_str(&contents) { summaries.insert(set.clone(), value); }
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) { summaries.insert(set.clone(), value); }
                     }
                 }
             }
