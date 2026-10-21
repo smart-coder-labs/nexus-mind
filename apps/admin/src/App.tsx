@@ -25,6 +25,8 @@ const AutonomousAgents = lazy(() => import('./pages/AutonomousAgents'))
 const FactoryPolicies = lazy(() => import('./pages/FactoryPolicies'))
 const FactoryDigest = lazy(() => import('./pages/FactoryDigest'))
 const FactoryIntake = lazy(() => import('./pages/FactoryIntake'))
+const FactoryEvaluations = lazy(() => import('./pages/FactoryEvaluations'))
+const FactoryModels = lazy(() => import('./pages/factory/FactoryModels'))
 const DecisionModel = lazy(() => import('./pages/factory/DecisionModel'))
 const FactorySettings = lazy(() => import('./pages/factory/FactorySettings'))
 const Policies    = lazy(() => import('./pages/Policies'))
@@ -108,6 +110,8 @@ function AppRoutes() {
                 <Route path="/factory/inbox"    element={<MaybeDisabled href="/factory/inbox"><FactoryDigest /></MaybeDisabled>} />
                 <Route path="/factory/intake"   element={<MaybeDisabled href="/factory/intake"><FactoryIntake /></MaybeDisabled>} />
                 <Route path="/factory/policies" element={<MaybeDisabled href="/factory/policies"><FactoryPolicies /></MaybeDisabled>} />
+                <Route path="/factory/evaluations" element={<MaybeDisabled href="/factory/evaluations"><FactoryEvaluations /></MaybeDisabled>} />
+                <Route path="/factory/models" element={<MaybeDisabled href="/factory/models"><FactoryModels /></MaybeDisabled>} />
                 <Route path="/factory/decision-model" element={<MaybeDisabled href="/factory/decision-model"><DecisionModel /></MaybeDisabled>} />
                 <Route path="/factory/settings" element={<MaybeDisabled href="/factory/settings"><FactorySettings /></MaybeDisabled>} />
                 {/* Pre-Factory URLs, kept so bookmarks and links in old messages still land. */}
