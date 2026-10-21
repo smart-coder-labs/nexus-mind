@@ -12,6 +12,7 @@
     "astro": "astro"
   },
   "dependencies": {
+    "@sentry/browser": "^10.75.3",
     "@astrojs/react": "^4.0.0",
     "@supabase/supabase-js": "^2.105.4",
     "astro": "^6.3.1",

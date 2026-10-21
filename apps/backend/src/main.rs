@@ -9,9 +9,7 @@ use std::net::SocketAddr;
 async fn main() -> anyhow::Result<()> {
     let config = config::Config::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(&config.log_level)
-        .init();
+    let _sentry = nexusmind::observability::init(&config.log_level);
 
     let conn = db::connection::connect(&config.db_path)?;
     // The autonomous worker starts beside us and may be writing; wait for it.

@@ -11,6 +11,7 @@ pub mod email;
 pub mod indexer;
 pub mod migration;
 pub mod models;
+pub mod observability;
 pub mod policy;
 pub mod repository_config;
 pub mod retrieval;

@@ -19,6 +19,16 @@ const nav=[['Producto','#producto'],['Cómo funciona','#como-funciona'],['Equipo
   <link rel="icon" href="/favicon.svg"/>
   <link rel="preload" href="/smartcoder/heebo-400.ttf" as="font" type="font/ttf" crossorigin/>
   <script is:inline>try { document.documentElement.dataset.theme = localStorage.getItem('nexusmind-comparison-theme') === 'dark' ? 'dark' : 'light'; } catch {}</script>
+  <script>
+    import * as Sentry from '@sentry/browser';
+
+    Sentry.init({
+      dsn: import.meta.env.PUBLIC_SENTRY_DSN,
+      environment: import.meta.env.PUBLIC_SENTRY_ENVIRONMENT || import.meta.env.MODE,
+      enabled: Boolean(import.meta.env.PUBLIC_SENTRY_DSN),
+      sendDefaultPii: false,
+    });
+  </script>
 </head>
 <body>
   <a class="sc-skip" href="#contenido">Saltar al contenido</a>
