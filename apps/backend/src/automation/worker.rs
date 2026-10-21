@@ -4526,6 +4526,43 @@ async fn execute_claim(
         Ok(executor @ ("nexus" | "claude" | "codex")) => executor,
         _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),
     };
+    // The persisted factory model preferences describe providers/models per
+    // role, but those roles are not yet wired to a matching CLI. In particular,
+    // ChatGPT plan OAuth is not available to this factory worker: the separate
+    // OpenShell Codex login path is not the same as the egress-proxied resolver.
+    // Fail before launching any model process; never silently charge Claude or
+    // switch to the API-key provider when the selected provider cannot run.
+    if matches!(claim.template_key.as_str(), "github_issue_resolver" | "github_pr_reviewer") {
+        let db = store.conn();
+        let Ok(conn) = db.lock() else {
+            return ("blocked_runtime".into(), json!({"code":"factory_model_config_unavailable"}));
+        };
+        let model_config = match crate::db::factory_model_config::get(&conn, &claim.org_id) {
+            Ok(model_config) => model_config,
+            Err(_) => return ("blocked_runtime".into(), json!({"code":"factory_model_config_unavailable"})),
+        };
+        drop(conn);
+        if !model_config.execution_ready {
+            let oauth_selected = [&model_config.roles.planner, &model_config.roles.reviewer, &model_config.roles.implementer]
+                .iter()
+                .any(|assignment| assignment.provider == crate::db::factory_model_config::ModelProvider::ChatgptPlan);
+            let code = if oauth_selected {
+                "factory_chatgpt_oauth_not_connected"
+            } else {
+                "factory_provider_runtime_not_wired"
+            };
+            return ("blocked_runtime".into(), json!({
+                "code": code,
+                "providers": {
+                    "planner": model_config.roles.planner.provider,
+                    "reviewer": model_config.roles.reviewer.provider,
+                    "implementer": model_config.roles.implementer.provider
+                },
+                "executor": executor,
+                "fallback": false
+            }));
+        }
+    }
     let nexus_selected = executor == "nexus";
     let codex_selected = executor == "codex";
     let sandboxed = match crate::factory::sandbox::autonomous_isolation(

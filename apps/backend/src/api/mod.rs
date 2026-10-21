@@ -12,6 +12,7 @@ pub mod context;
 pub mod conventions;
 pub mod docs;
 pub mod factory;
+pub mod factory_model_config;
 pub mod github_auth;
 pub mod harnesses;
 pub mod health;
