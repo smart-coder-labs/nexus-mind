@@ -4541,6 +4541,7 @@ async fn execute_claim(
             Ok(model_config) => model_config,
             Err(_) => return ("blocked_runtime".into(), json!({"code":"factory_model_config_unavailable"})),
         };
+        drop(conn);
         if !model_config.execution_ready {
             let oauth_selected = [&model_config.roles.planner, &model_config.roles.reviewer, &model_config.roles.implementer]
                 .iter()
