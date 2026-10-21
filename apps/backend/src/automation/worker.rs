@@ -7572,6 +7572,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             if ticks == 1 || ticks.is_multiple_of(20) {
                 super::sandboxed::gc_task_pods().await;
             }
+            // Admin-launched frozen specialist evals use the same worker and
+            // persistent runner volume as the previous Oracle cron handoff.
+            super::factory_evals::spawn_one(store.clone());
             let claim = {
                 let db = store.conn();
                 let Ok(conn) = db.lock() else {
