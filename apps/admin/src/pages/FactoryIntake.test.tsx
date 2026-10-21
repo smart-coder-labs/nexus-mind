@@ -10,6 +10,7 @@ import { chooseSelectOption } from '../test/select'
 const api = vi.hoisted(() => ({
   listFactoryIntakeSources: vi.fn(),
   listFactoryIntakeItems: vi.fn(),
+  listProjects: vi.fn(),
   getFactoryWatchdog: vi.fn(),
   listAutonomousAgentConnectors: vi.fn(),
   listAutonomousAgents: vi.fn(),
@@ -71,6 +72,7 @@ describe('FactoryIntake', () => {
     vi.clearAllMocks()
     api.listFactoryIntakeSources.mockResolvedValue([source])
     api.listFactoryIntakeItems.mockResolvedValue(items)
+    api.listProjects.mockResolvedValue([{ id: 'p-app', org_id: 'org1', name: 'app', description: null, parent_id: null, created_at: '2026-10-04' }])
     api.getFactoryWatchdog.mockResolvedValue(null)
     api.listAutonomousAgentConnectors.mockResolvedValue([
       { id: 'conn-secret', kind: 'target_secret', name: 'intake: Bugs', health: 'ready', metadata: { purpose: 'factory_intake', source_kind: 'slack' } },
@@ -110,7 +112,7 @@ describe('FactoryIntake', () => {
     const save = screen.getByRole('button', { name: 'Save source' })
     expect(save).toBeDisabled()
     await user.type(screen.getByLabelText('Name'), 'Bugs')
-    await user.type(screen.getByLabelText('NexusMind project for the tasks'), 'app')
+    await chooseSelectOption(user, screen.getByLabelText('NexusMind project for the tasks'), 'app')
     await user.click(screen.getByLabelText(/issue resolver/i))
     expect(screen.queryByRole('option', { name: 'Reviewer' })).not.toBeInTheDocument()
     await user.click(await screen.findByRole('option', { name: 'App resolver' }))

@@ -151,6 +151,7 @@ export default function FactoryIntake() {
 
   const sources = useQuery({ queryKey: ['factory-intake-sources'], queryFn: () => client.listFactoryIntakeSources(), enabled: canRead })
   const items = useQuery({ queryKey: ['factory-intake-items'], queryFn: () => client.listFactoryIntakeItems(50), enabled: canRead })
+  const projects = useQuery({ queryKey: ['projects'], queryFn: () => client.listProjects(), enabled: canRead })
   const watchdog = useQuery({ queryKey: ['factory-watchdog'], queryFn: () => client.getFactoryWatchdog(), enabled: canRead })
   const connectors = useQuery({ queryKey: ['autonomous-connectors'], queryFn: () => client.listAutonomousAgentConnectors(), enabled: canWrite })
   const agents = useQuery({ queryKey: ['autonomous-agents'], queryFn: () => client.listAutonomousAgents(), enabled: canWrite })
@@ -357,6 +358,10 @@ export default function FactoryIntake() {
         setDraft={setDraft}
         onClose={closeEditor}
         resolvers={resolvers}
+        projects={projects.data ?? []}
+        projectsLoading={projects.isLoading}
+        projectsError={projects.isError}
+        onRetryProjects={() => { void projects.refetch() }}
         secrets={draft ? secretsFor(draft) : []}
         canAddToken={canAddToken}
         saving={save.isPending}
@@ -372,6 +377,10 @@ function SourceEditor({
   setDraft,
   onClose,
   resolvers,
+  projects,
+  projectsLoading,
+  projectsError,
+  onRetryProjects,
   secrets,
   canAddToken,
   saving,
@@ -382,6 +391,10 @@ function SourceEditor({
   setDraft: (update: (current: Draft | null) => Draft | null) => void
   onClose: () => void
   resolvers: { id: string; name: string }[]
+  projects: { id: string; name: string }[]
+  projectsLoading: boolean
+  projectsError: boolean
+  onRetryProjects: () => void
   secrets: AutonomousAgentConnector[]
   canAddToken: boolean
   saving: boolean
@@ -461,9 +474,26 @@ function SourceEditor({
                 </StyledSelect>
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field id="intake-project" label="NexusMind project for the tasks">
-                  <Input id="intake-project" value={draft.project} placeholder="app" onChange={event => set('project', event.target.value)} />
+                <Field
+                  id="intake-project"
+                  label="NexusMind project for the tasks"
+                  hint={projectsLoading
+                    ? 'Loading projects…'
+                    : projectsError
+                      ? 'Could not load projects. Retry to choose one.'
+                      : projects.length === 0
+                        ? 'Create a NexusMind project before setting up intake.'
+                        : 'Tasks from this source will be created in the selected project.'}
+                >
+                  <StyledSelect id="intake-project" className={SELECT_CLASS} value={draft.project} onChange={event => set('project', event.target.value)}>
+                    <option value="">Choose a project</option>
+                    {projects.map(project => <option key={project.id} value={project.name}>{project.name}</option>)}
+                    {draft.project && !projects.some(project => project.name === draft.project) && (
+                      <option value={draft.project}>Unavailable project: {draft.project}</option>
+                    )}
+                  </StyledSelect>
                 </Field>
+                {projectsError && <InlineAlert onRetry={onRetryProjects}>Could not load NexusMind projects.</InlineAlert>}
                 <Field id="intake-base" label="Base branch">
                   <Input id="intake-base" value={draft.baseRef} onChange={event => set('baseRef', event.target.value)} />
                 </Field>
