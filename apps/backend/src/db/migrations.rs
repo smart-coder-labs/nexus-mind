@@ -161,8 +161,10 @@ pub fn run_v90(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// F5 trajectory audit: append-only run outcomes and human feedback. This is
-/// observational data only; no policy or execution path reads it.
+/// F5 trajectory audit: immutable run outcomes and human feedback. Updates and
+/// direct deletes are blocked; parent run/org deletion still cascades for
+/// retention/account cleanup. This is observational data only; no policy or
+/// execution path reads it.
 pub fn run_v91(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 91 { return Ok(()); }
