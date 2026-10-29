@@ -272,7 +272,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - A PR whose resolver branch names an untrusted intake issue is never merged without a person: an allow becomes a policy hold.
     - **Watchdog:** the org's Slack webhook hears about new held merges, blocked runs and factory tasks (at most once every 15 min), plus a daily summary.
   - **Open:**
-    - The local-worker OpenShell gateway selector and failure diagnostics are in [PR #334](https://github.com/smart-coder-labs/nexus-mind/pull/334); all CI checks passed, but required review and merge remain. Repository auto-merge is disabled. The production gateway alias and its credentials must already be provisioned.
+    - The local-worker OpenShell gateway selector and failure diagnostics are in [PR #334](https://github.com/smart-coder-labs/nexus-mind/pull/334); backend build, tests and Clippy passed, while the E2E Smoke Test remains in progress. Required review and merge remain, and repository auto-merge is disabled. The production gateway alias and its credentials must already be provisioned.
     - **OTel GenAI spans (#306) go to a self-hosted Phoenix (#307):** one container with SQLite and auth, reachable only from the nexusmind namespace. Langfuse v3 would need Postgres, ClickHouse, Redis and S3.
       - The worker exports once `scripts/factory/phoenix_wire_worker.sh` has run on the box. That script writes the production secret, so a person runs it.
     - Codex: built but not in use, by owner decision (no API key).
