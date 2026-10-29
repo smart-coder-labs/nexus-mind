@@ -1,6 +1,6 @@
 # NexusMind Software Factory — Implementation Plan
 
-Status: **F0–F3 built/deployed; F4 specialists built, exit criterion unmet** · Owner: cesar · Last updated: 2026-10-21
+Status: **F0–F3 built/deployed; F4 specialists built, exit criterion unmet** · Owner: cesar · Last updated: 2026-10-29
 
 Source documents:
 
@@ -272,6 +272,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - A PR whose resolver branch names an untrusted intake issue is never merged without a person: an allow becomes a policy hold.
     - **Watchdog:** the org's Slack webhook hears about new held merges, blocked runs and factory tasks (at most once every 15 min), plus a daily summary.
   - **Open:**
+    - The local-worker OpenShell gateway selector and failure diagnostics are in [PR #334](https://github.com/smart-coder-labs/nexus-mind/pull/334); all CI checks passed, but required review and merge remain. Repository auto-merge is disabled. The production gateway alias and its credentials must already be provisioned.
     - **OTel GenAI spans (#306) go to a self-hosted Phoenix (#307):** one container with SQLite and auth, reachable only from the nexusmind namespace. Langfuse v3 would need Postgres, ClickHouse, Redis and S3.
       - The worker exports once `scripts/factory/phoenix_wire_worker.sh` has run on the box. That script writes the production secret, so a person runs it.
     - Codex: built but not in use, by owner decision (no API key).
@@ -312,16 +313,16 @@ Also in this phase:
     - **Checks pod infrastructure is an error, not a rejection.** A failed install (`npm ci`, pnpm, yarn) or a lost command status in the tests or UI checks pod is `checks_install_failed` / `checks_pod_failed`: production blocks the run with the code and never publishes it, and the eval runner retries `error:` attempts. A test run that exits non-zero is still `tests_pass`.
     - tests-v2-05 replaced with a task outside the risky paths.
     - **Merged 2026-10-21:** #320 creates `/tmp/nm-ui`; #321 adds one repair round after a rejected review, moves docs implementation to Sonnet, distinguishes install/pod failures, and escapes prompt delimiters; #318 adds the resumable eval runner. Their checks passed. Deploys for these main commits are running.
-    - **Rerun status:** the previous results remain the only frozen-eval comparison. The owner deferred the new docs/tests/UI run until explicit authorization because it consumes Claude usage. Keep the existing inputs and results unchanged; write any rerun under new set filenames.
+    - **Rerun status:** the previous results remain the only frozen-eval comparison. The owner authorized the new docs/tests/UI run on 2026-10-29. A restricted manual workflow to queue new result sets from the existing frozen inputs is prepared locally; it uses the existing Oracle deploy SSH secret and does not require local Kubernetes credentials. Keep the existing inputs and results unchanged; write any rerun under new set filenames.
   - **Intake:**
     - **OD-7 resolved: `factory::redact`.** Before any Gmail, Notion, Drive or transcript text becomes a task (and so before it reaches a model), emails, phone numbers, Colombian ids, Luhn-checked cards, bank accounts and IBANs, addresses, and secrets are replaced with numbered placeholders. Person names are kept.
     - **Sources.** Gmail (label `factory`), Notion (a `factory` tag or a configured database), Drive/Meet transcripts (a configured folder), local `.txt`, and admin upload (`POST /v1/factory/intake/transcripts`, `factory_policy:write`). Tokens come from connectors bound to each source kind.
     - **Fix: manual.** Gmail and all transcript sources are always untrusted and `fix: manual`: they never auto-start.
     - **Migration v87** widens the source kinds; a table rebuild with foreign keys off keeps items linked.
   - **Open:**
-    - Rerunning the docs, tests and UI evals with this iteration, after owner authorization to spend Claude quota. The UI screenshot path (Playwright from a commands pod, images over stdout) has run only outside the cluster.
+    - Rerunning the docs, tests and UI evals with this iteration. The owner authorized spending Claude quota on 2026-10-29; the manual queue workflow must pass review and merge before it can run from GitHub Actions. The UI screenshot path (Playwright from a commands pod, images over stdout) has run only outside the cluster.
     - OAuth credentials per provider: Gmail `gmail.readonly`; Notion an internal integration token shared with the pages or database; Drive `drive.readonly` or a token scoped to the folder.
-    - Admin UI for the new sources.
+    - Admin UI for Gmail, Notion, Drive and manual transcript upload is implemented locally on `feat/factory-transcript-intake` (commits `5c51c7c`, `2577840`); it awaits owner preview before any admin push, per `apps/admin/PRODUCT.md`.
 
 ### F5: Controlled autonomy and learning (ongoing)
 
