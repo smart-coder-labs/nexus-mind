@@ -273,7 +273,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - **Watchdog:** the org's Slack webhook hears about new held merges, blocked runs and factory tasks (at most once every 15 min), plus a daily summary.
   - **Open:**
     - **OTel GenAI spans (#306) go to a self-hosted Phoenix (#307):** one container with SQLite and auth, reachable only from the nexusmind namespace. Langfuse v3 would need Postgres, ClickHouse, Redis and S3.
-      - The worker exports once `scripts/factory/phoenix_wire_worker.sh` has run on the box. That script writes the production secret, so a person runs it.
+      - The worker export is not yet verified in production. A reviewed manual workflow is prepared locally to create Phoenix secrets only when absent, apply the manifest, wire the system key only when the worker has no OTel destination, and restart the backend. After review/merge it still needs a manual dispatch and an observed span in Phoenix.
     - Codex: built but not in use, by owner decision (no API key).
     - The OpenAI API key for Codex (and a spend limit on its project).
     - Credentials for the first Slack and Sentry sources.

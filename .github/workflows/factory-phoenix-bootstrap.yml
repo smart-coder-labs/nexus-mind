@@ -1,0 +1,51 @@
+name: Bootstrap factory Phoenix observability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-phoenix-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Bootstrap Phoenix on Oracle
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Apply Phoenix and wire worker telemetry
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          BOOTSTRAP_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+
+          keyfile=$(mktemp)
+          trap 'rm -f "$keyfile"' EXIT
+          chmod 600 "$keyfile"
+          printf '%s\n' "$SSH_KEY" > "$keyfile"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSHOPTS=(-i "$keyfile" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+          REMOTE_DIR="/tmp/nexusmind-phoenix-${BOOTSTRAP_RUN_ID}"
+
+          ssh "${SSHOPTS[@]}" "$REMOTE" "mkdir -m 700 -p '$REMOTE_DIR'"
+          scp "${SSHOPTS[@]}" deploy/oracle/k8s/phoenix.yaml \
+            scripts/factory/bootstrap_phoenix.sh \
+            scripts/factory/phoenix_wire_worker.sh \
+            "$REMOTE:$REMOTE_DIR/"
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            "bash '$REMOTE_DIR/bootstrap_phoenix.sh' '$BOOTSTRAP_RUN_ID'"
