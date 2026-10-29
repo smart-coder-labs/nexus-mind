@@ -144,6 +144,7 @@ One Claude subscription window fits only a few tasks (both arms plus the judge),
   - To pause, create `<dir>/STOP`.
   - To retire it, remove the cron line.
 - **Output.** Per set: `<set>.results.jsonl`, `<set>.summary.json` (the binary's summary over every resumed run) and `<set>.done`. `runner.log` records each step.
+- **Queue a rerun on Oracle.** After the workflow is merged, use **Actions → Queue factory specialist eval rerun → Run workflow** on `main`. Choose `all`, `docs`, `tests` or `ui`. The workflow copies the highest-version frozen inputs on the production PVC into new `*-rerun-<workflow-run-id>.jsonl` files, leaves the originals untouched, then wakes the installed runner. Results and summaries use the new names. The runner resumes after Claude usage limits.
 
 ```sh
 node run_specialist_evals.mjs --org <org_id> --dir /data/factory-evals
