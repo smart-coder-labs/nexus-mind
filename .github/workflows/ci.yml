@@ -19,6 +19,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       admin: ${{ steps.filter.outputs.admin }}
       backoffice: ${{ steps.filter.outputs.backoffice }}
+      factory_commands_image: ${{ steps.filter.outputs.factory_commands_image }}
     steps:
       - uses: dorny/paths-filter@v3
         id: filter
@@ -32,6 +33,8 @@ jobs:
               - 'apps/admin/**'
             backoffice:
               - 'apps/backoffice/**'
+            factory_commands_image:
+              - 'apps/backend/factory-commands.Dockerfile'
 
   backend:
     name: Backend (Rust)
@@ -114,6 +117,35 @@ jobs:
         run: cd apps/backoffice && npm run build
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+  factory-commands-image:
+    name: Factory verification image (arm64)
+    needs: changes
+    if: needs.changes.outputs.factory_commands_image == 'true'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR (read the current runtime base)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build verification image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/factory-commands.Dockerfile
+          platforms: linux/arm64
+          build-args: |
+            BACKEND_IMAGE=ghcr.io/${{ github.repository_owner }}/nexusmind-backend:main-arm64
 
   e2e:
     name: E2E Smoke Test

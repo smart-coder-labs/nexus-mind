@@ -3,7 +3,8 @@
 //! local runner, so the worker classifies both paths with the same code.
 //!
 //! Configuration (worker environment):
-//! - `FACTORY_SANDBOX_IMAGE`: task pod image (v1: the backend image).
+//! - `FACTORY_SANDBOX_IMAGE`: agent task pod image (v1: the backend image).
+//! - `FACTORY_COMMANDS_IMAGE`: optional verification image, defaults to the agent image.
 //! - `FACTORY_PROXY_SIGNING_KEY`: shared with the egress proxy, at least 32 bytes.
 
 use std::path::Path;
@@ -144,6 +145,7 @@ pub(crate) fn failure_code(run_id: &str, error: &anyhow::Error) -> String {
 /// What every sandboxed pod of a run shares.
 struct Prepared {
     image: String,
+    commands_image: String,
     signing_key: String,
     workspace_tar: Vec<u8>,
     runtime: Arc<KubeRuntime>,
@@ -151,9 +153,21 @@ struct Prepared {
     now: i64,
 }
 
+fn image_for_profile<'a>(profile: PodProfile, agent: &'a str, commands: &'a str) -> &'a str {
+    if profile == PodProfile::Commands {
+        commands
+    } else {
+        agent
+    }
+}
+
 async fn prepare(run: &SandboxedRun<'_>) -> anyhow::Result<Prepared> {
     let image = std::env::var("FACTORY_SANDBOX_IMAGE")
         .map_err(|_| anyhow::anyhow!("sandbox_unconfigured"))?;
+    // Verification commands may need compilers that the agent image does not
+    // carry. Keep that toolchain in a separate image used only by commands pods.
+    let commands_image =
+        std::env::var("FACTORY_COMMANDS_IMAGE").unwrap_or_else(|_| image.clone());
     let signing_key = std::env::var("FACTORY_PROXY_SIGNING_KEY")
         .ok()
         .filter(|key| key.len() >= 32)
@@ -164,6 +178,7 @@ async fn prepare(run: &SandboxedRun<'_>) -> anyhow::Result<Prepared> {
     }
     Ok(Prepared {
         image,
+        commands_image,
         signing_key,
         workspace_tar: pack_workspace(run.workdir, run.secret_values).await?,
         runtime: Arc::new(KubeRuntime::in_cluster().await?),
@@ -206,7 +221,7 @@ impl Prepared {
                 pod_suffix: format!("{}-{}-{suffix}", self.attempt, run.slot),
                 profile,
                 slot: run.slot.to_string(),
-                image: self.image.clone(),
+                image: image_for_profile(profile, &self.image, &self.commands_image).to_string(),
                 run_token: token.to_string(),
                 wall_time_secs: lifetime.as_secs() as i64,
             }),
@@ -721,6 +736,18 @@ mod tests {
         let (argv, prompt) = sandbox_invocation(&command);
         assert_eq!(argv, ["claude", "-p", "--permission-mode", "plan"]);
         assert_eq!(prompt.as_deref(), Some(&b"review this"[..]));
+    }
+
+    #[test]
+    fn only_verification_pods_use_the_commands_image() {
+        assert_eq!(
+            image_for_profile(PodProfile::Agent, "agent-image", "commands-image"),
+            "agent-image"
+        );
+        assert_eq!(
+            image_for_profile(PodProfile::Commands, "agent-image", "commands-image"),
+            "commands-image"
+        );
     }
 
     #[test]

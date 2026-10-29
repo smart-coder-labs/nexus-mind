@@ -86,9 +86,41 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  factory-commands-build:
+    name: Build verification commands image (arm64) and push to GHCR
+    needs: backend-oracle-build
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push commands image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/factory-commands.Dockerfile
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            BACKEND_IMAGE=ghcr.io/${{ needs.backend-oracle-build.outputs.owner_lc }}/nexusmind-backend:main-arm64
+          tags: ghcr.io/${{ needs.backend-oracle-build.outputs.owner_lc }}/nexusmind-factory-commands:main-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   backend-oracle-deploy:
     name: Deploy backend to oracle (k3s) over SSH
-    needs: [backend-oracle-build, openshell-sandbox-build]
+    needs: [backend-oracle-build, openshell-sandbox-build, factory-commands-build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

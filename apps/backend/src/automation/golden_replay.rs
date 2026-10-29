@@ -1,7 +1,7 @@
 //! Golden task replay through the F1 verification gate (ADR 51dc0839).
 //!
 //! Each golden task is a merged pull request. The replay checks out its accepted
-//! answer (`merge_sha`), runs the repository's JS test commands in a sandbox
+//! answer (`merge_sha`), runs the repository's test commands in a sandbox
 //! commands pod, and stores the `VerificationReport`. No agent runs and nothing is
 //! published. The dataset lives outside the repository; tasks arrive on stdin.
 
@@ -20,8 +20,8 @@ pub struct GoldenTask {
 /// Run id under which replay reports are stored (one per task and head).
 pub const REPLAY_RUN_ID: &str = "golden-v1";
 
-/// The commands that verify a task, chosen by repository and touched paths. The
-/// sandbox image has node/npm only, so Rust-only changes have none.
+/// The commands that verify a task, chosen by repository and touched paths.
+/// Backend Rust checks run in the separate commands image, which includes Cargo.
 pub fn commands_for(task: &GoldenTask) -> Vec<Vec<String>> {
     let argv = |parts: &[&str]| {
         parts
@@ -50,6 +50,20 @@ pub fn commands_for(task: &GoldenTask) -> Vec<Vec<String>> {
                     "apps/backoffice",
                     "run",
                     "build",
+                ]));
+            }
+            if task.changed_files.iter().any(|file| {
+                file.starts_with("apps/backend/")
+                    && (file.ends_with(".rs")
+                        || file == "apps/backend/Cargo.toml"
+                        || file == "apps/backend/Cargo.lock")
+            }) {
+                commands.push(argv(&[
+                    "cargo",
+                    "test",
+                    "--manifest-path",
+                    "apps/backend/Cargo.toml",
+                    "--lib",
                 ]));
             }
             commands
@@ -276,12 +290,15 @@ mod tests {
     }
 
     #[test]
-    fn rust_only_changes_have_no_executable_evidence() {
+    fn rust_changes_run_the_backend_library_tests() {
         let backend = task(
             "smart-coder-labs/nexus-mind",
             &["apps/backend/src/lib.rs", "openspec/x.md"],
         );
-        assert!(commands_for(&backend).is_empty());
+        assert_eq!(
+            argv(&commands_for(&backend)),
+            ["cargo test --manifest-path apps/backend/Cargo.toml --lib"]
+        );
     }
 
     #[test]
@@ -357,7 +374,11 @@ mod tests {
         let all = [
             task(
                 "smart-coder-labs/nexus-mind",
-                &["apps/admin/a", "apps/backoffice/b"],
+                &[
+                    "apps/admin/a",
+                    "apps/backoffice/b",
+                    "apps/backend/src/lib.rs",
+                ],
             ),
             task("kasymir/kasymir-app-ui", &["src/a"]),
         ];

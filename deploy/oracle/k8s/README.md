@@ -15,6 +15,7 @@ Manifests: `nexusmind.yaml` in this dir. Copy it to the box (or `git pull` there
 
 ## 0. Prerequisites (already true)
 - Backend image built: `ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64`.
+- Verification image built by the production workflow: `ghcr.io/smart-coder-labs/nexusmind-factory-commands:main-arm64` (backend runtime tools plus Cargo; used only by commands pods).
 - Box already did `docker login ghcr.io` (creds in `~/.docker/config.json`).
 - Box still has the env at `~/oracle-deploy/.env` (from the docker deploy).
 - Verified backup on your Mac:
