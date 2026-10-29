@@ -129,6 +129,12 @@ spec:
           env:
             - name: AUTONOMOUS_AGENTS_ENABLED
               value: "true"
+            # The Nexus executor's CLI requires an explicit registered gateway
+            # name. Keep this aligned with the production registration under
+            # /claude-home/.config/openshell; without it the worker silently
+            # targets no gateway even when the gateway is reachable.
+            - name: OPENSHELL_GATEWAY
+              value: production
             - name: CLAUDE_CODE_BIN
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME

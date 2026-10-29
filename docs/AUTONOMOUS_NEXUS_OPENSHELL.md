@@ -12,9 +12,10 @@ OpenShell gateway; it does not require or receive a Docker socket.
    and configure a private endpoint with trusted TLS. Do not publish the
    unauthenticated gateway on the public Internet.
 2. Register that gateway for the worker's persisted `HOME` using
-   `openshell gateway add https://<private-gateway> --name production`, then
-   set `OPENSHELL_GATEWAY=production` in the worker environment. Provision
-   the gateway's client credentials according to its authentication mode.
+   `openshell gateway add https://<private-gateway> --name production`.
+   The Oracle worker selects that registration with
+   `OPENSHELL_GATEWAY=production`. Provision the gateway's client credentials
+   according to its authentication mode.
 3. The Oracle workflow builds and publishes `apps/nexus-cli/sandbox/Dockerfile`
    to `ghcr.io/<owner>/nexusmind-openshell:main-arm64`. Confirm that the
    gateway's compute driver can pull it (including GHCR credentials for a
@@ -24,10 +25,10 @@ OpenShell gateway; it does not require or receive a Docker socket.
 4. The worker image contains `/app/nexus` and the OpenShell CLI. Set
    `NEXUS_WORKER_BIN=/app/nexus` (the default). The worker uses the `essential`
    NexusMind MCP profile.
-   The Oracle worker inherits `OPENSHELL_GATEWAY`, `NEXUS_OPENSHELL_IMAGE`, and
-   credentials from `nexusmind-env`; they must be provisioned before selecting
-   Nexus in an agent definition. The existing Claude executor remains usable
-   while these values are absent.
+   The Oracle worker sets `OPENSHELL_GATEWAY=production` and inherits
+   `NEXUS_OPENSHELL_IMAGE` and gateway credentials from `nexusmind-env`; those
+   must be provisioned before selecting Nexus in an agent definition. The
+   existing Claude executor remains usable while these values are absent.
 5. Start a run with a single agent after provisioning. The sandbox name is
    stable per agent definition (`nx-a-…`), so it can retain the Claude Code
    executable login. Perform `claude auth login` in that sandbox once using an
