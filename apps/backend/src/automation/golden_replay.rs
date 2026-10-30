@@ -220,7 +220,7 @@ async fn replay(
             &super::sandboxed::CommandsSpec {
                 commands: &commands,
                 extra_env: &[],
-                timeout_secs: COMMAND_TIMEOUT_SECS,
+                timeout_secs: command_timeout_secs(&commands),
                 reproduce_failures: false,
                 hosts: &[],
                 label: "g",
@@ -246,6 +246,19 @@ async fn replay(
 /// Installs and test suites of real repositories take longer than a verification
 /// command's default.
 const COMMAND_TIMEOUT_SECS: u64 = 900;
+/// A cold Rust build in the constrained ARM64 pod can take longer than JS tests.
+const RUST_COMMAND_TIMEOUT_SECS: u64 = 3600;
+
+fn command_timeout_secs(commands: &[Vec<String>]) -> u64 {
+    if commands
+        .iter()
+        .any(|command| command.first().is_some_and(|program| program == "cargo"))
+    {
+        RUST_COMMAND_TIMEOUT_SECS
+    } else {
+        COMMAND_TIMEOUT_SECS
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -307,6 +320,19 @@ mod tests {
         assert_eq!(
             argv(&commands_for(&ui)),
             ["npm ci", "npm test -- --ci --passWithNoTests"]
+        );
+    }
+
+    #[test]
+    fn rust_replay_gets_a_cold_build_timeout_without_changing_js_limits() {
+        assert_eq!(command_timeout_secs(&[]), COMMAND_TIMEOUT_SECS);
+        assert_eq!(
+            command_timeout_secs(&[vec!["npm".into(), "test".into()]]),
+            COMMAND_TIMEOUT_SECS
+        );
+        assert_eq!(
+            command_timeout_secs(&[vec!["cargo".into(), "test".into()]]),
+            RUST_COMMAND_TIMEOUT_SECS
         );
     }
 
