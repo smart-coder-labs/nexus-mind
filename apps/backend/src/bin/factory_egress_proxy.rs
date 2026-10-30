@@ -15,21 +15,8 @@
 
 use std::sync::Arc;
 
+use nexusmind::factory::egress::DEFAULT_TUNNEL_ALLOWLIST;
 use nexusmind::factory::egress_server::{serve, AnthropicAuth, EgressConfig};
-
-/// Public package registries only: tunnels never carry credentials.
-const DEFAULT_ALLOWLIST: &[&str] = &[
-    "registry.npmjs.org",
-    "pypi.org",
-    "files.pythonhosted.org",
-    "crates.io",
-    "static.crates.io",
-    "index.crates.io",
-    "codeload.github.com",
-    // GitHub Packages answers tarball downloads with a redirect to a presigned
-    // URL here; it carries no credential.
-    "pkg-npm.githubusercontent.com",
-];
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name)
@@ -60,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
                 .collect()
         })
         .unwrap_or_else(|| {
-            DEFAULT_ALLOWLIST
+            DEFAULT_TUNNEL_ALLOWLIST
                 .iter()
                 .map(|host| host.to_string())
                 .collect()

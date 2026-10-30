@@ -166,8 +166,10 @@ async fn prepare(run: &SandboxedRun<'_>) -> anyhow::Result<Prepared> {
         .map_err(|_| anyhow::anyhow!("sandbox_unconfigured"))?;
     // Verification commands may need compilers that the agent image does not
     // carry. Keep that toolchain in a separate image used only by commands pods.
-    let commands_image =
-        std::env::var("FACTORY_COMMANDS_IMAGE").unwrap_or_else(|_| image.clone());
+    let commands_image = std::env::var("FACTORY_COMMANDS_IMAGE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| image.clone());
     let signing_key = std::env::var("FACTORY_PROXY_SIGNING_KEY")
         .ok()
         .filter(|key| key.len() >= 32)
