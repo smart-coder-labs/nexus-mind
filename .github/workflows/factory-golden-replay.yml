@@ -153,7 +153,7 @@ jobs:
           out_file="$run_dir/out.jsonl"
           ssh_options=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
           state=$(ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
-            "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'if [ ! -f $pid_file ]; then echo replay_not_found; elif kill -0 \$(cat $pid_file) 2>/dev/null; then echo running; else echo finished; fi'")
+            "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'if [ ! -f $pid_file ]; then echo replay_not_found; elif [ -s $out_file ] && tail -n 1 $out_file | grep -q summary; then echo finished; elif grep -q \"^State:[[:space:]]*Z\" /proc/\$(cat $pid_file)/status 2>/dev/null; then echo finished; elif kill -0 \$(cat $pid_file) 2>/dev/null; then echo running; else echo finished; fi'")
           case "$state" in
             running) echo "Replay $REPLAY_ID is still running." ;;
             finished)
