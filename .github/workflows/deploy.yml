@@ -64,6 +64,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +79,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push sandbox image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: apps/nexus-cli/sandbox
@@ -131,11 +134,13 @@ jobs:
           SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
           SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NEXUS_OPENSHELL_IMAGE: ghcr.io/${{ needs.backend-oracle-build.outputs.owner_lc }}/nexusmind-openshell@${{ needs.openshell-sandbox-build.outputs.image_digest }}
         run: |
           set -euo pipefail
           : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
           : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
           : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+          : "${NEXUS_OPENSHELL_IMAGE:?OpenShell sandbox image digest was not produced}"
 
           install -m 600 /dev/null /tmp/oracle_key
           printf '%s\n' "$SSH_KEY" > /tmp/oracle_key
@@ -153,9 +158,11 @@ jobs:
             printf '{"stringData":{"SENTRY_DSN":"%s"}}' "$SENTRY_DSN" | \
               ssh $SSHOPTS "$REMOTE" 'kubectl -n nexusmind patch secret nexusmind-env --type=merge --patch-file=/dev/stdin'
           fi
+          ssh $SSHOPTS "$REMOTE" 'kubectl apply -f /tmp/nexusmind.yaml'
+          ssh $SSHOPTS "$REMOTE" \
+            "kubectl -n nexusmind set env deployment/nexusmind-backend -c autonomous-worker NEXUS_OPENSHELL_IMAGE=$NEXUS_OPENSHELL_IMAGE"
           ssh $SSHOPTS "$REMOTE" '
             set -e
-            kubectl apply -f /tmp/nexusmind.yaml
             kubectl -n nexusmind rollout restart deploy/nexusmind-backend
             kubectl -n nexusmind rollout status deploy/nexusmind-backend --timeout=240s
           '
