@@ -223,6 +223,10 @@ pub fn verification_env(registry_token: &str) -> Vec<(String, String)> {
         ("HOME", "/tmp".to_string()),
         ("TMPDIR", "/tmp".to_string()),
         ("CI", "1".to_string()),
+        ("RUSTUP_HOME", "/usr/local/rustup".to_string()),
+        ("CARGO_HOME", "/tmp/.cargo".to_string()),
+        ("CARGO_BUILD_JOBS", "2".to_string()),
+        ("RUST_TEST_THREADS", "2".to_string()),
         (
             "HTTPS_PROXY",
             format!("http://run:{registry_token}@{PROXY_AUTHORITY}"),
@@ -615,6 +619,10 @@ mod tests {
             assert!(!env.contains_key(inherited), "{inherited}");
         }
         assert_eq!(env["HOME"], "/tmp");
+        assert_eq!(env["RUSTUP_HOME"], "/usr/local/rustup");
+        assert_eq!(env["CARGO_HOME"], "/tmp/.cargo");
+        assert_eq!(env["CARGO_BUILD_JOBS"], "2");
+        assert_eq!(env["RUST_TEST_THREADS"], "2");
     }
 
     #[test]
