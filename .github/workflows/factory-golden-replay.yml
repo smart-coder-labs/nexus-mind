@@ -1,0 +1,165 @@
+name: Factory F1 golden replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Start a replay or check an existing replay
+        type: choice
+        options: [start, status]
+        required: true
+      org_id:
+        description: Organization that owns the verification reports
+        type: string
+        required: true
+        default: bdf4b2aa-3f52-422e-8bee-a1babbb7d337
+      tasks_jsonl:
+        description: Sanitized JSONL; id, repository, merge_sha, changed_files only (start)
+        type: string
+        required: false
+      replay_id:
+        description: GitHub Actions run ID returned by the start action (status)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate request and manifest
+        id: validate
+        env:
+          ACTION: ${{ inputs.action }}
+          ORG_ID: ${{ inputs.org_id }}
+          TASKS_JSONL: ${{ inputs.tasks_jsonl }}
+          REPLAY_ID: ${{ inputs.replay_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, uuid
+          from pathlib import Path
+
+          action = os.environ["ACTION"]
+          try:
+              org_id = str(uuid.UUID(os.environ["ORG_ID"]))
+          except (ValueError, AttributeError):
+              raise SystemExit("org_id must be a UUID")
+          if org_id != os.environ["ORG_ID"].lower():
+              raise SystemExit("org_id must use canonical UUID form")
+
+          replay_id = os.environ.get("REPLAY_ID", "")
+          if action == "status":
+              if not re.fullmatch(r"[0-9]{1,20}", replay_id):
+                  raise SystemExit("replay_id must be the numeric Actions run ID from a start action")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write(f"replay_id={replay_id}\n")
+          elif action == "start":
+              raw = os.environ.get("TASKS_JSONL", "")
+              if not raw or len(raw.encode("utf-8")) > 45000:
+                  raise SystemExit("tasks_jsonl must be non-empty and at most 45,000 bytes")
+              allowed_repositories = {"smart-coder-labs/nexus-mind", "kasymir/kasymir-app-ui"}
+              keys = {"id", "repository", "merge_sha", "changed_files"}
+              rows, seen = [], set()
+              for line_number, line in enumerate(raw.splitlines(), 1):
+                  if not line.strip():
+                      continue
+                  try:
+                      task = json.loads(line)
+                  except json.JSONDecodeError as error:
+                      raise SystemExit(f"invalid JSON on line {line_number}") from error
+                  if not isinstance(task, dict) or set(task) != keys:
+                      raise SystemExit(f"line {line_number} must contain only id, repository, merge_sha, changed_files")
+                  try:
+                      task_id = str(uuid.UUID(task["id"]))
+                  except (ValueError, TypeError, AttributeError):
+                      raise SystemExit(f"line {line_number} has an invalid id")
+                  if task_id != task["id"] or task_id in seen:
+                      raise SystemExit(f"line {line_number} has a non-canonical or duplicate id")
+                  seen.add(task_id)
+                  if task["repository"] not in allowed_repositories:
+                      raise SystemExit(f"line {line_number} repository is not allowed")
+                  if not isinstance(task["merge_sha"], str) or not re.fullmatch(r"[0-9a-fA-F]{40}", task["merge_sha"]):
+                      raise SystemExit(f"line {line_number} has an invalid merge_sha")
+                  paths = task["changed_files"]
+                  if not isinstance(paths, list) or len(paths) > 40:
+                      raise SystemExit(f"line {line_number} changed_files must be a list of at most 40 paths")
+                  for path in paths:
+                      if not isinstance(path, str) or not path or path.startswith("/") or "\\" in path or "\x00" in path or ".." in path.split("/"):
+                          raise SystemExit(f"line {line_number} has an invalid changed_files path")
+                  rows.append({"id": task_id, "repository": task["repository"], "merge_sha": task["merge_sha"].lower(), "changed_files": paths})
+              if not rows or len(rows) > 50:
+                  raise SystemExit("tasks_jsonl must contain between 1 and 50 tasks")
+              destination = Path(os.environ["RUNNER_TEMP"]) / "factory-golden-tasks.jsonl"
+              destination.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows), encoding="utf-8")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write(f"task_count={len(rows)}\n")
+          else:
+              raise SystemExit("action must be start or status")
+          PY
+
+      - name: Configure Oracle SSH
+        if: inputs.action == 'start' || inputs.action == 'status'
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+          key="$RUNNER_TEMP/oracle_key"
+          known_hosts="$RUNNER_TEMP/oracle_known_hosts"
+          install -m 600 /dev/null "$key"
+          printf '%s\n' "$SSH_KEY" > "$key"
+          ssh-keyscan -H "$SSH_HOST" > "$known_hosts" 2>/dev/null
+          echo "SSH_KEY_FILE=$key" >> "$GITHUB_ENV"
+          echo "SSH_KNOWN_HOSTS=$known_hosts" >> "$GITHUB_ENV"
+          echo "ORACLE_REMOTE=${SSH_USER}@${SSH_HOST}" >> "$GITHUB_ENV"
+
+      - name: Start replay
+        if: inputs.action == 'start'
+        env:
+          ORG_ID: ${{ inputs.org_id }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$SSH_KEY_FILE" "$SSH_KNOWN_HOSTS"' EXIT
+          run_dir="/data/factory-evals/f1-replay-$GITHUB_RUN_ID"
+          task_file="$run_dir/tasks.jsonl"
+          out_file="$run_dir/out.jsonl"
+          err_file="$run_dir/err.log"
+          pid_file="$run_dir/pid"
+          ssh_options=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
+            "sudo kubectl -n nexusmind exec -i deploy/nexusmind-backend -c autonomous-worker -- sh -c 'mkdir -p $run_dir && cat > $task_file'" \
+            < "$RUNNER_TEMP/factory-golden-tasks.jsonl"
+          ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
+            "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'nohup /app/factory-golden-replay $ORG_ID < $task_file > $out_file 2> $err_file & echo \$! > $pid_file'"
+          echo "Started F1 replay run $GITHUB_RUN_ID with ${{ steps.validate.outputs.task_count }} sanitized tasks. Use the status action with replay_id=$GITHUB_RUN_ID."
+
+      - name: Read replay status
+        if: inputs.action == 'status'
+        env:
+          REPLAY_ID: ${{ steps.validate.outputs.replay_id }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$SSH_KEY_FILE" "$SSH_KNOWN_HOSTS"' EXIT
+          run_dir="/data/factory-evals/f1-replay-$REPLAY_ID"
+          pid_file="$run_dir/pid"
+          out_file="$run_dir/out.jsonl"
+          ssh_options=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          state=$(ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
+            "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'if [ ! -f $pid_file ]; then echo replay_not_found; elif kill -0 \$(cat $pid_file) 2>/dev/null; then echo running; else echo finished; fi'")
+          case "$state" in
+            running) echo "Replay $REPLAY_ID is still running." ;;
+            finished)
+              ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
+                "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- tail -n 1 $out_file" |
+                python3 -c 'import json,sys; value=json.loads(sys.stdin.readline()); summary=value.get("summary") if isinstance(value,dict) else None; print(json.dumps(summary,separators=(",",":")) if isinstance(summary,dict) else "replay_incomplete"); sys.exit(0 if isinstance(summary,dict) else 1)'
+              ;;
+            *) echo "$state"; exit 1 ;;
+          esac

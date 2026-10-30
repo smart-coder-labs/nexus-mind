@@ -1,7 +1,7 @@
 //! Golden task replay through the F1 verification gate (ADR 51dc0839).
 //!
 //! Each golden task is a merged pull request. The replay checks out its accepted
-//! answer (`merge_sha`), runs the repository's JS test commands in a sandbox
+//! answer (`merge_sha`), runs the repository's test commands in a sandbox
 //! commands pod, and stores the `VerificationReport`. No agent runs and nothing is
 //! published. The dataset lives outside the repository; tasks arrive on stdin.
 
@@ -20,8 +20,8 @@ pub struct GoldenTask {
 /// Run id under which replay reports are stored (one per task and head).
 pub const REPLAY_RUN_ID: &str = "golden-v1";
 
-/// The commands that verify a task, chosen by repository and touched paths. The
-/// sandbox image has node/npm only, so Rust-only changes have none.
+/// The commands that verify a task, chosen by repository and touched paths.
+/// Backend Rust checks run in the separate commands image, which includes Cargo.
 pub fn commands_for(task: &GoldenTask) -> Vec<Vec<String>> {
     let argv = |parts: &[&str]| {
         parts
@@ -50,6 +50,20 @@ pub fn commands_for(task: &GoldenTask) -> Vec<Vec<String>> {
                     "apps/backoffice",
                     "run",
                     "build",
+                ]));
+            }
+            if task.changed_files.iter().any(|file| {
+                file.starts_with("apps/backend/")
+                    && (file.ends_with(".rs")
+                        || file == "apps/backend/Cargo.toml"
+                        || file == "apps/backend/Cargo.lock")
+            }) {
+                commands.push(argv(&[
+                    "cargo",
+                    "test",
+                    "--manifest-path",
+                    "apps/backend/Cargo.toml",
+                    "--lib",
                 ]));
             }
             commands
@@ -206,7 +220,7 @@ async fn replay(
             &super::sandboxed::CommandsSpec {
                 commands: &commands,
                 extra_env: &[],
-                timeout_secs: COMMAND_TIMEOUT_SECS,
+                timeout_secs: command_timeout_secs(&commands),
                 reproduce_failures: false,
                 hosts: &[],
                 label: "g",
@@ -232,6 +246,19 @@ async fn replay(
 /// Installs and test suites of real repositories take longer than a verification
 /// command's default.
 const COMMAND_TIMEOUT_SECS: u64 = 900;
+/// A cold Rust build in the constrained ARM64 pod can take longer than JS tests.
+const RUST_COMMAND_TIMEOUT_SECS: u64 = 3600;
+
+fn command_timeout_secs(commands: &[Vec<String>]) -> u64 {
+    if commands
+        .iter()
+        .any(|command| command.first().is_some_and(|program| program == "cargo"))
+    {
+        RUST_COMMAND_TIMEOUT_SECS
+    } else {
+        COMMAND_TIMEOUT_SECS
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -251,14 +278,18 @@ mod tests {
     }
 
     #[test]
-    fn nexus_mind_runs_the_js_suites_its_change_touches() {
+    fn nexus_mind_runs_each_language_suite_its_change_touches() {
         let admin = task(
             "smart-coder-labs/nexus-mind",
             &["apps/admin/src/App.tsx", "apps/backend/src/main.rs"],
         );
         assert_eq!(
             argv(&commands_for(&admin)),
-            ["npm --prefix apps/admin ci", "npm --prefix apps/admin test"]
+            [
+                "npm --prefix apps/admin ci",
+                "npm --prefix apps/admin test",
+                "cargo test --manifest-path apps/backend/Cargo.toml --lib"
+            ]
         );
         let both = task(
             "smart-coder-labs/nexus-mind",
@@ -276,12 +307,15 @@ mod tests {
     }
 
     #[test]
-    fn rust_only_changes_have_no_executable_evidence() {
+    fn rust_changes_run_the_backend_library_tests() {
         let backend = task(
             "smart-coder-labs/nexus-mind",
             &["apps/backend/src/lib.rs", "openspec/x.md"],
         );
-        assert!(commands_for(&backend).is_empty());
+        assert_eq!(
+            argv(&commands_for(&backend)),
+            ["cargo test --manifest-path apps/backend/Cargo.toml --lib"]
+        );
     }
 
     #[test]
@@ -290,6 +324,19 @@ mod tests {
         assert_eq!(
             argv(&commands_for(&ui)),
             ["npm ci", "npm test -- --ci --passWithNoTests"]
+        );
+    }
+
+    #[test]
+    fn rust_replay_gets_a_cold_build_timeout_without_changing_js_limits() {
+        assert_eq!(command_timeout_secs(&[]), COMMAND_TIMEOUT_SECS);
+        assert_eq!(
+            command_timeout_secs(&[vec!["npm".into(), "test".into()]]),
+            COMMAND_TIMEOUT_SECS
+        );
+        assert_eq!(
+            command_timeout_secs(&[vec!["cargo".into(), "test".into()]]),
+            RUST_COMMAND_TIMEOUT_SECS
         );
     }
 
@@ -357,7 +404,11 @@ mod tests {
         let all = [
             task(
                 "smart-coder-labs/nexus-mind",
-                &["apps/admin/a", "apps/backoffice/b"],
+                &[
+                    "apps/admin/a",
+                    "apps/backoffice/b",
+                    "apps/backend/src/lib.rs",
+                ],
             ),
             task("kasymir/kasymir-app-ui", &["src/a"]),
         ];

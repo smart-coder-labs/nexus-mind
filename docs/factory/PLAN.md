@@ -130,7 +130,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
   - Containers are Kubernetes pods (user namespaces, PSA restricted, read-only root, no ServiceAccount token, `prlimit` process cap) rather than podman/colima; OD-3 is resolved by that.
   - The credential broker is the egress proxy: pods hold only short-lived HMAC run tokens, and the proxy injects the Claude and NexusMind credentials. GitHub writes stay in the worker (the pod never receives a GitHub token) instead of going through the proxy.
   - Repository code (tests, verification, scanners) runs in a separate commands pod with a registry-only token.
-  - **Open:** the gate has produced reports for real sandboxed runs, but the golden task set (kept outside the repo, F0) has not yet been replayed through the sandbox to produce reports for all golden tasks.
+  - **Open:** the golden replay reported all 30 tasks, but only the 10 tasks with executable JS evidence passed; 20 Rust-only tasks returned `no_verification_evidence` because the task image has no Cargo toolchain. [PR #338](https://github.com/smart-coder-labs/nexus-mind/pull/338) adds a separate verification image with Cargo, backend library tests for Rust changes, and a restricted manual workflow to dispatch the sanitized frozen manifest through the existing Oracle SSH secret. Re-run the unchanged set after review, merge and deploy to confirm reports for all tasks; `scripts/factory/dispatch_golden_replay.sh` sends only task IDs, repo names, merge SHAs and changed paths.
 
 ### F2: Code intelligence, "Bibliotecario" (2–3 weeks)
 
@@ -330,6 +330,8 @@ Also in this phase:
 - Build a trajectory store of accepted and rejected runs, with verification data and human edits.
 - Add a lookback workflow (recommendations only) that clusters recurrences against NexusMind `bugfix` memories.
 - LoRA/QLoRA only if the evals show a persistent behavioral gap.
+
+- **Trajectory store:** implemented as an append-only, org-scoped observational slice in [PR #332](https://github.com/smart-coder-labs/nexus-mind/pull/332); CI is green and required review remains. Accepted/rejected assessment samples and human feedback must still accumulate before any lookback recommendation can be evaluated.
 
 **Horizon:** 2026-10-04 → 2026-12-13, per the architecture doc. No GPU is needed before F4.
 

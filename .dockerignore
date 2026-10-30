@@ -4,6 +4,7 @@
 !apps/backend/Cargo.toml
 !apps/backend/Cargo.lock
 !apps/backend/Dockerfile
+!apps/backend/factory-commands.Dockerfile
 !apps/backend/src/
 !apps/backend/src/**
 !apps/nexus-cli/
