@@ -19,16 +19,17 @@ OpenShell gateway; it does not require or receive a Docker socket.
 3. The Oracle workflow builds and publishes `apps/nexus-cli/sandbox/Dockerfile`
    to `ghcr.io/<owner>/nexusmind-openshell:main-arm64`. Confirm that the
    gateway's compute driver can pull it (including GHCR credentials for a
-   private package). Resolve the published digest and set
-   `NEXUS_OPENSHELL_IMAGE` in the `nexusmind-env` Kubernetes secret to the
+   private package). The deploy workflow passes the published digest as
+   `NEXUS_OPENSHELL_IMAGE` to the `autonomous-worker` container, using the
    immutable `ghcr.io/<owner>/nexusmind-openshell@sha256:<digest>` reference.
 4. The worker image contains `/app/nexus` and the OpenShell CLI. Set
    `NEXUS_WORKER_BIN=/app/nexus` (the default). The worker uses the `essential`
    NexusMind MCP profile.
-   The Oracle worker sets `OPENSHELL_GATEWAY=production` and inherits
-   `NEXUS_OPENSHELL_IMAGE` and gateway credentials from `nexusmind-env`; those
-   must be provisioned before selecting Nexus in an agent definition. The
-   existing Claude executor remains usable while these values are absent.
+   The Oracle deployment sets `OPENSHELL_GATEWAY=production`; gateway endpoint
+   and client credentials must be provisioned in the worker's persisted
+   OpenShell configuration/environment before selecting Nexus in an agent
+   definition. The existing Claude executor remains usable while these values
+   are absent.
 5. Start a run with a single agent after provisioning. The sandbox name is
    stable per agent definition (`nx-a-…`), so it can retain the Claude Code
    executable login. Perform `claude auth login` in that sandbox once using an
@@ -44,9 +45,10 @@ For a Kubernetes deployment, use the upstream OpenShell gateway/operator
 installation and a private service; the backend deployment only needs network
 access, its gateway registration/certificates, and the environment above.
 
-The worker reports `nexus_gateway_unavailable`, `nexus_auth_required`,
+The deploy provisions the sandbox image reference, but not the separate
+gateway service, its endpoint/client authentication, or the interactive Claude
+login. The worker reports `nexus_gateway_unavailable`, `nexus_auth_required`,
 `nexus_cli_unavailable`, or `nexus_runtime_failed` when a prerequisite fails.
 Do not enable Nexus agents for production traffic until a real gateway,
 interactive login, image pull, transcript, file sync, and cancellation drill
-have passed in the target environment. None of those steps is a deployment
-performed by this change.
+have passed in the target environment.
