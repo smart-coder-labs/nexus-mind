@@ -4,6 +4,7 @@ pub mod factory_intake;
 pub mod factory_ops;
 pub mod factory_queries;
 pub mod factory_model_config;
+pub mod factory_trajectory;
 pub mod migrations;
 pub mod migration_queries;
 pub mod queries;
