@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
-const dir = '/data/factory-evals'
+const dir = process.env.NM_EVAL_DIR ?? '/data/factory-evals'
 const runId = process.env.NM_EVAL_RUN_ID ?? ''
 const requested = (process.env.NM_EVAL_SET_IDS ?? '').split(',').filter(Boolean)
 const allowed = new Set(['docs', 'tests', 'ui'])
@@ -13,12 +13,20 @@ if (!requested.length || requested.some(id => !allowed.has(id)) || new Set(reque
 
 const files = readdirSync(dir)
 const plans = requested.map(id => {
+  const sequence = { docs: '10', tests: '20', ui: '30' }[id]
   const sources = files
-    .map(name => ({ name, match: name.match(new RegExp(`^${id}-v(\\d+)\\.jsonl$`)) }))
+    .map(name => ({
+      name,
+      match: name.match(new RegExp(`^(?:(?:${sequence}-)?${id})(?:-v(\\d+))?\\.jsonl$`)),
+    }))
     .filter(file => file.match)
-    .sort((a, b) => Number(a.match[1]) - Number(b.match[1]))
+    .sort((a, b) => {
+      const versionOrder = Number(a.match[1] ?? 1) - Number(b.match[1] ?? 1)
+      if (versionOrder) return versionOrder
+      return Number(a.name.startsWith(`${sequence}-`)) - Number(b.name.startsWith(`${sequence}-`))
+    })
   const source = sources.at(-1)?.name
-  if (!source) throw new Error(`no frozen ${id}-vN.jsonl input exists`)
+  if (!source) throw new Error(`no frozen ${id} input exists`)
   const sourcePath = join(dir, source)
   const taskLines = readFileSync(sourcePath, 'utf8').split(/\r?\n/).filter(Boolean)
   if (!taskLines.length) throw new Error(`frozen input is empty: ${source}`)
