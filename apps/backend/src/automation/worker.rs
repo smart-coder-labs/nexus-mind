@@ -36,6 +36,10 @@ fn nexus_failure_code(stderr: &[u8]) -> &'static str {
     let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     if text.contains("login") || text.contains("authentication") || text.contains("auth required") {
         "nexus_auth_required"
+    } else if text.contains("gateway is not configured")
+        || text.contains("worker image is not configured")
+    {
+        "nexus_executor_not_ready"
     } else if text.contains("gateway") || text.contains("connection refused") {
         "nexus_gateway_unavailable"
     } else if text.contains("openshell cli is required") || text.contains("could not start") {
@@ -45,6 +49,29 @@ fn nexus_failure_code(stderr: &[u8]) -> &'static str {
     } else {
         "nexus_runtime_failed"
     }
+}
+
+/// Keep the stable UI failure code and a short, redacted CLI diagnostic. The
+/// generic code alone cannot distinguish a missing gateway registration from
+/// DNS, TLS, or authentication failures, which all need different fixes.
+fn nexus_failure_payload(
+    stderr: &[u8],
+    exit_code: Option<i32>,
+    context_manifest: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let detail = sanitize_output(stderr, 8192);
+    let detail = detail.trim().chars().take(800).collect::<String>();
+    let mut payload = json!({"code":nexus_failure_code(stderr)});
+    if !detail.is_empty() {
+        payload["detail"] = json!(detail);
+    }
+    if let Some(exit_code) = exit_code {
+        payload["exit_code"] = json!(exit_code);
+    }
+    if let Some(context_manifest) = context_manifest {
+        payload["context_manifest"] = context_manifest.clone();
+    }
+    payload
 }
 
 pub(crate) fn parse_claude_event_stream(
@@ -4112,11 +4139,12 @@ async fn resolve_issue_worktree(
             },
             Ok(Ok(output)) if nexus_selected => (
                 "blocked_runtime".into(),
-                json!({"code":nexus_failure_code(&output.stderr),"exit_code":output.status.code()}),
+                nexus_failure_payload(&output.stderr, output.status.code(), None),
             ),
             Ok(Ok(output)) => match parse_claude_event_stream(&output.stdout) {
                 Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed_nonzero_exit","result":value,"stream":stream})),
-                Err(_) => ("failed".into(), json!({"code":if nexus_selected {nexus_failure_code(&output.stderr)} else {"claude_failed"},"exit_code":output.status.code()})),
+                Err(_) if nexus_selected => ("failed".into(), nexus_failure_payload(&output.stderr, output.status.code(), None)),
+                Err(_) => ("failed".into(), json!({"code":"claude_failed","exit_code":output.status.code()})),
             },
         }
     };
@@ -5387,7 +5415,7 @@ async fn execute_claim(
         }
         Ok(Ok(output)) if nexus_selected => (
             "blocked_runtime".into(),
-            json!({"code":nexus_failure_code(&output.stderr),"exit_code":output.status.code(),"context_manifest":manifest.clone()}),
+            nexus_failure_payload(&output.stderr, output.status.code(), Some(&manifest)),
         ),
         Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model, &output.stdout) {
             Ok((value, stream)) if over_cost_cap(claim, &value) => (
@@ -5412,7 +5440,7 @@ async fn execute_claim(
                 Err(_) => {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
                     if nexus_selected {
-                        ("blocked_runtime".into(), json!({"code":nexus_failure_code(&output.stderr)}))
+                        ("blocked_runtime".into(), nexus_failure_payload(&output.stderr, output.status.code(), None))
                     } else if stderr.contains("auth") || stderr.contains("login") {
                         ("blocked_runtime".into(), json!({"code":"claude_auth_required"}))
                     } else {
