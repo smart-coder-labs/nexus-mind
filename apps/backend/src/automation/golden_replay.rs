@@ -278,14 +278,18 @@ mod tests {
     }
 
     #[test]
-    fn nexus_mind_runs_the_js_suites_its_change_touches() {
+    fn nexus_mind_runs_each_language_suite_its_change_touches() {
         let admin = task(
             "smart-coder-labs/nexus-mind",
             &["apps/admin/src/App.tsx", "apps/backend/src/main.rs"],
         );
         assert_eq!(
             argv(&commands_for(&admin)),
-            ["npm --prefix apps/admin ci", "npm --prefix apps/admin test"]
+            [
+                "npm --prefix apps/admin ci",
+                "npm --prefix apps/admin test",
+                "cargo test --manifest-path apps/backend/Cargo.toml --lib"
+            ]
         );
         let both = task(
             "smart-coder-labs/nexus-mind",
