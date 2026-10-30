@@ -165,6 +165,11 @@ jobs:
             set -e
             kubectl -n nexusmind rollout restart deploy/nexusmind-backend
             kubectl -n nexusmind rollout status deploy/nexusmind-backend --timeout=240s
+            # The egress proxy runs the same backend image under the sandbox
+            # namespace. Refresh it too so policy/allowlist code matches this
+            # commit before the next verification replay.
+            kubectl -n nexusmind-egress rollout restart deploy/factory-egress-proxy
+            kubectl -n nexusmind-egress rollout status deploy/factory-egress-proxy --timeout=240s
           '
           rm -f /tmp/oracle_key
           echo "oracle k8s deploy complete."
