@@ -101,6 +101,9 @@ jobs:
               raise SystemExit("action must be start or status")
           PY
 
+      - uses: actions/checkout@v4
+        if: inputs.action == 'start' || inputs.action == 'status'
+
       - name: Configure Oracle SSH
         if: inputs.action == 'start' || inputs.action == 'status'
         env:
@@ -128,18 +131,14 @@ jobs:
         run: |
           set -euo pipefail
           trap 'rm -f "$SSH_KEY_FILE" "$SSH_KNOWN_HOSTS"' EXIT
-          run_dir="/data/factory-evals/f1-replay-$GITHUB_RUN_ID"
-          task_file="$run_dir/tasks.jsonl"
-          out_file="$run_dir/out.jsonl"
-          err_file="$run_dir/err.log"
-          pid_file="$run_dir/pid"
+          config_map="f1-replay-$GITHUB_RUN_ID"
           ssh_options=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
           ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
-            "sudo kubectl -n nexusmind exec -i deploy/nexusmind-backend -c autonomous-worker -- sh -c 'mkdir -p $run_dir && cat > $task_file'" \
+            "sudo kubectl -n nexusmind create configmap $config_map --from-file=tasks.jsonl=/dev/stdin" \
             < "$RUNNER_TEMP/factory-golden-tasks.jsonl"
-          ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
-            "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'nohup /app/factory-golden-replay $ORG_ID < $task_file > $out_file 2> $err_file & echo \$! > $pid_file'"
-          echo "Started F1 replay run $GITHUB_RUN_ID with ${{ steps.validate.outputs.task_count }} sanitized tasks. Use the status action with replay_id=$GITHUB_RUN_ID."
+          ssh "${ssh_options[@]}" "$ORACLE_REMOTE" "sudo python3 - '$GITHUB_RUN_ID' '$ORG_ID' '$config_map'" \
+            < scripts/factory/create_golden_replay_job.py
+          echo "Started supervised F1 replay Job $config_map with ${{ steps.validate.outputs.task_count }} sanitized tasks. Use the status action with replay_id=$GITHUB_RUN_ID."
 
       - name: Read replay status
         if: inputs.action == 'status'
@@ -148,18 +147,6 @@ jobs:
         run: |
           set -euo pipefail
           trap 'rm -f "$SSH_KEY_FILE" "$SSH_KNOWN_HOSTS"' EXIT
-          run_dir="/data/factory-evals/f1-replay-$REPLAY_ID"
-          pid_file="$run_dir/pid"
-          out_file="$run_dir/out.jsonl"
           ssh_options=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
-          state=$(ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
-            "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'if [ ! -f $pid_file ]; then echo replay_not_found; elif [ -s $out_file ] && tail -n 1 $out_file | grep -q summary; then echo finished; elif grep -q \"^State:[[:space:]]*Z\" /proc/\$(cat $pid_file)/status 2>/dev/null; then echo finished; elif kill -0 \$(cat $pid_file) 2>/dev/null; then echo running; else echo finished; fi'")
-          case "$state" in
-            running) echo "Replay $REPLAY_ID is still running." ;;
-            finished)
-              ssh "${ssh_options[@]}" "$ORACLE_REMOTE" \
-                "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- tail -n 1 $out_file" |
-                python3 -c 'import json,sys; value=json.loads(sys.stdin.readline()); summary=value.get("summary") if isinstance(value,dict) else None; print(json.dumps(summary,separators=(",",":")) if isinstance(summary,dict) else "replay_incomplete"); sys.exit(0 if isinstance(summary,dict) else 1)'
-              ;;
-            *) echo "$state"; exit 1 ;;
-          esac
+          ssh "${ssh_options[@]}" "$ORACLE_REMOTE" "sudo python3 - '$REPLAY_ID'" \
+            < scripts/status_golden_replay_job.py
