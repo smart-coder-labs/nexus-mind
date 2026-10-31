@@ -130,6 +130,23 @@ connected ChatGPT account, edit **Task executor → Pi**, save, validate and sta
 **a new run**. Existing runs retain their revision snapshot. The agent was not
 modified or rerun during diagnosis.
 
+## Conversation transcript
+
+Pi stores raw JSONL in `autonomous_agent_run_transcript`, just like Claude,
+but its schema differs. The original UI accepted only Claude `assistant` and
+`user` events. A live Pi issue-resolver run had 1,842 stored events (1,667 were
+`message_update`, plus messages and tool executions), yet showed “No readable
+messages yet.” The run was healthy; the renderer did not understand Pi.
+
+`Transcript.tsx` now joins `text_delta` updates by assistant message/content
+index, replaces them with authoritative `text_end`/`message_end` content, and
+renders each message once. `turn_end` and `agent_end` duplicates are ignored.
+Tool executions show their names and errors, while system/user prompts,
+reasoning and successful tool-output dumps remain hidden. Existing stored runs
+need no rerun or migration. The UI count says **events**, not model turns, and
+autoscroll responds to text updates without a new row. Decoding runs once per
+message, not once per streaming token. Claude rendering remains unchanged.
+
 ## Verification / session state
 
 - Both installed CLIs report 1.4.0.

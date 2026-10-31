@@ -348,7 +348,7 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       <section aria-labelledby="run-conversation" className="space-y-3">
         <SectionTitle id="run-conversation" className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4 text-text-secondary" aria-hidden />Conversation
-          {transcript.length > 0 && <span className="text-[12px] font-normal text-text-tertiary">{transcript.length} turns</span>}
+          {transcript.length > 0 && <span className="text-[12px] font-normal text-text-tertiary">{transcript.length} events</span>}
         </SectionTitle>
         <TranscriptView turns={transcript} live={active} />
       </section>
