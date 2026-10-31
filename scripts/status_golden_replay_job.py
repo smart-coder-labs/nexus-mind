@@ -67,6 +67,48 @@ def progress_from_logs(logs: str) -> dict[str, Any]:
     return counts
 
 
+def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
+    """Return aggregate sandbox pod phases and allowlisted waiting reasons only."""
+    try:
+        value: Any = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    items = value.get("items") if isinstance(value, dict) else None
+    if not isinstance(items, list):
+        return None
+    phases: dict[str, int] = {}
+    waiting_reasons: dict[str, int] = {}
+    allowed_reasons = {
+        "ContainerCreating", "CreateContainerConfigError", "CreateContainerError",
+        "ErrImagePull", "ImagePullBackOff", "InsufficientCPU", "InsufficientMemory",
+        "PodInitializing", "Unschedulable",
+    }
+    for pod in items:
+        if not isinstance(pod, dict):
+            continue
+        labels = pod.get("metadata", {}).get("labels", {})
+        if labels.get("app") != "factory-task":
+            continue
+        status = pod.get("status", {})
+        phase = status.get("phase")
+        if isinstance(phase, str):
+            phases[phase] = phases.get(phase, 0) + 1
+        for container in status.get("containerStatuses", []):
+            waiting = container.get("state", {}).get("waiting", {})
+            reason = waiting.get("reason")
+            if isinstance(reason, str):
+                safe_reason = reason if reason in allowed_reasons else "Other"
+                waiting_reasons[safe_reason] = waiting_reasons.get(safe_reason, 0) + 1
+        for condition in status.get("conditions", []):
+            if condition.get("type") == "PodScheduled" and condition.get("status") == "False":
+                reason = condition.get("reason")
+                safe_reason = reason if isinstance(reason, str) and reason in allowed_reasons else "Other"
+                waiting_reasons[safe_reason] = waiting_reasons.get(safe_reason, 0) + 1
+    if not phases:
+        return None
+    return {"phases": phases, "waiting_reasons": waiting_reasons}
+
+
 def legacy_result(process_state: str, logs: str) -> dict[str, Any]:
     """Summarize runs started by the pre-Job runner without exposing task logs."""
     if process_state == "not_found":
@@ -150,6 +192,10 @@ def main() -> int:
     result = {"state": "running"}
     if progress and progress["completed"]:
         result["progress"] = progress
+    pods = kubectl("-n", "nexusmind-sandbox", "get", "pods", "-l", "app=factory-task", "-o", "json")
+    readiness = pod_readiness_from_json(pods.stdout) if pods.returncode == 0 else None
+    if readiness:
+        result["sandbox_pods"] = readiness
     print(json.dumps(result, separators=(",", ":")))
     return 0
 
