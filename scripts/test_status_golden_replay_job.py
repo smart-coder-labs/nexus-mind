@@ -1,6 +1,6 @@
 import unittest
 
-from status_golden_replay_job import legacy_result, progress_from_logs, summary_from_logs
+from status_golden_replay_job import legacy_result, pod_readiness_from_json, progress_from_logs, summary_from_logs
 
 
 class GoldenReplayStatusTests(unittest.TestCase):
@@ -33,6 +33,18 @@ class GoldenReplayStatusTests(unittest.TestCase):
         self.assertNotIn("deadbeef", str(progress))
         self.assertNotIn("do not expose", str(progress))
         self.assertNotIn("cluster token leaked", str(progress))
+
+    def test_pod_readiness_aggregates_only_safe_phases_and_reasons(self):
+        raw = '{"items":['
+        raw += '{"metadata":{"name":"private-pod","labels":{"app":"factory-task"}},"status":{"phase":"Pending","containerStatuses":[{"state":{"waiting":{"reason":"ImagePullBackOff","message":"private registry credential"}}}]}}'
+        raw += ',{"metadata":{"name":"unrelated-pod","labels":{"app":"other"}},"status":{"phase":"Running"}}'
+        raw += ',{"metadata":{"name":"another-private-pod","labels":{"app":"factory-task"}},"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"False","reason":"Unschedulable","message":"private node name"}]}}'
+        raw += ']}'
+        readiness = pod_readiness_from_json(raw)
+        self.assertEqual(readiness, {"phases": {"Pending": 2}, "waiting_reasons": {"ImagePullBackOff": 1, "Unschedulable": 1}})
+        self.assertNotIn("private-pod", str(readiness))
+        self.assertNotIn("private registry", str(readiness))
+        self.assertNotIn("private node", str(readiness))
 
     def test_legacy_run_reports_complete_with_only_numeric_summary(self):
         status = legacy_result(
