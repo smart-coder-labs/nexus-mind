@@ -82,7 +82,8 @@ for (const entry of readdirSync('/proc')) {
   if (!/^\d+$/.test(entry)) continue
   try {
     const argv = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0')
-    if (argv.some(arg => arg.endsWith('/run_specialist_evals.mjs')) && argv.includes('--dir')) runnerActive = true
+    const isRunner = argv.some(arg => arg.endsWith('/run.mjs') || arg.endsWith('/run_specialist_evals.mjs'))
+    if (isRunner && argv.includes('--org') && argv.includes('--dir')) runnerActive = true
   } catch {}
 }
 
