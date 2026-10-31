@@ -135,6 +135,35 @@ describe('FactoryIntake', () => {
     }))
   })
 
+  it.each([
+    { label: 'Gmail label', tokenLabel: 'Gmail read-only OAuth token', kind: 'gmail', config: {}, fill: async () => {} },
+    { label: 'Notion pages', tokenLabel: 'Notion integration token', kind: 'notion', config: { database_id: '12345678-1234-1234-1234-123456789abc' }, fill: async (user: ReturnType<typeof userEvent.setup>) => { await user.type(screen.getByLabelText('Database ID (optional)'), '12345678-1234-1234-1234-123456789abc') } },
+    { label: 'Drive transcripts', tokenLabel: 'Google Drive read-only OAuth token', kind: 'drive', config: { folder_id: 'Folder_123-ab' }, fill: async (user: ReturnType<typeof userEvent.setup>) => { await user.type(screen.getByLabelText('Google Drive folder ID'), 'Folder_123-ab') } },
+  ])('creates a $label source with the backend config', async ({ label, tokenLabel, kind, config, fill }) => {
+    api.listFactoryIntakeSources.mockResolvedValue([])
+    renderPage(['factory_policy:read', 'factory_policy:write', 'autonomous_agent:manage_connectors'])
+    const user = userEvent.setup()
+    await screen.findByText(/no intake sources yet/i)
+    await waitFor(() => expect(api.listAutonomousAgents).toHaveBeenCalled())
+    await user.click(screen.getByRole('button', { name: 'Add source' }))
+    await user.click(screen.getByRole('radio', { name: new RegExp(label, 'i') }))
+    await user.type(screen.getByLabelText('Name'), `Source ${label}`)
+    await chooseSelectOption(user, screen.getByLabelText('NexusMind project for the tasks'), 'app')
+    await user.click(screen.getByLabelText(/issue resolver/i))
+    await user.click(await screen.findByRole('option', { name: 'App resolver' }))
+    await fill(user)
+    await user.type(screen.getByLabelText(tokenLabel), 'provider-token')
+    await user.click(screen.getByRole('button', { name: 'Save source' }))
+    await waitFor(() => expect(api.createFactoryIntakeSource).toHaveBeenCalled())
+    expect(api.putAutonomousAgentConnector).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'target_secret',
+      secret: 'provider-token',
+      scopes: ['target:use'],
+      metadata: { purpose: 'factory_intake', source_kind: kind },
+    }))
+    expect(api.createFactoryIntakeSource).toHaveBeenCalledWith(expect.objectContaining({ kind, connector_id: 'conn-new', config }))
+  })
+
   it('pauses a source and says when saving fails', async () => {
     api.setFactoryIntakeSourceEnabled.mockRejectedValueOnce(new Error('connector_id must be a secret connector'))
     renderPage(['factory_policy:read', 'factory_policy:write'])

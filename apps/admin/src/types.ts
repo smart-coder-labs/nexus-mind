@@ -1682,8 +1682,8 @@ export interface FactoryBot {
   key_created_at: string | null
 }
 
-/** Factory F3 intake: a Slack channel or Sentry project feeding one issue-resolver agent. */
-export type FactoryIntakeKind = 'slack' | 'sentry'
+/** Factory intake source that feeds one issue-resolver agent. */
+export type FactoryIntakeKind = 'slack' | 'sentry' | 'gmail' | 'notion' | 'drive'
 export type FactoryPrivacyClass = 'public' | 'internal' | 'confidential' | 'restricted'
 export interface FactoryIntakeSource {
   id: string
