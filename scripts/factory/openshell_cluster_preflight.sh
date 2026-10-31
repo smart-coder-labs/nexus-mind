@@ -3,8 +3,17 @@ set -euo pipefail
 
 run_id="${1:?GitHub Actions run ID is required}"
 [[ "$run_id" =~ ^[0-9]{1,20}$ ]] || { echo 'invalid run id' >&2; exit 2; }
+action="${2:-preflight}"
+[[ "$action" == preflight || "$action" == install-agent-sandbox ]] || {
+  echo 'action must be preflight or install-agent-sandbox' >&2
+  exit 2
+}
 ns="openshell-preflight-${run_id}"
-cleanup() { kubectl delete namespace "$ns" --wait=false >/dev/null 2>&1 || true; }
+manifest=""
+cleanup() {
+  kubectl delete namespace "$ns" --wait=false >/dev/null 2>&1 || true
+  [[ -z "$manifest" ]] || rm -f "$manifest"
+}
 trap cleanup EXIT
 
 echo '== Kubernetes and Helm versions =='
@@ -81,4 +90,25 @@ if kubectl exec -n "$ns" client -- wget -q -T 5 -O - "http://${server_ip}:8080/h
   exit 1
 fi
 echo 'NetworkPolicy enforcement verified separately for pod ingress and egress'
+
+if [[ "$action" == install-agent-sandbox ]]; then
+  echo '== Install pinned Agent Sandbox controller v1.0.9 =='
+  if ! kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1; then
+    manifest="$(mktemp)"
+    curl -fsSL --retry 3 \
+      https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.9/sandbox.yaml \
+      -o "$manifest"
+    printf '%s  %s\n' \
+      3eeb27fa821659593ba92c5454571f08c84abb07096bb9d372c1c6c750f6d7d2 \
+      "$manifest" | sha256sum -c -
+    kubectl apply -f "$manifest"
+  else
+    echo 'Agent Sandbox CRD already exists; keeping the installed version'
+  fi
+  kubectl rollout status deployment/agent-sandbox-controller \
+    -n agent-sandbox-system --timeout=180s
+  kubectl wait --for=condition=Established \
+    crd/sandboxes.agents.x-k8s.io --timeout=60s
+  echo 'Agent Sandbox controller and CRD are Ready'
+fi
 

@@ -2,6 +2,13 @@ name: OpenShell gateway cluster preflight
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: Verify the private cluster or install the Agent Sandbox prerequisite
+        type: choice
+        options: [preflight, install-agent-sandbox]
+        required: true
+        default: preflight
 
 permissions:
   contents: read
@@ -12,17 +19,18 @@ concurrency:
 
 jobs:
   preflight:
-    if: github.ref == 'refs/heads/ops/openshell-gateway'
+    if: startsWith(github.ref, 'refs/heads/ops/openshell-')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Probe private k3s cluster
+      - name: Probe cluster and provision Agent Sandbox prerequisite
         env:
           SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
           SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
           SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
           PREFLIGHT_RUN_ID: ${{ github.run_id }}
+          ACTION: ${{ inputs.action }}
         run: |
           set -euo pipefail
           : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
@@ -37,4 +45,4 @@ jobs:
           SSHOPTS=(-i "$keyfile" -o UserKnownHostsFile="$known_hosts" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
           REMOTE="${SSH_USER}@${SSH_HOST}"
           scp "${SSHOPTS[@]}" scripts/factory/openshell_cluster_preflight.sh "$REMOTE:/tmp/openshell-cluster-preflight.sh"
-          ssh "${SSHOPTS[@]}" "$REMOTE" "sudo bash /tmp/openshell-cluster-preflight.sh '$PREFLIGHT_RUN_ID'"
+          ssh "${SSHOPTS[@]}" "$REMOTE" "sudo bash /tmp/openshell-cluster-preflight.sh '$PREFLIGHT_RUN_ID' '$ACTION'"
