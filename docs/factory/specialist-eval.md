@@ -9,7 +9,9 @@ Every task runs twice from the same `base_sha`. Model steps use Pi on the worker
 | Arm | Steps | Models |
 |---|---|---|
 | `baseline` | The resolver's fixed prompt, one invocation | `openai-codex/gpt-6-luna`, thinking `medium` |
-| `specialist` | Plan, then implement, then the specialist's checks, then review; when the review rejects for stated reasons, one repair (implement again with the reasons), then the checks and review again, whose verdict is final | Every model step uses `openai-codex/gpt-6-luna`, thinking `medium` |
+| `specialist` | Plan, implement, then checks and review; one repair is allowed after repairable deterministic check failures or a substantive review rejection, then every check and review runs again and the final verdict is binding | Every model step uses `openai-codex/gpt-6-luna`, thinking `medium` |
+
+The repair is bounded to one implementation call. It is never offered for infrastructure errors, policy/path-floor failures, unreadable reviews, or a failed hidden seeded-fault check. A `seeded_fault_caught` result is never included in model feedback; if the test command itself failed, only the test failure and a generic mutation-threshold note can be passed to the repair step. The repair still has the original scope rules, and all deterministic gates run again before the independent judge can accept the result.
 
 Each specialist step is a separate Pi invocation. The eval records no production `model.selected` events and does not use the org's frontier cap. Pi's OpenAI OAuth credentials stay on the worker; they are not copied into task pods. **Pi has local filesystem access.** The runner therefore rejects tasks for repositories other than `smart-coder-labs/nexus-mind`, and frozen task sets must remain trusted. Test and UI commands continue to run in isolated pods.
 
