@@ -38,9 +38,10 @@ def summary_from_logs(logs: str) -> dict[str, int] | None:
     return None
 
 
-def progress_from_logs(logs: str) -> dict[str, int]:
+def progress_from_logs(logs: str) -> dict[str, Any]:
     """Aggregate per-task outcomes without returning IDs, SHAs or command output."""
     counts = {"completed": 0, "passed": 0, "failed": 0, "skipped_no_evidence": 0, "errors": 0}
+    error_codes: dict[str, int] = {}
     for line in logs.splitlines():
         try:
             value: Any = json.loads(line)
@@ -53,12 +54,16 @@ def progress_from_logs(logs: str) -> dict[str, int]:
         counts["completed"] += 1
         if value.get("error") is not None:
             counts["errors"] += 1
+            error = value["error"]
+            code = error if isinstance(error, str) and re.fullmatch(r"[a-z_]{1,80}", error) else "other"
+            error_codes[code] = error_codes.get(code, 0) + 1
         elif value["skipped"]:
             counts["skipped_no_evidence"] += 1
         elif value["passed"]:
             counts["passed"] += 1
         else:
             counts["failed"] += 1
+    counts["error_codes"] = error_codes
     return counts
 
 
