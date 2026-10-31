@@ -27,6 +27,15 @@ pub struct TrajectoryEntry {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TrajectoryReviewItem {
+    pub run_id: String,
+    pub agent_name: String,
+    pub run_status: String,
+    pub outcome: Option<String>,
+    pub created_at: String,
+}
+
 /// Record a compact, non-decisional snapshot when an autonomous run finishes.
 /// The exact verification contract is copied when present so later verification
 /// runs for the same head cannot erase the evidence this run saw.
@@ -133,6 +142,40 @@ pub fn list_for_run(conn: &Connection, org_id: &str, run_id: &str) -> Result<Vec
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// List terminal runs that have no human outcome yet. The query returns only
+/// small audit fields; model transcripts, prompts, and diffs stay private.
+pub fn list_needing_feedback(
+    conn: &Connection,
+    org_id: &str,
+    limit: i64,
+) -> Result<Vec<TrajectoryReviewItem>> {
+    let mut statement = conn.prepare(
+        "SELECT t.run_id, d.name, r.status, t.outcome, t.created_at
+         FROM factory_trajectory_entries t
+         JOIN autonomous_agent_runs r ON r.org_id=t.org_id AND r.id=t.run_id
+         JOIN autonomous_agent_definitions d ON d.org_id=r.org_id AND d.id=r.definition_id
+         WHERE t.org_id=?1 AND t.entry_kind='run_outcome'
+           AND r.status IN ('succeeded','partial','failed','blocked_policy','blocked_runtime','budget_exhausted','dead_letter')
+           AND NOT EXISTS (
+               SELECT 1 FROM factory_trajectory_entries human
+               WHERE human.org_id=t.org_id AND human.run_id=t.run_id
+                 AND human.entry_kind='human_feedback'
+           )
+         ORDER BY t.created_at DESC, t.rowid DESC
+         LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![org_id, limit.clamp(1, 200)], |row| {
+        Ok(TrajectoryReviewItem {
+            run_id: row.get(0)?,
+            agent_name: row.get(1)?,
+            run_status: row.get(2)?,
+            outcome: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 fn get_entry(conn: &Connection, org_id: &str, id: &str) -> Result<Option<TrajectoryEntry>> {
     conn.query_row(
         "SELECT id, run_id, entry_kind, outcome, actor_user_id, data_json, created_at
@@ -228,6 +271,21 @@ mod tests {
         assert!(conn.execute("DELETE FROM factory_trajectory_entries WHERE id=?1", [&entries[0].id]).is_err());
         conn.execute("DELETE FROM autonomous_agent_runs WHERE id=?1", [&run]).unwrap();
         assert!(list_for_run(&conn, &org, &run).unwrap().is_empty(), "parent retention deletes cascade through the audit table");
+    }
+
+    #[test]
+    fn feedback_queue_lists_unlabeled_runs_and_removes_them_after_human_feedback() {
+        let (conn, org, user, run) = setup();
+        record_run_outcome(&conn, &org, &run, "succeeded", &json!({})).unwrap();
+        let pending = list_needing_feedback(&conn, &org, 50).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].run_id, run);
+        assert_eq!(pending[0].agent_name, "Resolver");
+        assert_eq!(pending[0].run_status, "succeeded");
+        assert!(list_needing_feedback(&conn, "another-org", 50).unwrap().is_empty());
+
+        record_human_feedback(&conn, &org, &run, &user, "accepted", None).unwrap();
+        assert!(list_needing_feedback(&conn, &org, 50).unwrap().is_empty());
     }
 
     #[test]

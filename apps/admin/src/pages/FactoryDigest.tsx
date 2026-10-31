@@ -39,10 +39,16 @@ export default function FactoryDigest() {
   const queryClient = useQueryClient()
 
   const digest = useQuery({ queryKey: ['factory-digest'], queryFn: () => client.getFactoryDigest(), enabled: canRead })
+  const feedback = useQuery({ queryKey: ['factory-trajectory-feedback'], queryFn: () => client.listFactoryTrajectoryFeedback(), enabled: canRead })
   const economics = useQuery({ queryKey: ['factory-economics'], queryFn: () => client.getFactoryEconomics(30), enabled: canRead })
   const decide = useMutation({
     mutationFn: ({ subject, approve }: { subject: string; approve: boolean }) => client.decideFactoryMerge(subject, approve),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['factory-digest'] }),
+  })
+  const labelRun = useMutation({
+    mutationFn: ({ runId, outcome }: { runId: string; outcome: 'accepted' | 'rejected' }) =>
+      client.recordFactoryTrajectoryFeedback(runId, outcome),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['factory-trajectory-feedback'] }),
   })
 
   if (!canRead) {
@@ -51,10 +57,12 @@ export default function FactoryDigest() {
 
   const data = digest.data
   const blocked = data?.blocked_runs ?? []
+  const reviewItems = feedback.data ?? []
   const nothingWaiting =
-    data && !data.held_merges.length && !data.approved_merges.length && !blocked.length && !data.factory_tasks.length && !data.unlabeled_shadow
+    data && feedback.isSuccess && !data.held_merges.length && !data.approved_merges.length && !blocked.length &&
+    !data.factory_tasks.length && !data.unlabeled_shadow && !reviewItems.length
   const failedSubject = decide.isError ? decide.variables?.subject : undefined
-  const waiting = data ? data.held_merges.length + blocked.length + data.factory_tasks.length : 0
+  const waiting = data ? data.held_merges.length + blocked.length + data.factory_tasks.length + reviewItems.length : 0
 
   return (
     <div className="p-6 md:p-8 min-w-0 max-w-7xl mx-auto space-y-6">
@@ -142,6 +150,61 @@ export default function FactoryDigest() {
                 </Link>
               </li>
             ))}
+          </ul>
+        </section>
+      )}
+
+      {feedback.isError && <InlineAlert onRetry={() => feedback.refetch()}>Could not load runs awaiting an outcome.</InlineAlert>}
+      {feedback.isLoading && <CardListSkeleton count={2} height="h-20" />}
+      {reviewItems.length > 0 && (
+        <section aria-labelledby="trajectory-feedback-title" className="space-y-3">
+          <SectionHeading
+            id="trajectory-feedback-title"
+            title="Agent outcomes awaiting review"
+            description="Mark whether each completed run produced a change worth keeping. This feedback is stored for evaluation and does not change policy or rerun the agent."
+          />
+          <ul className={cn(PANEL_CLASS, 'm-0 list-none divide-y divide-border-secondary p-0')}>
+            {reviewItems.map(item => {
+              const failedRun = labelRun.isError && labelRun.variables?.runId === item.run_id
+              return (
+                <li key={item.run_id} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-5 py-4">
+                  <Scale className="h-4 w-4 shrink-0 text-text-tertiary" aria-hidden="true" />
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-text-primary">{item.agent_name}</span>
+                      <Badge role="none" size="sm" variant="default">{runStatusLabel(item.run_status)}</Badge>
+                      <Badge role="none" size="sm" variant={item.outcome === 'unknown' || !item.outcome ? 'warning' : 'info'}>
+                        {item.outcome ?? 'unlabeled'}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-text-secondary">Did this run produce an accepted change?</p>
+                    <p className="font-mono text-[12px] text-text-tertiary">Run {item.run_id} · {when(item.created_at)}</p>
+                    {failedRun && <p role="alert" className="text-sm text-status-error">Could not save this outcome: {(labelRun.error as { message?: string })?.message ?? 'unknown error'}.</p>}
+                  </div>
+                  {canWrite && (
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={labelRun.isPending}
+                        loading={labelRun.isPending}
+                        onClick={() => labelRun.mutate({ runId: item.run_id, outcome: 'rejected' })}
+                      >
+                        Mark rejected
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={labelRun.isPending}
+                        loading={labelRun.isPending}
+                        onClick={() => labelRun.mutate({ runId: item.run_id, outcome: 'accepted' })}
+                      >
+                        Mark accepted
+                      </Button>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </section>
       )}
