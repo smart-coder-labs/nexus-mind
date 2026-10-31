@@ -10,6 +10,8 @@ const api = vi.hoisted(() => ({
   getFactoryDigest: vi.fn(),
   getFactoryEconomics: vi.fn(),
   decideFactoryMerge: vi.fn(),
+  listFactoryTrajectoryFeedback: vi.fn(),
+  recordFactoryTrajectoryFeedback: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ createClient: () => api }))
 
@@ -55,6 +57,8 @@ describe('FactoryDigest', () => {
     api.getFactoryDigest.mockResolvedValue(digest)
     api.getFactoryEconomics.mockResolvedValue(economics)
     api.decideFactoryMerge.mockResolvedValue({ id: 'd1', merges_after: '2026-10-04 01:10:00' })
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([])
+    api.recordFactoryTrajectoryFeedback.mockResolvedValue({})
   })
 
   it('lists held merges, blocked runs, waiting tasks and labels to give', async () => {
@@ -87,6 +91,50 @@ describe('FactoryDigest', () => {
     renderPage(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: `Approve merging ${SUBJECT}` }))
     await waitFor(() => expect(api.decideFactoryMerge).toHaveBeenCalledWith(SUBJECT, true))
+  })
+
+  it('collects human outcomes for completed runs in the factory inbox', async () => {
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
+      run_id: 'run-feedback-1',
+      agent_name: 'Issue resolver',
+      run_status: 'succeeded',
+      outcome: 'unknown',
+      created_at: '2026-10-30 12:00:00',
+    }])
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
+    expect(within(section).getByText('Issue resolver')).toBeInTheDocument()
+    expect(within(section).getByText('unknown')).toBeInTheDocument()
+    await userEvent.click(within(section).getByRole('button', { name: 'Mark accepted' }))
+    await waitFor(() => expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith('run-feedback-1', 'accepted'))
+  })
+
+  it('keeps outcome controls read-only without the factory write permission', async () => {
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
+      run_id: 'run-feedback-2',
+      agent_name: 'Issue resolver',
+      run_status: 'failed',
+      outcome: 'unknown',
+      created_at: '2026-10-30 12:00:00',
+    }])
+    renderPage(['factory_policy:read'])
+    const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
+    expect(within(section).queryByRole('button', { name: /mark accepted|mark rejected/i })).not.toBeInTheDocument()
+  })
+
+  it('shows an inline error when saving human feedback fails', async () => {
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
+      run_id: 'run-feedback-3',
+      agent_name: 'Issue resolver',
+      run_status: 'succeeded',
+      outcome: 'unknown',
+      created_at: '2026-10-30 12:00:00',
+    }])
+    api.recordFactoryTrajectoryFeedback.mockRejectedValue(new Error('Run is no longer reviewable'))
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
+    await userEvent.click(within(section).getByRole('button', { name: 'Mark accepted' }))
+    expect(await within(section).findByRole('alert')).toHaveTextContent('Could not save this outcome: Run is no longer reviewable.')
   })
 
   it('shows spend and says accepted changes are not measured yet', async () => {

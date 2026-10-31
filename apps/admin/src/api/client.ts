@@ -128,6 +128,7 @@ import type {
   FactoryBot,
   ShadowDecision,
   FactoryDigest,
+  FactoryTrajectoryReviewItem,
   FactoryEconomics,
   FactoryIntakeItem,
   FactoryIntakeSource,
@@ -1474,6 +1475,17 @@ export class NexusMindClient {
 
   getFactoryDigest(): Promise<FactoryDigest> {
     return this.request('/v1/factory/digest')
+  }
+
+  listFactoryTrajectoryFeedback(limit = 50): Promise<FactoryTrajectoryReviewItem[]> {
+    return this.request(`/v1/factory/trajectories?limit=${limit}`)
+  }
+
+  recordFactoryTrajectoryFeedback(runId: string, outcome: 'accepted' | 'rejected'): Promise<unknown> {
+    return this.request(`/v1/factory/trajectories/${encodeURIComponent(runId)}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({ outcome }),
+    })
   }
 
   getFactoryEconomics(days = 30): Promise<FactoryEconomics> {

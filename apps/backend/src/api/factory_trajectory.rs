@@ -1,17 +1,22 @@
 //! Read-only trajectory inspection and explicit human outcome/edit annotations.
 //! This module has no connection to policy or execution decisions.
 
-use axum::{extract::{Path, State}, http::StatusCode, Extension, Json};
+use axum::{extract::{Path, Query, State}, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 
 use crate::{
     api::helpers::{require_explicit_permission, AppJson},
-    db::factory_trajectory::{self, HumanEditMetadata, TrajectoryEntry},
+    db::factory_trajectory::{self, HumanEditMetadata, TrajectoryEntry, TrajectoryReviewItem},
     models::types::{ApiError, AuthContext},
     store::sqlite::SqliteStore,
 };
 
 type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+
+#[derive(Deserialize)]
+pub struct FeedbackQueueQuery {
+    pub limit: Option<i64>,
+}
 
 fn error(status: StatusCode, code: &str, message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
     (status, Json(ApiError { error: message.into(), code: code.to_string() }))
@@ -23,6 +28,20 @@ fn internal(error_value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
 
 fn lock_error() -> (StatusCode, Json<ApiError>) {
     error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Database lock error")
+}
+
+pub async fn list_feedback_queue(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Query(query): Query<FeedbackQueueQuery>,
+) -> ApiResult<Json<Vec<TrajectoryReviewItem>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    Ok(Json(
+        factory_trajectory::list_needing_feedback(&conn, &auth.org_id, limit).map_err(internal)?,
+    ))
 }
 
 pub async fn list_run_trajectory(

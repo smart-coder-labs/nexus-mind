@@ -218,6 +218,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/factory/evaluations/:id", get(factory_evals::get_run))
         .route("/v1/factory/lookback", get(factory_lookback::recommendations))
         .route(
+            "/v1/factory/trajectories",
+            get(factory_trajectory::list_feedback_queue),
+        )
+        .route(
             "/v1/factory/trajectories/:run_id",
             get(factory_trajectory::list_run_trajectory),
         )

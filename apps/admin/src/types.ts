@@ -1559,6 +1559,14 @@ export interface FactoryDigest {
   unlabeled_shadow_allows: number
 }
 
+export interface FactoryTrajectoryReviewItem {
+  run_id: string
+  agent_name: string
+  run_status: string
+  outcome: string | null
+  created_at: string
+}
+
 export interface FactoryModelSpend { model: string | null; runs: number; cost_usd: number; input_tokens: number; output_tokens: number }
 export interface FactoryEconomics {
   days: number
