@@ -38,6 +38,30 @@ def summary_from_logs(logs: str) -> dict[str, int] | None:
     return None
 
 
+def progress_from_logs(logs: str) -> dict[str, int]:
+    """Aggregate per-task outcomes without returning IDs, SHAs or command output."""
+    counts = {"completed": 0, "passed": 0, "failed": 0, "skipped_no_evidence": 0, "errors": 0}
+    for line in logs.splitlines():
+        try:
+            value: Any = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict) or not isinstance(value.get("id"), str):
+            continue
+        if not isinstance(value.get("passed"), bool) or not isinstance(value.get("skipped"), bool):
+            continue
+        counts["completed"] += 1
+        if value.get("error") is not None:
+            counts["errors"] += 1
+        elif value["skipped"]:
+            counts["skipped_no_evidence"] += 1
+        elif value["passed"]:
+            counts["passed"] += 1
+        else:
+            counts["failed"] += 1
+    return counts
+
+
 def legacy_result(process_state: str, logs: str) -> dict[str, Any]:
     """Summarize runs started by the pre-Job runner without exposing task logs."""
     if process_state == "not_found":
@@ -116,7 +140,12 @@ def main() -> int:
         print(json.dumps({"state": "failed"}, separators=(",", ":")))
         return 1
 
-    print(json.dumps({"state": "running"}, separators=(",", ":")))
+    logs = kubectl("-n", NAMESPACE, "logs", f"job/{name}")
+    progress = progress_from_logs(logs.stdout) if logs.returncode == 0 else None
+    result = {"state": "running"}
+    if progress and progress["completed"]:
+        result["progress"] = progress
+    print(json.dumps(result, separators=(",", ":")))
     return 0
 
 
