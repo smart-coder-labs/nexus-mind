@@ -126,7 +126,9 @@ export const RESULT_CODE: Record<string, string> = {
   sandbox_environment_failed: 'failed to prepare its sandbox environment',
   claude_auth_required: 'needs Claude Code re-authentication',
   claude_runtime_unavailable: 'could not reach the Claude Code runtime',
-  nexus_executor_not_ready: 'needs its Nexus OpenShell executor and Claude login provisioned',
+  nexus_executor_not_ready: 'needs its Nexus OpenShell executor provisioned',
+  nexus_image_not_configured: 'needs the OpenShell sandbox image configured',
+  nexus_gateway_not_configured: 'needs an OpenShell gateway registered for the worker',
   nexus_auth_required: 'needs Claude login inside its OpenShell sandbox',
   nexus_gateway_unavailable: 'could not reach the OpenShell gateway',
   nexus_cli_unavailable: 'could not start the Nexus worker executable',
@@ -138,7 +140,8 @@ export const RESULT_CODE: Record<string, string> = {
 /** Result codes that mean the run never got a working sandbox/runtime. */
 export const SANDBOX_FAILURE_CODES = new Set([
   'sandbox_create_failed', 'sandbox_environment_failed', 'claude_auth_required', 'claude_runtime_unavailable',
-  'nexus_executor_not_ready', 'nexus_auth_required', 'nexus_gateway_unavailable', 'nexus_cli_unavailable',
+  'nexus_executor_not_ready', 'nexus_image_not_configured', 'nexus_gateway_not_configured',
+  'nexus_auth_required', 'nexus_gateway_unavailable', 'nexus_cli_unavailable',
 ])
 
 // ── Runtime / settings ──

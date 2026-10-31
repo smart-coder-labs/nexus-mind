@@ -39,9 +39,18 @@ fn nexus_failure_code(stderr: &[u8]) -> &'static str {
     let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     if text.contains("login") || text.contains("authentication") || text.contains("auth required") {
         "nexus_auth_required"
-    } else if text.contains("gateway is not configured")
-        || text.contains("worker image is not configured")
+    } else if text.contains("worker image is not configured")
+        || text.contains("nexus_openshell_image")
+            && (text.contains("not configured") || text.contains("not set"))
     {
+        "nexus_image_not_configured"
+    } else if text.contains("gateway is not configured")
+        || text.contains("no gateway configured")
+        || text.contains("gateway endpoint") && text.contains("not configured")
+        || text.contains("openshell_gateway_endpoint") && text.contains("not set")
+    {
+        "nexus_gateway_not_configured"
+    } else if text.contains("executor is not configured") || text.contains("executor is not ready") {
         "nexus_executor_not_ready"
     } else if text.contains("gateway") || text.contains("connection refused") {
         "nexus_gateway_unavailable"
