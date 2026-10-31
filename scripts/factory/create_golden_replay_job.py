@@ -43,6 +43,13 @@ def build_job(
     if worker is None:
         raise ValueError("worker_container_missing")
 
+    # This Job only coordinates one verification pod at a time. Keep its CPU
+    # reservation small so that the 50m command pod can still be scheduled on
+    # the single-node production cluster while the Job is running.
+    resources = worker.setdefault("resources", {})
+    requests = resources.setdefault("requests", {})
+    requests["cpu"] = "50m"
+
     worker["command"] = ["/bin/sh", "-ec"]
     worker["args"] = [
         f"exec /app/factory-golden-replay {org_id} < {TASKS_PATH}"
