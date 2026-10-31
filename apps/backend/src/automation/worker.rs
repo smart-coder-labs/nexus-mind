@@ -8106,8 +8106,6 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     async fn git(workdir: &Path, args: &[&str]) {
         let mut command = Command::new("git");
         command.current_dir(workdir).args(args);
