@@ -202,7 +202,8 @@ impl OpenShell {
     fn stream_claude_auth_file(&self, source: &Path, destination: &str) -> Result<()> {
         let contents = fs::read(source).context("could not read worker Claude credentials")?;
         let command_line = format!("umask 077; cat > {destination}");
-        let mut command = self.exec_command(&["sh", "-c", &command_line], false, None)?;
+        let mut command = Command::new(&self.binary);
+        command.args(["sandbox", "exec", "-n", &self.sandbox, "--no-tty", "--", "sh", "-c", &command_line]);
         command.stdin(Stdio::piped());
         let mut child = command
             .spawn()
