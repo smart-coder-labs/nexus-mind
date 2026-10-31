@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 91;
+pub const LATEST_USER_VERSION: i32 = 92;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -104,6 +104,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v89(conn)?;
     run_v90(conn)?;
     run_v91(conn)?;
+    run_v92(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -194,6 +195,33 @@ pub fn run_v91(conn: &Connection) -> Result<()> {
             SELECT RAISE(ABORT, 'factory trajectory entries are append-only');
         END;
     PRAGMA user_version = 91;")?;
+    Ok(())
+}
+
+/// Migration v92: backfill and index the task key on factory run telemetry.
+/// Intake-linked runs use their stable TaskSpec id; other autonomous runs use
+/// their run id as the per-task key until they enter the factory router.
+pub fn run_v92(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 92 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_factory_intake_items_run
+             ON factory_intake_items(org_id, run_id);
+         UPDATE factory_run_metrics
+            SET task_id = COALESCE(
+                (SELECT task_id FROM factory_intake_items
+                   WHERE org_id = factory_run_metrics.org_id
+                     AND run_id = factory_run_metrics.run_id
+                   ORDER BY created_at DESC LIMIT 1),
+                run_id
+            )
+          WHERE task_id IS NULL OR task_id = '';
+         PRAGMA user_version = 92;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -9292,6 +9320,54 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn run_v92_backfills_task_keys_from_intake_or_run_id() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+        let (org, _, _) = crate::db::queries::bootstrap(
+            &conn,
+            "Acme",
+            "acme",
+            "a@acme.com",
+            "A",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_items
+                (org_id,task_id,source_ref,task_class,origin_trust,repository,start_decision,start_reason,run_id)
+             VALUES (?1,'task-1','issue:42','bugfix','trusted','acme/web','started','human_confirmed','run-intake')",
+            [&org.id],
+        )
+        .unwrap();
+        for run_id in ["run-intake", "run-unrouted"] {
+            conn.execute(
+                "INSERT INTO factory_run_metrics
+                    (id,org_id,run_id,template_key,provider,outcome)
+                 VALUES (?1,?2,?3,'github_issue_resolver','claude-code','succeeded')",
+                rusqlite::params![format!("metric-{run_id}"), org.id, run_id],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version=91;").unwrap();
+        run_v92(&conn).unwrap();
+        let task_ids: Vec<(String, String)> = conn
+            .prepare("SELECT run_id,task_id FROM factory_run_metrics ORDER BY run_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            task_ids,
+            [
+                ("run-intake".into(), "task-1".into()),
+                ("run-unrouted".into(), "run-unrouted".into())
+            ]
+        );
+        assert_eq!(get_user_version(&conn), 92);
+        run_v92(&conn).expect("v92 must be idempotent");
     }
 
     #[test]
