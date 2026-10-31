@@ -42,9 +42,8 @@ export default function RunsPage() {
     return Boolean(r && isActiveRun(r.status))
   }
   const runs = useQuery({ queryKey: ['autonomous-runs'], queryFn: () => client.listAutonomousAgentRuns(), refetchInterval: () => (selectedRunActive() ? 2500 : false) })
-  // Lifecycle events barely change mid-run; the terminal-status effect below
-  // refetches them once the run finishes, so no need to poll them live.
-  const events = useQuery({ queryKey: ['autonomous-run-events', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunEvents(selectedRun!.id), enabled: Boolean(selectedRun) })
+  // Model/verification/publication events also arrive during the run.
+  const events = useQuery({ queryKey: ['autonomous-run-events', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunEvents(selectedRun!.id), enabled: Boolean(selectedRun), refetchInterval: () => (selectedRunActive() ? 2500 : false) })
   // Reports appear when the run finishes; the terminal-status refetch covers them.
   const verification = useQuery({ queryKey: ['autonomous-run-verification', selectedRun?.id], queryFn: () => client.listRunVerificationReports(selectedRun!.id), enabled: Boolean(selectedRun) })
   const transcript = useQuery({
@@ -196,6 +195,9 @@ export default function RunsPage() {
 
         <section ref={detailRef} aria-label="Run detail" className="scroll-mt-4 min-h-0 min-w-0 overflow-y-auto rounded-xl border border-border-primary p-5 md:p-6">
           {current ? (
+            <>
+            {events.isError && <InlineError message="Could not load the event log." onRetry={() => void events.refetch()} />}
+            {transcript.isError && <InlineError message="Could not load conversation and tool logs." onRetry={() => void transcript.refetch()} />}
             <RunDetail
               run={current}
               events={events.data ?? []}
@@ -211,6 +213,7 @@ export default function RunsPage() {
               onArchive={can('autonomous_agent:update') ? id => archiveRun.mutate(id) : undefined}
               onRestore={can('autonomous_agent:update') ? id => unarchiveRun.mutate(id) : undefined}
             />
+            </>
           ) : (
             <EmptyState title="Select a run" description="Read the outcome, which stages it reached, the budget it used, and the agent’s conversation." />
           )}

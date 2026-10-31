@@ -6,11 +6,12 @@ import { ConfirmModal } from '../../../components/ConfirmModal'
 import type { AutonomousAgentEvent, AutonomousAgentRun, StoredVerificationReport } from '../../../types'
 import { VerificationReports } from '../VerificationReports'
 import {
-  CONTINUABLE_RUN_STATUSES, RESULT_CODE, SANDBOX_FAILURE_CODES, asArr, asDict, asNum, asStr, dur, fmtDateTime, fmtTime, humanize,
+  CONTINUABLE_RUN_STATUSES, RESULT_CODE, SANDBOX_FAILURE_CODES, asArr, asDict, asNum, asStr, dur, fmtDateTime, humanize,
   isActiveRun, parseLenient, round, runDurationSeconds, runStatusMeta, templateName, triggerName, usd, type Dict, type Tone,
 } from '../shared/format'
 import { OverflowMenu, RawJson, RunStatusPill, SectionTitle, TEXT_LINK, type MenuItem } from '../shared/ui'
 import { TranscriptView } from './Transcript'
+import { RunLogs } from './RunLogs'
 
 const outcomeToneClass: Record<Tone, string> = {
   ok: 'border-status-success/25 bg-status-success/[0.06]',
@@ -110,7 +111,8 @@ function eventLine(e: AutonomousAgentEvent, run: AutonomousAgentRun, code?: stri
   switch (e.kind) {
     case 'run.started': {
       const worker = asStr(p.worker) ?? 'local'
-      return `Started on the ${worker} worker${run.snapshot_sha ? ` at snapshot ${run.snapshot_sha.slice(0, 7)}` : ''}`
+      const executor = asStr(p.executor)
+      return `Started on the ${worker} worker${executor ? ` using ${executor === 'pi' ? 'Pi' : humanize(executor)}` : ''}${run.snapshot_sha ? ` at snapshot ${run.snapshot_sha.slice(0, 7)}` : ''}`
     }
     case 'model.selected': {
       const model = asStr(p.model); const tier = asStr(p.tier)
@@ -118,7 +120,10 @@ function eventLine(e: AutonomousAgentEvent, run: AutonomousAgentRun, code?: stri
     }
     case 'run.requeued': return `Put back in the queue${asStr(p.reason) ? `: ${humanize(asStr(p.reason)!).toLowerCase()}` : ''}`
     case 'run.cancelled': return 'Cancelled on request; partial work discarded'
-    case 'run.finished': return code && RESULT_CODE[code] ? `Agent ${RESULT_CODE[code]}` : `Finished: ${runStatusMeta(run.status).label.toLowerCase()}`
+    case 'run.finished': {
+      const eventCode = asStr(p.code) ?? code
+      return eventCode && RESULT_CODE[eventCode] ? `Agent ${RESULT_CODE[eventCode]}` : `Finished: ${asStr(p.status) ?? runStatusMeta(run.status).label.toLowerCase()}${eventCode ? ` (${eventCode})` : ''}`
+    }
     default: return humanize(e.kind.replace(/\./g, ' '))
   }
 }
@@ -162,7 +167,7 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
   const active = isActiveRun(run.status)
   const canContinue = Boolean(onContinue) && CONTINUABLE_RUN_STATUSES.includes(run.status)
   const meta = runStatusMeta(run.status)
-  const finished = events.find(e => e.kind === 'run.finished')
+  const finished = [...events].reverse().find(e => e.kind === 'run.finished')
   const payload = asDict(finished?.payload) ?? {}
   const result = asDict(payload.result) ?? {}
   // Template output (PR / review) is nested under `published` in the backend
@@ -348,25 +353,13 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       <section aria-labelledby="run-conversation" className="space-y-3">
         <SectionTitle id="run-conversation" className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4 text-text-secondary" aria-hidden />Conversation
-          {transcript.length > 0 && <span className="text-[12px] font-normal text-text-tertiary">{transcript.length} turns</span>}
+          {transcript.length > 0 && <span className="text-[12px] font-normal text-text-tertiary">{transcript.length} events</span>}
         </SectionTitle>
         <TranscriptView turns={transcript} live={active} />
       </section>
 
       {/* event log */}
-      <details className="border-t border-border-secondary pt-3">
-        <summary className="cursor-pointer rounded-md text-[12px] text-text-tertiary hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">Event log ({events.length})</summary>
-        {events.length ? (
-          <ol className="mt-3 list-none space-y-1.5 p-0">
-            {events.map(e => (
-              <li key={e.sequence} className="flex gap-3 text-sm">
-                <span className="w-12 shrink-0 text-[12px] text-text-tertiary tabular-nums">{fmtTime(e.created_at)}</span>
-                <span className="text-text-secondary">{eventLine(e, run, code)}</span>
-              </li>
-            ))}
-          </ol>
-        ) : <p className="mt-2 text-sm text-text-tertiary">No events recorded yet.</p>}
-      </details>
+      <RunLogs key={run.id} events={events} transcript={transcript} live={active} describeEvent={event => eventLine(event, run, code)} />
 
       {finished && <RawJson label="Raw result (JSON)" value={finished.payload} />}
 
