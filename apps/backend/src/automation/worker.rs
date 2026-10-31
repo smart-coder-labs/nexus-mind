@@ -14,6 +14,9 @@ pub(crate) fn sanitize_output(value: &[u8], limit: usize) -> String {
         r"gh[pousr]_[A-Za-z0-9_]{20,}",
         r"github_pat_[A-Za-z0-9_]{20,}",
         r"https://hooks\.slack\.com/services/\S+",
+        r"xox[baprs]-[A-Za-z0-9-]{10,}",
+        r"AKIA[0-9A-Z]{16}",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
         r"(?i)(token|secret|password|api[_-]?key)\s*[=:]\s*\S+",
     ];
     patterns.iter().fold(text, |current, pattern| {
@@ -81,6 +84,7 @@ pub(crate) fn parse_claude_event_stream(
     // turn), so these caps are generous; they still bound memory per run.
     const MAX_STREAM_BYTES: usize = 32 * 1_048_576;
     const MAX_LINE_BYTES: usize = 4 * 1_048_576;
+    const MAX_NOISE_LINES: usize = 100;
     if value.len() > MAX_STREAM_BYTES {
         anyhow::bail!("claude_event_stream_too_large")
     }
@@ -88,27 +92,38 @@ pub(crate) fn parse_claude_event_stream(
     let mut result = None;
     let mut event_counts = std::collections::BTreeMap::<String, usize>::new();
     let mut lines = 0usize;
+    let mut noise = 0usize;
     for line in sanitized.lines().filter(|line| !line.trim().is_empty()) {
         lines += 1;
         if lines > 100_000 || line.len() > MAX_LINE_BYTES {
             anyhow::bail!("claude_event_stream_limit_exceeded")
         }
-        let event: serde_json::Value =
-            serde_json::from_str(line).map_err(|_| anyhow::anyhow!("claude_event_malformed"))?;
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            noise += 1;
+            continue;
+        };
         let kind = event
             .get("type")
             .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("claude_event_type_missing"))?;
+            .filter(|value| !value.is_empty());
+        let Some(kind) = kind else {
+            noise += 1;
+            continue;
+        };
         *event_counts.entry(kind.to_string()).or_default() += 1;
         if kind == "result" {
             result = Some(event);
         }
     }
-    let result = result.ok_or_else(|| anyhow::anyhow!("claude_result_event_missing"))?;
+    let Some(result) = result else {
+        if noise > MAX_NOISE_LINES {
+            anyhow::bail!("claude_event_stream_noisy")
+        }
+        anyhow::bail!("claude_result_event_missing")
+    };
     Ok((
         result,
-        json!({"format":"stream-json","events":event_counts,"line_count":lines}),
+        json!({"format":"stream-json","events":event_counts,"line_count":lines,"noise_lines":noise}),
     ))
 }
 
@@ -364,14 +379,58 @@ async fn prepare_nexus_workspace(workdir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn command_ok(mut command: Command) -> anyhow::Result<()> {
-    let output = timeout(
+/// A failed sub-command with a stable public code and a sanitized explanation.
+/// Keeping the code in `Display` preserves existing callers that serialize
+/// `error.to_string()` while allowing outcomes to include useful detail.
+#[derive(Debug)]
+struct CommandFailure {
+    code: &'static str,
+    detail: String,
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.code)
+    }
+}
+
+impl std::error::Error for CommandFailure {}
+
+fn failure_payload(error: &anyhow::Error) -> serde_json::Value {
+    match error.downcast_ref::<CommandFailure>() {
+        Some(failure) if !failure.detail.is_empty() => {
+            json!({"code":failure.code,"detail":failure.detail})
+        }
+        _ => json!({"code":error.to_string()}),
+    }
+}
+
+pub(crate) async fn command_ok(command: Command) -> anyhow::Result<()> {
+    command_ok_as(command, "command_failed").await
+}
+
+async fn command_ok_as(mut command: Command, code: &'static str) -> anyhow::Result<()> {
+    let output = match timeout(
         Duration::from_secs(300),
         command.kill_on_drop(true).output(),
     )
-    .await??;
+    .await
+    {
+        Ok(output) => output?,
+        Err(_) => {
+            return Err(CommandFailure {
+                code,
+                detail: "timed out after 300s".into(),
+            }
+            .into())
+        }
+    };
     if !output.status.success() {
-        anyhow::bail!("command_failed")
+        let mut detail = sanitize_output(&output.stderr, 800).trim().to_string();
+        if detail.is_empty() {
+            detail = sanitize_output(&output.stdout, 800).trim().to_string();
+        }
+        return Err(CommandFailure { code, detail }.into());
     }
     Ok(())
 }
@@ -397,7 +456,9 @@ pub(crate) fn sandbox_write_consumer(
             };
             last = crate::factory::workspace::reset_and_apply(&workdir, &diff).await;
             if let (Ok(()), true, Some((token, branch, base))) = (&last, is_checkpoint, &push) {
-                let _ = checkpoint_wip_push(&workdir, token, branch, base).await;
+                if let Err(error) = checkpoint_wip_push(&workdir, token, branch, base).await {
+                    tracing::warn!(error = %failure_payload(&error), "sandbox WIP checkpoint push failed");
+                }
             }
         }
         last
@@ -712,7 +773,7 @@ async fn run_allowlisted_commands(
         command.current_dir(workdir).args(rest);
         restrict_test_environment(&mut command, workdir, &[]);
         let started = chrono::Utc::now();
-        command_ok(command).await?;
+        command_ok_as(command, "verification_command_failed").await?;
         receipts.push(json!({"argv":args,"status":"passed","started_at":started.to_rfc3339()}));
     }
     Ok(receipts)
@@ -1804,7 +1865,7 @@ async fn prepare_repository(
     }
     clone_args.extend(["--", url.as_str(), destination]);
     clone.args(clone_args);
-    command_ok(clone).await?;
+    command_ok_as(clone, "repository_clone_failed").await?;
     let head = Command::new("git")
         .current_dir(workdir)
         .args(["rev-parse", "HEAD"])
@@ -1839,12 +1900,12 @@ async fn prepare_repository(
             "origin",
             &format!("pull/{number}/head"),
         ]);
-        command_ok(fetch).await?;
+        command_ok_as(fetch, "repository_fetch_failed").await?;
         let mut checkout = Command::new("git");
         checkout
             .current_dir(workdir)
             .args(["checkout", "--detach", "FETCH_HEAD"]);
-        command_ok(checkout).await?;
+        command_ok_as(checkout, "repository_checkout_failed").await?;
         if let Some(expected) = claim
             .config
             .pointer("/trigger/head_sha")
@@ -2011,6 +2072,15 @@ async fn ensure_diff_has_no_secrets(workdir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Make Git report untracked agent-created files to diff-based gates. Intent-to-
+/// add records paths without staging their contents; ignored files remain ignored.
+async fn mark_new_files_for_diff(workdir: &Path) -> anyhow::Result<()> {
+    let mut add = Command::new("git");
+    add.current_dir(workdir)
+        .args(["add", "--intent-to-add", "--", "."]);
+    command_ok_as(add, "stage_new_files_failed").await
+}
+
 async fn publish_template_output(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
@@ -2046,6 +2116,9 @@ async fn publish_template_output(
             // and the budget-exhausted partial PR). It must never land in a finished
             // PR, so drop it from the working tree before we diff and commit.
             let _ = tokio::fs::remove_file(workdir.join("PENDING.md")).await;
+            // Diff based security and size gates must include new files. Do this
+            // before verification so generated artifacts stay untracked.
+            mark_new_files_for_diff(workdir).await?;
             let verification = resolver_verification(store, claim, workdir).await?;
             ensure_diff_has_no_secrets(workdir).await?;
             let diff = Command::new("git")
@@ -2247,10 +2320,10 @@ async fn publish_template_output(
             checkout
                 .current_dir(workdir)
                 .args(["checkout", "-b", &branch]);
-            command_ok(checkout).await?;
+            command_ok_as(checkout, "branch_create_failed").await?;
             let mut add = Command::new("git");
             add.current_dir(workdir).args(["add", "--all"]);
-            command_ok(add).await?;
+            command_ok_as(add, "stage_changes_failed").await?;
             let mut commit = Command::new("git");
             commit
                 .current_dir(workdir)
@@ -2266,7 +2339,7 @@ async fn publish_template_output(
                         None => "NexusMind: resolve QA finding".to_string(),
                     },
                 ]);
-            command_ok(commit).await?;
+            command_ok_as(commit, "commit_failed").await?;
             let mut push = authenticated_git(&token);
             require_publish_authority(store, claim)?;
             push.current_dir(workdir).args([
@@ -2274,7 +2347,7 @@ async fn publish_template_output(
                 "origin",
                 &format!("HEAD:refs/heads/{branch}"),
             ]);
-            command_ok(push).await?;
+            command_ok_as(push, "push_failed").await?;
             // Title precedence: the agent's title -> the live issue title (fetched
             // only on the fallback path) -> a static default. A missing title never
             // blocks the PR; the diff is what matters.
@@ -3642,7 +3715,7 @@ async fn checkpoint_wip_push(
         add.current_dir(workdir)
             .env("GIT_INDEX_FILE", &alt_index)
             .args(["add", "-A"]);
-        command_ok(add).await?;
+        command_ok_as(add, "wip_stage_failed").await?;
     }
     let tree = {
         let out = Command::new("git")
@@ -3691,7 +3764,7 @@ async fn checkpoint_wip_push(
             "origin",
             &format!("{commit}:refs/heads/{branch}"),
         ]);
-        command_ok(push).await?;
+        command_ok_as(push, "wip_push_failed").await?;
     }
     Ok(true)
 }
@@ -3708,6 +3781,7 @@ async fn open_partial_pr(
     number: i64,
     branch: &str,
 ) -> anyhow::Result<serde_json::Value> {
+    mark_new_files_for_diff(workdir).await?;
     ensure_diff_has_no_secrets(workdir).await?;
     let base = claim
         .config
@@ -4065,7 +4139,9 @@ async fn resolve_issue_worktree(
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(180)).await;
-                let _ = checkpoint_wip_push(&workdir, &checkpoint_token, &branch, &base).await;
+                if let Err(error) = checkpoint_wip_push(&workdir, &checkpoint_token, &branch, &base).await {
+                    tracing::warn!(error = %failure_payload(&error), "periodic WIP checkpoint push failed");
+                }
             }
         })
     });
@@ -4189,9 +4265,13 @@ async fn resolve_issue_worktree(
         // Resume mode: never open a new PR. Push the latest work onto the existing
         // WIP branch so its partial draft PR is updated in place with the progress.
         if let Some(ref checkpoint_token) = token {
-            let pushed = checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
-                .await
-                .unwrap_or(false);
+            let pushed = match checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha).await {
+                Ok(pushed) => pushed,
+                Err(error) => {
+                    outcome.1["continued_push_error"] = failure_payload(&error);
+                    false
+                }
+            };
             outcome.1["continued_pushed"] = json!(pushed);
         }
         outcome.1["continued_branch"] = json!(wip_branch);
@@ -4202,7 +4282,9 @@ async fn resolve_issue_worktree(
             // The run still cost what its result says: keep it for telemetry.
             Err(error) => {
                 let result = outcome.1.get("result").cloned();
-                outcome = ("blocked_policy".into(), json!({"code":error.to_string(),"result":result}));
+                let mut payload = failure_payload(&error);
+                payload["result"] = result.unwrap_or(serde_json::Value::Null);
+                outcome = ("blocked_policy".into(), payload);
             }
         }
         if let Some((spec, plan)) = planned.as_ref() {
@@ -4216,16 +4298,20 @@ async fn resolve_issue_worktree(
         if outcome.0 == "succeeded" {
             match publish_template_output(&store, &claim, &workdir, &outcome.1).await {
                 Ok(published) => outcome.1["published"] = published,
-                Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+                Err(error) => outcome = ("blocked_policy".into(), failure_payload(&error)),
             }
         }
     } else if let Some(ref checkpoint_token) = token {
         // The attempt didn't finish. Snapshot the latest work; if there is any,
         // surface it as a resumable partial draft PR instead of discarding it.
-        if checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
-            .await
-            .unwrap_or(false)
-        {
+        let pushed = match checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha).await {
+            Ok(pushed) => pushed,
+            Err(error) => {
+                outcome.1["wip_push_error"] = failure_payload(&error);
+                false
+            }
+        };
+        if pushed {
             outcome.1["resumable"] = json!(true);
             outcome.1["wip_branch"] = json!(wip_branch);
             match open_partial_pr(
@@ -4240,7 +4326,7 @@ async fn resolve_issue_worktree(
             .await
             {
                 Ok(published) => outcome.1["published"] = published,
-                Err(error) => outcome.1["partial_pr_error"] = json!(error.to_string()),
+                Err(error) => outcome.1["partial_pr_error"] = failure_payload(&error),
             }
         }
     }
@@ -4286,6 +4372,38 @@ async fn discover_resumable_wip(
         }
     }
     result
+}
+
+fn fanout_outcome(
+    results: &[(i64, String, serde_json::Value)],
+) -> (&'static str, String, Option<serde_json::Value>) {
+    const AGGREGATE: &str = "fanout_completed";
+    let resolved = results
+        .iter()
+        .filter(|(_, status, _)| status == "succeeded")
+        .count();
+    let failed = results.len() - resolved;
+    let status = if resolved > 0 && failed == 0 {
+        "succeeded"
+    } else if resolved > 0 {
+        "partial"
+    } else {
+        "blocked_policy"
+    };
+    if resolved > 0 {
+        return (status, AGGREGATE.into(), None);
+    }
+    let failure = results
+        .iter()
+        .find(|(_, status, _)| status != "succeeded")
+        .map(|(_, _, payload)| payload);
+    let code = failure
+        .and_then(|payload| payload.get("code"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(AGGREGATE)
+        .to_string();
+    let detail = failure.and_then(|payload| payload.get("detail")).cloned();
+    (status, code, detail)
 }
 
 async fn execute_resolver_fanout(
@@ -4500,17 +4618,12 @@ async fn execute_resolver_fanout(
                 "issue":number,
                 "status":status,
                 "code":payload.get("code"),
+                "detail":payload.get("detail"),
                 "usage":crate::factory::telemetry::run_result_event(payload),
             })
         })
         .collect();
-    let status = if resolved > 0 && failed == 0 {
-        "succeeded"
-    } else if resolved > 0 {
-        "partial"
-    } else {
-        "blocked_policy"
-    };
+    let (status, code, detail) = fanout_outcome(&results);
     // Keep the sandbox on any non-clean outcome so the work can be inspected/resumed
     // locally; only fully-successful runs are torn down. `gc_stale_sandboxes` reaps
     // leaked ones later so disk doesn't grow unbounded. (The durable copy is the
@@ -4521,7 +4634,9 @@ async fn execute_resolver_fanout(
     (
         status.into(),
         json!({
-            "code":"fanout_completed",
+            "code":code,
+            "detail":detail,
+            "fanout":"fanout_completed",
             "resolved":resolved,
             "failed":failed,
             "pull_requests":pull_requests,
@@ -7991,6 +8106,125 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    async fn git(workdir: &Path, args: &[&str]) {
+        let mut command = Command::new("git");
+        command.current_dir(workdir).args(args);
+        command_ok(command).await.expect("git command");
+    }
+
+    async fn repository_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+        git(path, &["init", "--initial-branch=main"]).await;
+        git(path, &["config", "user.email", "test@nexusmind.local"]).await;
+        git(path, &["config", "user.name", "Test"]).await;
+        git(path, &["config", "commit.gpgsign", "false"]).await;
+        git(path, &["config", "core.hooksPath", ""]).await;
+        tokio::fs::write(path.join("existing.txt"), "base\n")
+            .await
+            .unwrap();
+        git(path, &["add", "--all"]).await;
+        git(path, &["commit", "-m", "base"]).await;
+        dir
+    }
+
+    async fn numstat(workdir: &Path) -> String {
+        let output = Command::new("git")
+            .current_dir(workdir)
+            .args(["diff", "--numstat"])
+            .output()
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    #[tokio::test]
+    async fn failed_command_reports_its_step_and_redacts_secret_material() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "echo 'fatal: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA permission denied' >&2; exit 1",
+        ]);
+        let error = command_ok_as(command, "push_failed")
+            .await
+            .expect_err("non-zero exit must fail");
+        assert_eq!(error.to_string(), "push_failed");
+        let payload = failure_payload(&error);
+        assert_eq!(payload["code"], json!("push_failed"));
+        let detail = payload["detail"].as_str().unwrap();
+        assert!(detail.contains("[REDACTED]"));
+        assert!(!detail.contains("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    }
+
+    #[test]
+    fn plain_failures_keep_their_code_without_invented_detail() {
+        let payload = failure_payload(&anyhow::anyhow!("stale_base_branch"));
+        assert_eq!(payload["code"], json!("stale_base_branch"));
+        assert!(payload.get("detail").is_none());
+    }
+
+    #[tokio::test]
+    async fn new_files_are_visible_to_security_and_size_gates() {
+        let dir = repository_fixture().await;
+        let path = dir.path();
+        tokio::fs::create_dir_all(path.join("components")).await.unwrap();
+        tokio::fs::write(path.join("components/New.tsx"), "export const a = 1\n")
+            .await
+            .unwrap();
+        assert_eq!(numstat(path).await, "");
+        mark_new_files_for_diff(path).await.unwrap();
+        assert!(numstat(path).await.contains("components/New.tsx"));
+    }
+
+    #[tokio::test]
+    async fn secret_scan_covers_new_files_and_ignores_build_artifacts() {
+        let dir = repository_fixture().await;
+        let path = dir.path();
+        tokio::fs::write(path.join(".gitignore"), "node_modules/\ncoverage/\n")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(path.join("coverage")).await.unwrap();
+        tokio::fs::write(path.join("coverage/report.json"), "{}\n")
+            .await
+            .unwrap();
+        tokio::fs::write(path.join("config.ts"), "export const t = 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\n")
+            .await
+            .unwrap();
+        ensure_diff_has_no_secrets(path).await.unwrap();
+        mark_new_files_for_diff(path).await.unwrap();
+        let diff = numstat(path).await;
+        assert!(diff.contains("config.ts"));
+        assert!(!diff.contains("coverage/"));
+        assert!(ensure_diff_has_no_secrets(path).await.is_err());
+    }
+
+    #[test]
+    fn fanout_surfaces_the_real_failure_only_when_nothing_succeeded() {
+        let failed = (
+            7,
+            "blocked_policy".to_string(),
+            json!({"code":"push_failed","detail":"remote: permission denied"}),
+        );
+        let succeeded = (8, "succeeded".to_string(), json!({"code":"completed"}));
+
+        let (status, code, detail) = fanout_outcome(&[failed.clone()]);
+        assert_eq!(status, "blocked_policy");
+        assert_eq!(code, "push_failed");
+        assert_eq!(detail, Some(json!("remote: permission denied")));
+
+        let (status, code, detail) = fanout_outcome(&[succeeded.clone(), failed]);
+        assert_eq!(status, "partial");
+        assert_eq!(code, "fanout_completed");
+        assert_eq!(detail, None);
+
+        let (status, code, _) = fanout_outcome(&[succeeded]);
+        assert_eq!(status, "succeeded");
+        assert_eq!(code, "fanout_completed");
+
+        let (status, code, _) = fanout_outcome(&[]);
+        assert_eq!(status, "blocked_policy");
+        assert_eq!(code, "fanout_completed");
+    }
 
     #[test]
     fn lenient_json_finds_the_answer_among_prose_with_braces() {
@@ -8297,6 +8531,25 @@ mod tests {
 "#
         )
         .is_err());
+    }
+
+    #[test]
+    fn claude_stream_parser_keeps_result_when_stdout_contains_library_noise() {
+        let stream = br#"{"type":"result","result":"ok","total_cost_usd":0.1}
+Client.listTools() called but server does not advertise tools capability
+"#;
+        let (result, receipt) = parse_claude_event_stream(stream).unwrap();
+        assert_eq!(result["type"], "result");
+        assert_eq!(receipt["noise_lines"], 1);
+
+        let mut noisy_without_result = String::from("not-json\n");
+        noisy_without_result.push_str(&"warning\n".repeat(101));
+        assert_eq!(
+            parse_claude_event_stream(noisy_without_result.as_bytes())
+                .unwrap_err()
+                .to_string(),
+            "claude_event_stream_noisy"
+        );
     }
 
     #[tokio::test]
