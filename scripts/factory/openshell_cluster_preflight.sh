@@ -129,6 +129,17 @@ if [[ "$action" == install-openshell-gateway ]]; then
     --set server.auth.allowUnauthenticatedUsers=true \
     --set server.telemetryEnabled=false
   kubectl -n openshell get service openshell -o jsonpath='{.spec.type}' | grep -qx ClusterIP
+  echo '== Allow OpenShell sandboxes to pull the private NexusMind image =='
+  kubectl -n nexusmind get secret ghcr-pull -o json | python3 -c '
+import json, sys
+secret = json.load(sys.stdin)
+secret["metadata"]["namespace"] = "openshell"
+for key in ("uid", "resourceVersion", "creationTimestamp", "managedFields"):
+    secret["metadata"].pop(key, None)
+json.dump(secret, sys.stdout)
+' | kubectl apply -f -
+  kubectl -n openshell patch serviceaccount openshell-sandbox --type=merge \
+    -p '{"imagePullSecrets":[{"name":"ghcr-pull"}]}'
   kubectl apply -f - <<'YAML'
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -150,6 +161,12 @@ spec:
           podSelector:
             matchLabels:
               app: nexusmind-backend
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshell
+        podSelector:
+          matchLabels:
+            openshell.ai/component: supervisor
       ports:
         - protocol: TCP
           port: 8080
