@@ -109,6 +109,21 @@ describe('FactoryDigest', () => {
     await waitFor(() => expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith('run-feedback-1', 'accepted'))
   })
 
+  it('records a rejected outcome without changing merge policy', async () => {
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
+      run_id: 'run-feedback-rejected',
+      agent_name: 'Issue resolver',
+      run_status: 'succeeded',
+      outcome: 'unknown',
+      created_at: '2026-10-30 12:00:00',
+    }])
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
+    await userEvent.click(within(section).getByRole('button', { name: 'Mark rejected' }))
+    await waitFor(() => expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith('run-feedback-rejected', 'rejected'))
+    expect(api.decideFactoryMerge).not.toHaveBeenCalled()
+  })
+
   it('keeps outcome controls read-only without the factory write permission', async () => {
     api.listFactoryTrajectoryFeedback.mockResolvedValue([{
       run_id: 'run-feedback-2',
