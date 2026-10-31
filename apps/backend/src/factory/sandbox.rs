@@ -433,6 +433,13 @@ pub fn valid_artifact_name(name: &str) -> bool {
 }
 
 pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
+    let cpu_request = if request.profile == PodProfile::Commands {
+        // The production worker leaves a single 50m verification slot. Keep
+        // agent pods at their 100m reservation so this only unblocks F1 checks.
+        "50m"
+    } else {
+        "100m"
+    };
     let env = match request.profile {
         PodProfile::Agent => task_env(request),
         PodProfile::CodexAgent => codex_task_env(request),
@@ -489,10 +496,7 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
                     "capabilities": {"drop": ["ALL"]}
                 },
                 "resources": {
-                    // The production worker leaves only 50m allocatable CPU for
-                    // one sandbox slot. Keep the request schedulable while the
-                    // container can still burst up to its 2 CPU limit.
-                    "requests": {"cpu": "50m", "memory": "512Mi"},
+                    "requests": {"cpu": cpu_request, "memory": "512Mi"},
                     "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "8Gi"}
                 },
                 "volumeMounts": [
@@ -622,10 +626,18 @@ mod tests {
 
     #[test]
     fn sandbox_task_reserves_one_available_cpu_slot_and_can_burst() {
-        let pod = task_pod_manifest(&request());
+        let mut command_request = request();
+        command_request.profile = PodProfile::Commands;
+        let pod = task_pod_manifest(&command_request);
         let task = &pod["spec"]["containers"][0];
         assert_eq!(task["resources"]["requests"]["cpu"], "50m");
         assert_eq!(task["resources"]["limits"]["cpu"], "2");
+
+        let agent = task_pod_manifest(&request());
+        assert_eq!(
+            agent["spec"]["containers"][0]["resources"]["requests"]["cpu"],
+            "100m"
+        );
     }
 
     #[test]
