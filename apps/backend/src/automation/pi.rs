@@ -14,7 +14,11 @@ fn base_command() -> Command {
 
 /// Check only readiness metadata, never request or emit the credential itself.
 pub async fn preflight() -> Result<(), &'static str> {
-    let mut command = base_command();
+    let bin = std::env::var("AUTONOMOUS_PI_BIN")
+        .unwrap_or_else(|_| "/claude-home/.npm-global/bin/pi".into());
+    let mut command = Command::new(bin);
+    super::worker::restrict_claude_environment(&mut command);
+    command.env_remove("NEXUSMIND_API_KEY");
     command.args(["auth", "check", "--provider", "openai-codex", "--json"]);
     command.stdin(std::process::Stdio::null()).kill_on_drop(true);
     let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
