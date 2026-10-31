@@ -1568,6 +1568,30 @@ export interface FactoryTrajectoryReviewItem {
   created_at: string
 }
 
+export interface FactoryLookbackEvidenceTask {
+  id: string
+  title: string
+  updated_at: string
+}
+
+export interface FactoryLookbackRecommendation {
+  memory_id: string
+  memory_title: string
+  memory_project: string
+  recurring_terms: string[]
+  recurrence_count: number
+  task_evidence: FactoryLookbackEvidenceTask[]
+  explanation: string
+}
+
+export interface FactoryLookbackResponse {
+  recommendations: FactoryLookbackRecommendation[]
+  completed_tasks_scanned: number
+  bugfix_memories_scanned: number
+  history_limit: number
+  history_truncated: boolean
+}
+
 export interface FactoryModelSpend { model: string | null; runs: number; cost_usd: number; input_tokens: number; output_tokens: number }
 export interface FactoryEconomics {
   days: number

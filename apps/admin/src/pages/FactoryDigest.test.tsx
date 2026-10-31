@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   decideFactoryMerge: vi.fn(),
   listFactoryTrajectoryFeedback: vi.fn(),
   recordFactoryTrajectoryFeedback: vi.fn(),
+  getFactoryLookback: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ createClient: () => api }))
 
@@ -59,6 +60,10 @@ describe('FactoryDigest', () => {
     api.decideFactoryMerge.mockResolvedValue({ id: 'd1', merges_after: '2026-10-04 01:10:00' })
     api.listFactoryTrajectoryFeedback.mockResolvedValue([])
     api.recordFactoryTrajectoryFeedback.mockResolvedValue({})
+    api.getFactoryLookback.mockResolvedValue({
+      recommendations: [], completed_tasks_scanned: 0, bugfix_memories_scanned: 0,
+      history_limit: 500, history_truncated: false,
+    })
   })
 
   it('lists held merges, blocked runs, waiting tasks and labels to give', async () => {
@@ -158,6 +163,42 @@ describe('FactoryDigest', () => {
     expect(within(card).getByText('75%')).toBeInTheDocument()
     expect(within(card).getByText('$0.800')).toBeInTheDocument()
     expect(within(card).getByText(/not measured yet/i)).toBeInTheDocument()
+  })
+
+  it('shows read-only lookback recommendations only when task and memory access are granted', async () => {
+    api.getFactoryLookback.mockResolvedValue({
+      recommendations: [{
+        memory_id: 'memory-1',
+        memory_title: 'OAuth refresh timeout',
+        memory_project: 'nexus-mind',
+        recurring_terms: ['oauth', 'refresh'],
+        recurrence_count: 2,
+        task_evidence: [
+          { id: 'task-1', title: 'Fix OAuth refresh timeout', updated_at: '2026-10-29' },
+          { id: 'task-2', title: 'Repair refresh after reconnect', updated_at: '2026-10-30' },
+        ],
+        explanation: 'Review whether the stored fix applies to these repeated tasks.',
+      }],
+      completed_tasks_scanned: 10,
+      bugfix_memories_scanned: 3,
+      history_limit: 500,
+      history_truncated: true,
+    })
+    renderPage(['factory_policy:read', 'task:read', 'memory:read'])
+    const section = await screen.findByRole('region', { name: /recurring fixes to review/i })
+    expect(within(section).getByText('OAuth refresh timeout')).toBeInTheDocument()
+    expect(within(section).getByText('Review whether the stored fix applies to these repeated tasks.')).toBeInTheDocument()
+    expect(within(section).getByText(/history is capped at 500 records/i)).toBeInTheDocument()
+    await userEvent.click(within(section).getByText('Evidence (2 completed tasks)'))
+    expect(within(section).getByText('Fix OAuth refresh timeout')).toBeInTheDocument()
+    expect(within(section).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('does not request lookback data without both task and memory read permissions', async () => {
+    renderPage(['factory_policy:read', 'task:read'])
+    await screen.findByRole('region', { name: /economics/i })
+    expect(api.getFactoryLookback).not.toHaveBeenCalled()
+    expect(screen.queryByRole('region', { name: /recurring fixes to review/i })).not.toBeInTheDocument()
   })
 
   it('says when nothing waits', async () => {
