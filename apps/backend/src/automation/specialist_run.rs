@@ -330,6 +330,15 @@ pub(crate) async fn verify_and_review(
 /// requested change. A repair step can recreate it, so remove it before every
 /// verification/review round rather than only before the first one.
 async fn remove_progress_scratchpad(workdir: &Path) -> Result<(), String> {
+    let tracked = Command::new("git")
+        .current_dir(workdir)
+        .args(["ls-files", "--", "PENDING.md"])
+        .output()
+        .await
+        .map_err(|_| "scratchpad_cleanup_failed".to_string())?;
+    if !tracked.status.success() || !tracked.stdout.is_empty() {
+        return Err("scratchpad_cleanup_failed".into());
+    }
     match tokio::fs::remove_file(workdir.join("PENDING.md")).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -845,9 +854,21 @@ pub(crate) async fn checkout_diff(workdir: &Path, changed: &[ChangedFile]) -> an
 mod tests {
     use super::*;
 
+    fn init_repo(workdir: &Path) {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(workdir)
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
     #[tokio::test]
     async fn verification_removes_recreated_progress_scratchpad() {
         let workdir = tempfile::tempdir().unwrap();
+        init_repo(workdir.path());
         let scratchpad = workdir.path().join("PENDING.md");
         tokio::fs::write(&scratchpad, "unfinished plan").await.unwrap();
 
@@ -859,9 +880,29 @@ mod tests {
     #[tokio::test]
     async fn verification_fails_closed_if_progress_scratchpad_is_a_directory() {
         let workdir = tempfile::tempdir().unwrap();
+        init_repo(workdir.path());
         tokio::fs::create_dir(workdir.path().join("PENDING.md")).await.unwrap();
 
         assert_eq!(remove_progress_scratchpad(workdir.path()).await, Err("scratchpad_cleanup_failed".into()));
+    }
+
+    #[tokio::test]
+    async fn verification_preserves_a_tracked_pending_file() {
+        let workdir = tempfile::tempdir().unwrap();
+        init_repo(workdir.path());
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(workdir.path())
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let scratchpad = workdir.path().join("PENDING.md");
+        tokio::fs::write(&scratchpad, "tracked user content").await.unwrap();
+        assert!(git(&["add", "PENDING.md"]).status.success());
+
+        assert_eq!(remove_progress_scratchpad(workdir.path()).await, Err("scratchpad_cleanup_failed".into()));
+        assert_eq!(tokio::fs::read_to_string(scratchpad).await.unwrap(), "tracked user content");
     }
 
     #[test]
