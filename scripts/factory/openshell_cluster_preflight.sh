@@ -8,8 +8,19 @@ cleanup() { kubectl delete namespace "$ns" --wait=false >/dev/null 2>&1 || true;
 trap cleanup EXIT
 
 echo '== Kubernetes and Helm versions =='
-kubectl version --output=yaml
-helm version --short
+k8s_version="$(kubectl version -o json)"
+printf '%s\n' "$k8s_version" | python3 -c '
+import json, re, sys
+version = json.load(sys.stdin)["serverVersion"]
+major = int(re.match(r"\d+", version["major"]).group())
+minor = int(re.match(r"\d+", version["minor"]).group())
+print(f"Kubernetes server {major}.{minor}")
+if (major, minor) < (1, 29):
+    raise SystemExit("OpenShell Kubernetes driver requires Kubernetes 1.29+")
+'
+helm_version="$(helm version --short)"
+printf 'Helm %s\n' "$helm_version"
+[[ "$helm_version" == v3.* ]] || { echo 'OpenShell gateway requires Helm 3.x' >&2; exit 1; }
 echo '== Cluster nodes and CNI hints =='
 kubectl get nodes -o wide
 kubectl -n kube-system get daemonsets,pods -o wide
