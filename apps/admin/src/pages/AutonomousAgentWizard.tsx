@@ -10,7 +10,7 @@ import { Input, Textarea } from '../components/ui/Input'
 import { Switch } from '../components/ui/Switch'
 import { Badge } from '../components/ui/Badge'
 import type { AutonomousAgentDetail, AutonomousAgentTemplate, AutonomousAgentTemplateKey } from '../types'
-import { codexSupported, isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
+import { codexSupported, piSupported, isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
 import { TaskExecutorSelect, type TaskExecutor } from './factory/agents/TaskExecutorSelect'
 
 /**
@@ -545,7 +545,7 @@ function validateStep(id: StepId, state: FormState): boolean {
       if ('error' in parseAllowedHosts(state.allowedHosts)) return false
       if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor)) return false
       if (state.executor === 'codex' && (!codexSupported(state.template) || state.isolation === 'local')) return false
-      if (state.executor === 'pi' && (!codexSupported(state.template) || state.isolation === 'sandbox')) return false
+      if (state.executor === 'pi' && (!piSupported(state.template) || state.isolation === 'sandbox')) return false
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
@@ -703,7 +703,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   }
   return (
     <div className="space-y-5">
-      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers. Pi uses the worker's ChatGPT login with gpt-6.1-sol, independently of Factory role preferences, for issue resolvers and PR reviewers. It runs locally (unsafe: worker credentials are accessible).">
+      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers. Pi uses the worker's ChatGPT login with gpt-6.1-sol, independently of Factory role preferences, for QA, issue resolvers and PR reviewers. QA uses Playwright without shell or file-editing tools. It runs locally (unsafe: worker credentials are accessible).">
         <TaskExecutorSelect
           value={state.executor}
           template={template}
@@ -714,15 +714,15 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             if (value === 'pi') set('isolation', 'local')
           }}
         />
-        {!codexSupported(template) && (
-          <p className="mt-2 text-[12px] text-text-secondary">Pi and Codex are available only for issue resolvers and PR reviewers. Choose one of those templates to enable them.</p>
+        {!piSupported(template) && (
+          <p className="mt-2 text-[12px] text-text-secondary">Pi is available for QA, issue resolvers and PR reviewers. Codex is available only for issue resolvers and PR reviewers.</p>
         )}
       </Field>
       {state.executor === 'codex' && !codexSupported(template) && (
         <p role="alert" className="text-[12px] text-text-primary">Codex runs only issue resolvers and PR reviewers. Choose another executor.</p>
       )}
-      {state.executor === 'pi' && !codexSupported(template) && (
-        <p role="alert" className="text-[12px] text-text-primary">Pi runs only issue resolvers and PR reviewers. Choose another executor.</p>
+      {state.executor === 'pi' && !piSupported(template) && (
+        <p role="alert" className="text-[12px] text-text-primary">Pi runs only QA, issue resolvers and PR reviewers. Choose another executor.</p>
       )}
       <IsolationFields state={state} set={set} template={template} />
       {template === 'qa' && (

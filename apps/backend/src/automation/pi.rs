@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-pub const TEMPLATES: [&str; 2] = ["github_issue_resolver", "github_pr_reviewer"];
+pub const TEMPLATES: [&str; 3] = ["github_issue_resolver", "github_pr_reviewer", "qa"];
 pub const MODEL: &str = "gpt-6.1-sol";
 
 fn base_command() -> Command {
@@ -28,18 +28,67 @@ pub async fn preflight() -> Result<(), &'static str> {
     }
 }
 
-pub fn command(reviewer: bool) -> Command {
+fn agent_command(tools: &str) -> Command {
     let mut command = base_command();
-    // Do not load untrusted repository extensions/configuration or unrelated MCPs.
+    // Only explicitly supplied, worker-owned extensions may load.
     command.args([
         "--mode", "json", "--print", "--no-session", "--no-extensions",
-        "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp",
-        "--no-context-files", "--no-approve",
-        "--tools", if reviewer { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" },
+        "--no-skills", "--no-prompt-templates", "--no-themes",
+        "--no-context-files", "--no-approve", "--tools", tools,
     ]);
     command.arg("--model").arg(format!("openai-codex/{MODEL}"));
     // Prompt is delivered over stdin, not exposed in process arguments.
     command.stdin(std::process::Stdio::piped());
+    command
+}
+
+pub fn command(reviewer: bool) -> Command {
+    let mut command = agent_command(if reviewer { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" });
+    command.arg("--no-mcp");
+    command
+}
+
+/// Preserve the existing QA screenshot location while exposing only Playwright.
+fn qa_mcp_config(base: &Value, screenshots: &std::path::Path) -> anyhow::Result<Value> {
+    let mut playwright = base.pointer("/mcpServers/playwright").cloned()
+        .ok_or_else(|| anyhow::anyhow!("pi_qa_playwright_missing"))?;
+    anyhow::ensure!(playwright.get("command").and_then(Value::as_str).is_some_and(|s| !s.is_empty()), "pi_qa_playwright_command_missing");
+    let args = playwright.get_mut("args").and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("pi_qa_playwright_args_missing"))?;
+    anyhow::ensure!(args.iter().all(Value::is_string), "pi_qa_playwright_args_invalid");
+    // Replace any baked output-dir; every run writes to its own evidence dir.
+    let mut clean = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--output-dir" {
+            let _ = iter.next();
+        } else if !arg.as_str().unwrap_or_default().starts_with("--output-dir=") {
+            clean.push(arg.clone());
+        }
+    }
+    clean.extend([json!("--output-dir"), json!(screenshots)]);
+    *args = clean;
+    playwright["exposure"] = json!("direct");
+    Ok(json!({"mcpServers":{"playwright":playwright}}))
+}
+
+pub fn qa_command(workdir: &std::path::Path, screenshots: &std::path::Path) -> anyhow::Result<Command> {
+    let base = std::env::var("AUTONOMOUS_QA_MCP_CONFIG").unwrap_or_else(|_| "/app/qa-mcp.json".into());
+    let base: Value = serde_json::from_slice(&std::fs::read(base)?)?;
+    let config = qa_mcp_config(&base, screenshots)?;
+    let parent = workdir.parent().ok_or_else(|| anyhow::anyhow!("pi_qa_workdir_invalid"))?;
+    let config_path = parent.join("pi-qa-mcp.json");
+    let extension_path = parent.join("pi-qa-extension.ts");
+    std::fs::create_dir_all(screenshots)?;
+    std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
+    std::fs::write(&extension_path, include_str!("pi_qa_extension.ts"))?;
+    Ok(qa_invocation(&extension_path, &config_path))
+}
+
+fn qa_invocation(extension: &std::path::Path, config: &std::path::Path) -> Command {
+    let mut command = agent_command("read,grep,find,ls,mcp__playwright__*");
+    command.arg("--extension").arg(extension);
+    command.env("FACTORY_PI_QA_MCP_CONFIG", config);
     command
 }
 
@@ -111,6 +160,31 @@ mod tests {
         for flag in ["--no-approve", "--no-extensions", "--no-mcp", "--no-context-files", "--no-session"] {
             assert!(args.iter().any(|arg| arg == flag));
         }
+    }
+
+    #[test]
+    fn qa_uses_only_playwright_and_a_run_scoped_output_directory() {
+        let base = json!({"mcpServers":{
+            "playwright":{"command":"mcp-server-playwright", "args":["--headless", "--output-dir", "/old", "--output-dir=/older"]},
+            "unrelated":{"command":"do-not-start"}
+        }});
+        let config = qa_mcp_config(&base, std::path::Path::new("/run/screenshots")).unwrap();
+        assert_eq!(config["mcpServers"].as_object().unwrap().len(), 1);
+        assert_eq!(config["mcpServers"]["playwright"]["args"], json!(["--headless", "--output-dir", "/run/screenshots"]));
+        assert_eq!(config["mcpServers"]["playwright"]["exposure"], "direct");
+        assert!(qa_mcp_config(&json!({}), std::path::Path::new("/shots")).is_err());
+        assert!(qa_mcp_config(&json!({"mcpServers":{"playwright":{"command":"pw", "args":[false]}}}), std::path::Path::new("/shots")).is_err());
+    }
+
+    #[test]
+    fn qa_enables_only_the_trusted_extension_and_read_browser_tools() {
+        let command = qa_invocation(std::path::Path::new("/run/trusted.ts"), std::path::Path::new("/run/mcp.json"));
+        let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
+        assert!(args.windows(2).any(|pair| pair == ["--tools", "read,grep,find,ls,mcp__playwright__*"]));
+        assert!(args.windows(2).any(|pair| pair == ["--extension", "/run/trusted.ts"]));
+        assert!(args.iter().any(|arg| arg == "--no-extensions"));
+        assert!(args.iter().any(|arg| arg == "--no-approve"));
+        assert!(!args.iter().any(|arg| arg == "--no-mcp"));
     }
 
     #[test]

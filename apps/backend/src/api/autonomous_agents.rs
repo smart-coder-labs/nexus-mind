@@ -2338,25 +2338,27 @@ mod tests {
 
     #[test]
     fn pi_run_can_be_claimed_without_host_claude_login() {
-        let (conn, org_id, user_id) = fixture();
-        let mut pi_request = request();
-        pi_request.template_key = "github_pr_reviewer".into();
-        pi_request.config = serde_json::json!({"executor":"pi", "repository":"acme/repo"});
-        let created = queries::create_autonomous_agent_definition(
-            &conn, &org_id, &user_id, &pi_request,
-        ).unwrap();
-        queries::validate_autonomous_agent_definition(
-            &conn, &org_id, &user_id, &created.definition.id,
-        ).unwrap();
-        queries::set_autonomous_agent_status(
-            &conn, &org_id, &created.definition.id, "enabled",
-        ).unwrap();
-        queries::enqueue_autonomous_agent_run(
-            &conn, &org_id, &created.definition.id, "manual", "pi-health", None, None,
-        ).unwrap();
-        let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
-            .unwrap().expect("Pi checks its own OAuth, not host Claude health");
-        assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "pi");
+        for template in ["github_pr_reviewer", "qa"] {
+            let (conn, org_id, user_id) = fixture();
+            let mut pi_request = request();
+            pi_request.template_key = template.into();
+            pi_request.config = serde_json::json!({"executor":"pi", "repository":"acme/repo", "outputs":["nexusmind"]});
+            let created = queries::create_autonomous_agent_definition(
+                &conn, &org_id, &user_id, &pi_request,
+            ).unwrap();
+            queries::validate_autonomous_agent_definition(
+                &conn, &org_id, &user_id, &created.definition.id,
+            ).unwrap();
+            queries::set_autonomous_agent_status(
+                &conn, &org_id, &created.definition.id, "enabled",
+            ).unwrap();
+            queries::enqueue_autonomous_agent_run(
+                &conn, &org_id, &created.definition.id, "manual", "pi-health", None, None,
+            ).unwrap();
+            let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
+                .unwrap().expect("Pi checks its own OAuth, not host Claude health");
+            assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "pi");
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { StyledSelect } from '@/components/ui/Select/StyledSelect'
-import { codexSupported } from '../isolation'
+import { codexSupported, piSupported } from '../isolation'
 
 export type TaskExecutor = 'claude' | 'nexus' | 'codex' | 'pi'
 
@@ -14,7 +14,7 @@ export function TaskExecutorSelect({ value, template, onChange }: {
     <StyledSelect aria-label="Task executor" value={value} onValueChange={value => onChange(value as TaskExecutor)}>
       <option value="claude">Claude pure</option>
       <option value="nexus">Nexus harness (OpenShell)</option>
-      <option value="pi" disabled={!codeTemplate} data-description={codeTemplate ? 'ChatGPT OAuth · local worker' : 'Available for issue resolvers and PR reviewers only'}>
+      <option value="pi" disabled={!piSupported(template)} data-description={piSupported(template) ? (template === 'qa' ? 'ChatGPT OAuth · Playwright QA · local worker' : 'ChatGPT OAuth · local worker') : 'Available for QA, issue resolvers and PR reviewers only'}>
         Pi (ChatGPT account, local worker)
       </option>
       <option value="codex" disabled={!codeTemplate} data-description={codeTemplate ? 'OpenAI API key · sandbox only' : 'Available for issue resolvers and PR reviewers only'}>

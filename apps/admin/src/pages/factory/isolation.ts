@@ -34,6 +34,11 @@ export function codexSupported(template: string): boolean {
   return CODEX_TEMPLATES.includes(template)
 }
 
+/** Pi uses ChatGPT OAuth in the local worker; QA gets the trusted Playwright MCP. */
+export function piSupported(template: string): boolean {
+  return codexSupported(template) || template === 'qa'
+}
+
 export function sandboxSupported(template: string, executor: string): boolean {
   if (executor === 'codex') return codexSupported(template)
   return executor === 'claude' && SANDBOX_TEMPLATES.includes(template)
