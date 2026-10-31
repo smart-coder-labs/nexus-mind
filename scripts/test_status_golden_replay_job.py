@@ -23,14 +23,16 @@ class GoldenReplayStatusTests(unittest.TestCase):
         logs = '\n'.join([
             '{"id":"secret-id","repository":"private/repo","merge_sha":"deadbeef","passed":true,"skipped":false,"error":null,"failure_output":"do not expose"}',
             '{"id":"secret-id-2","repository":"private/repo","merge_sha":"deadbeef","passed":false,"skipped":true,"error":null}',
-            '{"id":"secret-id-3","repository":"private/repo","merge_sha":"deadbeef","passed":false,"skipped":false,"error":"pod_not_ready"}',
-            '{"summary":{"tasks":3,"passed":1,"failed":0,"skipped_no_evidence":1,"errors":1}}',
+            '{"id":"secret-id-3","repository":"private/repo","merge_sha":"deadbeef","passed":false,"skipped":false,"error":"cluster token leaked"}',
+            '{"id":"secret-id-4","repository":"private/repo","merge_sha":"deadbeef","passed":false,"skipped":false,"error":"pod_not_ready"}',
+            '{"summary":{"tasks":4,"passed":1,"failed":0,"skipped_no_evidence":1,"errors":2}}',
         ])
         progress = progress_from_logs(logs)
-        self.assertEqual(progress, {"completed": 3, "passed": 1, "failed": 0, "skipped_no_evidence": 1, "errors": 1})
+        self.assertEqual(progress, {"completed": 4, "passed": 1, "failed": 0, "skipped_no_evidence": 1, "errors": 2, "error_codes": {"other": 1, "pod_not_ready": 1}})
         self.assertNotIn("secret-id", str(progress))
         self.assertNotIn("deadbeef", str(progress))
         self.assertNotIn("do not expose", str(progress))
+        self.assertNotIn("cluster token leaked", str(progress))
 
     def test_legacy_run_reports_complete_with_only_numeric_summary(self):
         status = legacy_result(
