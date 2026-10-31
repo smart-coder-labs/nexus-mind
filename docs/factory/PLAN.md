@@ -188,7 +188,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
       - Spanish identifiers remain the dense models' weak spot. BM25 alone stays.
       - Scripts: `scripts/factory/coderank_*`. The eval binary takes external query vectors (`--query-vectors`).
     - Questions about infra and gold files outside the index: 29 of 241 nexus-mind gold files are docs or unsupported types.
-    - Production indexes were last built on 2026-08-28 and 2026-09-07. Config files and `indexed_commit` appear only after a re-index.
+    - **Production index freshness (read-only check, 2026-10-31):** `nexus-mind` is indexed at `53b9cbf` (2026-10-03; 679 files) while GitHub `main` is `4cf495f`; `kasymir-app-ui` is indexed at `5350cad` (2026-10-04; 4,765 files) while GitHub `main` is `157bbdc`. Both report `index_status=success`, but they are behind current heads. Reindexing uses the local Nomic ONNX embedder (not Claude); it remains pending. F2's retrieval benchmark exit was met on its frozen snapshots, so refreshing these production indexes is freshness maintenance, not a new eval.
 
 ### F3: Router and Model Gateway (1–2 weeks)
 
@@ -198,7 +198,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Add the `factory_operator` MCP profile and tools, the human digest in admin, and a watchdog that notifies only on meaningful change.
 - Add Slack (read) and Sentry intake adapters.
 - **Exit:** a measured false-low-risk rate below threshold (OD-5) before automatic routing is enabled.
-- **Status (2026-10-05): shadow, gateway tiers, operator surface, Slack/Sentry intake with live Jev starts, the watchdog and the Codex executor built. OTel is open; the merge exit needs human labels.**
+- **Status (2026-10-31):** shadow decisions, gateway tiers, operator surface, Slack/Sentry intake, watchdog, Codex/Pi executors, and OTel export are deployed. All 153 live shadow rows have human labels and settled outcomes; OD-5 still fails its per-class sample floor.
   - **Decided:**
     - Shadow comes first, so the measurement clock starts before the gateway exists.
     - Ground truth combines post-merge signals with a human label, and the label wins.
@@ -216,12 +216,11 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - `GET /v1/factory/shadow/report`, `GET /v1/factory/shadow/decisions` and `POST …/:id/label`.
     - The admin panel on the factory policies page.
   - **Volume:** no PR reviewer is active in production, so the measurement starts from a backfill of already-merged PRs, whose outcome is known at once.
-  - **First results (2026-10-04, 153 merged PRs: 63 nexus-mind, 90 kasymir-app-ui).**
-    - Jev allows 5 (3%): 4 clean, 1 pending.
-    - Jev holds 148: 121 clean, 27 pending.
-    - There are 0 high-risk outcomes.
+  - **First results (2026-10-04, 153 merged PRs: 63 nexus-mind, 90 kasymir-app-ui; initial backfill before all labels settled).**
+    - Jev allowed 5 (3%): 4 clean, 1 pending.
+    - Jev held 148: 121 clean, 27 pending.
   - **Signals recalibrated (#295, #296).** The first signal set ("any fix touching the same files", "any failing check") flagged 74% of merged PRs. Signals are now strict: a revert, a fix naming the PR, or a failed *required* check. Neither repository requires checks today.
-  - **Reading.** With no positive cases, the false-low rate cannot be validated yet. Human labels in the admin are the missing ground truth. Jev is very conservative (every settled hold was clean), so automating anything beyond docs will need a threshold recalibrated against those labels.
+  - **Live OD-5 report (read-only production DB check, 2026-10-31):** all 153 decisions are human-labeled and settled. In the four policy classes, settled allows are bugfix 0, docs 2, tests 1, and ui 0 (minimum 50 per class); none has a measurable passing sample, so OD-5 is unmet and automatic routing remains disabled. The current report has zero false lows among all five allowed decisions; the UI class has one high-risk outcome, and none of the UI decisions were allowed.
   - **Model Gateway (#297):**
     - Each run gets a model (`--model`), picked in this order: pin, then tier, then label class, then the template default.
     - Reviewer, judge and security templates run on Opus.
@@ -336,10 +335,10 @@ Also in this phase:
 - Build a trajectory store of accepted and rejected runs, with verification data and human edits.
 - Add a lookback workflow (recommendations only) that clusters recurrences against NexusMind `bugfix` memories.
 - LoRA/QLoRA only if the evals show a persistent behavioral gap.
-- **Progress (2026-10-31):** run outcomes and append-only human feedback are stored separately from routing. The factory inbox lists terminal runs without a human label and lets authorized reviewers mark them accepted or rejected; labels remain evidence only and do not change policy or execution.
-- **Status (2026-10-21): first audit-only slice in review.** Migration v91 adds append-only trajectory entries: rows cannot be updated or directly deleted, while deletion of their parent run or org cascades through them for retention/account cleanup. Finished runs record the explicit specialist review/check verdict (otherwise `unknown`) and snapshot the verification report when available. An owner can append an accepted/rejected assessment plus changed file paths and diff counts; the API never stores human patch contents. Read access is org-scoped. These entries are not read by routing, policy or execution. This slice does not automatically detect post-run edits or final PR acceptance, and it does not widen autonomy.
+- **Progress (2026-10-31):** run outcomes and append-only human feedback are stored separately from routing. The factory inbox lists terminal runs without a human label and lets authorized reviewers mark them accepted or rejected; labels remain evidence only and do not change policy or execution. A read-only production DB check found 19 run-outcome entries (`unknown`) and no accepted/rejected human-assessment entries yet.
+- **Audit-only trajectory schema (merged #332, 2026-10-30).** Migration v91 adds append-only trajectory entries: rows cannot be updated or directly deleted, while deletion of their parent run or org cascades through them for retention/account cleanup. Finished runs record the explicit specialist review/check verdict (otherwise `unknown`) and snapshot the verification report when available. An owner can append an accepted/rejected assessment plus changed file paths and diff counts; the API never stores human patch contents. Read access is org-scoped. These entries are not read by routing, policy or execution. This slice does not automatically detect post-run edits or final PR acceptance, and it does not widen autonomy.
 
-- **Trajectory store:** implemented as an append-only, org-scoped observational slice in [PR #332](https://github.com/smart-coder-labs/nexus-mind/pull/332); CI is green and required review remains. Accepted/rejected assessment samples and human feedback must still accumulate before any lookback recommendation can be evaluated.
+- **Trajectory store:** implemented as an append-only, org-scoped observational slice in [PR #332](https://github.com/smart-coder-labs/nexus-mind/pull/332), merged 2026-10-30. Run outcomes and IDs are recorded by [PR #346](https://github.com/smart-coder-labs/nexus-mind/pull/346); inbox human feedback was added by [PR #347](https://github.com/smart-coder-labs/nexus-mind/pull/347), both merged 2026-10-31. Accepted/rejected assessment samples must still accumulate before any lookback recommendation can be evaluated.
 
 **Horizon:** 2026-10-04 → 2026-12-13, per the architecture doc. No GPU is needed before F4.
 
