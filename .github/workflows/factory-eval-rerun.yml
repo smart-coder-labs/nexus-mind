@@ -9,6 +9,7 @@ on:
         options:
           - queue
           - status
+          - resume
         default: queue
         required: true
       sets:
@@ -98,3 +99,27 @@ jobs:
             scripts/factory/status_specialist_eval.mjs "$REMOTE:$REMOTE_DIR/"
           ssh "${SSHOPTS[@]}" "$REMOTE" \
             "bash '$REMOTE_DIR/status_specialist_eval.sh' '$EVAL_RUN_ID'"
+
+      - name: Resume already queued specialist evals with Pi/OpenAI
+        if: inputs.action == 'resume'
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+
+          keyfile=$(mktemp)
+          trap 'rm -f "$keyfile"' EXIT
+          chmod 600 "$keyfile"
+          printf '%s\n' "$SSH_KEY" > "$keyfile"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSHOPTS=(-i "$keyfile" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            /usr/local/bin/nexusmind-ensure-eval-runner
