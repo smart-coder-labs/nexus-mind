@@ -8,7 +8,7 @@ import { asArr, asDict, asStr } from '../shared/format'
 // Distils Claude stream-json and Pi JSONL events into human-readable chat:
 // assistant prose, a one-line note per tool call, tool errors, and the final
 // result. System/init turns and non-error tool outputs are dropped as noise.
-function toolResultText(content: unknown): string {
+export function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content
   const arr = asArr(content)
   if (arr) return arr.map(x => { const d = asDict(x); return asStr(d?.text) ?? (d?.type === 'image' ? '[image]' : JSON.stringify(x)) }).join('\n')

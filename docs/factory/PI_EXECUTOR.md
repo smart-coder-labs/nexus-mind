@@ -147,6 +147,25 @@ need no rerun or migration. The UI count says **events**, not model turns, and
 autoscroll responds to text updates without a new row. Decoding runs once per
 message, not once per streaming token. Claude rendering remains unchanged.
 
+## Run logs
+
+The run page previously fetched lifecycle events only once during execution and
+refreshed them on termination. Its conversation view intentionally discarded
+successful tool outputs, so neither surface provided usable command logs.
+
+The Event log now polls every 2.5 seconds while active, shows expandable lifecycle
+payloads and includes per-tool input/output for both Pi and Claude. Pi partial
+outputs update the same tool row; completed/failed/incomplete states are distinct.
+Long output keeps the newest 16,000 characters rather than freezing on a truncated
+prefix. Live following can be disabled, and showing older tool logs disables it.
+Only the latest 100 tool rows render initially, with older rows loadable. Binary
+image data is omitted; logs use the worker's already-sanitized stored payloads.
+Prompts and reasoning are not included. These are **recorded tool/runtime events**,
+not a new stream of Kubernetes container stderr. Fetch failures are visible and
+retryable instead of looking like empty logs. Existing stored runs need no rerun.
+Each finished event uses its own code, and the result card uses the latest finish
+when a run has multiple attempts.
+
 ## Verification / session state
 
 - Both installed CLIs report 1.4.0.
