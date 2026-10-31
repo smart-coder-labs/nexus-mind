@@ -162,6 +162,9 @@ RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
       && chmod +x "${PKG}/${BIN}" \
       && playwright install --with-deps chromium \
       && mcp-server-playwright install-browser chrome-for-testing \
+      && chromium_bin="$(find /ms-playwright -type f -path '*/chrome-linux*/chrome' -print | sort -V | tail -n 1)" \
+      && test -n "${chromium_bin}" \
+      && ln -sf "${chromium_bin}" /usr/local/bin/chromium \
       && chmod -R a+rX /ms-playwright \
       && ls -la /ms-playwright/ \
       && npm cache clean --force \
