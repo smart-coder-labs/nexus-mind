@@ -17,6 +17,7 @@ jobs:
       pull-requests: read
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
+      nexus_cli: ${{ steps.filter.outputs.nexus_cli }}
       admin: ${{ steps.filter.outputs.admin }}
       backoffice: ${{ steps.filter.outputs.backoffice }}
       factory_commands_image: ${{ steps.filter.outputs.factory_commands_image }}
@@ -29,6 +30,8 @@ jobs:
               - 'apps/backend/**'
               - 'scripts/reset-demo.sh'
               - 'scripts/test-mcp.sh'
+            nexus_cli:
+              - 'apps/nexus-cli/**'
             admin:
               - 'apps/admin/**'
             backoffice:
@@ -68,6 +71,34 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --manifest-path apps/backend/Cargo.toml -- -D warnings
+
+  nexus-cli:
+    name: Nexus CLI (Rust)
+    needs: changes
+    if: needs.changes.outputs.nexus_cli == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 'stable'
+          components: clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/nexus-cli
+
+      - name: Format
+        run: cargo fmt --manifest-path apps/nexus-cli/Cargo.toml -- --check
+
+      - name: Test
+        run: cargo test --manifest-path apps/nexus-cli/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --manifest-path apps/nexus-cli/Cargo.toml -- -D warnings
 
   admin:
     name: Admin Panel (React)

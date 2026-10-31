@@ -4,6 +4,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -17,6 +19,8 @@ use std::{
 use uuid::Uuid;
 
 const INSTALLER: &str = "https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh";
+const MAX_CLAUDE_AUTH_FILE_BYTES: u64 = 1024 * 1024;
+const CLAUDE_SANDBOX_CONFIG_DIR: &str = "/sandbox/.claude";
 const CODEX_AUTH_BOOTSTRAP_SCRIPT: &str = r#"import json, os, pathlib, sys
 auth = json.loads(sys.argv[2])
 for field, name in (("access_token", "CODEX_AUTH_ACCESS_TOKEN"), ("refresh_token", "CODEX_AUTH_REFRESH_TOKEN"), ("account_id", "CODEX_AUTH_ACCOUNT_ID")):
@@ -128,7 +132,7 @@ impl OpenShell {
                 self.clear_codex_auth();
                 output?
             }
-            "claude-code-headless" => self.raw_command_output(&["claude", "auth", "status"])?,
+            "claude-code-headless" => self.claude_auth_status()?,
             _ => bail!("auth status is available for Claude Code and Codex only"),
         };
         let text = format!(
@@ -136,7 +140,9 @@ impl OpenShell {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        if !output.status.success() {
+        if !output.status.success()
+            || runtime == "claude-code-headless" && !claude_status_ready(&output)
+        {
             bail!(
                 "{} login is not ready in OpenShell: {}",
                 runtime,
@@ -144,6 +150,58 @@ impl OpenShell {
             );
         }
         Ok(crate::redacted(text.trim()))
+    }
+
+    /// The worker's subscription login lives outside the sandbox. OpenShell
+    /// deliberately does not inherit host files, so seed only Claude Code's
+    /// auth files into the persistent sandbox when its own login is absent.
+    /// Files travel through the authenticated OpenShell upload channel and are
+    /// restricted to the sandbox user's HOME; they are never printed or put in
+    /// a provider environment variable.
+    fn claude_auth_status(&self) -> Result<Output> {
+        let output = self.raw_command_output(&["claude", "auth", "status"])?;
+        if claude_status_ready(&output) {
+            return Ok(output);
+        }
+        self.provision_claude_auth()?;
+        self.raw_command_output(&["claude", "auth", "status"])
+    }
+
+    fn provision_claude_auth(&self) -> Result<()> {
+        let home = env::var_os("HOME")
+            .map(PathBuf::from)
+            .context("Claude login is not ready in OpenShell: worker HOME is unavailable")?;
+        let files = host_claude_auth_files(&home)
+            .context(
+                "Claude login is not ready in OpenShell: worker Claude credentials are unavailable",
+            )?;
+
+        let prepared = self.raw_command_output(&["mkdir", "-p", CLAUDE_SANDBOX_CONFIG_DIR])?;
+        if !prepared.status.success() {
+            bail!("could not prepare Claude login storage in the OpenShell sandbox");
+        }
+        for (source, destination, _) in &files {
+            let uploaded = Command::new(&self.binary)
+                .args(["sandbox", "upload", "--no-git-ignore", &self.sandbox])
+                .arg(source)
+                .arg(destination)
+                .output()
+                .context("could not start Claude login upload to OpenShell")?;
+            if !uploaded.status.success() {
+                bail!("could not provision Claude login in the OpenShell sandbox");
+            }
+        }
+        let secured = self.raw_command_output(&["chmod", "700", CLAUDE_SANDBOX_CONFIG_DIR])?;
+        if !secured.status.success() {
+            bail!("could not secure Claude login files in the OpenShell sandbox");
+        }
+        for (_, _, path) in &files {
+            let secured = self.raw_command_output(&["chmod", "600", path])?;
+            if !secured.status.success() {
+                bail!("could not secure Claude login files in the OpenShell sandbox");
+            }
+        }
+        Ok(())
     }
 
     pub fn installed() -> bool {
@@ -666,6 +724,48 @@ impl OpenShell {
         args.extend(argv.iter().map(OsString::from));
         args
     }
+}
+
+fn claude_status_ready(output: &Output) -> bool {
+    output.status.success()
+        && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|status| status.get("loggedIn").and_then(serde_json::Value::as_bool))
+            == Some(true)
+}
+
+/// Select only the two Claude Code authentication files. Reject symlinks,
+/// non-regular files, empty files and unexpectedly large files before sending
+/// anything through the OpenShell gateway.
+fn host_claude_auth_files(home: &Path) -> Result<Vec<(PathBuf, &'static str, &'static str)>> {
+    let claude_dir = home.join(".claude");
+    let dir_meta = fs::symlink_metadata(&claude_dir)
+        .context("worker Claude credential directory is unavailable")?;
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+        bail!("worker Claude credential directory is unsafe");
+    }
+
+    let mut files = Vec::new();
+    let path = home.join(".claude/.credentials.json");
+    let metadata = fs::symlink_metadata(&path)
+        .context("worker Claude credentials are unavailable")?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_CLAUDE_AUTH_FILE_BYTES
+    {
+        bail!("worker Claude credential file is unsafe");
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o077 != 0 {
+        bail!("worker Claude credential file permissions are unsafe");
+    }
+    files.push((
+        path,
+        CLAUDE_SANDBOX_CONFIG_DIR,
+        "/sandbox/.claude/.credentials.json",
+    ));
+    Ok(files)
 }
 
 fn ensure_codex_policy(binary: &Path, sandbox: &str, managed: bool) -> Result<()> {
@@ -1389,6 +1489,69 @@ mod tests {
         }}))
         .is_err());
     }
+
+    #[test]
+    fn claude_auth_status_requires_a_logged_in_json_response() {
+        let ready = Command::new("sh")
+            .args(["-c", "printf '{\"loggedIn\":true}'"])
+            .output()
+            .unwrap();
+        let logged_out = Command::new("sh")
+            .args(["-c", "printf '{\"loggedIn\":false}'"])
+            .output()
+            .unwrap();
+        assert!(claude_status_ready(&ready));
+        assert!(!claude_status_ready(&logged_out));
+        assert!(!claude_status_ready(&Output {
+            status: ready.status,
+            stdout: b"not json".to_vec(),
+            stderr: Vec::new(),
+        }));
+    }
+
+    #[test]
+    fn claude_auth_provisioning_selects_only_bounded_auth_files() {
+        let home = temporary("claude-auth-files");
+        fs::create_dir(home.join(".claude")).unwrap();
+        let credentials = home.join(".claude/.credentials.json");
+        fs::write(&credentials, "{\"oauth\":true}").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600)).unwrap();
+        let files = host_claude_auth_files(&home).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, home.join(".claude/.credentials.json"));
+        assert_eq!(files[0].1, CLAUDE_SANDBOX_CONFIG_DIR);
+        assert_eq!(files[0].2, "/sandbox/.claude/.credentials.json");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn claude_auth_provisioning_rejects_symlinks_and_oversized_files() {
+        let home = temporary("claude-auth-validation");
+        fs::create_dir(home.join(".claude")).unwrap();
+        fs::write(home.join("credentials.json"), "{\"oauth\":true}").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            home.join("credentials.json"),
+            home.join(".claude/.credentials.json"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert!(host_claude_auth_files(&home).is_err());
+
+        #[cfg(unix)]
+        fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
+        #[cfg(unix)]
+        fs::write(
+            home.join(".claude/.credentials.json"),
+            vec![b'x'; MAX_CLAUDE_AUTH_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert!(host_claude_auth_files(&home).is_err());
+        fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn sandbox_name_is_deterministic_and_scoped_to_runtime() {
         let root = Path::new("/workspace/project");
