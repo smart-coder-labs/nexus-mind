@@ -18754,21 +18754,111 @@ pub fn upsert_autonomous_agent_finding(
     if !matches!(severity, "info" | "low" | "medium" | "high" | "critical") {
         anyhow::bail!("invalid_severity");
     }
+    // Serialize the identity lookup and write across worker connections. Otherwise
+    // two runs with different model-generated fingerprints can both insert.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let exact: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_findings WHERE org_id=?1 AND definition_id=?2 AND fingerprint=?3)",
+        rusqlite::params![org_id, definition_id, fingerprint], |row| row.get(0),
+    )?;
+    let is_qa: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions WHERE org_id=?1 AND id=?2 AND template_key='qa')",
+        rusqlite::params![org_id, definition_id], |row| row.get(0),
+    )?;
+    let mut canonical = fingerprint.to_string();
+    if is_qa && !exact {
+        let mut stmt = tx.prepare(
+            "SELECT fingerprint,title,evidence_json FROM autonomous_agent_findings
+             WHERE org_id=?1 AND definition_id=?2 AND status='open' ORDER BY created_at,id",
+        )?;
+        let candidates = stmt.query_map(rusqlite::params![org_id, definition_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        for candidate in candidates {
+            let (old_fingerprint, old_title, old_evidence) = candidate?;
+            let old_evidence = serde_json::from_str(&old_evidence).unwrap_or_default();
+            if qa_finding_identity_matches(&old_fingerprint, &old_title, &old_evidence, fingerprint, title, evidence) {
+                canonical = old_fingerprint;
+                break;
+            }
+        }
+    }
+    let mut stored_evidence = evidence.clone();
+    if canonical != fingerprint {
+        if let Some(object) = stored_evidence.as_object_mut() {
+            if object.contains_key("fingerprint") {
+                object.insert("fingerprint".into(), serde_json::json!(canonical));
+            }
+        }
+    }
     let id = Uuid::new_v4().to_string();
-    conn.execute(
+    tx.execute(
         "INSERT INTO autonomous_agent_findings (id,org_id,definition_id,run_id,fingerprint,title,severity,summary,evidence_json)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(org_id,definition_id,fingerprint) DO UPDATE SET run_id=excluded.run_id,title=excluded.title,
          severity=excluded.severity,summary=excluded.summary,evidence_json=excluded.evidence_json,
          occurrence_count=autonomous_agent_findings.occurrence_count+1,updated_at=datetime('now')",
-        rusqlite::params![id,org_id,definition_id,run_id,fingerprint,title,severity,summary,serde_json::to_string(evidence)?],
+        rusqlite::params![id,org_id,definition_id,run_id,canonical,title,severity,summary,serde_json::to_string(&stored_evidence)?],
     )?;
-    conn.query_row(
+    let finding = tx.query_row(
         "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at
          FROM autonomous_agent_findings WHERE org_id=?1 AND definition_id=?2 AND fingerprint=?3",
-        rusqlite::params![org_id,definition_id,fingerprint], finding_from_row,
-    ).map_err(Into::into)
+        rusqlite::params![org_id,definition_id,canonical], finding_from_row,
+    )?;
+    tx.commit()?;
+    Ok(finding)
 }
+
+/// Conservative QA fallback: keep location/module boundaries, normalize only
+/// fingerprint separators or an otherwise identical title. No fuzzy symptom merge.
+fn qa_finding_identity_matches(
+    old_fingerprint: &str, old_title: &str, old_evidence: &serde_json::Value,
+    fingerprint: &str, title: &str, evidence: &serde_json::Value,
+) -> bool {
+    let scope = |value: &serde_json::Value, key: &str| {
+        value.get(key).and_then(serde_json::Value::as_str).unwrap_or_default()
+            .split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    };
+    if ["module", "location"].iter().any(|key| scope(old_evidence, key) != scope(evidence, key)) {
+        return false;
+    }
+    let normalize_fingerprint = |text: &str| text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let fp = normalize_fingerprint(fingerprint);
+    if !fp.is_empty() && fp == normalize_fingerprint(old_fingerprint) {
+        return true;
+    }
+    let normalize_title = |text: &str| text.to_lowercase().split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+    let title = normalize_title(title);
+    title.split_whitespace().count() >= 3 && title == normalize_title(old_title)
+}
+
+/// Bounded reference context encourages the model to reuse canonical identities
+/// even when it would describe an existing defect with different wording.
+pub fn open_qa_finding_references(conn: &Connection, org_id: &str, definition_id: &str) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT fingerprint,title,evidence_json FROM autonomous_agent_findings
+         WHERE org_id=?1 AND definition_id=?2 AND status='open' ORDER BY created_at,id LIMIT 100",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, definition_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
+    rows.map(|row| {
+        let (fingerprint, title, evidence) = row?;
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap_or_default();
+        let mut reference = serde_json::json!({"fingerprint":fingerprint,"title":title});
+        for key in ["module", "location", "expected", "actual"] {
+            if let Some(text) = evidence.get(key).and_then(serde_json::Value::as_str) {
+                reference[key] = serde_json::json!(text.chars().take(800).collect::<String>());
+            }
+        }
+        Ok(reference)
+    }).collect()
+}
+
+#[cfg(test)]
+#[path = "qa_finding_dedup_tests.rs"]
+mod qa_finding_dedup_tests;
 
 fn finding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentFinding> {
     let evidence: String = row.get(8)?;
