@@ -4,8 +4,8 @@ set -euo pipefail
 run_id="${1:?GitHub Actions run ID is required}"
 [[ "$run_id" =~ ^[0-9]{1,20}$ ]] || { echo 'invalid run id' >&2; exit 2; }
 action="${2:-preflight}"
-[[ "$action" == preflight || "$action" == install-agent-sandbox ]] || {
-  echo 'action must be preflight or install-agent-sandbox' >&2
+[[ "$action" == preflight || "$action" == install-agent-sandbox || "$action" == install-openshell-gateway ]] || {
+  echo 'action must be preflight, install-agent-sandbox, or install-openshell-gateway' >&2
   exit 2
 }
 ns="openshell-preflight-${run_id}"
@@ -91,7 +91,7 @@ if kubectl exec -n "$ns" client -- wget -q -T 5 -O - "http://${server_ip}:8080/h
 fi
 echo 'NetworkPolicy enforcement verified separately for pod ingress and egress'
 
-if [[ "$action" == install-agent-sandbox ]]; then
+if [[ "$action" == install-agent-sandbox || "$action" == install-openshell-gateway ]]; then
   echo '== Install pinned Agent Sandbox controller v1.0.9 =='
   if ! kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1; then
     manifest="$(mktemp)"
@@ -110,5 +110,56 @@ if [[ "$action" == install-agent-sandbox ]]; then
   kubectl wait --for=condition=Established \
     crd/sandboxes.agents.x-k8s.io --timeout=60s
   echo 'Agent Sandbox controller and CRD are Ready'
+fi
+
+if [[ "$action" == install-openshell-gateway ]]; then
+  echo '== Install OpenShell gateway chart v0.1.2 (private ClusterIP) =='
+  kubectl get crd sandboxes.agents.x-k8s.io >/dev/null
+  kubectl -n agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout=180s
+  kubectl create namespace openshell --dry-run=client -o yaml | kubectl apply -f -
+  helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
+    --version 0.1.2 --namespace openshell --wait --timeout 5m \
+    --set service.type=ClusterIP \
+    --set server.auth.allowUnauthenticatedUsers=true \
+    --set server.telemetryEnabled=false
+  kubectl -n openshell get service openshell -o jsonpath='{.spec.type}' | grep -qx ClusterIP
+  kubectl apply -f - <<'YAML'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-worker-ingress
+  namespace: openshell
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openshell
+      app.kubernetes.io/instance: openshell
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nexusmind
+          podSelector:
+            matchLabels:
+              app: nexusmind-backend
+      ports:
+        - protocol: TCP
+          port: 8080
+YAML
+  kubectl -n openshell rollout status statefulset/openshell --timeout=180s
+  kubectl -n nexusmind rollout status deployment/nexusmind-backend --timeout=180s
+  echo '== Register the internal gateway for the autonomous worker =='
+  for key in ca.crt tls.crt tls.key; do
+    escaped_key="${key//./\\.}"
+    kubectl -n openshell get secret openshell-client-tls \
+      -o "jsonpath={.data.${escaped_key}}" | base64 -d |
+      kubectl -n nexusmind exec -i deploy/nexusmind-backend -c autonomous-worker -- \
+        sh -c "umask 077; mkdir -p /claude-home/.config/openshell/gateways/production/mtls; cat > /claude-home/.config/openshell/gateways/production/mtls/$key; chmod 600 /claude-home/.config/openshell/gateways/production/mtls/$key"
+  done
+  kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- \
+    sh -c 'openshell gateway remove production >/dev/null 2>&1 || true; openshell gateway add https://openshell.openshell.svc.cluster.local:8080 --local --name production; openshell gateway select production; openshell status'
+  echo 'Private OpenShell gateway is Ready; only the Nexus worker pod may reach TCP/8080.'
 fi
 

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Verify the private cluster or install the Agent Sandbox prerequisite
+        description: Preflight or install the private OpenShell runtime prerequisites
         type: choice
-        options: [preflight, install-agent-sandbox]
+        options: [preflight, install-agent-sandbox, install-openshell-gateway]
         required: true
         default: preflight
 
@@ -21,7 +21,7 @@ jobs:
   preflight:
     if: startsWith(github.ref, 'refs/heads/ops/openshell-')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Probe cluster and provision Agent Sandbox prerequisite
