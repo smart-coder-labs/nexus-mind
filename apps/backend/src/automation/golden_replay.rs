@@ -76,6 +76,22 @@ pub fn commands_for(task: &GoldenTask) -> Vec<Vec<String>> {
     }
 }
 
+/// Reuse the browser shipped with the trusted commands image rather than
+/// letting repository install scripts download a browser into an isolated pod.
+fn extra_env_for(task: &GoldenTask) -> Vec<(String, String)> {
+    if task.repository == "kasymir/kasymir-app-ui" {
+        vec![
+            ("PUPPETEER_SKIP_DOWNLOAD".into(), "true".into()),
+            (
+                "PUPPETEER_EXECUTABLE_PATH".into(),
+                "/usr/local/bin/chromium".into(),
+            ),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Checks a task before any pod is started: the report needs a canonical UUID,
 /// and the checkout a valid repository and a full commit SHA.
 pub fn validate_task(task: &GoldenTask) -> anyhow::Result<()> {
@@ -215,11 +231,12 @@ async fn replay(
             slot: "main",
             writes: None,
         };
+        let extra_env = extra_env_for(task);
         let runs = super::sandboxed::run_commands_sandboxed(
             &run,
             &super::sandboxed::CommandsSpec {
                 commands: &commands,
-                extra_env: &[],
+                extra_env: &extra_env,
                 timeout_secs: command_timeout_secs(&commands),
                 reproduce_failures: false,
                 hosts: &[],
@@ -325,6 +342,23 @@ mod tests {
             argv(&commands_for(&ui)),
             ["npm ci", "npm test -- --ci --passWithNoTests"]
         );
+    }
+
+    #[test]
+    fn kasymir_reuses_the_preinstalled_chromium() {
+        let ui = task("kasymir/kasymir-app-ui", &["src/components/Button.tsx"]);
+        assert_eq!(
+            extra_env_for(&ui),
+            vec![
+                ("PUPPETEER_SKIP_DOWNLOAD".into(), "true".into()),
+                (
+                    "PUPPETEER_EXECUTABLE_PATH".into(),
+                    "/usr/local/bin/chromium".into(),
+                ),
+            ]
+        );
+        let nexus = task("smart-coder-labs/nexus-mind", &["apps/admin/App.tsx"]);
+        assert!(extra_env_for(&nexus).is_empty());
     }
 
     #[test]
