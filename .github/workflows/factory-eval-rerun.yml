@@ -3,6 +3,14 @@ name: Queue factory specialist eval rerun
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: Queue a specialist eval rerun or inspect current progress without running model tasks
+        type: choice
+        options:
+          - queue
+          - status
+        default: queue
+        required: true
       sets:
         description: Frozen evaluation sets to rerun with new result files
         type: choice
@@ -32,6 +40,7 @@ jobs:
           ref: main
 
       - name: Copy frozen inputs to new run sets and wake the runner
+        if: inputs.action == 'queue'
         env:
           SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
           SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
@@ -60,3 +69,32 @@ jobs:
             "$REMOTE:$REMOTE_DIR/"
           ssh "${SSHOPTS[@]}" "$REMOTE" \
             "bash '$REMOTE_DIR/queue_specialist_eval_rerun.sh' '$EVAL_SETS' '$EVAL_RUN_ID'"
+
+      - name: Read specialist eval progress without running tasks
+        if: inputs.action == 'status'
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          EVAL_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+
+          keyfile=$(mktemp)
+          trap 'rm -f "$keyfile"' EXIT
+          chmod 600 "$keyfile"
+          printf '%s\n' "$SSH_KEY" > "$keyfile"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSHOPTS=(-i "$keyfile" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+          REMOTE_DIR="/tmp/nexusmind-factory-eval-status-${EVAL_RUN_ID}"
+
+          ssh "${SSHOPTS[@]}" "$REMOTE" "mkdir -m 700 -p '$REMOTE_DIR'"
+          scp "${SSHOPTS[@]}" scripts/factory/status_specialist_eval.sh \
+            scripts/factory/status_specialist_eval.mjs "$REMOTE:$REMOTE_DIR/"
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            "bash '$REMOTE_DIR/status_specialist_eval.sh' '$EVAL_RUN_ID'"
