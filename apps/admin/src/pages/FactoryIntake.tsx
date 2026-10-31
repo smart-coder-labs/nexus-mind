@@ -1,7 +1,7 @@
 import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BellRing, GitPullRequest, Hash, Plus, Radio, Siren, Trash2, X } from 'lucide-react'
+import { BellRing, FileText, FolderOpen, GitPullRequest, Hash, Mail, Plus, Radio, Siren, Trash2, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Badge } from '../components/ui/Badge'
@@ -26,10 +26,31 @@ import { PRIVACY_LABEL, startReason, taskClassLabel } from './factory/govern/wor
 const PRIVACY: FactoryPrivacyClass[] = ['internal', 'confidential', 'restricted', 'public']
 const NEW_TOKEN = '__new__'
 
-const KIND_LABEL: Record<FactoryIntakeKind, string> = { slack: 'Slack channel', sentry: 'Sentry project' }
+const KIND_LABEL: Record<FactoryIntakeKind, string> = {
+  slack: 'Slack channel', sentry: 'Sentry project', gmail: 'Gmail label', notion: 'Notion pages', drive: 'Drive transcripts',
+}
+const KIND_DESCRIPTION: Record<FactoryIntakeKind, string> = {
+  slack: 'Messages someone marks for the factory.',
+  sentry: 'Unresolved errors that match a search.',
+  gmail: 'Messages with the factory label.',
+  notion: 'Pages in a database or tagged for the factory.',
+  drive: 'Google Docs in a selected folder.',
+}
+const TOKEN_LABEL: Record<FactoryIntakeKind, string> = {
+  slack: 'Slack bot token (xoxb-…)',
+  sentry: 'Sentry auth token',
+  gmail: 'Gmail read-only OAuth token',
+  notion: 'Notion integration token',
+  drive: 'Google Drive read-only OAuth token',
+}
 
 function KindIcon({ kind, className }: { kind: FactoryIntakeKind | 'github'; className?: string }) {
-  const Icon = kind === 'slack' ? Hash : kind === 'sentry' ? Siren : GitPullRequest
+  const Icon = kind === 'slack' ? Hash
+    : kind === 'sentry' ? Siren
+      : kind === 'gmail' ? Mail
+        : kind === 'notion' ? FileText
+          : kind === 'drive' ? FolderOpen
+            : GitPullRequest
   return <Icon className={className ?? 'h-4 w-4'} aria-hidden="true" />
 }
 
@@ -62,6 +83,8 @@ interface Draft {
   orgSlug: string
   projectSlug: string
   query: string
+  databaseId: string
+  folderId: string
 }
 
 const EMPTY: Draft = {
@@ -81,6 +104,8 @@ const EMPTY: Draft = {
   orgSlug: '',
   projectSlug: '',
   query: 'is:unresolved level:[error,fatal]',
+  databaseId: '',
+  folderId: '',
 }
 
 function nextStepFor(reason: string): string {
@@ -117,22 +142,29 @@ function draftFrom(source: FactoryIntakeSource): Draft {
     orgSlug: text('org_slug'),
     projectSlug: text('project_slug'),
     query: text('query'),
+    databaseId: text('database_id'),
+    folderId: text('folder_id'),
   }
 }
 
 function sourceInput(draft: Draft, connectorId: string): FactoryIntakeSourceInput {
-  const config =
-    draft.kind === 'slack'
+  const config = draft.kind === 'slack'
       ? {
           channel_id: draft.channelId.trim(),
           allowed_reactors: draft.reactors.split(/[\s,]+/).map(user => user.trim()).filter(Boolean),
         }
-      : {
+      : draft.kind === 'sentry'
+        ? {
           base_url: draft.baseUrl.trim(),
           org_slug: draft.orgSlug.trim(),
           project_slug: draft.projectSlug.trim(),
           query: draft.query.trim(),
         }
+        : draft.kind === 'notion'
+          ? { database_id: draft.databaseId.trim() }
+          : draft.kind === 'drive'
+            ? { folder_id: draft.folderId.trim() }
+            : {}
   return {
     kind: draft.kind,
     name: draft.name.trim(),
@@ -147,11 +179,9 @@ function sourceInput(draft: Draft, connectorId: string): FactoryIntakeSourceInpu
 }
 
 /**
- * Factory intake (F3): Slack channels and Sentry projects that feed the
- * factory, what came in and whether it started, and who hears about what waits
- * on a person. Slack and Sentry text is untrusted: the decision model may start
- * a run only within fixed limits, and a PR from such a run never merges
- * without a person.
+ * Factory intake: external sources that feed the factory, what came in and
+ * whether it started, and who hears about what waits on a person. Every
+ * external source is untrusted; a PR from one never merges without a person.
  */
 export default function FactoryIntake() {
   const { session } = useAuth()
@@ -189,6 +219,12 @@ export default function FactoryIntake() {
       connector.metadata.purpose === 'factory_intake' &&
       connector.metadata.source_kind === current.kind &&
       (current.kind !== 'sentry' || connector.metadata.sentry_host === sentryHost(current.baseUrl)))
+  const secretForKind = (kind: FactoryIntakeKind) => (connectors.data ?? []).find(connector =>
+    connector.kind === 'target_secret' &&
+    connector.health !== 'revoked' &&
+    connector.metadata.purpose === 'factory_intake' &&
+    connector.metadata.source_kind === kind &&
+    (kind !== 'sentry' || connector.metadata.sentry_host === sentryHost(EMPTY.baseUrl)))?.id ?? NEW_TOKEN
   const hooks = (connectors.data ?? []).filter(connector => connector.kind === 'slack' && connector.health !== 'revoked')
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['factory-intake-sources'] })
@@ -276,7 +312,7 @@ export default function FactoryIntake() {
         <EmptyState
           icon={<Radio />}
           title="No intake sources yet"
-          description="GitHub issues already reach the factory through the issue resolver. Add a Slack channel or Sentry project to bring in more work."
+          description="GitHub issues already reach the factory through the issue resolver. Add a source to bring in more work."
         />
       )}
       {sources.data && sources.data.length > 0 && (
@@ -486,6 +522,7 @@ export default function FactoryIntake() {
         projectsError={projects.isError}
         onRetryProjects={() => { void projects.refetch() }}
         secrets={draft ? secretsFor(draft) : []}
+        secretForKind={secretForKind}
         canAddToken={canAddToken}
         saving={save.isPending}
         saveError={save.isError ? `The source was not saved: ${message(save.error)}.` : ''}
@@ -505,6 +542,7 @@ function SourceEditor({
   projectsError,
   onRetryProjects,
   secrets,
+  secretForKind,
   canAddToken,
   saving,
   saveError,
@@ -519,20 +557,34 @@ function SourceEditor({
   projectsError: boolean
   onRetryProjects: () => void
   secrets: AutonomousAgentConnector[]
+  secretForKind: (kind: FactoryIntakeKind) => string
   canAddToken: boolean
   saving: boolean
   saveError: string
   onSave: (draft: Draft) => void
 }) {
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft(current => (current ? { ...current, [key]: value } : current))
+  const changeKind = (kind: FactoryIntakeKind) => setDraft(current => current ? ({
+    ...current,
+    kind,
+    connector: secretForKind(kind),
+    newToken: '',
+  }) : current)
   const needsToken = draft?.connector === NEW_TOKEN && (!canAddToken || !draft.newToken.trim())
+  const sourceConfigIncomplete = draft?.kind === 'slack'
+    ? !draft.channelId.trim() || !draft.reactors.trim()
+    : draft?.kind === 'sentry'
+      ? !draft.baseUrl.trim() || !draft.orgSlug.trim() || !draft.projectSlug.trim() || !draft.query.trim()
+      : draft?.kind === 'drive'
+        ? !/^[A-Za-z0-9_-]{1,100}$/.test(draft.folderId.trim())
+        : draft?.kind === 'notion' && !!draft.databaseId.trim() && !/^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(draft.databaseId.trim())
   const incomplete =
     !draft ||
     !draft.name.trim() ||
     !draft.project.trim() ||
     !draft.resolver ||
     needsToken ||
-    (draft.kind === 'slack' ? !draft.channelId.trim() || !draft.reactors.trim() : !draft.orgSlug.trim() || !draft.projectSlug.trim() || !draft.query.trim())
+    sourceConfigIncomplete
 
   return (
     <Modal open={draft !== null} onOpenChange={value => { if (!value) onClose() }} size="xl" position="right">
@@ -541,24 +593,24 @@ function SourceEditor({
           <ModalHeader className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <ModalTitle>{draft.id ? `Edit ${draft.name}` : 'New intake source'}</ModalTitle>
-              <ModalDescription>Slack and Sentry text is untrusted: what it starts never merges without a person.</ModalDescription>
+              <ModalDescription>External source content is untrusted. Any pull request from it must be reviewed by a person.</ModalDescription>
             </div>
             <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={onClose} />
           </ModalHeader>
           <ModalContent className="flex-1 space-y-6">
             <FieldGroup title="Source">
-              <div role="radiogroup" aria-label="Kind of source" className="grid gap-2 sm:grid-cols-2">
-                {(['slack', 'sentry'] as FactoryIntakeKind[]).map(kind => (
+              <div role="radiogroup" aria-label="Kind of source" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {(['slack', 'sentry', 'gmail', 'notion', 'drive'] as FactoryIntakeKind[]).map(kind => (
                   <RadioCard
                     key={kind}
                     name="intake-kind"
                     value={kind}
                     checked={draft.kind === kind}
                     disabled={!!draft.id}
-                    onChange={value => set('kind', value as FactoryIntakeKind)}
+                    onChange={value => changeKind(value as FactoryIntakeKind)}
                     icon={<KindIcon kind={kind} className="h-4 w-4 text-text-secondary" />}
                     title={KIND_LABEL[kind]}
-                    description={kind === 'slack' ? 'Messages someone marks for the factory.' : 'Unresolved errors that match a search.'}
+                    description={KIND_DESCRIPTION[kind]}
                   />
                 ))}
               </div>
@@ -569,7 +621,7 @@ function SourceEditor({
                 <Field id="intake-channel" label="Channel ID" hint="The bot must be a member of the channel.">
                   <Input id="intake-channel" value={draft.channelId} placeholder="C0123ABCD" onChange={event => set('channelId', event.target.value)} />
                 </Field>
-              ) : (
+              ) : draft.kind === 'sentry' ? (
                 <>
                   <Field id="intake-sentry-url" label="Sentry URL">
                     <Input id="intake-sentry-url" value={draft.baseUrl} onChange={event => set('baseUrl', event.target.value)} />
@@ -583,6 +635,18 @@ function SourceEditor({
                     </Field>
                   </div>
                 </>
+              ) : draft.kind === 'notion' ? (
+                <Field id="intake-notion-database" label="Database ID (optional)" hint="Leave blank to find pages tagged with the factory label. The integration must have access to the database.">
+                  <Input id="intake-notion-database" value={draft.databaseId} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" onChange={event => set('databaseId', event.target.value)} />
+                </Field>
+              ) : draft.kind === 'drive' ? (
+                <Field id="intake-drive-folder" label="Google Drive folder ID" hint="Only Google Docs in this folder are imported. The token needs drive.readonly access to the folder.">
+                  <Input id="intake-drive-folder" value={draft.folderId} placeholder="Folder ID from its Drive URL" onChange={event => set('folderId', event.target.value)} />
+                </Field>
+              ) : (
+                <div className="rounded-lg border border-border-primary bg-foreground/[0.03] px-4 py-3 text-sm text-text-secondary">
+                  Gmail reads only messages carrying the <code className="font-mono">factory</code> label. Use a read-only Gmail token.
+                </div>
               )}
             </FieldGroup>
 
@@ -647,7 +711,17 @@ function SourceEditor({
                 </StyledSelect>
               </Field>
               {draft.connector === NEW_TOKEN && canAddToken && (
-                <Field id="intake-new-token" label={draft.kind === 'slack' ? 'Slack bot token (xoxb-…)' : 'Sentry auth token'}>
+                <Field
+                  id="intake-new-token"
+                  label={TOKEN_LABEL[draft.kind]}
+                  hint={draft.kind === 'gmail'
+                    ? 'Use an OAuth access token with the gmail.readonly scope.'
+                    : draft.kind === 'notion'
+                      ? 'Share the source database or pages with this integration before saving.'
+                      : draft.kind === 'drive'
+                        ? 'Use an OAuth access token with drive.readonly and access to the selected folder.'
+                        : undefined}
+                >
                   <Input id="intake-new-token" type="password" autoComplete="off" value={draft.newToken} onChange={event => set('newToken', event.target.value)} />
                 </Field>
               )}
@@ -662,7 +736,7 @@ function SourceEditor({
                 >
                   <Input id="intake-reactors" value={draft.reactors} placeholder="U0123ABCD, U0456EFGH" onChange={event => set('reactors', event.target.value)} />
                 </Field>
-              ) : (
+              ) : draft.kind === 'sentry' ? (
                 <Field
                   id="intake-sentry-query"
                   label="Issues to take (Sentry search)"
@@ -670,6 +744,12 @@ function SourceEditor({
                 >
                   <Input id="intake-sentry-query" className="font-mono" value={draft.query} onChange={event => set('query', event.target.value)} />
                 </Field>
+              ) : draft.kind === 'gmail' ? (
+                <p className="text-sm text-text-secondary">Only messages carrying the <code className="font-mono">factory</code> label are imported. Gmail intake is always held for human review.</p>
+              ) : draft.kind === 'notion' ? (
+                <p className="text-sm text-text-secondary">Pages in the configured database are imported. Without a database ID, pages must carry a <code className="font-mono">factory</code> tag or checkbox.</p>
+              ) : (
+                <p className="text-sm text-text-secondary">Google Docs in the configured folder are imported as transcripts and always wait for human review.</p>
               )}
             </FieldGroup>
 
