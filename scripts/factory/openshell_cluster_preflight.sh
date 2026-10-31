@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# k3s configures kubectl via its built-in default, but Helm's Kubernetes client
+# does not use that k3s-specific fallback. Share the same cluster config.
+if [[ -z "${KUBECONFIG:-}" && -f /etc/rancher/k3s/k3s.yaml ]]; then
+  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+fi
+
 run_id="${1:?GitHub Actions run ID is required}"
 [[ "$run_id" =~ ^[0-9]{1,20}$ ]] || { echo 'invalid run id' >&2; exit 2; }
 action="${2:-preflight}"
