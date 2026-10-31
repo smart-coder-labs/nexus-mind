@@ -3,7 +3,13 @@
 ## What changed
 
 `executor: "pi"` is available for `github_issue_resolver` and
-`github_pr_reviewer`. Existing agents keep their executor. Pi uses
+`github_pr_reviewer`. Existing agents keep their executor. The selector always
+shows Pi and Codex, but disables them with an explanation for other templates.
+Initially these options were conditionally hidden, causing users editing QA or
+Judge agents to see only Claude and OpenShell even after a successful deployment.
+`TaskExecutorSelect.test.tsx` covers discovery, disabled choices and selecting Pi
+on both compatible templates. This visibility fix does not add Pi browser/QA
+support or bypass backend template/isolation validation. Pi uses
 `openai-codex/gpt-6.1-sol` through ChatGPT OAuth, not the Codex executor's
 OpenAI API key. The bundled Pi 1.4.0 model catalog includes this model.
 
