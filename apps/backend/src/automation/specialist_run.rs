@@ -281,6 +281,7 @@ pub(crate) async fn verify_and_review(
     seeded: &[SeededFault],
     choose_review_model: impl FnOnce() -> String,
 ) -> Result<Finished, String> {
+    remove_progress_scratchpad(env.workdir).await?;
     let changed = checkout_changes(env.workdir).await.map_err(|_| "diff_inspection_failed".to_string())?;
     if changed.iter().all(|file| file.filename == "PENDING.md") {
         return Ok(Finished { changed, ..Default::default() });
@@ -323,6 +324,17 @@ pub(crate) async fn verify_and_review(
         review_event: Some(event),
         screenshots,
     })
+}
+
+/// PENDING.md is the resolver's handoff scratchpad, not part of a specialist's
+/// requested change. A repair step can recreate it, so remove it before every
+/// verification/review round rather than only before the first one.
+async fn remove_progress_scratchpad(workdir: &Path) -> Result<(), String> {
+    match tokio::fs::remove_file(workdir.join("PENDING.md")).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("scratchpad_cleanup_failed".into()),
+    }
 }
 
 /// Every deterministic check of a change: the in-worker checks, then, for a
@@ -832,6 +844,25 @@ pub(crate) async fn checkout_diff(workdir: &Path, changed: &[ChangedFile]) -> an
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn verification_removes_recreated_progress_scratchpad() {
+        let workdir = tempfile::tempdir().unwrap();
+        let scratchpad = workdir.path().join("PENDING.md");
+        tokio::fs::write(&scratchpad, "unfinished plan").await.unwrap();
+
+        remove_progress_scratchpad(workdir.path()).await.unwrap();
+        assert!(!scratchpad.exists());
+        remove_progress_scratchpad(workdir.path()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn verification_fails_closed_if_progress_scratchpad_is_a_directory() {
+        let workdir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir(workdir.path().join("PENDING.md")).await.unwrap();
+
+        assert_eq!(remove_progress_scratchpad(workdir.path()).await, Err("scratchpad_cleanup_failed".into()));
+    }
 
     #[test]
     fn porcelain_entries_become_pull_file_statuses() {
