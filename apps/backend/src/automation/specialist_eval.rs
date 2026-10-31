@@ -5,8 +5,9 @@
 //! on the worker; repository commands remain in sandbox pods.
 //!
 //! - **baseline**: today's generic resolver, its fixed prompt;
-//! - **specialist**: plan, implement, checks, review, and one repair round after
-//!   a rejecting review, exactly as the worker runs it.
+//! - **specialist**: plan, implement, checks, review, and one bounded repair
+//!   after repairable check failures or a substantive rejecting review, exactly
+//!   as the worker runs it.
 //!
 //! An attempt is **accepted** only when its change passes the merge gate's path
 //! and risk floor, the specialist's deterministic checks (applied to both arms,
@@ -554,7 +555,8 @@ impl SandboxEvalRunner {
         match plan {
             Some(plan) if !attempt.no_op => {
                 // Exactly as the worker finishes a specialist run: checks,
-                // review, and one repair round after a rejecting review.
+                // one bounded repair for repairable check failures or a
+                // substantive rejected review, then final checks and review.
                 let mut rounds = super::specialist_run::LiveRounds {
                     env: &env,
                     spec,

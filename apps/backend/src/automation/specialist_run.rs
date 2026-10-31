@@ -237,6 +237,9 @@ pub(crate) async fn plan(env: &StepEnv<'_>, spec: &Specialist, config: &Value, m
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Finished {
     pub changed: Vec<ChangedFile>,
+    /// Whether the current diff and proposed issue title pass the automatic
+    /// merge path floor; unknown means no repair is eligible.
+    pub path_floor_passed: Option<bool>,
     /// `None` when there was nothing to check (no change).
     pub checks: Option<CheckReport>,
     /// `None` when the review did not run (no change, or the checks failed).
@@ -282,9 +285,18 @@ pub(crate) async fn verify_and_review(
     if changed.iter().all(|file| file.filename == "PENDING.md") {
         return Ok(Finished { changed, ..Default::default() });
     }
+    let title = config.pointer("/issue/title").and_then(Value::as_str).unwrap_or_default();
+    let publishable_paths: Vec<ChangedFile> = changed.iter().filter(|file| file.filename != "PENDING.md").cloned().collect();
+    let path_floor_passed = super::merge_gate::auto_merge_path_verdict(&publishable_paths, title).is_ok();
     let Checked { report: checks, screenshots } = run_checks(env, spec, &changed, seeded, routes).await?;
     if !checks.passed {
-        return Ok(Finished { changed, checks: Some(checks), screenshots, ..Default::default() });
+        return Ok(Finished {
+            changed,
+            path_floor_passed: Some(path_floor_passed),
+            checks: Some(checks),
+            screenshots,
+            ..Default::default()
+        });
     }
     // The change's files and diff are taken before the screenshots land in the
     // checkout, and the screenshots leave it when `shots` drops after the step.
@@ -304,6 +316,7 @@ pub(crate) async fn verify_and_review(
     };
     Ok(Finished {
         changed,
+        path_floor_passed: Some(path_floor_passed),
         checks: Some(checks),
         review: Some(review),
         review_model: Some(model),
@@ -375,18 +388,65 @@ pub(crate) async fn check_checkout(
 /// found nothing, so a repair has nothing to fix.
 const REVIEW_REQUEST_FAILURES: &[&str] = &["claude_usage_limited", "claude_api_error"];
 
-/// The reasons a repair round would fix, when the round gets one: the checks
-/// passed and the review read the change and rejected it for stated reasons.
-/// A failed check is already a precise, deterministic answer and is final; an
-/// unreadable verdict or a failed review request says nothing about the change.
-pub(crate) fn repair_reasons(finished: &Finished) -> Option<&[String]> {
+/// Only checks a change can fix without changing the factory's scope or risk
+/// decision may request one repair. Seeded-fault feedback is deliberately never
+/// exposed to the agent; when tests did not run, that check is only a derivative
+/// failure and is omitted from the repair prompt.
+const REPAIRABLE_CHECKS: &[&str] = &[
+    "links_resolve",
+    "identifiers_exist",
+    "tests_pass",
+    "mutation_score",
+    "ui_build",
+    "ui_lint",
+    "ui_tests",
+    "ui_screenshots",
+];
+
+fn check_repair_reasons(checks: &CheckReport) -> Option<Vec<String>> {
+    let mut reasons = Vec::new();
+    for check in checks.checks.iter().filter(|check| !check.passed && !check.advisory) {
+        if check.name == "seeded_fault_caught" {
+            if !check.details.is_empty() && check.details.iter().all(|detail| detail.starts_with("not run:")) {
+                continue;
+            }
+            // The task's seeded faults are hidden evaluation data. Never pass
+            // their result or location to a model, even as an untrusted hint.
+            return None;
+        }
+        if !REPAIRABLE_CHECKS.contains(&check.name) {
+            return None;
+        }
+        if check.name == "mutation_score" {
+            // Don't reveal which generated mutation survived. The threshold
+            // failure is enough to direct stronger tests without target leakage.
+            reasons.push("mutation_score: mutation checks did not meet the required threshold".to_string());
+        } else {
+            reasons.push(format!("{}: {}", check.name, check.details.join("; ")));
+        }
+    }
+    (!reasons.is_empty()).then_some(reasons)
+}
+
+/// Reasons for one bounded repair: either repairable deterministic findings,
+/// or a substantive review rejection after all checks pass. Infrastructure,
+/// policy-floor, hidden seeded-fault, and unreadable-review failures stay final.
+pub(crate) fn repair_reasons(finished: &Finished) -> Option<Vec<String>> {
+    if finished.path_floor_passed != Some(true) {
+        return None;
+    }
+    if let Some(checks) = finished.checks.as_ref().filter(|checks| !checks.passed) {
+        return check_repair_reasons(checks);
+    }
+    if !finished.checks.as_ref().is_some_and(|checks| checks.passed) {
+        return None;
+    }
     let review = finished.review.as_ref().filter(|review| !review.accept)?;
     let review_failed = review
         .reasons
         .iter()
         .any(|reason| reason.starts_with("verdict_unreadable") || REVIEW_REQUEST_FAILURES.contains(&reason.as_str()));
-    let checks_passed = finished.checks.as_ref().is_some_and(|checks| checks.passed);
-    (checks_passed && !review_failed && !review.reasons.is_empty()).then_some(review.reasons.as_slice())
+    (!review_failed && !review.reasons.is_empty()).then(|| review.reasons.clone())
 }
 
 /// The repair round's implementation step.
@@ -454,15 +514,13 @@ pub(crate) trait Rounds {
     async fn repair(&mut self, reasons: &[String]) -> RepairStep;
 }
 
-/// Checks and reviews the change; when the review rejects it for stated
-/// reasons (see `repair_reasons`), implements once more with those reasons and
-/// checks and reviews again. One round only: the eval showed that a strict
-/// review with no way back turns every slip into a failure, but an open loop
-/// would trade the frontier review's judgment for an unbounded run. `Err` only
-/// when the first round could not run, as before.
+/// Verifies and reviews the change; when it has repairable check failures or a
+/// substantive rejecting review (see `repair_reasons`), implements once more
+/// with bounded feedback and repeats all checks and the review. One round only;
+/// policy, infrastructure and hidden-eval failures remain final.
 pub(crate) async fn review_with_repair(rounds: &mut impl Rounds) -> Result<Reviewed, String> {
     let first = rounds.verify_and_review(false).await?;
-    let Some(reasons) = repair_reasons(&first).map(<[String]>::to_vec) else {
+    let Some(reasons) = repair_reasons(&first) else {
         return Ok(Reviewed::single(first));
     };
     let repair = rounds.repair(&reasons).await;
@@ -872,6 +930,7 @@ mod tests {
     fn round(checks_pass: bool, verdict: Option<(bool, &str)>, review_cost: f64) -> Finished {
         Finished {
             changed: vec![ChangedFile { filename: "docs/a.md".into(), status: "added".into(), previous_filename: None }],
+            path_floor_passed: Some(true),
             checks: Some(CheckReport { passed: checks_pass, checks: vec![] }),
             review: verdict.map(|(accept, reason)| Verdict {
                 accept,
@@ -880,6 +939,15 @@ mod tests {
             review_model: verdict.map(|_| "opus".into()),
             review_event: verdict.map(|_| json!({"type": "result", "total_cost_usd": review_cost})),
             ..Default::default()
+        }
+    }
+
+    fn failed_check(name: &'static str, details: &[&str]) -> specialists::CheckOutcome {
+        specialists::CheckOutcome {
+            name,
+            passed: false,
+            advisory: false,
+            details: details.iter().map(|detail| (*detail).to_string()).collect(),
         }
     }
 
@@ -988,6 +1056,58 @@ mod tests {
         // A first round that could not run is an error, as before.
         let (reviewed, calls) = drive(vec![Err("checks_install_failed".into())], repair_step(None)).await;
         assert_eq!((reviewed.unwrap_err().as_str(), calls.len()), ("checks_install_failed", 1));
+    }
+
+    #[tokio::test]
+    async fn repairable_check_failures_get_one_safe_feedback_round() {
+        let first = Finished {
+            path_floor_passed: Some(true),
+            checks: Some(CheckReport::from_checks(vec![
+                failed_check("tests_pass", &["vitest failed: expected 2 to be 3"]),
+                failed_check("mutation_score", &["killed 1 of 3 mutants", "survived: src/secret.ts:1 `<` -> `>=`"]),
+                failed_check("seeded_fault_caught", &["not run: the changed tests did not pass"]),
+            ])),
+            ..Default::default()
+        };
+        let findings = repair_reasons(&first).expect("repairable checks produce findings");
+        assert!(findings.iter().any(|finding| finding.contains("vitest failed")));
+        assert!(findings.iter().any(|finding| finding == "mutation_score: mutation checks did not meet the required threshold"));
+        assert!(findings.iter().all(|finding| !finding.contains("secret.ts") && !finding.contains("seeded_fault_caught")));
+
+        let (reviewed, calls) = drive(vec![Ok(first), Ok(round(true, Some((true, "")), 0.3))], repair_step(None)).await;
+        let reviewed = reviewed.unwrap();
+        assert!(reviewed.accepted());
+        assert_eq!(calls.len(), 3);
+        assert!(calls[1].starts_with("repair("));
+        assert!(!calls[1].contains("seeded_fault_caught") && !calls[1].contains("secret.ts"), "{calls:?}");
+        assert_eq!(
+            reviewed.billed().iter().map(|(step, _, _)| *step).collect::<Vec<_>>(),
+            vec![Step::Repair, Step::Review]
+        );
+    }
+
+    #[tokio::test]
+    async fn seeded_faults_and_scope_floor_findings_never_trigger_repair() {
+        for check in [
+            failed_check("seeded_fault_caught", &["not caught: apps/admin/src/hidden.ts"]),
+            failed_check("ui_paths_only", &["changed a file outside src/"]),
+        ] {
+            let first = Finished {
+                path_floor_passed: Some(true),
+                checks: Some(CheckReport::from_checks(vec![check])),
+                ..Default::default()
+            };
+            assert!(repair_reasons(&first).is_none());
+            let (reviewed, calls) = drive(vec![Ok(first)], repair_step(None)).await;
+            assert!(!reviewed.unwrap().accepted());
+            assert_eq!(calls, ["review(repaired=false)"]);
+        }
+        let risky = Finished {
+            path_floor_passed: Some(false),
+            checks: Some(CheckReport::from_checks(vec![failed_check("tests_pass", &["test failed"])])),
+            ..Default::default()
+        };
+        assert!(repair_reasons(&risky).is_none());
     }
 
     #[tokio::test]

@@ -3898,9 +3898,9 @@ struct SpecialistImplementation<'a> {
 }
 
 /// The end of a specialist run (F4): the specialist's checks and frontier
-/// review on the finished change, with one repair round when the review
-/// rejects it (the implementation step again, told the reasons, then the
-/// checks and review again), then its outcome folded into the resolver's.
+/// review on the finished change, with one repair round after repairable
+/// check failures or a substantive review rejection, then every gate runs
+/// again before its outcome is folded into the resolver's.
 /// A no-op answer (an issue comment) has nothing to check or review; a failed
 /// outcome only gets the plan's cost. A stopped run stops here too.
 #[allow(clippy::too_many_arguments)]
