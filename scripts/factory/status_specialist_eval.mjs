@@ -16,6 +16,32 @@ const parseLines = path => lines(path).flatMap(line => {
 const isError = outcome => Array.isArray(outcome.reasons)
   && outcome.reasons.some(reason => typeof reason === 'string' && reason.startsWith('error:'))
 
+// Expose only allowlisted failure classes for diagnosing aggregate eval
+// regressions. Review/judge prose can contain task text, paths or code, so it
+// must never be copied into workflow logs.
+const checkCodes = new Set([
+  'doc_paths_only', 'links_resolve', 'identifiers_exist',
+  'test_paths_only', 'test_reads_source', 'no_focused_or_skipped_tests',
+  'tests_pass', 'mutation_score', 'seeded_fault_caught',
+  'ui_paths_only', 'ui_build', 'ui_lint', 'ui_tests', 'ui_screenshots',
+])
+function reasonClass(reason) {
+  if (typeof reason !== 'string') return null
+  if (reason === 'no_change' || reason === 'checks_missing' || reason === 'checks:failed') return reason
+  if (reason.startsWith('error:')) {
+    const code = reason.slice('error:'.length)
+    return `error:${/^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : 'other'}`
+  }
+  if (reason.startsWith('checks:')) {
+    const code = reason.slice('checks:'.length).split(':', 1)[0]
+    return checkCodes.has(code) ? `checks:${code}` : 'checks:other'
+  }
+  if (reason.startsWith('specialist_review_rejected:')) return 'specialist_review_rejected'
+  if (reason.startsWith('judge:')) return 'judge_rejected'
+  if (reason.startsWith('merge_floor:')) return 'merge_floor'
+  return 'other'
+}
+
 // Show only bounded runner events. Raw stderr, prompts, diffs and task content
 // can contain repository data, so do not copy those into Actions logs.
 const runnerEvents = lines(join(dir, 'runner.log')).flatMap(line => {
@@ -66,12 +92,16 @@ for (const file of runFiles) {
   const arms = ['baseline', 'specialist'].map(arm => {
     const rows = current.filter(outcome => outcome.arm === arm)
     const errorCodes = {}
+    const rejectionClasses = {}
     for (const outcome of rows) {
       for (const reason of Array.isArray(outcome.reasons) ? outcome.reasons : []) {
-        if (typeof reason !== 'string' || !reason.startsWith('error:')) continue
-        const code = reason.slice('error:'.length)
-        const safeCode = /^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : 'other'
-        errorCodes[safeCode] = (errorCodes[safeCode] ?? 0) + 1
+        const category = reasonClass(reason)
+        if (category) rejectionClasses[category] = (rejectionClasses[category] ?? 0) + 1
+        if (typeof reason === 'string' && reason.startsWith('error:')) {
+          const code = reason.slice('error:'.length)
+          const safeCode = /^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : 'other'
+          errorCodes[safeCode] = (errorCodes[safeCode] ?? 0) + 1
+        }
       }
     }
     return {
@@ -81,6 +111,7 @@ for (const file of runFiles) {
       rejected: rows.filter(outcome => outcome.accepted === false).length,
       errors: rows.filter(isError).length,
       error_codes: errorCodes,
+      rejection_classes: rejectionClasses,
     }
   })
   const summaryPath = join(dir, file.replace(/\.jsonl$/, '.summary.json'))
