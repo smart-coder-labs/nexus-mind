@@ -153,12 +153,13 @@ jobs:
           # `ubuntu` has kubectl on the box. Ship + apply the manifests, then roll
           # the deployment so the freshly built :main-arm64 digest is pulled
           # (imagePullPolicy: Always). Recreate strategy => brief (~40s) downtime.
+          scp $SSHOPTS deploy/oracle/k8s/factory-sandbox.yaml "$REMOTE:/tmp/factory-sandbox.yaml"
           scp $SSHOPTS deploy/oracle/k8s/nexusmind.yaml "$REMOTE:/tmp/nexusmind.yaml"
           if [ -n "$SENTRY_DSN" ]; then
             printf '{"stringData":{"SENTRY_DSN":"%s"}}' "$SENTRY_DSN" | \
               ssh $SSHOPTS "$REMOTE" 'kubectl -n nexusmind patch secret nexusmind-env --type=merge --patch-file=/dev/stdin'
           fi
-          ssh $SSHOPTS "$REMOTE" 'kubectl apply -f /tmp/nexusmind.yaml'
+          ssh $SSHOPTS "$REMOTE" 'kubectl apply -f /tmp/factory-sandbox.yaml && kubectl apply -f /tmp/nexusmind.yaml'
           ssh $SSHOPTS "$REMOTE" \
             "kubectl -n nexusmind set env deployment/nexusmind-backend -c autonomous-worker NEXUS_OPENSHELL_IMAGE=$NEXUS_OPENSHELL_IMAGE"
           ssh $SSHOPTS "$REMOTE" '
