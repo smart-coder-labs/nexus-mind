@@ -180,16 +180,8 @@ impl OpenShell {
         if !prepared.status.success() {
             bail!("could not prepare Claude login storage in the OpenShell sandbox");
         }
-        for (source, destination, _) in &files {
-            let uploaded = Command::new(&self.binary)
-                .args(["sandbox", "upload", "--no-git-ignore", &self.sandbox])
-                .arg(source)
-                .arg(destination)
-                .output()
-                .context("could not start Claude login upload to OpenShell")?;
-            if !uploaded.status.success() {
-                bail!("could not provision Claude login in the OpenShell sandbox");
-            }
+        for (source, _, destination) in &files {
+            self.stream_claude_auth_file(source, destination)?;
         }
         let secured = self.raw_command_output(&["chmod", "700", CLAUDE_SANDBOX_CONFIG_DIR])?;
         if !secured.status.success() {
@@ -200,6 +192,34 @@ impl OpenShell {
             if !secured.status.success() {
                 bail!("could not secure Claude login files in the OpenShell sandbox");
             }
+        }
+        Ok(())
+    }
+
+    /// Stream the credential through OpenShell's authenticated exec channel.
+    /// The gateway's file-upload endpoint can fail for sandbox home paths; the
+    /// exec channel carries the bytes only on stdin, never argv or logs.
+    fn stream_claude_auth_file(&self, source: &Path, destination: &str) -> Result<()> {
+        let contents = fs::read(source).context("could not read worker Claude credentials")?;
+        let command_line = format!("umask 077; cat > {destination}");
+        let mut command = self.exec_command(&["sh", "-c", &command_line], false, None)?;
+        command.stdin(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .context("could not start Claude credential transfer to OpenShell")?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("OpenShell Claude credential transfer has no stdin")?;
+        stdin
+            .write_all(&contents)
+            .context("could not stream Claude credentials to OpenShell")?;
+        drop(stdin);
+        let uploaded = child
+            .wait_with_output()
+            .context("could not finish Claude credential transfer to OpenShell")?;
+        if !uploaded.status.success() {
+            bail!("could not provision Claude login in the OpenShell sandbox");
         }
         Ok(())
     }
