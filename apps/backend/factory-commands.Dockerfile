@@ -11,8 +11,12 @@ RUN apt-get update \
 COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 
+# Verification pods have a 4 GiB memory limit. One Cargo job avoids concurrent
+# rustc/linker peaks; disabling test debug info reduces link memory without
+# changing test behavior.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/tmp/.cargo \
-    CARGO_BUILD_JOBS=2 \
+    CARGO_BUILD_JOBS=1 \
+    CARGO_PROFILE_TEST_DEBUG=0 \
     RUST_TEST_THREADS=2 \
     PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
