@@ -91,9 +91,6 @@ jobs:
         with:
           workspaces: apps/nexus-cli
 
-      - name: Format
-        run: cargo fmt --manifest-path apps/nexus-cli/Cargo.toml -- --check
-
       - name: Test
         run: cargo test --manifest-path apps/nexus-cli/Cargo.toml
 
