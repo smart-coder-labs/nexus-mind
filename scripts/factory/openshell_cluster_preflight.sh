@@ -161,12 +161,12 @@ spec:
           podSelector:
             matchLabels:
               app: nexusmind-backend
-      - namespaceSelector:
-          matchLabels:
-            kubernetes.io/metadata.name: openshell
-        podSelector:
-          matchLabels:
-            openshell.ai/component: supervisor
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshell
+          podSelector:
+            matchLabels:
+              openshell.ai/component: supervisor
       ports:
         - protocol: TCP
           port: 8080
