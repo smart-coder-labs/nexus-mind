@@ -34,6 +34,7 @@ pub(crate) struct StepEnv<'a> {
     pub attempt_id: &'a str,
     pub workdir: &'a Path,
     pub sandboxed: bool,
+    pub pi_eval: bool,
     pub claude_bin: &'a str,
     pub secret_values: &'a [String],
     /// The run's pod slot (`main`, `issue-<n>`); a step's pod uses `<slot>-<step>`.
@@ -81,6 +82,28 @@ pub(crate) async fn run_step(
     max_turns: u64,
     wall_time: Duration,
 ) -> anyhow::Result<Value> {
+    if env.pi_eval {
+        let mut command = super::pi::eval_command(!writes);
+        command.current_dir(env.workdir).kill_on_drop(true);
+        let output = tokio::time::timeout(
+            wall_time,
+            super::worker::run_claude_capturing_transcript(
+                &mut command,
+                Some(prompt),
+                env.store,
+                env.org_id,
+                env.run_id,
+                env.secret_values,
+                env.seq_base + seq_offset(step),
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("specialist_step_timed_out"))?
+        .map_err(|_| anyhow::anyhow!("pi_spawn_failed"))?;
+        let (event, _) = super::pi::parse(&output.stdout)
+            .map_err(|_| anyhow::anyhow!("pi_provider_error"))?;
+        return Ok(event);
+    }
     let mut command = Command::new(env.claude_bin);
     super::worker::restrict_claude_environment(&mut command);
     super::worker::ignore_repository_settings(&mut command);

@@ -1,17 +1,17 @@
 //! Frozen eval of the specialists against the generic resolver (factory F4 exit:
 //! "each specialist beats the baseline on the frozen eval").
 //!
-//! Each task is run twice from the same base commit, in the sandbox:
+//! Each task is run twice from the same base commit. Pi model steps run locally
+//! on the worker; repository commands remain in sandbox pods.
 //!
-//! - **baseline**: today's generic resolver, its fixed prompt on the standard tier;
-//! - **specialist**: plan (frontier), implement (the specialist's tier), checks,
-//!   review (frontier), and one repair round after a rejecting review,
-//!   exactly as the worker runs it.
+//! - **baseline**: today's generic resolver, its fixed prompt;
+//! - **specialist**: plan, implement, checks, review, and one repair round after
+//!   a rejecting review, exactly as the worker runs it.
 //!
 //! An attempt is **accepted** only when its change passes the merge gate's path
 //! and risk floor, the specialist's deterministic checks (applied to both arms,
 //! so the comparison is fair), the specialist's own review when it has one, and
-//! an independent frontier judge that compares it with the task. The judge's
+//! an independent Pi judge that compares it with the task. The judge's
 //! cost is reported apart: it is the eval's, not the change's. Running and
 //! scoring are split so the scoring is unit-tested with a fake runner. The
 //! dataset lives outside the repository (see `docs/factory/specialist-eval.md`).
@@ -25,8 +25,11 @@ use super::merge_gate::{self, ChangedFile};
 use super::specialist_tests::SeededFault;
 use super::specialist_ui::{ReviewShots, Screenshot};
 use crate::factory::contracts::TaskClass;
-use crate::factory::gateway::{claude_model, Tier};
 use crate::factory::specialists::{self, CheckReport, Specialist, Step, Verdict, Verification};
+
+fn eval_model() -> &'static str {
+    super::pi::EVAL_MODEL_QUALIFIED
+}
 
 /// One frozen eval task. Reference fields are optional: "document this existing
 /// code" tasks have no merged answer, and the judge works from the description
@@ -278,7 +281,7 @@ pub fn score(task: &EvalTask, arm: Arm, attempt: &Attempt, judgement: Option<&Ju
 /// (a usage limit, an API error), later attempts would most likely fail the
 /// same way, and scoring them as rejections would compare the arms on noise.
 /// A transient error stops it too; resume from `stopped_at`.
-pub const STOPPING_ERRORS: &[&str] = &["claude_usage_limited", "claude_api_error"];
+pub const STOPPING_ERRORS: &[&str] = &["claude_usage_limited", "claude_api_error", "pi_provider_error"];
 
 fn stops_eval(code: &str) -> bool {
     STOPPING_ERRORS.contains(&code)
@@ -448,7 +451,7 @@ pub fn judge_prompt(task: &EvalTask, diff: &str, screenshots: &[String]) -> Stri
 /// them), and the specialist's checks on the checkout (the tests specialist's
 /// in their own commands pod, with the task's seeded faults). Frontier steps here are not
 /// recorded as `model.selected` events: the eval is not an org's production
-/// traffic and must not use up its daily frontier cap.
+/// traffic and must not use production model caps.
 pub struct SandboxEvalRunner {
     pub store: crate::store::sqlite::SqliteStore,
     pub org_id: String,
@@ -492,6 +495,7 @@ impl SandboxEvalRunner {
 
     async fn try_attempt(&self, task: &EvalTask, arm: Arm, attempt: &mut Attempt) -> anyhow::Result<()> {
         let spec = validate_task(task)?;
+        anyhow::ensure!(task.repository == "smart-coder-labs/nexus-mind", "pi_eval_repository_not_trusted");
         let dir = self.checkout(task).await?;
         let workdir = dir.path().join("repo");
         let run_id = Self::run_id(task, arm.short());
@@ -504,6 +508,7 @@ impl SandboxEvalRunner {
             attempt_id: &attempt_id,
             workdir: &workdir,
             sandboxed: true,
+            pi_eval: true,
             claude_bin: "claude",
             secret_values: &secrets,
             slot: "main",
@@ -514,9 +519,9 @@ impl SandboxEvalRunner {
         let step_error = |error: anyhow::Error| anyhow::anyhow!(super::sandboxed::failure_code(&run_id, &error));
         let mut routes = task.routes.clone();
         let (prompt, model, plan) = match arm {
-            Arm::Baseline => (resolver_prompt, claude_model(Tier::Standard), None),
+            Arm::Baseline => (resolver_prompt, eval_model(), None),
             Arm::Specialist => {
-                let model = claude_model(spec.plan_tier);
+                let model = eval_model();
                 let planned = super::specialist_run::plan(&env, spec, &config, model)
                     .await
                     .map_err(|code| anyhow::anyhow!(code))?;
@@ -524,7 +529,7 @@ impl SandboxEvalRunner {
                 routes.extend(planned.routes.iter().filter(|route| !task.routes.contains(route)).cloned());
                 (
                     specialists::implementation_prompt(spec, &resolver_prompt, &planned.plan),
-                    claude_model(spec.implement_tier),
+                    eval_model(),
                     Some(planned.plan),
                 )
             }
@@ -560,8 +565,8 @@ impl SandboxEvalRunner {
                     implementation_prompt: &prompt,
                     max_turns: self.max_turns,
                     wall_time: self.wall_time,
-                    review_model: || claude_model(spec.review_tier).to_string(),
-                    repair_model: || claude_model(spec.implement_tier).to_string(),
+                    review_model: || eval_model().to_string(),
+                    repair_model: || eval_model().to_string(),
                 };
                 let reviewed =
                     super::specialist_run::review_with_repair(&mut rounds).await.map_err(|code| anyhow::anyhow!(code))?;
@@ -605,6 +610,7 @@ impl EvalRunner for SandboxEvalRunner {
     }
 
     async fn judge(&self, task: &EvalTask, attempt: &Attempt) -> anyhow::Result<Judgement> {
+        anyhow::ensure!(task.repository == "smart-coder-labs/nexus-mind", "pi_eval_repository_not_trusted");
         let dir = attempt.checkout.as_ref().ok_or_else(|| anyhow::anyhow!("checkout_missing"))?;
         let workdir = dir.path().join("repo");
         let run_id = Self::run_id(task, "j");
@@ -617,12 +623,13 @@ impl EvalRunner for SandboxEvalRunner {
             attempt_id: &attempt_id,
             workdir: &workdir,
             sandboxed: true,
+            pi_eval: true,
             claude_bin: "claude",
             secret_values: &secrets,
             slot: "main",
             seq_base: 0,
         };
-        let model = claude_model(Tier::Frontier);
+        let model = eval_model();
         // As for the review: the screenshots sit in the checkout only while the judge runs.
         let shots = ReviewShots::write(&workdir, &attempt.screenshots)
             .map_err(|_| anyhow::anyhow!("ui_screenshots_unwritable"))?;
