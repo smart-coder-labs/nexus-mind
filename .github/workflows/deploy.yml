@@ -167,7 +167,9 @@ jobs:
             kubectl -n nexusmind rollout status deploy/nexusmind-backend --timeout=240s
             # The egress proxy runs the same backend image under the sandbox
             # namespace. Refresh it too so policy/allowlist code matches this
-            # commit before the next verification replay.
+            # commit before the next verification replay. A zero-surge strategy
+            # lets this complete when the one-node cluster has no free CPU.
+            kubectl -n nexusmind-egress patch deployment factory-egress-proxy --type=merge --patch="{\"spec\":{\"strategy\":{\"type\":\"RollingUpdate\",\"rollingUpdate\":{\"maxUnavailable\":1,\"maxSurge\":0}}}}"
             kubectl -n nexusmind-egress rollout restart deploy/factory-egress-proxy
             kubectl -n nexusmind-egress rollout status deploy/factory-egress-proxy --timeout=240s
           '

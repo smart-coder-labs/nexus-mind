@@ -98,6 +98,10 @@ kind: Deployment
 metadata: {name: factory-egress-proxy, namespace: nexusmind-egress}
 spec:
   replicas: 1
+  # The production cluster has a single 4-core node; reserve no surge pod
+  # during egress-proxy rollouts. The service is briefly unavailable while the
+  # replacement starts, but every deployment can complete under full CPU load.
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 1, maxSurge: 0}}
   selector: {matchLabels: {app: factory-egress-proxy}}
   template:
     metadata: {labels: {app: factory-egress-proxy}}
