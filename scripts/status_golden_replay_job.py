@@ -67,6 +67,17 @@ def progress_from_logs(logs: str) -> dict[str, Any]:
     return counts
 
 
+def millicores(value: Any) -> int | None:
+    if isinstance(value, str):
+        try:
+            return int(value[:-1]) if value.endswith("m") else int(float(value) * 1000)
+        except ValueError:
+            return None
+    if isinstance(value, (int, float)):
+        return int(value * 1000)
+    return None
+
+
 def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
     """Return aggregate sandbox pod phases and allowlisted waiting reasons only."""
     try:
@@ -79,6 +90,7 @@ def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
     phases: dict[str, int] = {}
     waiting_reasons: dict[str, int] = {}
     scheduling_causes: dict[str, int] = {}
+    workloads: dict[str, dict[str, Any]] = {}
     allowed_reasons = {
         "ContainerCreating", "CreateContainerConfigError", "CreateContainerError",
         "ErrImagePull", "ImagePullBackOff", "InsufficientCPU", "InsufficientMemory",
@@ -94,6 +106,21 @@ def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
         phase = status.get("phase")
         if isinstance(phase, str):
             phases[phase] = phases.get(phase, 0) + 1
+        run_label = labels.get("factory.nexusmind/run", "")
+        workload = "f1_replay" if isinstance(run_label, str) and run_label.startswith("golden-") else "other_factory"
+        workload_summary = workloads.setdefault(workload, {"phases": {}, "requested_cpu_m": 0})
+        if isinstance(phase, str):
+            workload_summary["phases"][phase] = workload_summary["phases"].get(phase, 0) + 1
+        spec = pod.get("spec", {})
+        app_requests = [
+            millicores(container.get("resources", {}).get("requests", {}).get("cpu")) or 0
+            for container in spec.get("containers", [])
+        ]
+        init_requests = [
+            millicores(container.get("resources", {}).get("requests", {}).get("cpu")) or 0
+            for container in spec.get("initContainers", [])
+        ]
+        workload_summary["requested_cpu_m"] += max(sum(app_requests), max(init_requests, default=0))
         for container in status.get("containerStatuses", []):
             waiting = container.get("state", {}).get("waiting", {})
             reason = waiting.get("reason")
@@ -124,7 +151,12 @@ def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
                 scheduling_causes[cause] = scheduling_causes.get(cause, 0) + 1
     if not phases:
         return None
-    return {"phases": phases, "waiting_reasons": waiting_reasons, "scheduling_causes": scheduling_causes}
+    return {
+        "phases": phases,
+        "waiting_reasons": waiting_reasons,
+        "scheduling_causes": scheduling_causes,
+        "workloads": workloads,
+    }
 
 
 def cpu_snapshot(nodes_raw: str, pods_raw: str) -> dict[str, Any] | None:
@@ -135,16 +167,6 @@ def cpu_snapshot(nodes_raw: str, pods_raw: str) -> dict[str, Any] | None:
     except (json.JSONDecodeError, AttributeError):
         return None
     if not isinstance(nodes, list) or not isinstance(pods, list):
-        return None
-
-    def millicores(value: Any) -> int | None:
-        if isinstance(value, str):
-            try:
-                return int(value[:-1]) if value.endswith("m") else int(float(value) * 1000)
-            except ValueError:
-                return None
-        if isinstance(value, (int, float)):
-            return int(value * 1000)
         return None
 
     result = []

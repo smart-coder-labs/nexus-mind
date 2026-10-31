@@ -41,7 +41,12 @@ class GoldenReplayStatusTests(unittest.TestCase):
         raw += ',{"metadata":{"name":"another-private-pod","labels":{"app":"factory-task"}},"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"False","reason":"Unschedulable","message":"0/1 nodes available: 1 Insufficient cpu; private node name"}]}}'
         raw += ']}'
         readiness = pod_readiness_from_json(raw)
-        self.assertEqual(readiness, {"phases": {"Pending": 2}, "waiting_reasons": {"ImagePullBackOff": 1, "Unschedulable": 1}, "scheduling_causes": {"insufficient_cpu": 1}})
+        self.assertEqual(readiness, {
+            "phases": {"Pending": 2},
+            "waiting_reasons": {"ImagePullBackOff": 1, "Unschedulable": 1},
+            "scheduling_causes": {"insufficient_cpu": 1},
+            "workloads": {"other_factory": {"phases": {"Pending": 2}, "requested_cpu_m": 0}},
+        })
         self.assertNotIn("private-pod", str(readiness))
         self.assertNotIn("private registry", str(readiness))
         self.assertNotIn("private node", str(readiness))
