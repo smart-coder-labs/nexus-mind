@@ -1,6 +1,6 @@
 # NexusMind Software Factory — Implementation Plan
 
-Status: **F0–F3 built/deployed; F4 specialists built, exit criterion unmet** · Owner: cesar · Last updated: 2026-10-29
+Status: **F0–F1 frozen evals pending; F2 built; F3 deployed with OD-5 unmet; F4 specialists built, exit criterion unmet** · Owner: cesar · Last updated: 2026-10-31
 
 Source documents:
 
@@ -276,13 +276,14 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - A PR whose resolver branch names an untrusted intake issue is never merged without a person: an allow becomes a policy hold.
     - **Watchdog:** the org's Slack webhook hears about new held merges, blocked runs and factory tasks (at most once every 15 min), plus a daily summary.
   - **Open:**
-    - The local-worker OpenShell gateway selector and failure diagnostics are in consolidated [PR #337](https://github.com/smart-coder-labs/nexus-mind/pull/337), together with Phoenix bootstrap and eval reruns; change detection passed and Backend (Rust) CI is running. Required review and merge remain, and repository auto-merge is disabled. The production gateway alias and its credentials must already be provisioned.
+    - **OpenShell:** the private production gateway is deployed as an internal ClusterIP service with mTLS, and the worker connects to it. The selector and failure-diagnostic fixes landed in [PR #359](https://github.com/smart-coder-labs/nexus-mind/pull/359); its deployment completed successfully. [Issue #339](https://github.com/smart-coder-labs/nexus-mind/issues/339) tracks the remaining acceptance gap: a stable named-agent run with Claude login, transcript/workspace synchronization, and cancellation. No agent run was started for this status update.
     - **OTel GenAI spans (#306) go to a self-hosted Phoenix (#307):** one container with SQLite and auth, reachable only from the nexusmind namespace. Langfuse v3 would need Postgres, ClickHouse, Redis and S3.
-      - The worker export is not yet verified in production. [PR #337](https://github.com/smart-coder-labs/nexus-mind/pull/337) adds a manual workflow to create Phoenix secrets only when absent, apply the manifest, wire the system key only when the worker has no OTel destination, restart the backend and verify worker-to-Phoenix reachability. After review/merge it still needs a manual dispatch and an observed span in Phoenix.
+      - Production export is verified: worker OTel configuration is present, Phoenix resolves from the worker, and a metadata-only query found 24 GenAI/LLM spans in the `default` project (newest: 2026-10-31 06:40 UTC). Prompt contents were not inspected. The latest deployment also passed worker readiness and API health checks.
     - Codex: built but not in use, by owner decision (no API key).
     - The OpenAI API key for Codex (and a spend limit on its project).
     - Credentials for the first Slack and Sentry sources.
     - ~~Human labels for OD-5.~~ Done: 153 labels; the owner's risk rubric replaced the docs/tests-only merge floor (ADR 225771a4).
+    - **OD-5 remains unmet:** the live decision panel has no task class with at least 50 settled `allow` decisions. Automatic routing stays disabled until the criterion is met.
 
 ### F4: Specialists (2–4 weeks)
 
@@ -317,16 +318,17 @@ Also in this phase:
     - **Checks pod infrastructure is an error, not a rejection.** A failed install (`npm ci`, pnpm, yarn) or a lost command status in the tests or UI checks pod is `checks_install_failed` / `checks_pod_failed`: production blocks the run with the code and never publishes it, and the eval runner retries `error:` attempts. A test run that exits non-zero is still `tests_pass`.
     - tests-v2-05 replaced with a task outside the risky paths.
     - **Merged 2026-10-21:** #320 creates `/tmp/nm-ui`; #321 adds one repair round after a rejected review, moves docs implementation to Sonnet, distinguishes install/pod failures, and escapes prompt delimiters; #318 adds the resumable eval runner. Their checks passed. Deploys for these main commits are running.
-    - **Rerun status:** the previous results remain the only frozen-eval comparison. The owner authorized the new docs/tests/UI run on 2026-10-29. [PR #337](https://github.com/smart-coder-labs/nexus-mind/pull/337) adds a restricted manual workflow to queue new result sets from the existing frozen inputs; it uses the existing Oracle deploy SSH secret and does not require local Kubernetes credentials. Keep the existing inputs and results unchanged; write any rerun under new set filenames.
+    - **Rerun status:** the previous results remain the only frozen-eval comparison. On 2026-10-31 the owner paused all evals and agent runs to preserve Claude quota. Do not dispatch the rerun workflow or start model-backed QA until the owner resumes it. Existing frozen inputs and results remain unchanged.
   - **Intake:**
     - **OD-7 resolved: `factory::redact`.** Before any Gmail, Notion, Drive or transcript text becomes a task (and so before it reaches a model), emails, phone numbers, Colombian ids, Luhn-checked cards, bank accounts and IBANs, addresses, and secrets are replaced with numbered placeholders. Person names are kept.
     - **Sources.** Gmail (label `factory`), Notion (a `factory` tag or a configured database), Drive/Meet transcripts (a configured folder), local `.txt`, and admin upload (`POST /v1/factory/intake/transcripts`, `factory_policy:write`). Tokens come from connectors bound to each source kind.
     - **Fix: manual.** Gmail and all transcript sources are always untrusted and `fix: manual`: they never auto-start.
     - **Migration v87** widens the source kinds; a table rebuild with foreign keys off keeps items linked.
   - **Open:**
-    - Rerunning the docs, tests and UI evals with this iteration. The owner authorized spending Claude quota on 2026-10-29; PR #337 must pass review and merge before its workflow can run from GitHub Actions. The UI screenshot path (Playwright from a commands pod, images over stdout) has run only outside the cluster.
+    - Frozen docs/tests/UI eval reruns are paused by the owner on 2026-10-31 to preserve Claude quota. The UI screenshot path (Playwright from a commands pod, images over stdout) has run only outside the cluster.
+    - The Admin Factory Settings panel reports that the local backend Claude Code runtime needs re-authentication. This is separate from the OpenShell gateway's healthy mTLS connection.
     - OAuth credentials per provider: Gmail `gmail.readonly`; Notion an internal integration token shared with the pages or database; Drive `drive.readonly` or a token scoped to the folder.
-    - Admin UI for Gmail, Notion, Drive and manual transcript upload is implemented locally on `feat/factory-transcript-intake` (commits `5c51c7c`, `2577840`); it awaits owner preview before any admin push, per `apps/admin/PRODUCT.md`.
+    - Admin UI for Gmail, Notion, Drive and manual transcript upload shipped in [PR #355](https://github.com/smart-coder-labs/nexus-mind/pull/355). Provider OAuth credentials remain a deployment prerequisite.
 
 ### F5: Controlled autonomy and learning (ongoing)
 
