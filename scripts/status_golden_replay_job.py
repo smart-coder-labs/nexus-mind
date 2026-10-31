@@ -78,6 +78,7 @@ def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
         return None
     phases: dict[str, int] = {}
     waiting_reasons: dict[str, int] = {}
+    scheduling_causes: dict[str, int] = {}
     allowed_reasons = {
         "ContainerCreating", "CreateContainerConfigError", "CreateContainerError",
         "ErrImagePull", "ImagePullBackOff", "InsufficientCPU", "InsufficientMemory",
@@ -104,9 +105,26 @@ def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
                 reason = condition.get("reason")
                 safe_reason = reason if isinstance(reason, str) and reason in allowed_reasons else "Other"
                 waiting_reasons[safe_reason] = waiting_reasons.get(safe_reason, 0) + 1
+                message = condition.get("message", "")
+                message = message.lower() if isinstance(message, str) else ""
+                if "insufficient cpu" in message:
+                    cause = "insufficient_cpu"
+                elif "insufficient memory" in message:
+                    cause = "insufficient_memory"
+                elif "too many pods" in message:
+                    cause = "pod_capacity"
+                elif "untolerated taint" in message:
+                    cause = "untolerated_taint"
+                elif "volume node affinity conflict" in message:
+                    cause = "volume_affinity"
+                elif "node affinity" in message or "node selector" in message:
+                    cause = "node_affinity"
+                else:
+                    cause = "other"
+                scheduling_causes[cause] = scheduling_causes.get(cause, 0) + 1
     if not phases:
         return None
-    return {"phases": phases, "waiting_reasons": waiting_reasons}
+    return {"phases": phases, "waiting_reasons": waiting_reasons, "scheduling_causes": scheduling_causes}
 
 
 def legacy_result(process_state: str, logs: str) -> dict[str, Any]:
