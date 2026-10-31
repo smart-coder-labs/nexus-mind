@@ -225,7 +225,11 @@ pub fn verification_env(registry_token: &str) -> Vec<(String, String)> {
         ("CI", "1".to_string()),
         ("RUSTUP_HOME", "/usr/local/rustup".to_string()),
         ("CARGO_HOME", "/tmp/.cargo".to_string()),
-        ("CARGO_BUILD_JOBS", "2".to_string()),
+        // Rust integration checks run in 4 GiB verification pods. Keep one
+        // compiler job and disable test debug info to avoid link OOMs. The
+        // task launcher rebuilds the environment, so both settings belong here.
+        ("CARGO_BUILD_JOBS", "1".to_string()),
+        ("CARGO_PROFILE_TEST_DEBUG", "0".to_string()),
         ("RUST_TEST_THREADS", "2".to_string()),
         (
             "HTTPS_PROXY",
@@ -621,7 +625,8 @@ mod tests {
         assert_eq!(env["HOME"], "/tmp");
         assert_eq!(env["RUSTUP_HOME"], "/usr/local/rustup");
         assert_eq!(env["CARGO_HOME"], "/tmp/.cargo");
-        assert_eq!(env["CARGO_BUILD_JOBS"], "2");
+        assert_eq!(env["CARGO_BUILD_JOBS"], "1");
+        assert_eq!(env["CARGO_PROFILE_TEST_DEBUG"], "0");
         assert_eq!(env["RUST_TEST_THREADS"], "2");
     }
 
