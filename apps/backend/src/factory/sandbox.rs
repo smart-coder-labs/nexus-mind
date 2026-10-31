@@ -180,6 +180,18 @@ pub fn resolve_isolation(
     executor: &str,
     default: Isolation,
 ) -> anyhow::Result<Isolation> {
+    // Pi uses the worker's persisted ChatGPT OAuth identity, never a task pod.
+    if executor == "pi" {
+        if !crate::automation::pi::TEMPLATES.contains(&template_key) {
+            anyhow::bail!("pi_unsupported_template")
+        }
+        return match config.get("isolation") {
+            None => Ok(Isolation::Local),
+            Some(Value::String(value)) if value == "local" => Ok(Isolation::Local),
+            Some(Value::String(value)) if value == "sandbox" => anyhow::bail!("pi_requires_local"),
+            _ => anyhow::bail!("invalid_isolation"),
+        };
+    }
     // Codex runs only in a task pod: its OpenAI key exists only in the proxy.
     if executor == "codex" {
         if !crate::automation::codex::CODEX_TEMPLATES.contains(&template_key) {

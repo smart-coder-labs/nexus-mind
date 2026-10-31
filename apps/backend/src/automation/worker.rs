@@ -123,7 +123,11 @@ fn over_cost_cap(claim: &queries::ClaimedAutonomousRun, result: &serde_json::Val
 fn parse_agent_events(
     codex_model: Option<&str>,
     stdout: &[u8],
+    pi_selected: bool,
 ) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
+    if pi_selected {
+        return super::pi::parse(stdout);
+    }
     match codex_model {
         Some(model) => super::codex::parse_codex_event_stream(stdout, model),
         None => parse_claude_event_stream(stdout),
@@ -3931,6 +3935,7 @@ async fn resolve_issue_worktree(
     // Codex runs only in the sandbox (enforced by its isolation): its model is
     // chosen here and its invocation built when the pod runs.
     let codex_selected = queries::autonomous_executor(&claim.config).ok() == Some("codex");
+    let pi_selected = queries::autonomous_executor(&claim.config).ok() == Some("pi");
     if codex_selected && !sandboxed {
         return (number, "blocked_policy".into(), json!({"code":"codex_requires_sandbox"}));
     }
@@ -3988,9 +3993,13 @@ async fn resolve_issue_worktree(
     } else {
         restrict_claude_environment(&mut claude);
         ignore_repository_settings(&mut claude);
-        let model = match planned.as_ref() {
-            Some((spec, _)) => select_step_model(&store, &claim, &runtime_config, spec, crate::factory::specialists::Step::Implement).model,
-            None => select_run_model(&store, &claim, &runtime_config).model,
+        let model = if pi_selected {
+            super::pi::MODEL.to_string()
+        } else {
+            match planned.as_ref() {
+                Some((spec, _)) => select_step_model(&store, &claim, &runtime_config, spec, crate::factory::specialists::Step::Implement).model,
+                None => select_run_model(&store, &claim, &runtime_config).model,
+            }
         };
         claude.args([
             "-p", &prompt, "--output-format", "stream-json", "--verbose",
@@ -4007,6 +4016,9 @@ async fn resolve_issue_worktree(
         .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
     if !sandboxed && std::path::Path::new(&nexusmind_mcp).exists() {
         claude.args(["--mcp-config", &nexusmind_mcp]);
+    }
+    if pi_selected {
+        claude = super::pi::command(false);
     }
     claude.current_dir(&workdir).kill_on_drop(true);
     let cancelled = async {
@@ -4098,7 +4110,7 @@ async fn resolve_issue_worktree(
         Box::pin(async {
             Ok(run_claude_capturing_transcript(
                 &mut claude,
-                nexus_selected.then_some(prompt.as_str()),
+                (nexus_selected || pi_selected).then_some(prompt.as_str()),
                 &store,
                 &claim.org_id,
                 &claim.run.id,
@@ -4119,9 +4131,9 @@ async fn resolve_issue_worktree(
         value = timeout(outer_wall, invocation) => match value {
             Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
             Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
-            Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
+            Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if pi_selected {"pi_cli_unavailable"} else if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
             Ok(Ok(output)) if output.status.success() => {
-                match parse_agent_events(codex_model.as_deref(), &output.stdout) {
+                match parse_agent_events(codex_model.as_deref(), &output.stdout, pi_selected) {
                     // Codex bills an API key: its cost cap holds here too.
                     Ok((value, stream)) if codex_model.is_some() && over_cost_cap(&claim, &value) => {
                         ("budget_exhausted".into(), json!({"code":"cost_limit_exceeded","result":value,"stream":stream}))
@@ -4130,7 +4142,8 @@ async fn resolve_issue_worktree(
                     Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string()})),
                 }
             }
-            Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model.as_deref(), &output.stdout) {
+            Ok(Ok(output)) if pi_selected => ("blocked_runtime".into(), json!({"code":"pi_failed_or_auth_required","exit_code":output.status.code()})),
+            Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model.as_deref(), &output.stdout, pi_selected) {
                 Ok((value, stream)) if over_cost_cap(&claim, &value) => {
                     ("budget_exhausted".into(), json!({"code":"cost_limit_exceeded","result":value,"stream":stream}))
                 }
@@ -4551,16 +4564,20 @@ async fn execute_claim(
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
     let executor = match queries::autonomous_executor(&claim.config) {
-        Ok(executor @ ("nexus" | "claude" | "codex")) => executor,
+        Ok(executor @ ("nexus" | "claude" | "codex" | "pi")) => executor,
         _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),
     };
-    // The persisted factory model preferences describe providers/models per
-    // role, but those roles are not yet wired to a matching CLI. In particular,
-    // ChatGPT plan OAuth is not available to this factory worker: the separate
-    // OpenShell Codex login path is not the same as the egress-proxied resolver.
-    // Fail before launching any model process; never silently charge Claude or
-    // switch to the API-key provider when the selected provider cannot run.
-    if matches!(claim.template_key.as_str(), "github_issue_resolver" | "github_pr_reviewer") {
+    // Pi is an explicit executor opt-in with its own fixed model and persisted
+    // OAuth identity, independent of the still-unwired per-role preferences.
+    // Check its actual provider before any run (including multi-issue runs).
+    if executor == "pi" {
+        if let Err(code) = super::pi::preflight().await {
+            return ("blocked_runtime".into(), json!({"code":code,"fallback":false}));
+        }
+    }
+    // Other executors still cannot honor the persisted per-role preferences.
+    // Never silently charge another provider or claim those roles are wired.
+    if executor != "pi" && matches!(claim.template_key.as_str(), "github_issue_resolver" | "github_pr_reviewer") {
         let db = store.conn();
         let Ok(conn) = db.lock() else {
             return ("blocked_runtime".into(), json!({"code":"factory_model_config_unavailable"}));
@@ -4593,6 +4610,7 @@ async fn execute_claim(
     }
     let nexus_selected = executor == "nexus";
     let codex_selected = executor == "codex";
+    let pi_selected = executor == "pi";
     let sandboxed = match crate::factory::sandbox::autonomous_isolation(
         &claim.config,
         &claim.template_key,
@@ -5135,7 +5153,7 @@ async fn execute_claim(
             );
         }
     };
-    let preflight = if nexus_selected {
+    let preflight = if nexus_selected || pi_selected {
         None
     } else {
         Some(super::runtime::probe_claude(&config.claude_code_bin).await)
@@ -5246,12 +5264,16 @@ async fn execute_claim(
             Err(code) => return ("blocked_runtime".into(), json!({"code":code})),
         }
     }
-    let run_model = (!nexus_selected).then(|| match planned.as_ref() {
-        Some((spec, _)) => {
-            select_step_model(store, claim, &runtime_config, spec, crate::factory::specialists::Step::Implement).model
-        }
-        None => select_run_model(store, claim, &runtime_config).model,
-    });
+    let run_model = if pi_selected {
+        Some(super::pi::MODEL.to_string())
+    } else {
+        (!nexus_selected).then(|| match planned.as_ref() {
+            Some((spec, _)) => {
+                select_step_model(store, claim, &runtime_config, spec, crate::factory::specialists::Step::Implement).model
+            }
+            None => select_run_model(store, claim, &runtime_config).model,
+        })
+    };
     let codex_model = if codex_selected { run_model.as_deref() } else { None };
     if let Some(Err(code)) = codex_model.map(super::codex::start_check) {
         return ("blocked_policy".into(), json!({"code":code}));
@@ -5330,6 +5352,9 @@ async fn execute_claim(
     // sanitizer (e.g. the ephemeral repo access token).
     let mut secret_values: Vec<String> = repo_token.iter().cloned().collect();
     secret_values.extend(target_secret_values.iter().cloned());
+    if pi_selected {
+        claude = super::pi::command(claim.template_key == "github_pr_reviewer");
+    }
     claude.current_dir(&workdir).kill_on_drop(true);
     let seq_base = (output_retry as i64) * 100_000;
     // A sandboxed resolver's checkout follows the pod's diffs (no WIP pushes on
@@ -5385,7 +5410,7 @@ async fn execute_claim(
         Box::pin(async {
             Ok(run_claude_capturing_transcript(
                 &mut claude,
-                nexus_selected.then_some(prompt.as_str()),
+                (nexus_selected || pi_selected).then_some(prompt.as_str()),
                 store,
                 &claim.org_id,
                 &claim.run.id,
@@ -5404,9 +5429,9 @@ async fn execute_claim(
         value = timeout(if sandboxed { super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time), sandbox_verification.len(), false) + SANDBOX_OUTER_MARGIN } else { Duration::from_secs(wall_time) }, invocation) => match value {
         Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
         Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
-        Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
+        Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if pi_selected {"pi_cli_unavailable"} else if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
         Ok(Ok(output)) if output.status.success() => {
-            let (value,stream)=match parse_agent_events(codex_model, &output.stdout){
+            let (value,stream)=match parse_agent_events(codex_model, &output.stdout, pi_selected){
                 Ok(parsed)=>parsed,
                 Err(error)=>return ("blocked_runtime".into(),json!({"code":error.to_string()})),
             };
@@ -5417,7 +5442,8 @@ async fn execute_claim(
             "blocked_runtime".into(),
             nexus_failure_payload(&output.stderr, output.status.code(), Some(&manifest)),
         ),
-        Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model, &output.stdout) {
+        Ok(Ok(output)) if pi_selected => ("blocked_runtime".into(), json!({"code":"pi_failed_or_auth_required","exit_code":output.status.code()})),
+        Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model, &output.stdout, pi_selected) {
             Ok((value, stream)) if over_cost_cap(claim, &value) => (
                 "budget_exhausted".into(),
                 json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest.clone()}),
@@ -7769,6 +7795,7 @@ fn record_run_telemetry(
     let provider = match queries::autonomous_executor(&claim.config) {
         Ok("nexus") => "nexus",
         Ok("codex") => "codex",
+        Ok("pi") => "openai-codex",
         Ok(_) => "claude-code",
         Err(_) => "unknown",
     };

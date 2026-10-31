@@ -1,4 +1,5 @@
 pub mod codex;
+pub mod pi;
 pub mod connectors;
 pub mod factory_intake;
 pub mod factory_evals;

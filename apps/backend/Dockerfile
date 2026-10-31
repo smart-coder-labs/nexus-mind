@@ -29,6 +29,8 @@ ARG CLAUDE_CODE_VERSION=2.1.235
 # Codex CLI for the `codex` executor (factory F3). It runs only in task pods,
 # with its OpenAI key injected by the egress proxy.
 ARG CODEX_VERSION=0.160.0
+# Pi task executor uses the worker's persisted ChatGPT OAuth, never task-pod credentials.
+ARG PI_VERSION=1.4.0
 ARG OPENSHELL_VERSION=v0.1.2
 
 # Client only. The OpenShell gateway is a separate service with its own
@@ -64,8 +66,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && npm config set prefix /usr/local \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+    && npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && claude --version \
     && codex --version \
+    && pi --version \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 

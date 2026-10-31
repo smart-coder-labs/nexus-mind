@@ -19,6 +19,14 @@ describe('sandboxSupported', () => {
   })
 })
 
+describe('Pi isolation', () => {
+  it('keeps the ChatGPT identity in the local worker, not a task pod', () => {
+    expect(localSupported('pi')).toBe(true)
+    expect(sandboxSupported('github_issue_resolver', 'pi')).toBe(false)
+    expect(sandboxSupported('github_pr_reviewer', 'pi')).toBe(false)
+  })
+})
+
 describe('parseAllowedHosts', () => {
   it('accepts lowercase DNS names separated by commas or lines', () => {
     expect(parseAllowedHosts('cdn.acme.test, Auth.Example.com\n\nstripe.com')).toEqual({

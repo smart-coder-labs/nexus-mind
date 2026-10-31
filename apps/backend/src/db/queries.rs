@@ -16811,7 +16811,7 @@ pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
     match config.get("executor") {
         None => Ok("claude"), // revisions created before the selector remain unchanged
         Some(serde_json::Value::String(value))
-            if value == "claude" || value == "nexus" || value == "codex" =>
+            if value == "claude" || value == "nexus" || value == "codex" || value == "pi" =>
         {
             Ok(value)
         }
@@ -16870,10 +16870,19 @@ mod autonomous_executor_tests {
     use serde_json::json;
 
     #[test]
+    fn pi_requires_code_templates_and_local_execution() {
+        super::validate_autonomous_executor(&json!({"executor":"pi"}), "github_issue_resolver").unwrap();
+        super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"local"}), "github_pr_reviewer").unwrap();
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "github_pr_reviewer").unwrap_err().to_string(), "pi_requires_local");
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi"}), "qa").unwrap_err().to_string(), "pi_unsupported_template");
+    }
+
+    #[test]
     fn defaults_old_agents_to_claude_and_rejects_unknown_values() {
         assert_eq!(autonomous_executor(&json!({})).unwrap(), "claude");
         assert_eq!(autonomous_executor(&json!({"executor":"claude"})).unwrap(), "claude");
         assert_eq!(autonomous_executor(&json!({"executor":"nexus"})).unwrap(), "nexus");
+        assert_eq!(autonomous_executor(&json!({"executor":"pi"})).unwrap(), "pi");
         assert!(autonomous_executor(&json!({"executor":"other"})).is_err());
         assert!(autonomous_executor(&json!({"executor":null})).is_err());
     }
@@ -17876,7 +17885,7 @@ pub fn claim_next_autonomous_agent_run(
          LEFT JOIN autonomous_agent_work_items candidate_work ON candidate_work.run_id=r.id
          LEFT JOIN autonomous_agent_revisions candidate_revision ON candidate_revision.id=r.revision_id
          WHERE r.status='queued' AND o.autonomous_agents_enabled=1
-           AND (?1=1 OR COALESCE(json_extract(candidate_revision.config_json,'$.executor'),'claude')='nexus')
+           AND (?1=1 OR COALESCE(json_extract(candidate_revision.config_json,'$.executor'),'claude') IN ('nexus','pi'))
            AND (SELECT COUNT(*) FROM autonomous_agent_runs active
                 WHERE active.definition_id=r.definition_id AND active.status IN ('leased','running'))
                < COALESCE(json_extract(r.budget_json,'$.max_definition_concurrency'),1)
