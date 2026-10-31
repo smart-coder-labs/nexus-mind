@@ -106,6 +106,7 @@ jobs:
           SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
           SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
           SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          EVAL_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
@@ -120,6 +121,31 @@ jobs:
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           SSHOPTS=(-i "$keyfile" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
           REMOTE="${SSH_USER}@${SSH_HOST}"
+
+          # An explicit resume dispatch authorizes the Pi/OpenAI eval queue to
+          # run. Preserve the prior pause marker for audit before waking it.
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            "EVAL_RUN_ID='$EVAL_RUN_ID' bash -s" <<'REMOTE'
+          set -euo pipefail
+          if command -v kubectl >/dev/null 2>&1; then
+            kubectl_cmd() { kubectl "$@"; }
+          elif command -v k3s >/dev/null 2>&1; then
+            kubectl_cmd() { k3s kubectl "$@"; }
+          else
+            echo 'kubectl is unavailable on the Oracle host' >&2
+            exit 1
+          fi
+          pod=$(kubectl_cmd -n nexusmind get pods -l app=nexusmind-backend \
+            --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          [[ -n "$pod" ]] || { echo 'no running NexusMind pod found' >&2; exit 1; }
+          kubectl_cmd -n nexusmind exec "$pod" -c autonomous-worker -- \
+            env EVAL_RUN_ID="$EVAL_RUN_ID" sh -ec '
+              marker=/data/factory-evals/STOP
+              if [ -f "$marker" ]; then
+                mv "$marker" "/data/factory-evals/STOP.paused-$EVAL_RUN_ID"
+              fi
+            '
+          REMOTE
 
           ssh "${SSHOPTS[@]}" "$REMOTE" \
             /usr/local/bin/nexusmind-ensure-eval-runner
