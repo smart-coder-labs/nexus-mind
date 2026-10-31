@@ -454,6 +454,21 @@ pub async fn get_runtime_health(
     Ok(Json(value))
 }
 
+/// Checks whether the worker's local Pi executor has a usable ChatGPT OAuth
+/// identity. Only readiness metadata leaves the worker; command output is never
+/// returned or persisted.
+pub async fn get_pi_runtime_health(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<crate::automation::pi::PiRuntimeHealth>> {
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    }
+    Ok(Json(crate::automation::pi::probe_runtime().await))
+}
+
 pub async fn check_runtime_health(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

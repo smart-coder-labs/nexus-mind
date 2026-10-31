@@ -116,6 +116,7 @@ import type {
   AutonomousAgentSchedule,
   AutonomousAgentRun,
   AutonomousRuntimeHealth,
+  PiRuntimeHealth,
   AutonomousAgentConnector,
   AutonomousAgentFinding,
   AutonomousAgentDelivery,
@@ -1415,6 +1416,7 @@ export class NexusMindClient {
   listAutonomousAgentRuns(definitionId?:string): Promise<AutonomousAgentRun[]> { return this.request(`/v1/autonomous-agent-runs${definitionId?`?definition_id=${encodeURIComponent(definitionId)}`:''}`) }
   getAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> { return this.request('/v1/autonomous-agents/runtime') }
   checkAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> { return this.request('/v1/autonomous-agents/runtime',{method:'POST'}) }
+  getAutonomousPiRuntimeHealth(): Promise<PiRuntimeHealth> { return this.request('/v1/autonomous-agents/pi-runtime') }
   listAutonomousAgentConnectors(): Promise<AutonomousAgentConnector[]> { return this.request('/v1/autonomous-agent-connectors') }
   putAutonomousAgentConnector(data:{kind:string;name:string;secret?:string;metadata:Record<string,unknown>;scopes:string[]}): Promise<AutonomousAgentConnector> { return this.request('/v1/autonomous-agent-connectors',{method:'PUT',body:JSON.stringify(data)}) }
   revokeAutonomousAgentConnector(id:string): Promise<void> { return this.request(`/v1/autonomous-agent-connectors/${encodeURIComponent(id)}`,{method:'DELETE'}) }

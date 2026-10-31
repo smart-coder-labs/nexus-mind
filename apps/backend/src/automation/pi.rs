@@ -28,6 +28,34 @@ pub async fn preflight() -> Result<(), &'static str> {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PiRuntimeHealth {
+    pub status: String,
+    pub reason_code: Option<String>,
+}
+
+/// Read-only readiness metadata for Admin. Never returns Pi's raw output.
+pub async fn probe_runtime() -> PiRuntimeHealth {
+    match preflight().await {
+        Ok(()) => PiRuntimeHealth {
+            status: "ready".into(),
+            reason_code: None,
+        },
+        Err("pi_oauth_required") => PiRuntimeHealth {
+            status: "blocked".into(),
+            reason_code: Some("pi_oauth_required".into()),
+        },
+        Err("pi_cli_unavailable") => PiRuntimeHealth {
+            status: "unavailable".into(),
+            reason_code: Some("pi_binary_missing".into()),
+        },
+        Err(code) => PiRuntimeHealth {
+            status: "unavailable".into(),
+            reason_code: Some(code.into()),
+        },
+    }
+}
+
 fn agent_command(tools: &str) -> Command {
     let mut command = base_command();
     // Only explicitly supplied, worker-owned extensions may load.

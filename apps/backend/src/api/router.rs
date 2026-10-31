@@ -631,6 +631,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
                 .post(autonomous_agents::check_runtime_health),
         )
         .route(
+            "/v1/autonomous-agents/pi-runtime",
+            get(autonomous_agents::get_pi_runtime_health),
+        )
+        .route(
             "/v1/autonomous-agents/settings",
             get(autonomous_agents::get_org_settings).patch(autonomous_agents::patch_org_settings),
         )

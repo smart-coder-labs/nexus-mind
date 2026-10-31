@@ -21,6 +21,12 @@ export function useRuntimeHealth() {
   return { runtime, check }
 }
 
+/** Local Pi executor OAuth readiness; checking it does not invoke a model. */
+export function usePiRuntimeHealth() {
+  const { can, client } = useFactory()
+  return useQuery({ queryKey: ['autonomous-pi-runtime'], queryFn: () => client.getAutonomousPiRuntimeHealth(), enabled: can('autonomous_agent:read'), refetchInterval: 60_000 })
+}
+
 /**
  * "Pause all agents" / "Resume agents". Pausing stops every agent in the org, so
  * it is destructive-styled and always confirmed; resuming is a plain action.

@@ -8,7 +8,7 @@ import { Input } from '../../components/ui/Input'
 import { Skeleton } from '../../components/ui/Skeleton'
 import { SandboxBotPanel } from './SandboxBotPanel'
 import { fmtDateTime, humanize, runtimeStatusMeta } from './shared/format'
-import { PauseAllControl, useFactorySettings, useRuntimeHealth } from './shared/fleet'
+import { PauseAllControl, useFactorySettings, usePiRuntimeHealth, useRuntimeHealth } from './shared/fleet'
 import { InlineError, PageHeader, PermissionNote, SectionTitle, errorMessage, useFactory } from './shared/ui'
 
 function Section({ id, title, description, children, tone }: { id: string; title: string; description: string; children: ReactNode; tone?: 'danger' }) {
@@ -30,6 +30,7 @@ const RETENTION_MAX = 3650
 export default function FactorySettings() {
   const { can, client, invalidate } = useFactory()
   const { runtime, check } = useRuntimeHealth()
+  const piRuntime = usePiRuntimeHealth()
   const { settings, toggle } = useFactorySettings()
   const [retention, setRetention] = useState('')
   const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
@@ -76,6 +77,27 @@ export default function FactorySettings() {
               {check.isError && <span role="alert" className="text-[12px] text-status-error">{errorMessage(check.error, 'The check failed.')} Try again.</span>}
             </div>
           : <PermissionNote permission="autonomous_agent:enable" action="re-check the runtime" />}
+      </Section>
+
+      <Section id="pi-runtime-title" title="Pi executor" description="Pi uses the worker's local ChatGPT OAuth login. This check reads auth readiness only and never sends a model prompt.">
+        {piRuntime.isLoading ? <Skeleton className="h-6 w-48" /> : piRuntime.isError ? (
+          <InlineError message="Could not check Pi executor readiness." onRetry={() => void piRuntime.refetch()} />
+        ) : (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge size="md" variant={piRuntime.data?.status === 'ready' ? 'success' : piRuntime.data?.status === 'blocked' ? 'warning' : 'error'} dot>
+                {piRuntime.data?.status === 'ready' ? 'Pi OAuth ready' : piRuntime.data?.status === 'blocked' ? 'Pi OAuth required' : 'Pi unavailable'}
+              </Badge>
+              {piRuntime.data?.reason_code && <span className="text-sm text-text-secondary">{humanize(piRuntime.data.reason_code)}</span>}
+            </div>
+            {piRuntime.data?.status === 'blocked' && (
+              <p className="flex gap-2 rounded-md border border-status-warning/25 bg-status-warning/[0.08] px-4 py-3 text-sm text-text-primary">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden />
+                <span>Sign in to Pi with the OpenAI Codex provider on the worker host. Agent runs using Pi remain blocked until that local login is provisioned.</span>
+              </p>
+            )}
+          </div>
+        )}
       </Section>
 
       <Section id="pause-title" title="Pause all agents" tone="danger" description="Stops every agent in this organization at once. Runs in progress are cancelled and nothing new starts until you resume.">
