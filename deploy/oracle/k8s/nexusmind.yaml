@@ -139,6 +139,10 @@ spec:
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME
               value: /claude-home
+            # Pi is installed in the PVC-backed npm prefix; ChatGPT OAuth lives
+            # in /claude-home/.pi/agent/auth.json and survives pod replacement.
+            - name: AUTONOMOUS_PI_BIN
+              value: /claude-home/.npm-global/bin/pi
             # The AI Content Manager generates post imagery by shelling out to the
             # Higgsfield CLI. That CLI keeps a browser-OAuth session in
             # $HOME/.config/higgsfield, so it is installed into the PVC (which HOME

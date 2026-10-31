@@ -63,6 +63,8 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "sandbox_unsupported_executor"
         | "codex_unsupported_template"
         | "codex_requires_sandbox"
+        | "pi_unsupported_template"
+        | "pi_requires_local"
         | "invalid_sandbox_allowed_hosts"
         | "too_many_sandbox_hosts" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
         "invalid_connector_kind"
@@ -2332,6 +2334,38 @@ mod tests {
         let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
             .unwrap().expect("Nexus uses sandbox login, not host Claude health");
         assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "nexus");
+    }
+
+    #[test]
+    fn pi_run_can_be_claimed_without_host_claude_login() {
+        let (conn, org_id, user_id) = fixture();
+        let mut pi_request = request();
+        pi_request.template_key = "github_pr_reviewer".into();
+        pi_request.config = serde_json::json!({"executor":"pi", "repository":"acme/repo"});
+        let created = queries::create_autonomous_agent_definition(
+            &conn, &org_id, &user_id, &pi_request,
+        ).unwrap();
+        queries::validate_autonomous_agent_definition(
+            &conn, &org_id, &user_id, &created.definition.id,
+        ).unwrap();
+        queries::set_autonomous_agent_status(
+            &conn, &org_id, &created.definition.id, "enabled",
+        ).unwrap();
+        queries::enqueue_autonomous_agent_run(
+            &conn, &org_id, &created.definition.id, "manual", "pi-health", None, None,
+        ).unwrap();
+        let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
+            .unwrap().expect("Pi checks its own OAuth, not host Claude health");
+        assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "pi");
+    }
+
+    #[test]
+    fn pi_configuration_errors_are_client_errors() {
+        for code in ["pi_requires_local", "pi_unsupported_template"] {
+            let (status, Json(body)) = store_error(anyhow::anyhow!(code));
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(body.code, code);
+        }
     }
 
     #[test]
