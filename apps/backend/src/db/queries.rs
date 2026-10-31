@@ -16870,11 +16870,13 @@ mod autonomous_executor_tests {
     use serde_json::json;
 
     #[test]
-    fn pi_requires_code_templates_and_local_execution() {
+    fn pi_requires_supported_templates_and_local_execution() {
         super::validate_autonomous_executor(&json!({"executor":"pi"}), "github_issue_resolver").unwrap();
         super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"local"}), "github_pr_reviewer").unwrap();
         assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "github_pr_reviewer").unwrap_err().to_string(), "pi_requires_local");
-        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi"}), "qa").unwrap_err().to_string(), "pi_unsupported_template");
+        super::validate_autonomous_executor(&json!({"executor":"pi"}), "qa").unwrap();
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi"}), "judge").unwrap_err().to_string(), "pi_unsupported_template");
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "qa").unwrap_err().to_string(), "pi_requires_local");
     }
 
     #[test]

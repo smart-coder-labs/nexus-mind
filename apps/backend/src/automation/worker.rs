@@ -5326,7 +5326,7 @@ async fn execute_claim(
     // the per-run directory (declared before the loop) the worker reads back
     // afterwards for evidence upload.
     // Sandboxed runs get their Playwright MCP from the sandbox runner.
-    if matches!(claim.template_key.as_str(), "qa" | "judge") && !sandboxed {
+    if matches!(claim.template_key.as_str(), "qa" | "judge") && !sandboxed && !pi_selected {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
         if std::path::Path::new(&base_config).exists() {
@@ -5353,7 +5353,14 @@ async fn execute_claim(
     let mut secret_values: Vec<String> = repo_token.iter().cloned().collect();
     secret_values.extend(target_secret_values.iter().cloned());
     if pi_selected {
-        claude = super::pi::command(claim.template_key == "github_pr_reviewer");
+        claude = if claim.template_key == "qa" {
+            match super::pi::qa_command(&workdir, &qa_screenshots_dir) {
+                Ok(command) => command,
+                Err(_) => return ("blocked_runtime".into(), json!({"code":"pi_qa_mcp_unavailable"})),
+            }
+        } else {
+            super::pi::command(claim.template_key == "github_pr_reviewer")
+        };
     }
     claude.current_dir(&workdir).kill_on_drop(true);
     let seq_base = (output_retry as i64) * 100_000;

@@ -2,14 +2,13 @@
 
 ## What changed
 
-`executor: "pi"` is available for `github_issue_resolver` and
+`executor: "pi"` supports `qa`, `github_issue_resolver` and
 `github_pr_reviewer`. Existing agents keep their executor. The selector always
-shows Pi and Codex, but disables them with an explanation for other templates.
-Initially these options were conditionally hidden, causing users editing QA or
-Judge agents to see only Claude and OpenShell even after a successful deployment.
-`TaskExecutorSelect.test.tsx` covers discovery, disabled choices and selecting Pi
-on both compatible templates. This visibility fix does not add Pi browser/QA
-support or bypass backend template/isolation validation. Pi uses
+shows Pi and Codex, disabling unsupported choices with an explanation. Pi QA
+requires the QA integration changes in this branch to be deployed; the earlier
+installation (#351) and visibility fix (#352) alone do not enable QA.
+`TaskExecutorSelect.test.tsx` covers selecting Pi for QA while Codex remains
+disabled there. Judge remains unsupported. Pi uses
 `openai-codex/gpt-6.1-sol` through ChatGPT OAuth, not the Codex executor's
 OpenAI API key. The bundled Pi 1.4.0 model catalog includes this model.
 
@@ -21,8 +20,26 @@ before each run; there is no API-key or Claude fallback. Pi runs can be leased
 even when host Claude health is not ready. Local execution is unsafe: a resolver can execute repository code and access the
 worker filesystem, including persisted identities. Only use trusted repos.
 This is not a credential-free sandbox. Reviewer tools are limited to read,
-grep, find and ls. Pi does not load extensions, skills, repository settings,
-context files or MCP servers for factory runs.
+grep, find and ls. Pi does not load discovered extensions, skills, repository
+settings or context files. Only QA loads a worker-owned extension and Playwright
+MCP; issue-resolver/reviewer runs still disable all MCP servers.
+
+### QA Playwright integration
+
+- QA gets read/grep/find/ls and `mcp__playwright__*`, never bash/edit/write.
+- The Rust binary embeds `pi_qa_extension.ts`, writing it outside the checkout
+  alongside a per-run MCP config derived only from `/app/qa-mcp.json`
+  (`AUTONOMOUS_QA_MCP_CONFIG` override). Only its `playwright` entry is kept.
+- The trusted extension uses Pi 1.4.0 `createMcpExtension({loadConfig})` to
+  **replace discovery**, not append to personal/repository MCP servers. Tools
+  are exposed directly; codemode auto-activation is off.
+- Pi retains its ordinary persisted OAuth store and refresh locks. No OAuth
+  token copy, isolated auth-file symlink or global config mutation is needed.
+- Screenshots use the worker's existing per-run output directory and fallback
+  collection from the checkout. The same evidence upload, evaluation and
+  worker-controlled deliveries apply. The model does not publish findings itself.
+- Missing/malformed Playwright config blocks the run as `pi_qa_mcp_unavailable`.
+  Pi QA is still local, not a network or credential-free sandbox.
 
 Prompts travel over stdin. Pi JSONL is normalized into the existing result
 schema. Incomplete, aborted, failed and nonzero-exit runs are not accepted as
@@ -45,8 +62,9 @@ does not implement Claude's max-turns flag or a subscription USD cost cap.
   manifest sets `/claude-home/.npm-global/bin/pi`. The live worker already
   has this directory on PATH, so installation required no restart.
 
-**The selector/backend changes still need their normal build and deployment.**
-Installing Pi alone does not update the running backend or admin.
+**QA support requires its normal build and deployment.** Initial Pi support
+(#351) already deployed successfully; installing Pi alone does not update the
+running backend or admin.
 
 ## Connect ChatGPT (do this in the running container, not just on the host)
 
@@ -98,6 +116,20 @@ in there does **not** authenticate the Kubernetes worker. Do not copy auth
 files into Git or Kubernetes manifests. Use `/logout` inside worker Pi to
 remove its saved login; provider-side revocation is separate.
 
+## Troubleshoot issue-resolver provider mismatch
+
+`factory_chatgpt_oauth_not_connected` can be returned by the unwired Factory
+role-preference gate when the **agent executor is not Pi**, even though Pi OAuth
+is ready. The Codex executor uses an OpenAI API key in the sandbox; it does not
+use Pi's ChatGPT OAuth. Do not bypass the gate or silently switch providers.
+
+The reported `Kasymir Issues Resolver` failure was confirmed on run
+`bac61bec-85e4-46fe-a6eb-1d0c65d5a50b`: revision 5 saved `executor: codex`,
+`isolation: sandbox`. OAuth was still ready for `openai-codex` in Pi. To use the
+connected ChatGPT account, edit **Task executor → Pi**, save, validate and start
+**a new run**. Existing runs retain their revision snapshot. The agent was not
+modified or rerun during diagnosis.
+
 ## Verification / session state
 
 - Both installed CLIs report 1.4.0.
@@ -105,7 +137,12 @@ remove its saved login; provider-side revocation is separate.
   `openai-codex`. Initial login was to `openai`, which is a separate provider.
 - A real worker invocation with all factory flags returned `OK` using
   `gpt-6.1-sol`; JSONL ends with `agent_settled`, `aborted: false`.
-- Admin production build passed; isolation and Agents tests passed (12 tests).
+- Real QA smoke test on Oracle used the trusted extension, navigated to
+  `https://example.com` and took `pi-qa-smoke.png` successfully. Both Playwright
+  calls ended without errors; the 69,657-byte screenshot was found in the
+  checkout fallback location, which the worker's existing collector covers.
+- Initial Admin build and focused tests passed; new QA tests cover option
+  selection, isolation, browser-only command/config and independent leasing.
 - Rust tests cover parsing, configuration validation, API errors and leasing
   independently of Claude. Local `cargo` is unavailable; CI must validate them.
 - Deploy via the normal PR/CI/main workflow. Do not copy or commit credentials.
