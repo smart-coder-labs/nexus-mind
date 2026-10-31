@@ -47,12 +47,22 @@ for (const file of runFiles) {
   }
   const arms = ['baseline', 'specialist'].map(arm => {
     const rows = current.filter(outcome => outcome.arm === arm)
+    const errorCodes = {}
+    for (const outcome of rows) {
+      for (const reason of Array.isArray(outcome.reasons) ? outcome.reasons : []) {
+        if (typeof reason !== 'string' || !reason.startsWith('error:')) continue
+        const code = reason.slice('error:'.length)
+        const safeCode = /^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : 'other'
+        errorCodes[safeCode] = (errorCodes[safeCode] ?? 0) + 1
+      }
+    }
     return {
       arm,
       outcomes: rows.length,
       accepted: rows.filter(outcome => outcome.accepted === true).length,
       rejected: rows.filter(outcome => outcome.accepted === false).length,
       errors: rows.filter(isError).length,
+      error_codes: errorCodes,
     }
   })
   const summaryPath = join(dir, file.replace(/\.jsonl$/, '.summary.json'))
