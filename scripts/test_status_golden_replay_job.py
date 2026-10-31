@@ -1,6 +1,6 @@
 import unittest
 
-from status_golden_replay_job import legacy_result, pod_readiness_from_json, progress_from_logs, summary_from_logs
+from status_golden_replay_job import cpu_snapshot, legacy_result, pod_readiness_from_json, progress_from_logs, summary_from_logs
 
 
 class GoldenReplayStatusTests(unittest.TestCase):
@@ -45,6 +45,13 @@ class GoldenReplayStatusTests(unittest.TestCase):
         self.assertNotIn("private-pod", str(readiness))
         self.assertNotIn("private registry", str(readiness))
         self.assertNotIn("private node", str(readiness))
+
+    def test_cpu_snapshot_counts_scheduled_requests_without_node_names(self):
+        nodes = '{"items":[{"metadata":{"name":"private-node"},"status":{"allocatable":{"cpu":"2000m"}}}]}'
+        pods = '{"items":[{"spec":{"nodeName":"private-node","containers":[{"resources":{"requests":{"cpu":"250m"}}},{"resources":{"requests":{"cpu":"250m"}}}],"initContainers":[{"resources":{"requests":{"cpu":"500m"}}}]},"status":{"phase":"Running"}},{"spec":{"nodeName":"private-node","containers":[{"resources":{"requests":{"cpu":"100m"}}}]},"status":{"phase":"Pending"}}]}'
+        snapshot = cpu_snapshot(nodes, pods)
+        self.assertEqual(snapshot, {"nodes": [{"allocatable_m": 2000, "requested_m": 600, "available_m": 1400}]})
+        self.assertNotIn("private-node", str(snapshot))
 
     def test_legacy_run_reports_complete_with_only_numeric_summary(self):
         status = legacy_result(

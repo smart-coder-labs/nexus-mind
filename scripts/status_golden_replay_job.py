@@ -127,6 +127,45 @@ def pod_readiness_from_json(raw: str) -> dict[str, Any] | None:
     return {"phases": phases, "waiting_reasons": waiting_reasons, "scheduling_causes": scheduling_causes}
 
 
+def cpu_snapshot(nodes_raw: str, pods_raw: str) -> dict[str, Any] | None:
+    """Show per-node CPU allocatable and scheduled requests without node identifiers."""
+    try:
+        nodes: Any = json.loads(nodes_raw).get("items", [])
+        pods: Any = json.loads(pods_raw).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(nodes, list) or not isinstance(pods, list):
+        return None
+
+    def millicores(value: Any) -> int | None:
+        if isinstance(value, str):
+            try:
+                return int(value[:-1]) if value.endswith("m") else int(float(value) * 1000)
+            except ValueError:
+                return None
+        if isinstance(value, (int, float)):
+            return int(value * 1000)
+        return None
+
+    result = []
+    for node in nodes:
+        allocatable = node.get("status", {}).get("allocatable", {})
+        capacity_m = millicores(allocatable.get("cpu"))
+        if capacity_m is None:
+            continue
+        node_name = node.get("metadata", {}).get("name")
+        requested_m = 0
+        for pod in pods:
+            spec = pod.get("spec", {})
+            if spec.get("nodeName") != node_name or pod.get("status", {}).get("phase") in {"Succeeded", "Failed"}:
+                continue
+            app_requests = [millicores(container.get("resources", {}).get("requests", {}).get("cpu")) or 0 for container in spec.get("containers", [])]
+            init_requests = [millicores(container.get("resources", {}).get("requests", {}).get("cpu")) or 0 for container in spec.get("initContainers", [])]
+            requested_m += max(sum(app_requests), max(init_requests, default=0))
+        result.append({"allocatable_m": capacity_m, "requested_m": requested_m, "available_m": capacity_m - requested_m})
+    return {"nodes": result} if result else None
+
+
 def legacy_result(process_state: str, logs: str) -> dict[str, Any]:
     """Summarize runs started by the pre-Job runner without exposing task logs."""
     if process_state == "not_found":
@@ -214,6 +253,11 @@ def main() -> int:
     readiness = pod_readiness_from_json(pods.stdout) if pods.returncode == 0 else None
     if readiness:
         result["sandbox_pods"] = readiness
+    nodes = kubectl("get", "nodes", "-o", "json")
+    all_pods = kubectl("get", "pods", "--all-namespaces", "-o", "json")
+    capacity = cpu_snapshot(nodes.stdout, all_pods.stdout) if nodes.returncode == 0 and all_pods.returncode == 0 else None
+    if capacity:
+        result["cluster_cpu"] = capacity
     print(json.dumps(result, separators=(",", ":")))
     return 0
 
