@@ -489,7 +489,10 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
                     "capabilities": {"drop": ["ALL"]}
                 },
                 "resources": {
-                    "requests": {"cpu": "100m", "memory": "512Mi"},
+                    // The production worker leaves only 50m allocatable CPU for
+                    // one sandbox slot. Keep the request schedulable while the
+                    // container can still burst up to its 2 CPU limit.
+                    "requests": {"cpu": "50m", "memory": "512Mi"},
                     "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "8Gi"}
                 },
                 "volumeMounts": [
@@ -615,6 +618,14 @@ mod tests {
             !serialized.contains("/anthropic") && !serialized.contains("/nexusmind"),
             "{serialized}"
         );
+    }
+
+    #[test]
+    fn sandbox_task_reserves_one_available_cpu_slot_and_can_burst() {
+        let pod = task_pod_manifest(&request());
+        let task = &pod["spec"]["containers"][0];
+        assert_eq!(task["resources"]["requests"]["cpu"], "50m");
+        assert_eq!(task["resources"]["limits"]["cpu"], "2");
     }
 
     #[test]
