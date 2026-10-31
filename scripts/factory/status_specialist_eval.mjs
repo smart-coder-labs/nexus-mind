@@ -16,6 +16,24 @@ const parseLines = path => lines(path).flatMap(line => {
 const isError = outcome => Array.isArray(outcome.reasons)
   && outcome.reasons.some(reason => typeof reason === 'string' && reason.startsWith('error:'))
 
+// Show only bounded runner events. Raw stderr, prompts, diffs and task content
+// can contain repository data, so do not copy those into Actions logs.
+const runnerEvents = lines(join(dir, 'runner.log')).flatMap(line => {
+  const match = line.match(/^(\d{4}-\d\d-\d\dT[0-9:.]+Z) (.*)$/)
+  if (!match) return []
+  const [, timestamp, message] = match
+  if (message === 'start' || message === 'finished') return [`${timestamp} ${message}`]
+  const running = message.match(/^([A-Za-z0-9._-]+): running (\d+) of (\d+) tasks$/)
+  if (running) return [`${timestamp} ${running[1]}: running ${running[2]} of ${running[3]} tasks`]
+  const limited = message.match(/^([A-Za-z0-9._-]+): provider limit at ([A-Za-z0-9._-]+); waiting (\d+)s$/)
+  if (limited) return [`${timestamp} ${limited[1]}: provider limit at ${limited[2]}; waiting ${limited[3]}s`]
+  const outcome = message.match(/^([A-Za-z0-9._-]+): [A-Za-z0-9._-]+ (baseline|specialist) accepted=(true|false)$/)
+  if (outcome) return [`${timestamp} ${outcome[1]}: ${outcome[2]} accepted=${outcome[3]}`]
+  const failure = message.match(/^([A-Za-z0-9._-]+): failed \(exit (\d+)\):/)
+  if (failure) return [`${timestamp} ${failure[1]}: failed (exit ${failure[2]})`]
+  return []
+}).slice(-20)
+
 const files = readdirSync(dir)
 const runFiles = files.filter(name => /^(?:(?:10|20|30)-)?(docs|tests|ui)-rerun-[0-9]+\.jsonl$/.test(name)).sort()
 const sets = []
@@ -100,5 +118,6 @@ for (const entry of readdirSync('/proc')) {
 console.log(JSON.stringify({
   runner_active: runnerActive,
   stop_marker: files.includes('STOP'),
+  runner_events: runnerEvents,
   sets,
 }, null, 2))
