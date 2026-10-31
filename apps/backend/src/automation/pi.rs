@@ -4,6 +4,9 @@ use tokio::process::Command;
 
 pub const TEMPLATES: [&str; 3] = ["github_issue_resolver", "github_pr_reviewer", "qa"];
 pub const MODEL: &str = "gpt-6.1-sol";
+pub const EVAL_MODEL: &str = "gpt-6-luna";
+pub const EVAL_MODEL_QUALIFIED: &str = "openai-codex/gpt-6-luna";
+pub const EVAL_THINKING: &str = "medium";
 
 fn base_command() -> Command {
     let mut command = Command::new(std::env::var("AUTONOMOUS_PI_BIN").unwrap_or_else(|_| "pi".into()));
@@ -60,7 +63,7 @@ pub async fn probe_runtime() -> PiRuntimeHealth {
     }
 }
 
-fn agent_command(tools: &str) -> Command {
+fn agent_command(tools: &str, model: &str, thinking: Option<&str>) -> Command {
     let mut command = base_command();
     // Only explicitly supplied, worker-owned extensions may load.
     command.args([
@@ -68,14 +71,27 @@ fn agent_command(tools: &str) -> Command {
         "--no-skills", "--no-prompt-templates", "--no-themes",
         "--no-context-files", "--no-approve", "--tools", tools,
     ]);
-    command.arg("--model").arg(format!("openai-codex/{MODEL}"));
+    if let Some(thinking) = thinking {
+        command.args(["--thinking", thinking]);
+    }
+    command.arg("--model").arg(format!("openai-codex/{model}"));
     // Prompt is delivered over stdin, not exposed in process arguments.
     command.stdin(std::process::Stdio::piped());
     command
 }
 
 pub fn command(reviewer: bool) -> Command {
-    let mut command = agent_command(if reviewer { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" });
+    let tools = if reviewer { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" };
+    let mut command = agent_command(tools, MODEL, None);
+    command.arg("--no-mcp");
+    command
+}
+
+/// F4's frozen eval invokes Pi on the worker, where the OpenAI OAuth login is
+/// provisioned. Verification commands still run in isolated task pods.
+pub fn eval_command(read_only: bool) -> Command {
+    let tools = if read_only { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" };
+    let mut command = agent_command(tools, EVAL_MODEL, Some(EVAL_THINKING));
     command.arg("--no-mcp");
     command
 }
@@ -118,7 +134,7 @@ pub fn qa_command(workdir: &std::path::Path, screenshots: &std::path::Path) -> a
 }
 
 fn qa_invocation(extension: &std::path::Path, config: &std::path::Path) -> Command {
-    let mut command = agent_command("read,grep,find,ls,mcp__playwright__*");
+    let mut command = agent_command("read,grep,find,ls,mcp__playwright__*", MODEL, None);
     command.arg("--extension").arg(extension);
     command.env("FACTORY_PI_QA_MCP_CONFIG", config);
     command

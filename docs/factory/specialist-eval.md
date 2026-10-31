@@ -4,14 +4,14 @@ F4's exit criterion is that **each specialist beats the baseline on a frozen eva
 
 ## What runs
 
-Every task runs twice from the same `base_sha`, both times in the sandbox (task pods behind the egress proxy, as in production):
+Every task runs twice from the same `base_sha`. Model steps use Pi on the worker with the OpenAI ChatGPT OAuth account; deterministic repository commands still run in isolated task pods.
 
 | Arm | Steps | Models |
 |---|---|---|
-| `baseline` | The resolver's fixed prompt, one invocation | Standard tier (`sonnet`) |
-| `specialist` | Plan, then implement, then the specialist's checks, then review; when the review rejects for stated reasons, one repair (implement again with the reasons), then the checks and review again, whose verdict is final | Plan and review on the frontier tier (`opus`); every specialist implements (and repairs) on the standard tier (`sonnet`) |
+| `baseline` | The resolver's fixed prompt, one invocation | `openai-codex/gpt-6-luna`, thinking `medium` |
+| `specialist` | Plan, then implement, then the specialist's checks, then review; when the review rejects for stated reasons, one repair (implement again with the reasons), then the checks and review again, whose verdict is final | Every model step uses `openai-codex/gpt-6-luna`, thinking `medium` |
 
-Each specialist step is a separate Claude Code invocation with its own `--model`. In production every step records its own `model.selected` event, so the daily frontier cap (`FACTORY_FRONTIER_RUNS_PER_DAY`, 20 by default) counts the plan and review steps. The eval records no events: it is not an org's production traffic, and it must not use up the org's frontier cap.
+Each specialist step is a separate Pi invocation. The eval records no production `model.selected` events and does not use the org's frontier cap. Pi's OpenAI OAuth credentials stay on the worker; they are not copied into task pods. **Pi has local filesystem access.** The runner therefore rejects tasks for repositories other than `smart-coder-labs/nexus-mind`, and frozen task sets must remain trusted. Test and UI commands continue to run in isolated pods.
 
 ## When an attempt is accepted
 
@@ -43,7 +43,7 @@ An attempt is accepted only if all of these hold:
 
    A missing `build`, `lint` or `test` script is an advisory finding. The routes are the task's `routes` (both arms), the plan's (specialist arm) and the fixture file's `route_hints` for the changed files. The screenshots go to the specialist's review and to the judge, for both arms.
 4. On the specialist arm, the specialist's own review accepted the change.
-5. An independent Opus judge accepted it. The judge reads the checkout, the task, its acceptance criteria and the diff (and, for UI, opens the screenshots), and answers `{"verdict":"accept|reject","reasons":[…]}`. Anything else counts as a reject.
+5. An independent Pi judge accepted it. The judge reads the checkout, the task, its acceptance criteria and the diff (and, for UI, opens the screenshots), and answers `{"verdict":"accept|reject","reasons":[…]}`. Anything else counts as a reject.
 
 The judge runs only when steps 1 to 4 pass, so a failing change costs no judge call.
 
@@ -113,7 +113,7 @@ A UI task:
 
 ## Running
 
-The eval runs inside the worker container, which has the sandbox ServiceAccount, the proxy signing key, the database and the server's GitHub login (the same setup as `factory-golden-replay`):
+The eval runs inside the worker container, which has the sandbox ServiceAccount, the database and the server's GitHub login (the same setup as `factory-golden-replay`). Before running tasks it checks that Pi has an `openai-codex` OAuth login. This preflight does not call a model. Model calls use the ChatGPT subscription and consume its quota; an operator must explicitly choose when to launch the eval.
 
 ```bash
 factory-specialist-eval <org_id> < docs-v1.jsonl > docs-v1-results.jsonl
@@ -130,21 +130,21 @@ Tasks run one at a time, because the node has room for one task pod. Each line o
 
 The last line is the summary. For each arm it gives `tasks`, `accepted`, `acceptance_rate`, `cost_usd` and `cost_per_accepted_change`, the plan's primary metric: every attempt's cost, accepted or not, divided by the number accepted. It also gives `specialist_beats_baseline`. That is true when the specialist is accepted more often, or equally often (at least once) at a lower cost per accepted change. A cost that is unknown never wins a tie.
 
-**Budget.** A docs task costs one `sonnet` run for the baseline. For the specialist it costs two `opus` steps and one `sonnet` run (plus one more of each when the review asks for a repair), and each accepted-so-far attempt adds one `opus` judge call. A tests task's specialist arm implements on `sonnet` as well, and each arm adds one commands pod (install, tests, at most 10 mutants and the seeded faults, each command under 300 s). A UI task's specialist arm implements on `sonnet` too, and each arm adds one commands pod (install, build, lint, tests and screenshots, each command under 300 s). All of it runs on the Claude subscription.
+**Budget.** A docs task uses one Pi model call for the baseline. The specialist uses plan and implementation calls, followed by review and possibly repair; an attempt that clears its deterministic gates adds one judge call. Tests and UI tasks also start isolated commands pods for their deterministic checks. Pi reports token counts but no subscription invoice amount, so summaries leave USD cost unknown and cannot claim a cost-per-accepted-change win on a tie in acceptance rate.
 
 ## Running unattended
 
-One Claude subscription window fits only a few tasks (both arms plus the judge), and the binary stops at the first usage limit or API error, printing `stopped_at`. `scripts/factory/run_specialist_evals.mjs` runs the sets unattended and resumes after each limit.
-- **Where it runs.** Copy it and the sets into the worker container and start it with `nohup`. It needs only `node`.
+One OpenAI subscription window fits only a few tasks (both arms plus the judge), and the binary stops at the first provider error, printing `stopped_at`. `scripts/factory/run_specialist_evals.mjs` runs the sets unattended and resumes after each limit.
+- **Where it runs.** Copy it and the sets into the worker container and start it with `nohup`. It needs `node`, a working Pi installation and the worker's OpenAI OAuth login.
 - **Sets.** `<dir>` holds one `.jsonl` per set, run in name order: `10-docs.jsonl`, `20-tests.jsonl`, `30-ui.jsonl`. The folder is read again after each set, so a set added later is picked up.
 - **Limits.** On `stopped_at` it waits (`--retry-secs`, 1800 by default) and runs the remaining tasks, for up to `--max-wait-hours` (14).
 - **Restarts.** A task already in `<set>.results.jsonl` is not run again, so a restarted runner continues where it was. The exception is a task whose newest outcome is an attempt error (`error:<code>`, such as a pod that never became ready): it runs again, up to 3 attempts in all. The summary counts each task and arm's newest outcome. Hidden files such as macOS `._*` are ignored.
 - **Keep it on the persistent volume.** Use `<dir>` = `/data/factory-evals`. A deploy replaces the pod, which wipes `/tmp` and kills the runner.
-- **Keep it running.** `scripts/factory/ensure_eval_runner.sh` is installed on the Oracle host as `/usr/local/bin/nexusmind-ensure-eval-runner` and runs every 15 minutes from root's crontab. It starts the runner when it isn't running and some set has no `.done`.
+- **Keep it running.** `scripts/factory/ensure_eval_runner.sh` is installed on the Oracle host as `/usr/local/bin/nexusmind-ensure-eval-runner` and runs every 15 minutes from root's crontab. It starts the runner when it isn't running and some set has no `.done`. Enabling this cron consumes OpenAI subscription quota as the eval runs.
   - To pause, create `<dir>/STOP`.
   - To retire it, remove the cron line.
 - **Output.** Per set: `<set>.results.jsonl`, `<set>.summary.json` (the binary's summary over every resumed run) and `<set>.done`. `runner.log` records each step.
-- **Queue a rerun on Oracle.** After the workflow is merged, use **Actions → Queue factory specialist eval rerun → Run workflow** on `main`. Choose `all`, `docs`, `tests` or `ui`. The workflow copies the highest-version frozen inputs on the production PVC into new `*-rerun-<workflow-run-id>.jsonl` files, leaves the originals untouched, then wakes the installed runner. Results and summaries use the new names. The runner resumes after Claude usage limits.
+- **Queue a rerun on Oracle.** After the workflow is merged, use **Actions → Queue factory specialist eval rerun → Run workflow** on `main`. Choose `all`, `docs`, `tests` or `ui`. The workflow copies the highest-version frozen inputs on the production PVC into new `*-rerun-<workflow-run-id>.jsonl` files, leaves the originals untouched, then wakes the installed runner. Results and summaries use the new names. The runner resumes after Pi/OpenAI provider limits.
 
 ```sh
 node run_specialist_evals.mjs --org <org_id> --dir /data/factory-evals
@@ -153,6 +153,6 @@ node run_specialist_evals.mjs --self-test
 
 ## Turning a specialist on
 
-A specialist runs in production only when the worker's `FACTORY_SPECIALISTS` names it, as in `FACTORY_SPECIALISTS=docs` or `FACTORY_SPECIALISTS=docs,tests`. It is off by default, so the generic resolver is unchanged until the eval shows a win. Even when it is on, a specialist applies only to Claude Code issue-resolver runs whose issue labels give its class (`gateway::class_from_labels`).
+A specialist runs in production only when the worker's `FACTORY_SPECIALISTS` names it, as in `FACTORY_SPECIALISTS=docs` or `FACTORY_SPECIALISTS=docs,tests`. It is off by default, so the generic resolver is unchanged until the eval shows a win. Even when it is on, a specialist applies only to Claude Code issue-resolver runs whose issue labels give its class (`gateway::class_from_labels`); the Pi change here applies only to frozen F4 evaluation.
 
 The tests and UI specialists also need a sandboxed run. If the specialist's checks fail, the run ends as `blocked_policy` with code `specialist_checks_failed`. If the review rejects the change, the code is `specialist_review_rejected`. In both cases the reasons are under `specialist` and nothing is published.

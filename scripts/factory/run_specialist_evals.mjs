@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Runs the frozen specialist evals unattended, inside the autonomous-worker
-// container, and survives the Claude usage limit.
+// container, and resumes after temporary Pi/OpenAI subscription limits.
 //
 // `factory-specialist-eval` stops at the first provider error (a usage limit
 // or an API error) and prints `stopped_at`. One subscription window only fits

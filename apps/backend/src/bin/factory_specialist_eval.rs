@@ -51,10 +51,18 @@ async fn main() -> anyhow::Result<()> {
     let mut seen = std::collections::HashSet::new();
     for task in &tasks {
         validate_task(task).map_err(|error| anyhow::anyhow!("task {}: {error}", task.id))?;
+        anyhow::ensure!(
+            task.repository == "smart-coder-labs/nexus-mind",
+            "task {}: Pi evals are restricted to smart-coder-labs/nexus-mind",
+            task.id
+        );
         if !seen.insert(task.id.clone()) {
             anyhow::bail!("duplicate task id {}", task.id)
         }
     }
+    nexusmind::automation::pi::preflight()
+        .await
+        .map_err(|code| anyhow::anyhow!("Pi OpenAI OAuth preflight failed: {code}"))?;
     let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "/data/nexusmind.db".into());
     let runner = SandboxEvalRunner {
         store: SqliteStore::new(db::connection::connect(&db_path)?),
