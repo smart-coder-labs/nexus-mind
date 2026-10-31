@@ -12,6 +12,9 @@ use serde_json::Value;
 
 /// Largest diff accepted back from a task: anything bigger is refused, not truncated.
 pub const MAX_DIFF_BYTES: usize = 5 * 1024 * 1024;
+const TASK_SLOT_NAME: &str = "factory-task-slot";
+const TASK_SLOT_NAMESPACE: &str = "nexusmind";
+const TASK_SLOT_BOOTSTRAP_GRACE_SECS: u64 = 30;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PodHandle {
@@ -1289,17 +1292,139 @@ pub fn exit_code_from_status(
 }
 
 /// In-cluster runtime: task pods in the sandbox namespace, driven through the
-/// Kubernetes API with the worker's ServiceAccount (pods, pods/exec only).
+/// Kubernetes API with the worker's scoped pod and single-Lease permissions.
 pub struct KubeRuntime {
     pods: kube::Api<k8s_openapi::api::core::v1::Pod>,
+    task_slot: kube::Api<k8s_openapi::api::coordination::v1::Lease>,
 }
 
 impl KubeRuntime {
     pub async fn in_cluster() -> anyhow::Result<Self> {
         let client = kube::Client::try_default().await?;
         Ok(Self {
-            pods: kube::Api::namespaced(client, super::sandbox::SANDBOX_NAMESPACE),
+            pods: kube::Api::namespaced(client.clone(), super::sandbox::SANDBOX_NAMESPACE),
+            task_slot: kube::Api::namespaced(client, TASK_SLOT_NAMESPACE),
         })
+    }
+
+    /// One node has room for one factory task pod. Serialize all factory callers
+    /// (including the separately supervised F1 replay Job) with a namespaced
+    /// Lease instead of letting Kubernetes time out competing pods as failures.
+    async fn acquire_task_slot(&self, holder: &str) -> anyhow::Result<()> {
+        use k8s_openapi::api::coordination::v1::LeaseSpec;
+        use kube::api::{ListParams, ReplaceParams};
+
+        loop {
+            let active = self
+                .pods
+                .list(&ListParams::default().labels("role=task"))
+                .await?
+                .items
+                .into_iter()
+                .any(|pod| {
+                    if pod.metadata.name.as_deref() == Some(holder) {
+                        return false;
+                    }
+                    !matches!(
+                        pod.status
+                            .as_ref()
+                            .and_then(|status| status.phase.as_deref()),
+                        Some("Succeeded" | "Failed")
+                    )
+                });
+            if active {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+
+            let existing = self.task_slot.get(TASK_SLOT_NAME).await?;
+            let current_holder = existing
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.holder_identity.as_deref());
+            if current_holder == Some(holder) {
+                return Ok(());
+            }
+
+            if let Some(owner) = current_holder {
+                if let Some(pod) = self.pods.get_opt(owner).await? {
+                    let phase = pod
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.phase.as_deref());
+                    if !matches!(phase, Some("Succeeded" | "Failed")) {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                } else {
+                    let acquired_at = existing
+                        .metadata
+                        .annotations
+                        .as_ref()
+                        .and_then(|annotations| annotations.get("factory.nexusmind/acquired-at"))
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    if now.saturating_sub(acquired_at) < TASK_SLOT_BOOTSTRAP_GRACE_SECS {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                }
+            }
+
+            let acquired_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string();
+            let mut lease = existing;
+            lease
+                .metadata
+                .annotations
+                .get_or_insert_with(Default::default)
+                .insert("factory.nexusmind/acquired-at".into(), acquired_at);
+            lease
+                .spec
+                .get_or_insert_with(LeaseSpec::default)
+                .holder_identity = Some(holder.to_string());
+            match self
+                .task_slot
+                .replace(TASK_SLOT_NAME, &ReplaceParams::default(), &lease)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(kube::Error::Api(response)) if response.code == 409 => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    async fn release_task_slot(&self, holder: &str) -> anyhow::Result<()> {
+        use kube::api::ReplaceParams;
+
+        let Some(mut lease) = self.task_slot.get_opt(TASK_SLOT_NAME).await? else {
+            return Ok(());
+        };
+        let spec = lease.spec.get_or_insert_with(Default::default);
+        if spec.holder_identity.as_deref() != Some(holder) {
+            return Ok(());
+        }
+        spec.holder_identity = None;
+        if let Some(annotations) = lease.metadata.annotations.as_mut() {
+            annotations.remove("factory.nexusmind/acquired-at");
+        }
+        match self
+            .task_slot
+            .replace(TASK_SLOT_NAME, &ReplaceParams::default(), &lease)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(kube::Error::Api(response)) if response.code == 409 => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -1307,10 +1432,23 @@ impl KubeRuntime {
 impl SandboxRuntime for KubeRuntime {
     async fn create(&self, manifest: &Value) -> anyhow::Result<PodHandle> {
         let pod: k8s_openapi::api::core::v1::Pod = serde_json::from_value(manifest.clone())?;
+        let name = pod
+            .metadata
+            .name
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("pod_without_name"))?;
+        self.acquire_task_slot(name).await?;
         let created = self
             .pods
             .create(&kube::api::PostParams::default(), &pod)
-            .await?;
+            .await;
+        let created = match created {
+            Ok(created) => created,
+            Err(error) => {
+                let _ = self.release_task_slot(name).await;
+                return Err(error.into());
+            }
+        };
         Ok(PodHandle {
             namespace: super::sandbox::SANDBOX_NAMESPACE.to_string(),
             name: created
@@ -1423,9 +1561,11 @@ impl SandboxRuntime for KubeRuntime {
             ..Default::default()
         };
         match self.pods.delete(&pod.name, &params).await {
-            Ok(_) => Ok(()),
+            Ok(_) => self.release_task_slot(&pod.name).await,
             // Already gone (e.g. its deadline killed it): the goal is met.
-            Err(kube::Error::Api(response)) if response.code == 404 => Ok(()),
+            Err(kube::Error::Api(response)) if response.code == 404 => {
+                self.release_task_slot(&pod.name).await
+            }
             Err(error) => Err(error.into()),
         }
     }

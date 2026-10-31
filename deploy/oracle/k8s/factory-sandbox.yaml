@@ -24,6 +24,11 @@
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: nexusmind
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: nexusmind-sandbox
   labels:
     pod-security.kubernetes.io/enforce: restricted
@@ -139,11 +144,31 @@ spec:
   selector: {app: factory-egress-proxy}
   ports: [{port: 8080, targetPort: 8080}]
 ---
-# The worker's identity. It can manage task pods in the sandbox namespace and
-# nothing else: no secrets, no other namespaces, no cluster-wide rights.
+# The worker's identity. It can manage sandbox task pods and one shared Lease
+# in its own namespace; it receives no secrets or cluster-wide permissions.
 apiVersion: v1
 kind: ServiceAccount
 metadata: {name: factory-worker, namespace: nexusmind}
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata: {name: factory-task-slot, namespace: nexusmind}
+spec: {leaseDurationSeconds: 120}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: factory-task-slot, namespace: nexusmind}
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [factory-task-slot]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: factory-worker-task-slot, namespace: nexusmind}
+subjects: [{kind: ServiceAccount, name: factory-worker, namespace: nexusmind}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: factory-task-slot}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
