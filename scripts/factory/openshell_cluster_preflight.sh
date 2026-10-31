@@ -166,6 +166,11 @@ YAML
   done
   kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- \
     sh -c 'openshell gateway remove production >/dev/null 2>&1 || true; openshell gateway add https://openshell.openshell.svc.cluster.local:8080 --local --name production; openshell gateway select production; openshell status'
+  if kubectl exec -n "$ns" server -- nc -z -w 3 openshell.openshell.svc.cluster.local 8080; then
+    echo 'OpenShell gateway accepted a connection from outside the Nexus worker pod' >&2
+    exit 1
+  fi
+  echo 'NetworkPolicy denied gateway access from the isolated preflight pod as expected'
   echo 'Private OpenShell gateway is Ready; only the Nexus worker pod may reach TCP/8080.'
 fi
 
