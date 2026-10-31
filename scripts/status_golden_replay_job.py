@@ -10,6 +10,8 @@ import sys
 from typing import Any
 
 NAMESPACE = "nexusmind"
+DEPLOYMENT = "nexusmind-backend"
+WORKER_CONTAINER = "autonomous-worker"
 
 
 def kubectl(*args: str) -> subprocess.CompletedProcess[str]:
@@ -36,6 +38,51 @@ def summary_from_logs(logs: str) -> dict[str, int] | None:
     return None
 
 
+def legacy_result(process_state: str, logs: str) -> dict[str, Any]:
+    """Summarize runs started by the pre-Job runner without exposing task logs."""
+    if process_state == "not_found":
+        return {"state": "not_found"}
+    if process_state == "running":
+        return {"state": "running"}
+    if process_state != "finished":
+        return {"state": "status_unavailable"}
+    summary = summary_from_logs(logs)
+    if summary is None:
+        return {"state": "incomplete"}
+    return {"state": "complete", "summary": summary}
+
+
+def legacy_status(replay_id: str) -> dict[str, Any]:
+    # IDs are validated as decimal before reaching this function. The shell
+    # checks only the legacy worker's PID and prints no task output.
+    state_script = (
+        'dir="/data/factory-evals/f1-replay-$1"; '
+        'if [ ! -f "$dir/pid" ]; then echo not_found; exit 0; fi; '
+        'pid=$(cat "$dir/pid"); '
+        'if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && '
+        'tr "\\000" " " < "/proc/$pid/cmdline" | grep -q "factory-golden-replay"; '
+        'then echo running; else echo finished; fi'
+    )
+    command = [
+        "-n", NAMESPACE, "exec", f"deploy/{DEPLOYMENT}", "-c", WORKER_CONTAINER,
+        "--", "sh", "-c", state_script, "sh", replay_id,
+    ]
+    state_result = kubectl(*command)
+    if state_result.returncode != 0:
+        return {"state": "status_unavailable"}
+    process_state = state_result.stdout.strip().splitlines()[-1:] or ["unknown"]
+    state = process_state[0]
+    if state != "finished":
+        return legacy_result(state, "")
+
+    output_result = kubectl(
+        "-n", NAMESPACE, "exec", f"deploy/{DEPLOYMENT}", "-c", WORKER_CONTAINER,
+        "--", "cat", f"/data/factory-evals/f1-replay-{replay_id}/out.jsonl",
+    )
+    logs = output_result.stdout if output_result.returncode == 0 else ""
+    return legacy_result("finished", logs)
+
+
 def main() -> int:
     if len(sys.argv) != 2 or not re.fullmatch(r"[0-9]{1,20}", sys.argv[1]):
         print('usage: status_golden_replay_job.py REPLAY_ID', file=sys.stderr)
@@ -43,8 +90,12 @@ def main() -> int:
     name = f"f1-replay-{sys.argv[1]}"
     result = kubectl("-n", NAMESPACE, "get", "job", name, "-o", "json")
     if result.returncode != 0:
-        print(json.dumps({"state": "not_found"}, separators=(",", ":")))
-        return 1
+        if "NotFound" not in result.stderr:
+            print(json.dumps({"state": "status_unavailable"}, separators=(",", ":")))
+            return 1
+        status = legacy_status(sys.argv[1])
+        print(json.dumps(status, separators=(",", ":")))
+        return 0 if status["state"] == "running" else int(status["state"] != "complete")
     try:
         job = json.loads(result.stdout)
     except json.JSONDecodeError:
