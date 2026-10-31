@@ -1312,7 +1312,7 @@ impl KubeRuntime {
     /// Lease instead of letting Kubernetes time out competing pods as failures.
     async fn acquire_task_slot(&self, holder: &str) -> anyhow::Result<()> {
         use k8s_openapi::api::coordination::v1::LeaseSpec;
-        use kube::api::{ListParams, ReplaceParams};
+        use kube::api::{ListParams, PostParams};
 
         loop {
             let active = self
@@ -1392,7 +1392,7 @@ impl KubeRuntime {
                 .holder_identity = Some(holder.to_string());
             match self
                 .task_slot
-                .replace(TASK_SLOT_NAME, &ReplaceParams::default(), &lease)
+                .replace(TASK_SLOT_NAME, &PostParams::default(), &lease)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -1403,7 +1403,7 @@ impl KubeRuntime {
     }
 
     async fn release_task_slot(&self, holder: &str) -> anyhow::Result<()> {
-        use kube::api::ReplaceParams;
+        use kube::api::PostParams;
 
         let Some(mut lease) = self.task_slot.get_opt(TASK_SLOT_NAME).await? else {
             return Ok(());
@@ -1418,7 +1418,7 @@ impl KubeRuntime {
         }
         match self
             .task_slot
-            .replace(TASK_SLOT_NAME, &ReplaceParams::default(), &lease)
+            .replace(TASK_SLOT_NAME, &PostParams::default(), &lease)
             .await
         {
             Ok(_) => Ok(()),
