@@ -11,6 +11,7 @@ import { Switch } from '../components/ui/Switch'
 import { Badge } from '../components/ui/Badge'
 import type { AutonomousAgentDetail, AutonomousAgentTemplate, AutonomousAgentTemplateKey } from '../types'
 import { codexSupported, isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
+import { TaskExecutorSelect, type TaskExecutor } from './factory/agents/TaskExecutorSelect'
 
 /**
  * Guided create/edit wizard for autonomous agents.
@@ -47,7 +48,7 @@ interface FormState {
   name: string
   description: string
   template: AutonomousAgentTemplateKey
-  executor: 'claude' | 'nexus' | 'codex' | 'pi'
+  executor: TaskExecutor
   // execution isolation (software factory sandbox)
   isolation: IsolationChoice
   allowedHosts: string
@@ -703,24 +704,19 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   return (
     <div className="space-y-5">
       <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers. Pi uses the worker's ChatGPT login with gpt-6.1-sol, independently of Factory role preferences, for issue resolvers and PR reviewers. It runs locally (unsafe: worker credentials are accessible).">
-        <NativeSelect
+        <TaskExecutorSelect
           value={state.executor}
+          template={template}
           onChange={value => {
-            set('executor', value as FormState['executor'])
+            set('executor', value)
             // Codex never runs in the worker: drop a local choice instead of leaving an invalid form.
             if (value === 'codex' && state.isolation === 'local') set('isolation', 'default')
             if (value === 'pi') set('isolation', 'local')
           }}
-        >
-          <option value="claude">Claude pure</option>
-          <option value="nexus">Nexus harness (OpenShell)</option>
-          {(codexSupported(template) || state.executor === 'pi') && (
-            <option value="pi" disabled={!codexSupported(template)}>Pi (ChatGPT account, local worker)</option>
-          )}
-          {(codexSupported(template) || state.executor === 'codex') && (
-            <option value="codex" disabled={!codexSupported(template)}>Codex (OpenAI API key, sandbox only)</option>
-          )}
-        </NativeSelect>
+        />
+        {!codexSupported(template) && (
+          <p className="mt-2 text-[12px] text-text-secondary">Pi and Codex are available only for issue resolvers and PR reviewers. Choose one of those templates to enable them.</p>
+        )}
       </Field>
       {state.executor === 'codex' && !codexSupported(template) && (
         <p role="alert" className="text-[12px] text-text-primary">Codex runs only issue resolvers and PR reviewers. Choose another executor.</p>
