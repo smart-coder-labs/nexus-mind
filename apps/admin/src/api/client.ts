@@ -130,6 +130,7 @@ import type {
   ShadowDecision,
   FactoryDigest,
   FactoryTrajectoryReviewItem,
+  FactoryLookbackResponse,
   FactoryEconomics,
   FactoryIntakeItem,
   FactoryIntakeSource,
@@ -1481,6 +1482,10 @@ export class NexusMindClient {
 
   listFactoryTrajectoryFeedback(limit = 50): Promise<FactoryTrajectoryReviewItem[]> {
     return this.request(`/v1/factory/trajectories?limit=${limit}`)
+  }
+
+  getFactoryLookback(): Promise<FactoryLookbackResponse> {
+    return this.request('/v1/factory/lookback')
   }
 
   recordFactoryTrajectoryFeedback(runId: string, outcome: 'accepted' | 'rejected'): Promise<unknown> {

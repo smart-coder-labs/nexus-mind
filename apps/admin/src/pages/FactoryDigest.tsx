@@ -35,11 +35,13 @@ export default function FactoryDigest() {
   const permissions = session?.user.permissions ?? []
   const canRead = permissions.includes('factory_policy:read')
   const canWrite = permissions.includes('factory_policy:write')
+  const canReadLookback = canRead && permissions.includes('task:read') && permissions.includes('memory:read')
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
 
   const digest = useQuery({ queryKey: ['factory-digest'], queryFn: () => client.getFactoryDigest(), enabled: canRead })
   const feedback = useQuery({ queryKey: ['factory-trajectory-feedback'], queryFn: () => client.listFactoryTrajectoryFeedback(), enabled: canRead })
+  const lookback = useQuery({ queryKey: ['factory-lookback'], queryFn: () => client.getFactoryLookback(), enabled: canReadLookback })
   const economics = useQuery({ queryKey: ['factory-economics'], queryFn: () => client.getFactoryEconomics(30), enabled: canRead })
   const decide = useMutation({
     mutationFn: ({ subject, approve }: { subject: string; approve: boolean }) => client.decideFactoryMerge(subject, approve),
@@ -58,9 +60,10 @@ export default function FactoryDigest() {
   const data = digest.data
   const blocked = data?.blocked_runs ?? []
   const reviewItems = feedback.data ?? []
+  const noLookbackRecommendations = !canReadLookback || lookback.isError || (lookback.isSuccess && lookback.data.recommendations.length === 0)
   const nothingWaiting =
     data && feedback.isSuccess && !data.held_merges.length && !data.approved_merges.length && !blocked.length &&
-    !data.factory_tasks.length && !data.unlabeled_shadow && !reviewItems.length
+    !data.factory_tasks.length && !data.unlabeled_shadow && !reviewItems.length && noLookbackRecommendations
   const failedSubject = decide.isError ? decide.variables?.subject : undefined
   const waiting = data ? data.held_merges.length + blocked.length + data.factory_tasks.length + reviewItems.length : 0
 
@@ -222,6 +225,52 @@ export default function FactoryDigest() {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {canReadLookback && lookback.isError && <InlineAlert onRetry={() => lookback.refetch()}>Could not load recurring fix recommendations.</InlineAlert>}
+      {canReadLookback && lookback.isLoading && <CardListSkeleton count={1} height="h-24" />}
+      {canReadLookback && lookback.data && (
+        <section aria-labelledby="lookback-title" className="space-y-3">
+          <SectionHeading
+            id="lookback-title"
+            title="Recurring fixes to review"
+            description="Read-only matches between completed tasks and NexusMind bugfix memories. These suggestions do not change tasks, memories, policy, or agent runs."
+          />
+          <p className="text-[12px] text-text-tertiary">
+            Scanned {lookback.data.completed_tasks_scanned} completed tasks and {lookback.data.bugfix_memories_scanned} bugfix memories.
+            {lookback.data.history_truncated && ` History is capped at ${lookback.data.history_limit} records; some matches may be omitted.`}
+          </p>
+          {lookback.data.recommendations.length === 0 ? (
+            <EmptyState icon={<Scale />} title="No recurring fixes found" description="No repeated completed-task terms matched a bugfix memory in the scanned history." />
+          ) : (
+            <ul className={cn(PANEL_CLASS, 'm-0 list-none divide-y divide-border-secondary p-0')}>
+              {lookback.data.recommendations.map(recommendation => (
+                <li key={recommendation.memory_id} className="space-y-3 px-5 py-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-text-primary">{recommendation.memory_title}</span>
+                    <Badge role="none" variant="default">{recommendation.memory_project}</Badge>
+                    <Badge role="none" variant="warning">{recommendation.recurrence_count} recurring tasks</Badge>
+                  </div>
+                  <p className="text-sm text-text-secondary">{recommendation.explanation}</p>
+                  <div className="flex flex-wrap gap-1.5" aria-label="Recurring terms">
+                    {recommendation.recurring_terms.map(term => <Badge key={term} role="none" variant="info">{term}</Badge>)}
+                  </div>
+                  <details className="text-sm text-text-secondary">
+                    <summary className="cursor-pointer">Evidence ({recommendation.task_evidence.length} completed tasks)</summary>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {recommendation.task_evidence.map(task => (
+                        <li key={task.id}>
+                          <span className="text-text-primary">{task.title}</span>
+                          <code className="ml-2 text-[11px] text-text-tertiary">{task.id}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
 
