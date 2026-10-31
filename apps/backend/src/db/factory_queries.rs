@@ -805,12 +805,16 @@ pub fn record_run_metrics(
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO factory_run_metrics
-           (id, org_id, run_id, template_key, subject, provider, model, input_tokens,
+           (id, org_id, run_id, template_key, task_id, subject, provider, model, input_tokens,
             cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, duration_ms,
             num_turns, outcome)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?15, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         VALUES (?1, ?2, ?3, ?4,
+            COALESCE((SELECT task_id FROM factory_intake_items
+                       WHERE org_id=?2 AND run_id=?3 ORDER BY created_at DESC LIMIT 1), ?3),
+            ?5, ?15, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(run_id) DO UPDATE SET
             template_key = excluded.template_key, subject = excluded.subject,
+            task_id = excluded.task_id,
             provider = excluded.provider,
             model = excluded.model, input_tokens = excluded.input_tokens,
             cached_input_tokens = excluded.cached_input_tokens,
@@ -1461,6 +1465,14 @@ mod tests {
             provider, "nexus",
             "the latest finish wins, provider included"
         );
+        let task_id: String = conn
+            .query_row(
+                "SELECT task_id FROM factory_run_metrics WHERE run_id = 'run-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_id, "run-1", "unrouted runs still get a stable task key");
         let rows: Vec<(f64, Option<i64>, i64)> = conn
             .prepare("SELECT cost_usd, input_tokens, cached_input_tokens FROM factory_run_metrics WHERE run_id = 'run-1'")
             .unwrap()
@@ -1469,6 +1481,40 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(rows, vec![(0.5, None, 90_000)]);
+    }
+
+    #[test]
+    fn run_metrics_use_the_intake_task_id_when_a_run_is_routed() {
+        let (conn, org, _) = setup();
+        conn.execute(
+            "INSERT INTO factory_intake_items
+                (org_id,task_id,source_ref,task_class,origin_trust,repository,start_decision,start_reason,run_id)
+             VALUES (?1,'task-1','issue:42','bugfix','trusted','acme/web','started','human_confirmed','run-1')",
+            [&org],
+        )
+        .unwrap();
+        record_run_metrics(
+            &conn,
+            &org,
+            "run-1",
+            "github_issue_resolver",
+            Some("acme/web#42"),
+            "claude-code",
+            "succeeded",
+            &crate::factory::telemetry::RunMetrics {
+                cost_usd: Some(0.25),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task_id: String = conn
+            .query_row(
+                "SELECT task_id FROM factory_run_metrics WHERE run_id = 'run-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_id, "task-1");
     }
 
     #[test]
