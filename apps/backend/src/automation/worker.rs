@@ -130,10 +130,43 @@ pub(crate) fn parse_claude_event_stream(
         }
         anyhow::bail!("claude_result_event_missing")
     };
+    if result.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+        let error = result
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let message = result
+            .get("result")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .take(1200)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if result
+            .get("api_error_status")
+            .and_then(serde_json::Value::as_u64)
+            == Some(401)
+            || error == "authentication_failed"
+            || message.contains("failed to authenticate")
+            || message.contains("access token has been revoked")
+        {
+            anyhow::bail!("claude_auth_required")
+        }
+        anyhow::bail!("claude_event_reported_error")
+    }
     Ok((
         result,
         json!({"format":"stream-json","events":event_counts,"line_count":lines,"noise_lines":noise}),
     ))
+}
+
+fn claude_auth_error_in_stream(stdout: &[u8]) -> bool {
+    matches!(
+        parse_claude_event_stream(stdout),
+        Err(error) if error.to_string() == "claude_auth_required"
+    )
 }
 
 /// Whether a run's reported cost is over its `max_cost_usd` budget (25 USD by default).
@@ -4236,12 +4269,22 @@ async fn resolve_issue_worktree(
                 Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed_nonzero_exit","result":value,"stream":stream})),
                 Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string(),"exit_code":output.status.code()})),
             },
-            Ok(Ok(output)) if nexus_selected => (
-                "blocked_runtime".into(),
-                nexus_failure_payload(&output.stderr, output.status.code(), None),
-            ),
+            Ok(Ok(output)) if nexus_selected => {
+                if claude_auth_error_in_stream(&output.stdout) {
+                    ("blocked_runtime".into(), json!({"code":"claude_auth_required"}))
+                } else {
+                    (
+                        "blocked_runtime".into(),
+                        nexus_failure_payload(&output.stderr, output.status.code(), None),
+                    )
+                }
+            }
             Ok(Ok(output)) => match parse_claude_event_stream(&output.stdout) {
                 Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed_nonzero_exit","result":value,"stream":stream})),
+                Err(error) if error.to_string() == "claude_auth_required" => (
+                    "blocked_runtime".into(),
+                    json!({"code":"claude_auth_required"}),
+                ),
                 Err(_) if nexus_selected => ("failed".into(), nexus_failure_payload(&output.stderr, output.status.code(), None)),
                 Err(_) => ("failed".into(), json!({"code":"claude_failed","exit_code":output.status.code()})),
             },
@@ -5591,10 +5634,19 @@ async fn execute_claim(
             let max_cost=claim.run.budget.get("max_cost_usd").and_then(|v|v.as_f64()).unwrap_or(25.0);
             if value.get("total_cost_usd").and_then(|v|v.as_f64()).is_some_and(|cost|cost>max_cost){("budget_exhausted".into(),json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest.clone()}))}else{("succeeded".into(), json!({"code":"completed","result":value,"stream":stream,"context_manifest":manifest.clone()}))}
         }
-        Ok(Ok(output)) if nexus_selected => (
-            "blocked_runtime".into(),
-            nexus_failure_payload(&output.stderr, output.status.code(), Some(&manifest)),
-        ),
+        Ok(Ok(output)) if nexus_selected => {
+            if claude_auth_error_in_stream(&output.stdout) {
+                (
+                    "blocked_runtime".into(),
+                    json!({"code":"claude_auth_required","context_manifest":manifest.clone()}),
+                )
+            } else {
+                (
+                    "blocked_runtime".into(),
+                    nexus_failure_payload(&output.stderr, output.status.code(), Some(&manifest)),
+                )
+            }
+        }
         Ok(Ok(output)) if pi_selected => ("blocked_runtime".into(), json!({"code":"pi_failed_or_auth_required","exit_code":output.status.code()})),
         Ok(Ok(output)) if codex_model.is_some() => match parse_agent_events(codex_model, &output.stdout, pi_selected) {
             Ok((value, stream)) if over_cost_cap(claim, &value) => (
@@ -5615,6 +5667,10 @@ async fn execute_claim(
                 Ok((value, stream)) => (
                     "succeeded".into(),
                     json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest.clone()}),
+                ),
+                Err(error) if error.to_string() == "claude_auth_required" => (
+                    "blocked_runtime".into(),
+                    json!({"code":"claude_auth_required","context_manifest":manifest.clone()}),
                 ),
                 Err(_) => {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
@@ -8598,6 +8654,15 @@ mod tests {
 "#
         )
         .is_err());
+    }
+
+    #[test]
+    fn claude_stream_parser_blocks_revoked_oauth_instead_of_accepting_it() {
+        let stream = br#"{"type":"result","subtype":"success","is_error":true,"error":"authentication_failed","api_error_status":401,"result":"Failed to authenticate. API Error: 401 OAuth access token has been revoked.","total_cost_usd":0}"#;
+        assert_eq!(
+            parse_claude_event_stream(stream).unwrap_err().to_string(),
+            "claude_auth_required"
+        );
     }
 
     #[test]
