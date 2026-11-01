@@ -20,6 +20,8 @@ use uuid::Uuid;
 
 const INSTALLER: &str = "https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh";
 const MAX_CLAUDE_AUTH_FILE_BYTES: u64 = 1024 * 1024;
+// OpenShell sandbox exec rejects stdin payloads of 4 MiB or larger.
+const OPENSHELL_EXEC_STDIN_CHUNK_BYTES: usize = 3 * 1024 * 1024;
 const CLAUDE_SANDBOX_CONFIG_DIR: &str = "/sandbox/.claude";
 const CODEX_AUTH_BOOTSTRAP_SCRIPT: &str = r#"import json, os, pathlib, sys
 auth = json.loads(sys.argv[2])
@@ -443,43 +445,25 @@ impl OpenShell {
         if !mkdir.status.success() {
             bail!("could not prepare OpenShell workspace");
         }
-        // Stream the archive over the authenticated exec channel. OpenShell's
-        // file-upload endpoint can reject fresh sandbox paths even when the
-        // workspace exists; stdin avoids that endpoint and never puts file
-        // contents in argv or logs.
-        let mut command = self.exec_command(
-            &["tar", "-xf", "-", "-C", &self.workspace],
-            false,
+        // The gateway file-upload endpoint can reject sandbox paths. Stream in
+        // bounded chunks over authenticated exec; a single stdin transfer is
+        // limited to 4 MiB by OpenShell.
+        let remote_archive = format!("/sandbox/.nexus-upload-{}.tar", Uuid::new_v4());
+        let transfer = self.stream_file_to_sandbox(&archive, &remote_archive);
+        let _ = fs::remove_file(&archive);
+        if let Err(error) = transfer {
+            let _ = self.raw_command_output(&["rm", "-f", &remote_archive]);
+            return Err(error);
+        }
+        let extract = self.command_output(
+            &["tar", "-xf", &remote_archive, "-C", &self.workspace],
             None,
         )?;
-        command.stdin(Stdio::piped());
-        let transfer = (|| -> Result<Output> {
-            let mut source = fs::File::open(&archive)
-                .context("could not open OpenShell repository archive")?;
-            let mut child = command
-                .spawn()
-                .context("could not start OpenShell repository transfer")?;
-            let mut stdin = child
-                .stdin
-                .take()
-                .context("OpenShell repository transfer has no stdin")?;
-            let copied = std::io::copy(&mut source, &mut stdin);
-            drop(stdin);
-            if let Err(error) = copied {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error).context("could not stream repository archive to OpenShell");
-            }
-            child
-                .wait_with_output()
-                .context("could not finish OpenShell repository transfer")
-        })();
-        let _ = fs::remove_file(&archive);
-        let output = transfer?;
-        if !output.status.success() {
+        let _ = self.raw_command_output(&["rm", "-f", &remote_archive]);
+        if !extract.status.success() {
             bail!(
-                "OpenShell repository upload failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "OpenShell archive extraction failed: {}",
+                String::from_utf8_lossy(&extract.stderr).trim()
             );
         }
         self.remove_stale_guest_files(root)?;
@@ -490,6 +474,51 @@ impl OpenShell {
                 "could not prepare Git baseline in OpenShell: {}",
                 String::from_utf8_lossy(&baseline.stderr).trim()
             );
+        }
+        Ok(())
+    }
+
+    fn stream_file_to_sandbox(&self, source: &Path, destination: &str) -> Result<()> {
+        let mut source = fs::File::open(source)
+            .context("could not open OpenShell repository archive")?;
+        let mut buffer = vec![0; OPENSHELL_EXEC_STDIN_CHUNK_BYTES];
+        let mut first_chunk = true;
+        loop {
+            let length = source.read(&mut buffer)?;
+            if length == 0 {
+                break;
+            }
+            let redirect = if first_chunk { ">" } else { ">>" };
+            let command_line = format!("cat {redirect} {destination}");
+            let mut command = self.exec_command(&["sh", "-c", &command_line], false, None)?;
+            command.stdin(Stdio::piped());
+            let mut child = command
+                .spawn()
+                .context("could not start OpenShell repository transfer")?;
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("OpenShell repository transfer has no stdin")?;
+            let copied = stdin.write_all(&buffer[..length]);
+            drop(stdin);
+            if let Err(error) = copied {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("could not stream repository archive to OpenShell");
+            }
+            let output = child
+                .wait_with_output()
+                .context("could not finish OpenShell repository transfer")?;
+            if !output.status.success() {
+                bail!(
+                    "OpenShell repository upload failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            first_chunk = false;
+        }
+        if first_chunk {
+            bail!("OpenShell repository archive is empty");
         }
         Ok(())
     }
