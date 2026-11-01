@@ -283,6 +283,10 @@ pub(crate) async fn verify_and_review(
 ) -> Result<Finished, String> {
     remove_progress_scratchpad(env.workdir).await?;
     let changed = checkout_changes(env.workdir).await.map_err(|_| "diff_inspection_failed".to_string())?;
+    // The resolver's PENDING.md handoff can be reported by the sandbox even
+    // after cleanup. It is never part of the requested change, so exclude it
+    // from the checks, diff and review as a final boundary.
+    let changed = requested_changes(changed);
     if changed.iter().all(|file| file.filename == "PENDING.md") {
         return Ok(Finished { changed, ..Default::default() });
     }
@@ -344,6 +348,15 @@ async fn remove_progress_scratchpad(workdir: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err("scratchpad_cleanup_failed".into()),
     }
+}
+
+/// The resolver's progress file is not a requested change. Filter stale or
+/// sandbox-reported entries even when filesystem cleanup ran before checkout.
+fn requested_changes(changed: Vec<ChangedFile>) -> Vec<ChangedFile> {
+    changed
+        .into_iter()
+        .filter(|file| file.filename != "PENDING.md" && file.previous_filename.as_deref() != Some("PENDING.md"))
+        .collect()
 }
 
 /// Every deterministic check of a change: the in-worker checks, then, for a
@@ -875,6 +888,21 @@ mod tests {
         remove_progress_scratchpad(workdir.path()).await.unwrap();
         assert!(!scratchpad.exists());
         remove_progress_scratchpad(workdir.path()).await.unwrap();
+    }
+
+    #[test]
+    fn review_changes_exclude_progress_scratchpad_and_renames_of_it() {
+        let changed = requested_changes(vec![
+            ChangedFile { filename: "PENDING.md".into(), status: "added".into(), previous_filename: None },
+            ChangedFile {
+                filename: "docs/final.md".into(),
+                status: "renamed".into(),
+                previous_filename: Some("PENDING.md".into()),
+            },
+            ChangedFile { filename: "docs/requested.md".into(), status: "modified".into(), previous_filename: None },
+        ]);
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].filename, "docs/requested.md");
     }
 
     #[tokio::test]
