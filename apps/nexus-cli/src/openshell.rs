@@ -619,16 +619,9 @@ impl OpenShell {
             let _ = fs::remove_file(&archive);
             bail!("could not prepare OpenShell context directory");
         }
-        let uploaded = Command::new(&self.binary)
-            .args(["sandbox", "upload", &self.sandbox])
-            .arg(&archive)
-            .arg("/sandbox")
-            .output();
+        let uploaded = self.stream_file_to_sandbox(&archive, &remote_archive);
         let _ = fs::remove_file(&archive);
-        let uploaded = uploaded?;
-        if !uploaded.status.success() {
-            bail!("could not upload worker context to OpenShell");
-        }
+        uploaded.context("could not upload worker context to OpenShell")?;
         let extracted = self.raw_command_output(&[
             "tar", "-xf", &remote_archive, "-C", &destination,
         ])?;
