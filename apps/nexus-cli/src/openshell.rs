@@ -672,14 +672,27 @@ impl OpenShell {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
         }
-        let output = Command::new(&self.binary)
-            .args(["sandbox", "download", &self.sandbox, &self.workspace])
+        let archive = env::temp_dir().join(format!(
+            "nexus-sandbox-download-{}.tar",
+            Uuid::new_v4()
+        ));
+        let transfer = self.stream_workspace_to_archive(&archive);
+        if let Err(error) = transfer {
+            let _ = fs::remove_file(&archive);
+            return Err(error).context("OpenShell repository download failed");
+        }
+        let extracted = Command::new("tar")
+            .arg("-xf")
+            .arg(&archive)
+            .arg("-C")
             .arg(&staging)
-            .output()?;
-        if !output.status.success() {
+            .output()
+            .context("could not extract the OpenShell repository download")?;
+        let _ = fs::remove_file(&archive);
+        if !extracted.status.success() {
             bail!(
-                "OpenShell repository download failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "OpenShell repository archive extraction failed: {}",
+                String::from_utf8_lossy(&extracted.stderr).trim()
             );
         }
         // Directory download copies its contents into the destination.
@@ -712,6 +725,67 @@ impl OpenShell {
             );
         }
         result
+    }
+
+    /// Stream the sandbox workspace archive to a protected host-side file.
+    /// OpenShell's file-transfer endpoint cannot resolve this executor's
+    /// workspace mount, while exec stdout is streamed without a size cap.
+    fn stream_workspace_to_archive(&self, archive: &Path) -> Result<()> {
+        let mut command = Command::new(&self.binary);
+        command.args([
+            "sandbox",
+            "exec",
+            "-n",
+            &self.sandbox,
+            "--no-tty",
+            "--",
+            "tar",
+            "-cf",
+            "-",
+            "-C",
+            &self.workspace,
+            ".",
+        ]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .context("could not start OpenShell workspace download")?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .context("OpenShell workspace download has no stdout")?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(archive) {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("could not create protected OpenShell download archive");
+            }
+        };
+        let copied = std::io::copy(&mut stdout, &mut file);
+        drop(stdout);
+        drop(file);
+        let output = child
+            .wait_with_output()
+            .context("could not finish OpenShell workspace download")?;
+        let copied = copied.context("could not stream OpenShell workspace archive to the host")?;
+        if !output.status.success() {
+            bail!(
+                "OpenShell workspace archive command failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        if copied == 0 {
+            bail!("OpenShell workspace archive is empty");
+        }
+        Ok(())
     }
 
     pub fn exec_command(
