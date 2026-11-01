@@ -61,10 +61,14 @@ const runnerEvents = lines(join(dir, 'runner.log')).flatMap(line => {
 }).slice(-20)
 
 const files = readdirSync(dir)
-const runFiles = files.filter(name => /^(?:(?:10|20|30)-)?(docs|tests|ui)-rerun-[0-9]+\.jsonl$/.test(name)).sort()
+// Frozen hand-authored sets (for example `10-docs-v2.jsonl`) share the same
+// result format as reruns. Include them in the status view without accepting
+// arbitrary filenames or exposing task contents.
+const setName = name => name.match(/^(?:(?:10|20|30)-)?(docs|tests|ui)(?:-[a-z0-9][a-z0-9-]{0,80})?\.jsonl$/)
+const runFiles = files.filter(name => setName(name)).sort()
 const sets = []
 for (const file of runFiles) {
-  const [, set] = file.match(/^(?:(?:10|20|30)-)?(docs|tests|ui)-rerun-[0-9]+\.jsonl$/)
+  const [, set] = setName(file)
   const total = lines(join(dir, file)).length
   const outcomes = parseLines(join(dir, file.replace(/\.jsonl$/, '.results.jsonl')))
     .filter(outcome => typeof outcome.id === 'string' && ['baseline', 'specialist'].includes(outcome.arm))
@@ -126,6 +130,7 @@ for (const file of runFiles) {
   }
   sets.push({
     set,
+    set_id: file.replace(/\.jsonl$/, '').replace(/^(?:10|20|30)-/, ''),
     tasks_total: total,
     tasks_complete: finishedIds.size,
     tasks_remaining: Math.max(0, total - finishedIds.size),
