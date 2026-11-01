@@ -439,23 +439,43 @@ impl OpenShell {
         // A filtered archive prevents .git, .nexus sessions, ignored build
         // artifacts, and common credential files from entering the sandbox.
         let archive = make_archive(root)?;
-        let remote = format!(
-            "/sandbox/{}",
-            archive
-                .file_name()
-                .unwrap_or_else(|| OsStr::new("nexus-upload.tar"))
-                .to_string_lossy()
-        );
         let mkdir = self.raw_command_output(&["mkdir", "-p", &self.workspace])?;
         if !mkdir.status.success() {
             bail!("could not prepare OpenShell workspace");
         }
-        let output = Command::new(&self.binary)
-            .args(["sandbox", "upload", &self.sandbox])
-            .arg(&archive)
-            .arg("/sandbox")
-            .output()?;
+        // Stream the archive over the authenticated exec channel. OpenShell's
+        // file-upload endpoint can reject fresh sandbox paths even when the
+        // workspace exists; stdin avoids that endpoint and never puts file
+        // contents in argv or logs.
+        let mut command = self.exec_command(
+            &["tar", "-xf", "-", "-C", &self.workspace],
+            false,
+            None,
+        )?;
+        command.stdin(Stdio::piped());
+        let transfer = (|| -> Result<Output> {
+            let mut source = fs::File::open(&archive)
+                .context("could not open OpenShell repository archive")?;
+            let mut child = command
+                .spawn()
+                .context("could not start OpenShell repository transfer")?;
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("OpenShell repository transfer has no stdin")?;
+            let copied = std::io::copy(&mut source, &mut stdin);
+            drop(stdin);
+            if let Err(error) = copied {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("could not stream repository archive to OpenShell");
+            }
+            child
+                .wait_with_output()
+                .context("could not finish OpenShell repository transfer")
+        })();
         let _ = fs::remove_file(&archive);
+        let output = transfer?;
         if !output.status.success() {
             bail!(
                 "OpenShell repository upload failed: {}",
@@ -463,14 +483,6 @@ impl OpenShell {
             );
         }
         self.remove_stale_guest_files(root)?;
-        let extract = self.command_output(&["tar", "-xf", &remote, "-C", &self.workspace], None)?;
-        let _ = self.raw_command_output(&["rm", "-f", &remote]);
-        if !extract.status.success() {
-            bail!(
-                "OpenShell archive extraction failed: {}",
-                String::from_utf8_lossy(&extract.stderr).trim()
-            );
-        }
         let baseline = self.command_output(&["sh", "-c",
             "git init -q && git add -A && git -c user.name=Nexus -c user.email=nexus@localhost commit -qm 'Nexus sandbox baseline' --allow-empty"], None)?;
         if !baseline.status.success() {
