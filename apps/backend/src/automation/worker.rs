@@ -4683,6 +4683,13 @@ async fn gc_stale_sandboxes(max_age_hours: u64) {
     }
 }
 
+fn requires_factory_model_config(executor: &str, template_key: &str) -> bool {
+    // Nexus and Pi authenticate with their own runtime subscriptions; this
+    // separate gateway credential check applies only to the other executors.
+    matches!(executor, "claude" | "codex")
+        && matches!(template_key, "github_issue_resolver" | "github_pr_reviewer")
+}
+
 async fn execute_claim(
     store: &SqliteStore,
     config: &Config,
@@ -4702,7 +4709,7 @@ async fn execute_claim(
     }
     // Other executors still cannot honor the persisted per-role preferences.
     // Never silently charge another provider or claim those roles are wired.
-    if executor != "pi" && matches!(claim.template_key.as_str(), "github_issue_resolver" | "github_pr_reviewer") {
+    if requires_factory_model_config(executor, &claim.template_key) {
         let db = store.conn();
         let Ok(conn) = db.lock() else {
             return ("blocked_runtime".into(), json!({"code":"factory_model_config_unavailable"}));
@@ -8130,6 +8137,29 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn subscription_executors_do_not_require_factory_gateway_credentials() {
+        for executor in ["nexus", "pi"] {
+            assert!(!super::requires_factory_model_config(
+                executor,
+                "github_issue_resolver"
+            ));
+            assert!(!super::requires_factory_model_config(
+                executor,
+                "github_pr_reviewer"
+            ));
+        }
+        assert!(super::requires_factory_model_config(
+            "claude",
+            "github_issue_resolver"
+        ));
+        assert!(super::requires_factory_model_config(
+            "codex",
+            "github_pr_reviewer"
+        ));
+        assert!(!super::requires_factory_model_config("nexus", "qa"));
+    }
+
     async fn git(workdir: &Path, args: &[&str]) {
         let mut command = Command::new("git");
         command.current_dir(workdir).args(args);
