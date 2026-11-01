@@ -535,19 +535,14 @@ impl OpenShell {
         if !prepared.status.success() {
             bail!("could not prepare OpenShell worker configuration directory");
         }
-        let uploaded = Command::new(&self.binary)
-            .args(["sandbox", "upload", &self.sandbox])
-            .arg(source)
-            .arg(&destination)
-            .output()?;
-        if !uploaded.status.success() {
-            bail!("could not upload worker configuration to OpenShell");
-        }
         let filename = source
             .file_name()
             .context("worker configuration has no filename")?
             .to_string_lossy();
-        Ok(format!("{destination}/{filename}"))
+        let remote_path = format!("{destination}/{filename}");
+        self.stream_file_to_sandbox(source, &remote_path)
+            .context("could not upload worker configuration to OpenShell")?;
+        Ok(remote_path)
     }
 
     pub fn upload_worker_mcp_config(&self, source: &Path) -> Result<String> {
