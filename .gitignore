@@ -3,6 +3,8 @@ dist/
 .wrangler/
 .DS_Store
 *.tsbuildinfo
+__pycache__/
+*.pyc
 
 .env
 .env.*
