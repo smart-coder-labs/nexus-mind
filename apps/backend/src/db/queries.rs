@@ -1569,7 +1569,7 @@ pub fn revoke_automation_attempt(
     attempt_id: &str,
     reason: &str,
 ) -> Result<bool> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::connection::AtomicSavepoint::new(conn)?;
     let affected = tx.execute(
         "UPDATE automation_attempts
          SET status = 'revoked', revoked_at = datetime('now')
@@ -17573,7 +17573,7 @@ pub fn enqueue_autonomous_agent_run(
     let automation_run_id = Uuid::new_v4().to_string();
     let run_id = Uuid::new_v4().to_string();
     let input_json = input.map(serde_json::to_string).transpose()?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::connection::AtomicSavepoint::new(conn)?;
     tx.execute(
         "INSERT INTO automation_runs (id,org_id,project_id,created_by,profile_version_ref,policy_generation)
          VALUES (?1,?2,NULL,?3,?4,?5)",
@@ -18616,6 +18616,7 @@ pub fn enqueue_github_webhook_agents(
     head_sha: Option<&str>,
     payload_hash: &str,
 ) -> Result<usize> {
+    let repository=repository.to_ascii_lowercase();
     let template = match kind {
         "github_issue" => "github_issue_resolver",
         "github_pr" => "github_pr_reviewer",
@@ -18625,7 +18626,7 @@ pub fn enqueue_github_webhook_agents(
         "SELECT d.id FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
          ON r.definition_id=d.id AND r.revision=d.current_revision
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key=?2
-           AND json_extract(r.config_json,'$.repository')=?3 AND r.validation_status='valid'",
+           AND lower(json_extract(r.config_json,'$.repository'))=lower(?3) AND r.validation_status='valid'",
     )?;
     let ids = stmt
         .query_map(rusqlite::params![org_id, template, repository], |row| {
@@ -18639,7 +18640,7 @@ pub fn enqueue_github_webhook_agents(
             let already_owned: bool = conn.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM autonomous_agent_work_items work
-                    WHERE work.definition_id=?1 AND work.repository=?2
+                    WHERE work.definition_id=?1 AND lower(work.repository)=?2
                       AND work.kind='github_issue' AND work.external_number=?3
                       AND work.eligibility IN('pending','eligible','completed')
                 )",
@@ -18650,7 +18651,13 @@ pub fn enqueue_github_webhook_agents(
                 continue;
             }
         }
-        let identity = head_sha.unwrap_or(payload_hash);
+        let mut generation=0_i64;
+        if kind=="github_pr" {
+            let head=head_sha.filter(|sha|crate::factory::workflows::valid_sha(sha)).ok_or_else(||anyhow::anyhow!("invalid_pull_request_head"))?;
+            let (count,live):(i64,i64)=conn.query_row("SELECT count(*),COALESCE(sum(CASE WHEN r.status!='cancelled' THEN 1 ELSE 0 END),0) FROM autonomous_agent_work_items w JOIN autonomous_agent_runs r ON r.id=w.run_id WHERE w.definition_id=?1 AND lower(w.repository)=?2 AND w.kind='github_pr' AND w.external_number=?3 AND w.head_sha=?4",rusqlite::params![definition_id,repository,external_number,head],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            if live>0 {continue;}generation=count;
+        }
+        let identity = if generation>0 {format!("{}:retry:{generation}",head_sha.unwrap_or(payload_hash))}else{head_sha.unwrap_or(payload_hash).to_string()};
         let occurrence = format!(
             "github:{}",
             hex::encode(Sha256::digest(
@@ -18696,16 +18703,16 @@ pub fn list_github_reconciliation_sources(
     let mut stmt = conn.prepare(
         "SELECT DISTINCT d.org_id,d.template_key,
                 json_extract(r.config_json,'$.repository'),
-                json_extract(r.config_json,'$.github_connector_id')
+                COALESCE(json_extract(r.config_json,'$.github_connector_id'),'server_gh_cli')
          FROM autonomous_agent_definitions d
          JOIN autonomous_agent_revisions r
            ON r.definition_id=d.id AND r.revision=d.current_revision
          JOIN organizations o ON o.id=d.org_id
-         JOIN autonomous_agent_connectors c
+         LEFT JOIN autonomous_agent_connectors c
            ON c.id=json_extract(r.config_json,'$.github_connector_id')
           AND c.org_id=d.org_id
          WHERE d.status='enabled' AND o.autonomous_agents_enabled=1
-           AND r.validation_status='valid' AND c.health='ready'
+           AND r.validation_status='valid' AND (c.health='ready' OR json_extract(r.config_json,'$.github_connector_id') IS NULL)
            AND d.template_key IN('github_issue_resolver','github_pr_reviewer')
            AND json_extract(r.config_json,'$.repository') IS NOT NULL
          ORDER BY d.org_id,d.template_key,json_extract(r.config_json,'$.repository')

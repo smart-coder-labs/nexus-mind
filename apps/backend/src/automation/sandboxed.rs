@@ -349,6 +349,7 @@ async fn run_commands(
         );
         job.files.push((path.to_string(), proxy.into_bytes()));
     }
+    crate::factory::resolver_checks::bind_proxy_integrity(&mut job.files,&mut job.verification)?;
     let mut runs = run_in_sandbox(prepared.runtime.clone(), &job, &mut |_: &[u8]| {})
         .await?
         .verification;

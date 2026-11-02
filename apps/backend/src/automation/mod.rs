@@ -3,6 +3,7 @@ pub mod pi;
 pub mod connectors;
 pub mod factory_intake;
 pub mod factory_evals;
+pub mod workflow_intake;
 pub mod golden_replay;
 pub mod image_gen;
 pub mod linkedin;

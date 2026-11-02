@@ -29,6 +29,7 @@ const FactoryEvaluations = lazy(() => import('./pages/FactoryEvaluations'))
 const FactoryModels = lazy(() => import('./pages/factory/FactoryModels'))
 const DecisionModel = lazy(() => import('./pages/factory/DecisionModel'))
 const FactorySettings = lazy(() => import('./pages/factory/FactorySettings'))
+const WorkflowsPage = lazy(() => import('./pages/factory/workflows/WorkflowsPage'))
 const Policies    = lazy(() => import('./pages/Policies'))
 const Conventions = lazy(() => import('./pages/Conventions'))
 const Webhooks    = lazy(() => import('./pages/Webhooks'))
@@ -104,6 +105,7 @@ function AppRoutes() {
                 <Route path="/api-keys" element={<MaybeDisabled href="/api-keys"><AdminRoute><ApiKeys /></AdminRoute></MaybeDisabled>} />
                 <Route path="/agents"  element={<MaybeDisabled href="/agents"><AdminRoute><Agents /></AdminRoute></MaybeDisabled>} />
                 <Route path="/factory"          element={<MaybeDisabled href="/factory"><AutonomousAgents section="agents" /></MaybeDisabled>} />
+                <Route path="/factory/workflows" element={<MaybeDisabled href="/factory/workflows"><WorkflowsPage /></MaybeDisabled>} />
                 <Route path="/factory/runs"     element={<MaybeDisabled href="/factory/runs"><AutonomousAgents section="runs" /></MaybeDisabled>} />
                 <Route path="/factory/findings" element={<MaybeDisabled href="/factory/findings"><AutonomousAgents section="findings" /></MaybeDisabled>} />
                 <Route path="/factory/templates" element={<MaybeDisabled href="/factory/templates"><AutonomousAgents section="templates" /></MaybeDisabled>} />

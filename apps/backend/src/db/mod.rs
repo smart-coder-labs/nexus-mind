@@ -1,3 +1,6 @@
+pub mod workflows;
+pub mod workflow_execution;
+pub mod github_review_hooks;
 pub mod connection;
 pub mod doc_queries;
 pub mod factory_intake;

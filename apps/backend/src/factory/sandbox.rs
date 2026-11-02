@@ -242,6 +242,7 @@ pub fn verification_env(registry_token: &str) -> Vec<(String, String)> {
         // task launcher rebuilds the environment, so both settings belong here.
         ("CARGO_BUILD_JOBS", "1".to_string()),
         ("CARGO_PROFILE_TEST_DEBUG", "0".to_string()),
+        ("CARGO_PROFILE_DEV_DEBUG", "0".to_string()),
         ("RUST_TEST_THREADS", "2".to_string()),
         (
             "HTTPS_PROXY",

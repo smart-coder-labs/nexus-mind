@@ -1,0 +1,15 @@
+# Build once, review the image, then register its immutable sha256 image ID in
+# runner configuration. Runtime execution rejects mutable tags and never pulls.
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE}
+ARG CLAUDE_CODE_VERSION=2.1.235
+RUN apt-get update && apt-get install -y --no-install-recommends python3 git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm cache clean --force \
+    && python3 --version && claude --version
+ENV HOME=/home/runner DISABLE_AUTOUPDATER=1 PYTHONDONTWRITEBYTECODE=1
+USER 1000:1000
+WORKDIR /work
+# /entry.py is mounted read-only by the runner, not supplied by the repository.
+ENTRYPOINT ["python3", "/entry.py"]

@@ -189,6 +189,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Factory',
     items: [
       { label: 'Agents',            href: '/factory',                icon: Bot,               adminOnly: true, requiredPermission: 'autonomous_agent:read' },
+      { label: 'Workspaces & workflows', href: '/factory/workflows', icon: FolderGit, adminOnly: true, requiredPermission: 'factory_policy:read' },
       { label: 'Runs',              href: '/factory/runs',           icon: PlayCircle,        adminOnly: true, requiredPermission: 'autonomous_agent:read' },
       { label: 'Findings',          href: '/factory/findings',       icon: Flag,              adminOnly: true, requiredPermission: 'autonomous_agent:read' },
       { label: 'Needs a human',     href: '/factory/inbox',          icon: Inbox,             adminOnly: true, requiredPermission: 'factory_policy:read' },

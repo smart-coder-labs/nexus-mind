@@ -22,6 +22,20 @@ pub fn connect(path: &str) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Nestable atomic unit used when an enqueue belongs to an outer webhook
+/// delivery transaction. Savepoints also start/commit a transaction when alone.
+pub(crate) struct AtomicSavepoint<'a> {conn:&'a Connection,name:String,finished:bool}
+impl<'a> AtomicSavepoint<'a> {
+    pub fn new(conn:&'a Connection)->rusqlite::Result<Self> {
+        let name=format!("atomic_{}",uuid::Uuid::new_v4().simple());
+        conn.execute_batch(&format!("SAVEPOINT {name}"))?;
+        Ok(Self{conn,name,finished:false})
+    }
+    pub fn commit(mut self)->rusqlite::Result<()> {self.conn.execute_batch(&format!("RELEASE {}",self.name))?;self.finished=true;Ok(())}
+}
+impl std::ops::Deref for AtomicSavepoint<'_>{type Target=Connection;fn deref(&self)->&Connection{self.conn}}
+impl Drop for AtomicSavepoint<'_>{fn drop(&mut self){if !self.finished {let _=self.conn.execute_batch(&format!("ROLLBACK TO {}; RELEASE {}",self.name,self.name));}}}
+
 #[cfg(test)]
 mod tests {
     use super::*;

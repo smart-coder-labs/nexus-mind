@@ -1,3 +1,4 @@
+import type { WorkflowCatalog, WorkflowDefinition, WorkflowRun, Workspace, Repository, StoredWorkflow } from '../pages/factory/workflows/types'
 import type {
   Org,
   OrgSettings,
@@ -1426,6 +1427,42 @@ export class NexusMindClient {
   unarchiveAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/unarchive`,{method:'POST'}) }
   archiveAllAutonomousAgentRuns(): Promise<{archived:number}> { return this.request('/v1/autonomous-agent-runs/archive-all',{method:'POST'}) }
   continueAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/continue`,{method:'POST'}) }
+
+  approveWorkflowAction(id: string, action: string, revision: number): Promise<WorkflowRun> {
+    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify({ action, revision }) })
+  }
+  getWorkflowArtifact(id: string): Promise<{ mime: string; content_base64: string }> { return this.request(`/v1/factory/workflow-artifacts/${encodeURIComponent(id)}`) }
+  rotateFactoryRunner(id: string): Promise<{id:string;token:string}> { return this.request(`/v1/factory/runners/${encodeURIComponent(id)}/rotate`, { method: 'POST' }) }
+  createWorkflowIntake(data: {definition_id:string;kind:string;connector_id:string;config:unknown}): Promise<{id:string}> { return this.request('/v1/factory/workflow-intakes', {method:'POST',body:JSON.stringify(data)}) }
+  deleteWorkflowIntake(id:string): Promise<void> { return this.request(`/v1/factory/workflow-intakes/${encodeURIComponent(id)}`, {method:'DELETE'}) }
+  pollWorkflowIntakes(): Promise<{polling:boolean}> { return this.request('/v1/factory/workflow-intakes/poll', {method:'POST'}) }
+  getGithubReviewHooks(): Promise<{login:string|null;hooks:{id:string;health:string;metadata:{repository?:string;reviewer_login?:string;callback_url?:string;hook_id?:number}}[]}> { return this.request('/v1/autonomous-agents/github/review-hooks') }
+  registerGithubReviewHook(definition_id:string,public_base_url:string): Promise<{id:string;login:string}> {return this.request('/v1/autonomous-agents/github/review-hooks',{method:'POST',body:JSON.stringify({definition_id,public_base_url})})}
+  disconnectGithubReviewHook(id:string): Promise<{remote_deleted:boolean}> {return this.request(`/v1/autonomous-agents/github/review-hooks/${encodeURIComponent(id)}`,{method:'DELETE'})}
+  getWorkflowCatalog(): Promise<WorkflowCatalog> { return this.request('/v1/factory/workflow-catalog') }
+  registerFactoryRunner(name: string): Promise<{ id: string; name: string; token: string }> {
+    return this.request('/v1/factory/runners', { method: 'POST', body: JSON.stringify({ name }) })
+  }
+  revokeFactoryRunner(id: string): Promise<void> { return this.request(`/v1/factory/runners/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+  createFactoryWorkspace(data: { runner_id: string; name: string; root_path: string }): Promise<Workspace> {
+    return this.request('/v1/factory/workspaces', { method: 'POST', body: JSON.stringify(data) })
+  }
+  confirmFactoryWorkspace(id: string, revision: number, repositories: Repository[]): Promise<Workspace> {
+    return this.request(`/v1/factory/workspaces/${encodeURIComponent(id)}/confirm`, { method: 'POST', body: JSON.stringify({ revision, repositories }) })
+  }
+  createFactoryWorkflow(definition: WorkflowDefinition): Promise<StoredWorkflow> {
+    return this.request('/v1/factory/workflows', { method: 'POST', body: JSON.stringify(definition) })
+  }
+  startFactoryWorkflow(definition_id: string, source_key: string, task: unknown): Promise<WorkflowRun> {
+    return this.request('/v1/factory/workflow-runs', { method: 'POST', body: JSON.stringify({ definition_id, source_key, task }) })
+  }
+  startNextLinearWorkflow(id: string, connector_id: string, team_id?: string, project_id?: string): Promise<{ run: WorkflowRun | null; reason?: string }> {
+    return this.request(`/v1/factory/workflows/${encodeURIComponent(id)}/linear-next`, { method: 'POST', body: JSON.stringify({ connector_id, team_id: team_id || null, project_id: project_id || null }) })
+  }
+  getFactoryWorkflowRun(id: string): Promise<WorkflowRun> { return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}`) }
+  controlFactoryWorkflowRun(id: string, action: 'cancel' | 'retry' | 'resume', step_id?: string): Promise<WorkflowRun> {
+    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/control`, { method: 'POST', body: JSON.stringify({ action, step_id }) })
+  }
 
   // Software factory — per-action policies. Requires factory_policy:read / :write.
   listFactoryPolicies(): Promise<FactoryPolicy[]> {
