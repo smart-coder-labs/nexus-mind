@@ -58,6 +58,8 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "invalid_daily_time"
         | "invalid_misfire_policy"
         | "invalid_executor"
+        | "invalid_agent_model"
+        | "invalid_model_source"
         | "invalid_isolation"
         | "sandbox_unsupported_template"
         | "sandbox_unsupported_executor"
@@ -104,6 +106,10 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         code,
         if status == StatusCode::INTERNAL_SERVER_ERROR {
             "Database error"
+        } else if code == "invalid_agent_model" {
+            "El modelo no es compatible con el harness o, para Codex, no tiene un precio aprobado. Elige un modelo admitido o deja selección automática."
+        } else if code == "invalid_model_source" {
+            "La fuente del modelo debe ser agent o factory_roles; no se cambiará de proveedor como fallback."
         } else {
             &message
         },
@@ -524,6 +530,9 @@ pub async fn patch_org_settings(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:enable")?;
+    if req.enabled.is_some() {
+        require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    }
     Ok(Json(
         queries::patch_autonomous_agent_org_settings(
             &conn,
@@ -719,17 +728,15 @@ pub async fn run_now(
         Some(serde_json::json!({ "trigger": trigger }))
     } else if definition.template_key == "github_pr_reviewer" {
         // The PR to review is chosen per run (not baked into the agent).
-        body.as_ref()
-            .and_then(|b| b.targets.first())
-            .map(|target| {
-                serde_json::json!({
-                    "trigger": {
-                        "kind": "github_pr",
-                        "repository": target.repository,
-                        "number": target.number,
-                    }
-                })
+        body.as_ref().and_then(|b| b.targets.first()).map(|target| {
+            serde_json::json!({
+                "trigger": {
+                    "kind": "github_pr",
+                    "repository": target.repository,
+                    "number": target.number,
+                }
             })
+        })
     } else {
         None
     };
@@ -1069,8 +1076,8 @@ pub async fn archive_all_findings(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
-    let archived = queries::archive_all_autonomous_agent_findings(&conn, &auth.org_id)
-        .map_err(store_error)?;
+    let archived =
+        queries::archive_all_autonomous_agent_findings(&conn, &auth.org_id).map_err(store_error)?;
     Ok(Json(serde_json::json!({ "archived": archived })))
 }
 
@@ -1115,7 +1122,11 @@ pub async fn upload_brand_asset(
 
     let mut found: Option<(Vec<u8>, String, String)> = None;
     while let Some(field) = multipart.next_field().await.map_err(|source| {
-        error(StatusCode::BAD_REQUEST, "invalid_upload", &source.to_string())
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_upload",
+            &source.to_string(),
+        )
     })? {
         if field.name() != Some("file") {
             continue;
@@ -1139,10 +1150,13 @@ pub async fn upload_brand_asset(
                 "Upload a PNG, JPEG, WebP or SVG image.",
             ));
         };
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_upload", "Could not read the uploaded file."))?;
+        let bytes = field.bytes().await.map_err(|_| {
+            error(
+                StatusCode::BAD_REQUEST,
+                "invalid_upload",
+                "Could not read the uploaded file.",
+            )
+        })?;
         if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
             return Err(error(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -1186,10 +1200,20 @@ pub async fn upload_brand_asset(
     );
     let stored = crate::automation::r2::put_object(&cfg, &key, &bytes, &mime)
         .await
-        .map_err(|source| error(StatusCode::BAD_GATEWAY, "upload_failed", &source.to_string()))?;
+        .map_err(|source| {
+            error(
+                StatusCode::BAD_GATEWAY,
+                "upload_failed",
+                &source.to_string(),
+            )
+        })?;
     // A permanent public base is guaranteed above, so this returns a stable URL
     // and the expiry argument is never used.
-    let url = crate::automation::r2::object_url(&cfg, &stored, crate::automation::r2::MAX_PRESIGN_EXPIRY_SECS);
+    let url = crate::automation::r2::object_url(
+        &cfg,
+        &stored,
+        crate::automation::r2::MAX_PRESIGN_EXPIRY_SECS,
+    );
     Ok(Json(serde_json::json!({ "url": url })))
 }
 
@@ -1295,7 +1319,10 @@ pub async fn linkedin_callback(
         return page(false, "Invalid state payload.");
     };
     let org_id = payload.get("org_id").and_then(|v| v.as_str()).unwrap_or("");
-    let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+    let user_id = payload
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let destination = payload
         .get("destination")
         .and_then(|v| v.as_str())
@@ -1352,7 +1379,9 @@ pub async fn linkedin_callback(
     }
     page(
         true,
-        &format!("Connected as {display_name} ({destination}). Approved posts can now be published."),
+        &format!(
+            "Connected as {display_name} ({destination}). Approved posts can now be published."
+        ),
     )
 }
 
@@ -1566,10 +1595,14 @@ mod tests {
             },
         )
         .unwrap();
-        let validated =
-            queries::validate_autonomous_agent_definition(conn, org_id, user_id, &created.definition.id)
-                .unwrap()
-                .unwrap();
+        let validated = queries::validate_autonomous_agent_definition(
+            conn,
+            org_id,
+            user_id,
+            &created.definition.id,
+        )
+        .unwrap()
+        .unwrap();
         validated
             .revision
             .validation
@@ -1615,7 +1648,10 @@ mod tests {
             "visual_style": "editorial dark-tech",
         });
         let errors = content_manager_errors(&conn, &org_id, &user_id, "With system", ok_config);
-        assert!(errors.is_empty(), "expected a clean validation, got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "expected a clean validation, got {errors:?}"
+        );
     }
 
     /// A malformed design system reaches the image model as prose and skews the
@@ -1671,7 +1707,10 @@ mod tests {
         let (conn, org_id, user_id) = fixture();
         let errors =
             content_manager_errors(&conn, &org_id, &user_id, "Default", base_content_config());
-        assert!(errors.is_empty(), "expected a clean validation, got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "expected a clean validation, got {errors:?}"
+        );
         let template = managed_templates()
             .into_iter()
             .find(|t| t.key == "ai_content_manager")
@@ -1690,13 +1729,23 @@ mod tests {
         let (conn, org_id, _user_id) = fixture();
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         let delivery = queries::create_autonomous_agent_delivery(
-            &conn, &org_id, "run1", Some("f1"), "linkedin", "f1",
+            &conn,
+            &org_id,
+            "run1",
+            Some("f1"),
+            "linkedin",
+            "f1",
         )
         .unwrap();
         // Creating it twice returns the same row, which is why the row alone
         // cannot decide who sends.
         let again = queries::create_autonomous_agent_delivery(
-            &conn, &org_id, "run1", Some("f1"), "linkedin", "f1",
+            &conn,
+            &org_id,
+            "run1",
+            Some("f1"),
+            "linkedin",
+            "f1",
         )
         .unwrap();
         assert_eq!(delivery.id, again.id);
@@ -1710,8 +1759,13 @@ mod tests {
         );
 
         // A failed attempt published nothing, so it becomes claimable again.
-        queries::fail_autonomous_agent_delivery(&conn, &org_id, &delivery.id, "linkedin_post_failed")
-            .unwrap();
+        queries::fail_autonomous_agent_delivery(
+            &conn,
+            &org_id,
+            &delivery.id,
+            "linkedin_post_failed",
+        )
+        .unwrap();
         assert!(queries::claim_autonomous_agent_delivery(&conn, &org_id, &delivery.id).unwrap());
 
         // Once delivered, nothing can claim it again.
@@ -1776,7 +1830,12 @@ mod tests {
             "security_dast must carry the active-scan capability tag"
         );
         // Never a write/deploy/repository capability — it is evidence-only.
-        for forbidden in ["repository:read", "repository:branch", "github:draft_pr", "tests:run"] {
+        for forbidden in [
+            "repository:read",
+            "repository:branch",
+            "github:draft_pr",
+            "tests:run",
+        ] {
             assert!(
                 !template.capabilities.iter().any(|c| c == forbidden),
                 "{forbidden} must not be granted to security_dast"
@@ -1786,7 +1845,10 @@ mod tests {
         // it comes from a registered web_application target.
         assert!(template.config_schema.pointer("/repository").is_none());
         assert!(template.config_schema.pointer("/url").is_none());
-        assert!(template.default_budgets.pointer("/requests_per_second").is_some());
+        assert!(template
+            .default_budgets
+            .pointer("/requests_per_second")
+            .is_some());
     }
 
     #[test]
@@ -2326,29 +2388,47 @@ mod tests {
         let (conn, org_id, user_id) = fixture();
         let mut nexus_request = request();
         nexus_request.config["executor"] = serde_json::json!("nexus");
-        let created = queries::create_autonomous_agent_definition(
-            &conn, &org_id, &user_id, &nexus_request,
-        ).unwrap();
+        let created =
+            queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &nexus_request)
+                .unwrap();
         queries::validate_autonomous_agent_definition(
-            &conn, &org_id, &user_id, &created.definition.id,
-        ).unwrap();
-        queries::set_autonomous_agent_status(
-            &conn, &org_id, &created.definition.id, "enabled",
-        ).unwrap();
+            &conn,
+            &org_id,
+            &user_id,
+            &created.definition.id,
+        )
+        .unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &created.definition.id, "enabled")
+            .unwrap();
         queries::enqueue_autonomous_agent_run(
-            &conn, &org_id, &created.definition.id, "manual", "nexus-health", None, None,
-        ).unwrap();
-        queries::save_autonomous_runtime_health(&conn, &crate::automation::runtime::RuntimeHealth {
-            status: "reauth_required".into(),
-            reason_code: Some("host_claude_login".into()),
-            claude_version: None,
-            checked_at: None,
-            last_success_at: None,
-            last_failure_at: None,
-        }).unwrap();
+            &conn,
+            &org_id,
+            &created.definition.id,
+            "manual",
+            "nexus-health",
+            None,
+            None,
+        )
+        .unwrap();
+        queries::save_autonomous_runtime_health(
+            &conn,
+            &crate::automation::runtime::RuntimeHealth {
+                status: "reauth_required".into(),
+                reason_code: Some("host_claude_login".into()),
+                claude_version: None,
+                checked_at: None,
+                last_success_at: None,
+                last_failure_at: None,
+            },
+        )
+        .unwrap();
         let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
-            .unwrap().expect("Nexus uses sandbox login, not host Claude health");
-        assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "nexus");
+            .unwrap()
+            .expect("Nexus uses sandbox login, not host Claude health");
+        assert_eq!(
+            queries::autonomous_executor(&claim.config).unwrap(),
+            "nexus"
+        );
     }
 
     #[test]
@@ -2358,20 +2438,31 @@ mod tests {
             let mut pi_request = request();
             pi_request.template_key = template.into();
             pi_request.config = serde_json::json!({"executor":"pi", "repository":"acme/repo", "outputs":["nexusmind"]});
-            let created = queries::create_autonomous_agent_definition(
-                &conn, &org_id, &user_id, &pi_request,
-            ).unwrap();
+            let created =
+                queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &pi_request)
+                    .unwrap();
             queries::validate_autonomous_agent_definition(
-                &conn, &org_id, &user_id, &created.definition.id,
-            ).unwrap();
-            queries::set_autonomous_agent_status(
-                &conn, &org_id, &created.definition.id, "enabled",
-            ).unwrap();
+                &conn,
+                &org_id,
+                &user_id,
+                &created.definition.id,
+            )
+            .unwrap();
+            queries::set_autonomous_agent_status(&conn, &org_id, &created.definition.id, "enabled")
+                .unwrap();
             queries::enqueue_autonomous_agent_run(
-                &conn, &org_id, &created.definition.id, "manual", "pi-health", None, None,
-            ).unwrap();
+                &conn,
+                &org_id,
+                &created.definition.id,
+                "manual",
+                "pi-health",
+                None,
+                None,
+            )
+            .unwrap();
             let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
-                .unwrap().expect("Pi checks its own OAuth, not host Claude health");
+                .unwrap()
+                .expect("Pi checks its own OAuth, not host Claude health");
             assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "pi");
         }
     }

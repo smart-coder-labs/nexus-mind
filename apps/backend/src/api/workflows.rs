@@ -25,6 +25,11 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
         | "inventory_conflict"
         | "run_conflict"
         | "retry_limit_or_step_conflict"
+        | "factory_paused"
+        | "workflow_agent_unavailable"
+        | "workflow_agent_template_incompatible"
+        | "workflow_agent_instructions_unsafe"
+        | "workflow_agent_model_missing"
         | "runtime_revision_conflict"
         | "runtime_configuration_incomplete" => StatusCode::CONFLICT,
         _ => StatusCode::UNPROCESSABLE_ENTITY,
@@ -44,6 +49,11 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
         Json(ApiError {
             code: public.into(),
             error: match public {
+                "workflow_agent_instructions_unsafe"=>"Las instrucciones del agente son demasiado extensas o contienen posibles credenciales. Revísalas en el catálogo; los secretos deben permanecer en referencias privadas, no se copiarán al runner.",
+                "workflow_agent_unavailable"=>"El perfil de agente no existe en esta organización o ya no está habilitado y validado. Selecciónalo de nuevo.",
+                "workflow_agent_template_incompatible"=>"La plantilla del agente no es compatible con una fase de código. Usa un resolver/reviewer o ejecuta su plantilla completa como agente individual.",
+                "workflow_agent_model_missing"=>"El agente no tiene un modelo explícito. Desactiva la herencia y elige un modelo compatible con el harness.",
+                "factory_paused"=>"Factory está pausada para esta organización. Reactívala desde Configuración.",
                 "runtime_revision_conflict"=>"Otra persona guardó una revisión nueva. Recarga antes de guardar.",
                 "runtime_configuration_incomplete"=>"Completa los perfiles y espera a que el runner aplique la configuración antes de iniciar el workflow completo.",
                 "invalid_runtime_agent"=>"Completa imagen por digest, modelo, conexión de proxy y red interna de cada agente. No introduzcas credenciales.",
@@ -78,7 +88,7 @@ pub async fn catalog(
     require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
     db::expire_leases(&conn, &auth.org_id, chrono::Utc::now().timestamp()).map_err(fail)?;
     Ok(Json(
-        json!({"runners":db::list_runners(&conn,&auth.org_id).map_err(fail)?,"workspaces":db::list_workspaces(&conn,&auth.org_id,None).map_err(fail)?,"definitions":db::list_definitions(&conn,&auth.org_id).map_err(fail)?,"runs":db::list_runs(&conn,&auth.org_id).map_err(fail)?,"intakes":crate::automation::workflow_intake::list(&conn,&auth.org_id).map_err(fail)?}),
+        json!({"runners":db::list_runners(&conn,&auth.org_id).map_err(fail)?,"workspaces":db::list_workspaces(&conn,&auth.org_id,None).map_err(fail)?,"definitions":db::list_definitions(&conn,&auth.org_id).map_err(fail)?,"runs":db::list_runs(&conn,&auth.org_id).map_err(fail)?,"intakes":crate::automation::workflow_intake::list(&conn,&auth.org_id).map_err(fail)?,"pending_runs":db::list_pending_runs(&conn,&auth.org_id).map_err(fail)?,"findings":db::list_findings(&conn,&auth.org_id).map_err(fail)?,"factory_enabled":db::factory_enabled(&conn,&auth.org_id).map_err(fail)?}),
     ))
 }
 #[derive(Deserialize)]

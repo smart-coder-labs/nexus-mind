@@ -1,4 +1,4 @@
-//! One intake contract for Linear, Slack and Sentry, targeting workflow IDs
+//! One intake contract for GitHub Issues, Linear, Slack and Sentry, targeting workflow IDs
 //! rather than creating intermediary GitHub issues. Poll leases are persisted.
 use crate::{
     db::workflows,
@@ -21,8 +21,89 @@ pub struct Source {
     pub connector_id: String,
     pub config: Value,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GithubConfig {
+    repository: String,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    include_assigned: bool,
+}
+fn github_config(config: &Value) -> Result<GithubConfig> {
+    let mut value: GithubConfig = serde_json::from_value(config.clone())
+        .map_err(|_| anyhow::anyhow!("invalid_github_intake_config"))?;
+    crate::automation::connectors::validate_repository(&value.repository)?;
+    value.repository = value.repository.to_ascii_lowercase();
+    if value.labels.len() > 20
+        || value
+            .labels
+            .iter()
+            .any(|l| l.trim().is_empty() || l.len() > 100 || l.chars().any(char::is_control))
+    {
+        bail!("invalid_github_intake_labels")
+    }
+    Ok(value)
+}
+fn github_target(config: &Value, workspace: &Value) -> Result<String> {
+    let repository = github_config(config)?.repository;
+    let permitted = workspace["repositories"].as_array().is_some_and(|repos| {
+        repos.iter().any(|r| {
+            r["remote"]
+                .as_str()
+                .and_then(|s| crate::factory::workflow_publication::github_repository(s).ok())
+                .is_some_and(|s| s.eq_ignore_ascii_case(&repository))
+        })
+    });
+    if !permitted {
+        bail!("github_intake_repository_not_in_workspace")
+    }
+    Ok(repository)
+}
+fn github_tasks(issues: &[Value], config: &Value) -> Result<Vec<(String, Value)>> {
+    let settings = github_config(config)?;
+    let target = IntakeTarget {
+        repository: settings.repository,
+        base_ref: "main".into(),
+        privacy_class: PrivacyClass::Internal,
+    };
+    let mut tasks = Vec::new();
+    for issue in issues {
+        if !settings.include_assigned
+            && (issue["assignees"].as_array().is_some_and(|a| !a.is_empty())
+                || issue["assignee"].is_object())
+        {
+            continue;
+        }
+        if issue["number"].as_u64().filter(|n| *n > 0).is_none()
+            || issue["state"] != "open"
+            || !settings.labels.iter().all(|label| {
+                issue["labels"].as_array().is_some_and(|labels| {
+                    labels.iter().any(|l| {
+                        l["name"]
+                            .as_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(label))
+                    })
+                })
+            })
+        {
+            continue;
+        }
+        if let Ok(Some(spec)) =
+            intake::github_issue_to_task_spec(issue, &target, chrono::Utc::now())
+        {
+            let key = format!("github:{}", spec.source.reference);
+            let mut task = serde_json::to_value(spec)?;
+            task["origin_trust"] = json!("untrusted");
+            tasks.push((key, task));
+        }
+    }
+    Ok(tasks)
+}
 fn validate(kind: &str, config: &Value) -> Result<()> {
-    if kind == "linear" {
+    if kind == "github" {
+        github_config(config)?;
+    } else if kind == "linear" {
         for key in ["team_id", "project_id"] {
             if config.get(key).is_some_and(|v| {
                 !v.is_null() && (!v.is_string() || v.as_str().unwrap_or_default().len() > 100)
@@ -58,6 +139,20 @@ fn connector(
     {
         bail!("connector_intake_scope")
     }
+    if kind == "github" {
+        let repository = github_config(config)?.repository;
+        if !connector.metadata["repositories"]
+            .as_array()
+            .is_some_and(|repos| {
+                repos.iter().any(|r| {
+                    r.as_str()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&repository))
+                })
+            })
+        {
+            bail!("connector_intake_scope")
+        }
+    }
     if kind == "sentry" {
         let url = config["base_url"].as_str().unwrap_or_default();
         let host = intake::sentry_base_host(url)
@@ -79,6 +174,14 @@ pub fn create(c: &rusqlite::Connection, org: &str, user: &str, b: &Source) -> Re
     if !exists {
         bail!("not_found")
     }
+    if b.kind == "github" {
+        let workspace: String = c.query_row(
+            "SELECT workspace_id FROM factory_workflow_definitions WHERE id=?1 AND org_id=?2",
+            params![b.definition_id, org],
+            |r| r.get(0),
+        )?;
+        github_target(&b.config, &workflows::workspace_by_id(c, org, &workspace)?)?;
+    }
     let id = uuid::Uuid::new_v4().to_string();
     c.execute("INSERT INTO factory_workflow_intakes(id,org_id,definition_id,kind,connector_id,config_json,created_by) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![id,org,b.definition_id,b.kind,b.connector_id,b.config.to_string(),user])?;
     Ok(json!({"id":id}))
@@ -88,14 +191,22 @@ pub fn list(c: &rusqlite::Connection, org: &str) -> Result<Vec<Value>> {
     let rows=s.query_map([org],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,bool>(5)?,r.get::<_,i64>(6)?,r.get::<_,Option<String>>(7)?)))?.map(|r|{let(id,definition,kind,connector,config,enabled,next,error)=r?;Ok(json!({"id":id,"definition_id":definition,"kind":kind,"connector_id":connector,"config":serde_json::from_str::<Value>(&config)?,"enabled":enabled,"next_poll":next,"last_error":error}))}).collect();
     rows
 }
-static POLLING:std::sync::LazyLock<dashmap::DashSet<String>>=std::sync::LazyLock::new(dashmap::DashSet::new);
-pub fn spawn_poll(store:SqliteStore,org:String,runner:Option<String>) {
-    let key=format!("{org}:{}",runner.as_deref().unwrap_or("human"));
-    if !POLLING.insert(key.clone()){return}
+static POLLING: std::sync::LazyLock<dashmap::DashSet<String>> =
+    std::sync::LazyLock::new(dashmap::DashSet::new);
+pub fn spawn_poll(store: SqliteStore, org: String, runner: Option<String>) {
+    let key = format!("{org}:{}", runner.as_deref().unwrap_or("human"));
+    if !POLLING.insert(key.clone()) {
+        return;
+    }
     tokio::spawn(async move {
-        struct Guard(String);impl Drop for Guard {fn drop(&mut self){POLLING.remove(&self.0);}}
-        let _guard=Guard(key);
-        let _=poll(&store,&org,runner.as_deref()).await;
+        struct Guard(String);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                POLLING.remove(&self.0);
+            }
+        }
+        let _guard = Guard(key);
+        let _ = poll(&store, &org, runner.as_deref()).await;
     });
 }
 pub async fn poll(store: &SqliteStore, org: &str, runner: Option<&str>) -> Result<Value> {
@@ -104,6 +215,9 @@ pub async fn poll(store: &SqliteStore, org: &str, runner: Option<&str>) -> Resul
         let c = handle
             .lock()
             .map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
+        if !workflows::factory_enabled(&c, org)? {
+            return Ok(json!({"queued":0,"paused":true}));
+        }
         let mut s=c.prepare("SELECT i.id,i.definition_id,i.kind,i.connector_id,i.config_json FROM factory_workflow_intakes i JOIN factory_workflow_definitions d ON d.id=i.definition_id JOIN factory_workspaces w ON w.id=d.workspace_id WHERE i.org_id=?1 AND i.enabled=1 AND i.next_poll<=?2 AND (?3 IS NULL OR w.runner_id=?3) ORDER BY i.next_poll,i.id LIMIT 10")?;
         let rows = s
             .query_map(params![org, chrono::Utc::now().timestamp(), runner], |r| {
@@ -142,10 +256,17 @@ pub async fn poll(store: &SqliteStore, org: &str, runner: Option<&str>) -> Resul
             Err(_) => (0, Some("intake_timeout".into())),
         };
         started += count;
-        if count>0 {
-            let run={let h=store.conn();let c=h.lock().map_err(|_|anyhow::anyhow!("storage_unavailable"))?;
-                c.query_row("SELECT e.run_id FROM factory_workflow_events e JOIN factory_workflow_runs r ON r.id=e.run_id WHERE r.org_id=?1 AND e.kind='intake.received' AND json_extract(e.payload_json,'$.source_id')=?2 ORDER BY e.seq DESC LIMIT 1",params![org,id],|r|r.get::<_,String>(0)).ok()};
-            if let Some(run)=run {let _=crate::factory::workflow_policy::assess_intake(store,org,&run).await;}
+        if count > 0 {
+            let run = {
+                let h = store.conn();
+                let c = h
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
+                c.query_row("SELECT e.run_id FROM factory_workflow_events e JOIN factory_workflow_runs r ON r.id=e.run_id WHERE r.org_id=?1 AND e.kind='intake.received' AND json_extract(e.payload_json,'$.source_id')=?2 ORDER BY e.seq DESC LIMIT 1",params![org,id],|r|r.get::<_,String>(0)).ok()
+            };
+            if let Some(run) = run {
+                let _ = crate::factory::workflow_policy::assess_intake(store, org, &run).await;
+            }
         }
         let h = store.conn();
         let c = h
@@ -159,10 +280,17 @@ pub async fn poll(store: &SqliteStore, org: &str, runner: Option<&str>) -> Resul
                 "connector_intake_scope",
                 "sentry_connector_host_mismatch",
                 "workspace_not_confirmed",
+                "runtime_configuration_incomplete",
+                "workflow_agent_unavailable",
+                "workflow_agent_model_missing",
+                "workflow_agent_template_incompatible",
+                "workflow_agent_instructions_unsafe",
                 "linear_issue_limit_exceeded",
                 "linear_upstream_rejected",
                 "linear_graphql_failed",
                 "intake_timeout",
+                "github_issue_limit_exceeded",
+                "github_intake_repository_not_in_workspace",
             ]
             .contains(&s.as_str())
             {
@@ -217,6 +345,15 @@ async fn poll_one(
         {
             tasks.push((issue.source_key(), issue.task()));
         }
+    } else if kind == "github" {
+        let repository = github_target(config, &workspace)?;
+        let issues = crate::automation::connectors::list_labeled_github_issues_bounded(
+            &token,
+            &repository,
+            intake::INTAKE_LABEL,
+        )
+        .await?;
+        tasks = github_tasks(&issues, config)?;
     } else {
         let remote = workspace["repositories"]
             .as_array()
@@ -246,6 +383,18 @@ async fn poll_one(
         .map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
     if connector(&c, org, connector_id, kind, config)? != token {
         bail!("connector_changed")
+    }
+    if kind == "github" {
+        github_target(
+            config,
+            &workflows::workspace_by_id(
+                &c,
+                org,
+                workspace["id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("not_found"))?,
+            )?,
+        )?;
     }
     let busy:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM factory_workflow_runs WHERE org_id=?1 AND workspace_id=?2 AND status NOT IN ('succeeded','cancelled'))",params![org,workspace["id"].as_str()],|r|r.get(0))?;
     if busy {
@@ -280,4 +429,88 @@ async fn poll_one(
         return Ok(1);
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod github_tests {
+    use super::*;
+    fn config() -> Value {
+        json!({"repository":"Acme/Web","labels":["bug"]})
+    }
+    fn issue() -> Value {
+        json!({"number":42,"state":"open","title":"Fix button","body":"Reproduce this bug","author_association":"OWNER","html_url":"https://github.com/acme/web/issues/42","labels":[{"name":"factory"},{"name":"BUG"}]})
+    }
+    #[test]
+    fn assigned_issues_require_an_explicit_opt_in_to_avoid_competing_with_resolvers() {
+        let mut assigned = issue();
+        assigned["assignees"] = json!([{"login":"another-person"}]);
+        assert!(github_tasks(&[assigned.clone()], &config())
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            github_tasks(
+                &[assigned],
+                &json!({"repository":"acme/web","labels":["bug"],"include_assigned":true})
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+    #[test]
+    fn github_config_is_bounded_and_rejects_credentials_and_external_repositories() {
+        assert!(validate("github", &config()).is_ok());
+        for bad in [
+            json!({"repository":"https://evil.test/web"}),
+            json!({"repository":"../web"}),
+            json!({"repository":"acme/web","token":"fixture"}),
+            json!({"repository":"acme/web","labels":[""]}),
+        ] {
+            assert!(validate("github", &bad).is_err());
+        }
+        let workspace = json!({"repositories":[{"remote":"git@github.com:ACME/Web.git"}]});
+        assert_eq!(github_target(&config(), &workspace).unwrap(), "acme/web");
+        assert!(github_target(
+            &config(),
+            &json!({"repositories":[{"remote":"https://github.com/other/web.git"}]})
+        )
+        .is_err());
+    }
+    #[test]
+    fn github_issues_require_factory_and_all_filters_and_never_include_prs_or_closed_work() {
+        let original = issue();
+        let tasks = github_tasks(&[original.clone()], &config()).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].0, "github:acme/web#42");
+        assert_eq!(tasks[0].1["origin_trust"], "untrusted");
+        assert_eq!(
+            tasks[0].0,
+            github_tasks(
+                &[original.clone()],
+                &json!({"repository":"acme/WEB","labels":[]})
+            )
+            .unwrap()[0]
+                .0
+        );
+        for field in ["pull_request", "state", "labels", "number", "title"] {
+            let mut candidate = original.clone();
+            candidate[field] = match field {
+                "pull_request" => json!({"url":"https://api.github.com/pr"}),
+                "state" => json!("closed"),
+                "labels" => json!([{"name":"bug"}]),
+                "number" => json!(-1),
+                _ => json!(""),
+            };
+            assert!(
+                github_tasks(&[candidate], &config()).unwrap().is_empty(),
+                "{field}"
+            );
+        }
+        assert!(github_tasks(
+            &[original],
+            &json!({"repository":"acme/web","labels":["security"]})
+        )
+        .unwrap()
+        .is_empty());
+    }
 }

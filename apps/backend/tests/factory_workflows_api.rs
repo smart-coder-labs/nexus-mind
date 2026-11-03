@@ -11,6 +11,42 @@ use nexusmind::{
 use serde_json::{json, Value};
 use tower::util::ServiceExt;
 #[tokio::test]
+async fn shared_pause_requires_authority_over_both_execution_engines() {
+    let app = app("fleet_only");
+    let cookie = login(&app).await;
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        "/v1/autonomous-agents/settings",
+        Some(&cookie),
+        None,
+        Some(json!({"enabled":false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, current) = request(
+        &app,
+        "GET",
+        "/v1/autonomous-agents/settings",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(current["enabled"], true);
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        "/v1/autonomous-agents/settings",
+        Some(&cookie),
+        None,
+        Some(json!({"retention_days":30})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+#[tokio::test]
 async fn runtime_settings_require_owner_permission_and_runner_scoped_reports() {
     let app = app("super_user");
     let cookie = login(&app).await;
@@ -344,8 +380,22 @@ async fn real_python_runner_discovers_and_prepares_without_touching_personal_cha
 fn app(role: &str) -> axum::Router {
     let c = connection::connect(":memory:").unwrap();
     migrations::run(&c).unwrap();
-    let (_, user, _) =
+    let (org, user, _) =
         queries::bootstrap(&c, "Test Org", "test-org", "owner@test.com", "Owner").unwrap();
+    if role == "fleet_only" {
+        queries::create_role(
+            &c,
+            &org.id,
+            "fleet_only",
+            "Fleet only",
+            &[
+                "autonomous_agent:read".into(),
+                "autonomous_agent:enable".into(),
+            ],
+            None,
+        )
+        .unwrap();
+    }
     queries::set_user_password(&c, &user.id, &hash_password("testpass1").unwrap()).unwrap();
     c.execute("UPDATE users SET role=?1 WHERE id=?2", [role, &user.id])
         .unwrap();

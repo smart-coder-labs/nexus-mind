@@ -1,6 +1,15 @@
+import type { AutonomousAgentDefinition } from '../../../types'
+export type WorkflowAgentProfile = Pick<
+  AutonomousAgentDefinition,
+  'id' | 'name' | 'template_key' | 'status' | 'validation_status'
+> & { revision: { revision: number; config_hash: string; config: Record<string, unknown> } }
 export type AgentRole = 'investigation' | 'test_author' | 'implementation' | 'reviewer'
 export type RuntimeAgent = {
   role: AgentRole
+  harness?: string
+  binding?: { id: string; revision: number; name: string; config_hash: string } | null
+  inherit_model?: boolean
+  instructions?: string
   image: string
   model: string
   model_connection: string
@@ -32,6 +41,7 @@ export type RuntimeState = {
     networks: string[]
     model_connections: string[]
     environments: string[]
+    harnesses?: string[]
     error?: string | null
   }
 }
@@ -98,6 +108,11 @@ export const checkTypes = [
   { id: 'security', label: 'Seguridad' },
 ]
 export function blockerLabel(code: string): string {
+  if (code.startsWith('model:')) return `Seleccionar modelo explícito para ${code.slice(6)}`
+  if (code.startsWith('harness:'))
+    return `Instalar y autorizar el adaptador ${code.slice(8)} en el runner`
+  if (code.startsWith('agent_binding:'))
+    return 'Revisar el agente vinculado: debe estar habilitado y validado'
   if (code.startsWith('agent:'))
     return `Configurar ${agentRoles.find((r) => r.id === code.slice(6))?.label.toLowerCase() ?? code.slice(6)}`
   if (code.startsWith('check:'))

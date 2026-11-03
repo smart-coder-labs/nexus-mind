@@ -21,6 +21,111 @@ fn seed(c: rusqlite::Connection) -> (rusqlite::Connection, String, String, Strin
     db::confirm_inventory(&c, &org.id, &wid, 1, &[repo(true)]).unwrap();
     (c, org.id, user.id, rid, wid)
 }
+#[test]
+fn schema_97_upgrades_existing_96_intakes_without_losing_rows_or_indexes() {
+    let (c, org, user, _, w) = setup();
+    let d = define(
+        &c,
+        &org,
+        &user,
+        &w,
+        vec![step("prepare", &[], StepKind::Prepare)],
+    );
+    let sql: String = c
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='factory_workflow_intakes'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    c.execute_batch("DROP TABLE factory_workflow_intakes")
+        .unwrap();
+    c.execute_batch(&sql.replace("'github',", "")).unwrap();
+    c.execute_batch("CREATE INDEX workflow_intake_due ON factory_workflow_intakes(org_id,enabled,next_poll);PRAGMA user_version=96").unwrap();
+    c.execute("INSERT INTO factory_workflow_intakes(id,org_id,definition_id,kind,connector_id,config_json,enabled,next_poll,last_error,created_by) VALUES ('legacy',?1,?2,'linear','private-reference','{\"team_id\":\"TEAM\"}',0,123,'held',?3)",rusqlite::params![org,d,user]).unwrap();
+    migrations::run(&c).unwrap();
+    let row:(String,i64,String)=c.query_row("SELECT config_json,next_poll,last_error FROM factory_workflow_intakes WHERE id='legacy'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(row, ("{\"team_id\":\"TEAM\"}".into(), 123, "held".into()));
+    c.execute_batch("INSERT INTO factory_workflow_intakes SELECT 'github-source',org_id,definition_id,'github',connector_id,config_json,enabled,next_poll,last_error,created_by FROM factory_workflow_intakes WHERE id='legacy'").unwrap();
+    migrations::run(&c).unwrap();
+    assert_eq!(
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        97
+    );
+    assert_eq!(
+        c.query_row("SELECT count(*) FROM factory_workflow_intakes", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='workflow_intake_due'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert!(c
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query([])
+        .unwrap()
+        .next()
+        .unwrap()
+        .is_none());
+}
+#[test]
+fn shared_factory_pause_fences_active_workflows_and_preserves_queued_work() {
+    let (c, org, user, runner, w) = setup();
+    let d = define(
+        &c,
+        &org,
+        &user,
+        &w,
+        vec![step("prepare", &[], StepKind::Prepare)],
+    );
+    let active = run(&c, &org, &d);
+    let capabilities = vec!["adapter:test".into()];
+    let job = db::claim(&c, &org, &runner, &capabilities, 100)
+        .unwrap()
+        .unwrap();
+    let queued = db::start_run(&c, &org, &d, "queued:2", &json!({"title":"Queued"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    queries::patch_autonomous_agent_org_settings(&c, &org, Some(false), None).unwrap();
+    assert_eq!(
+        db::run_detail(&c, &org, &active).unwrap()["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        db::run_detail(&c, &org, &queued).unwrap()["status"],
+        "queued"
+    );
+    assert!(db::claim(&c, &org, &runner, &capabilities, 101)
+        .unwrap()
+        .is_none());
+    assert!(db::start_run(&c, &org, &d, "paused:3", &json!({})).is_err());
+    assert!(nexusmind::db::workflow_execution::lease(
+        &c,
+        &org,
+        &runner,
+        &active,
+        "prepare",
+        job["lease_token"].as_str().unwrap(),
+        101
+    )
+    .is_err());
+    queries::patch_autonomous_agent_org_settings(&c, &org, Some(true), None).unwrap();
+    assert!(db::claim(&c, &org, &runner, &capabilities, 102)
+        .unwrap()
+        .is_some());
+}
 fn repo(writable: bool) -> Repository {
     Repository {
         path: "api".into(),

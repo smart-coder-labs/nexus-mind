@@ -16808,6 +16808,7 @@ pub fn get_autonomous_agent_detail(
 }
 
 pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
+    if config.get("model_source").is_some_and(|v|!matches!(v.as_str(),Some("agent"|"factory_roles"))) {anyhow::bail!("invalid_model_source")}
     match config.get("executor") {
         None => Ok("claude"), // revisions created before the selector remain unchanged
         Some(serde_json::Value::String(value))
@@ -16821,12 +16822,27 @@ pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
 
 fn validate_autonomous_executor(config: &serde_json::Value, template_key: &str) -> Result<()> {
     let executor = autonomous_executor(config)?;
+    if config.get("model_source").and_then(serde_json::Value::as_str)==Some("agent") {
+        if let Some(model)=config.get("model") {
+            let value=model.as_str().ok_or_else(||anyhow::anyhow!("invalid_agent_model"))?;
+            if executor=="claude" && !crate::factory::gateway::pinned_model(value) {anyhow::bail!("invalid_agent_model")}
+            if executor=="codex" && crate::automation::codex::start_check(value).is_err() {anyhow::bail!("invalid_agent_model")}
+        }
+    }
     crate::factory::sandbox::parse_allowed_hosts(config.get("sandbox_allowed_hosts"))?;
     crate::factory::sandbox::autonomous_isolation(config, template_key, executor).map(|_| ())
 }
 
 #[cfg(test)]
 mod autonomous_executor_tests {
+    #[test]
+    fn model_source_and_explicit_models_fail_closed() {
+        for source in [serde_json::json!("unknown"),serde_json::json!(true)] {
+            assert!(super::autonomous_executor(&serde_json::json!({"model_source":source})).is_err());
+        }
+        assert!(super::validate_autonomous_executor(&serde_json::json!({"executor":"claude","model_source":"agent","model":"sonnet"}),"github_issue_resolver").is_ok());
+        assert!(super::validate_autonomous_executor(&serde_json::json!({"executor":"claude","model_source":"agent","model":"gpt-other-provider"}),"github_issue_resolver").is_err());
+    }
     #[test]
     fn saved_configs_reject_invalid_sandbox_hosts() {
         let bad = serde_json::json!({"sandbox_allowed_hosts": ["*.acme.test"]});
@@ -16849,7 +16865,7 @@ mod autonomous_executor_tests {
     #[test]
     fn run_input_cannot_override_agent_config() {
         assert!(super::RUN_INPUT_KEYS.contains(&"app_base_url"));
-        for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor"] {
+        for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor", "model_source"] {
             assert!(!super::RUN_INPUT_KEYS.contains(&protected), "{protected}");
         }
     }
@@ -18066,6 +18082,8 @@ pub fn patch_autonomous_agent_org_settings(
     if retention_days.is_some_and(|v| !(7..=3650).contains(&v)) {
         anyhow::bail!("invalid_retention_days")
     }
+    let transaction=crate::db::connection::AtomicSavepoint::new(conn)?;
+    let conn=&*transaction;
     conn.execute("UPDATE organizations SET autonomous_agents_enabled=COALESCE(?2,autonomous_agents_enabled),autonomous_agent_retention_days=COALESCE(?3,autonomous_agent_retention_days) WHERE id=?1",rusqlite::params![org_id,enabled.map(i64::from),retention_days])?;
     if enabled == Some(false) {
         let attempts=conn.prepare("SELECT lease.attempt_id FROM autonomous_agent_leases lease JOIN autonomous_agent_runs run ON run.id=lease.run_id WHERE run.org_id=?1 AND lease.released_at IS NULL")?.query_map([org_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -18075,7 +18093,10 @@ pub fn patch_autonomous_agent_org_settings(
         conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE released_at IS NULL AND run_id IN(SELECT id FROM autonomous_agent_runs WHERE org_id=?1)",[org_id])?;
         conn.execute("UPDATE autonomous_agent_runs SET status='cancelled',finished_at=datetime('now') WHERE org_id=?1 AND status IN ('leased','running')",[org_id])?;
     }
-    get_autonomous_agent_org_settings(conn, org_id)
+    if enabled==Some(false) {crate::db::workflows::pause_active_runs(conn,org_id)?;}
+    let result=get_autonomous_agent_org_settings(conn, org_id)?;
+    transaction.commit()?;
+    Ok(result)
 }
 
 pub fn cleanup_autonomous_agent_retention(conn: &Connection) -> Result<usize> {

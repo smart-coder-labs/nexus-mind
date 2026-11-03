@@ -287,7 +287,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         name = 'nm-' + uuid.uuid4().hex
         command = [runtime, 'run', '--rm', '--pull=never', '--name', name, *restrictions(),
                    '--network', adapter_network(config, adapter, job['run_id']), '--workdir', '/work',
-                   '--mount', 'type=bind,src=' + str(work) + ',dst=/work',
+                   '--mount', 'type=bind,src=' + str(work) + ',dst=/work' + (',readonly' if adapter.get('role') in ('investigation','reviewer') or job['step']['kind']=='review' else ''),
                    '--mount', 'type=bind,src=' + str(inp) + ',dst=/input,readonly',
                    '--mount', 'type=bind,src=' + str(out) + ',dst=/output',
                    '--mount', 'type=bind,src=' + str(Path(__file__).with_name('container_entry.py').resolve()) + ',dst=/entry.py,readonly']

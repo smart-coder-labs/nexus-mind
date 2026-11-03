@@ -93,6 +93,9 @@ pub fn lease(
     fence: &str,
     now: i64,
 ) -> Result<u32> {
+    if !super::workflows::factory_enabled(c, org)? {
+        bail!("lease_conflict")
+    }
     c.query_row("SELECT s.attempt FROM factory_workflow_steps s JOIN factory_workflow_runs r ON r.id=s.run_id JOIN factory_runners a ON a.id=r.runner_id WHERE r.id=?1 AND r.org_id=?2 AND r.runner_id=?3 AND a.revoked=0 AND r.status IN ('running','blocked') AND s.step_id=?4 AND s.status='running' AND s.lease_token=?5 AND s.lease_until>?6",params![run,org,runner,step,fence,now],|r|r.get(0)).optional()?.ok_or_else(||anyhow::anyhow!("lease_conflict"))
 }
 pub fn artifacts(c: &Connection, run: &str) -> Result<Vec<Value>> {

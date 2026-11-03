@@ -18,7 +18,7 @@ describe('runtime settings', () => {
     )
     const user = userEvent.setup()
     await user.type(screen.getByLabelText(/^Imagen de agentes/), 'sha256:' + 'a'.repeat(64))
-    await user.type(screen.getByLabelText(/^Conexión de modelo/), 'proxy')
+    await user.type(screen.getByLabelText('Conexión de modelo compartida'), 'proxy')
     await user.type(screen.getByLabelText(/^Red interna del proxy/), 'model-net')
     await user.click(screen.getByRole('button', { name: 'Guardar configuración' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
@@ -73,7 +73,9 @@ describe('runtime settings', () => {
         onDraft={onDraft}
       />,
     )
-    await userEvent.setup().type(screen.getByLabelText(/^Conexión de modelo/), 'private-alias')
+    await userEvent
+      .setup()
+      .type(screen.getByLabelText('Conexión de modelo compartida'), 'private-alias')
     const draft = onDraft.mock.calls.at(-1)![0]
     unmount()
     render(
@@ -85,6 +87,6 @@ describe('runtime settings', () => {
         draft={draft}
       />,
     )
-    expect(screen.getByLabelText(/^Conexión de modelo/)).toHaveValue('private-alias')
+    expect(screen.getByLabelText('Conexión de modelo compartida')).toHaveValue('private-alias')
   })
 })

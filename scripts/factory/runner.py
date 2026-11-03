@@ -250,7 +250,7 @@ def tick_locked(config, roots):
         if 'runtime' in workspace:
             report=sync(config,workspace,api,roots,private_file)
             if report['applied_revision'] and report['applied_revision']==workspace['runtime']['revision']:
-                declared,services_config=compile_settings(workspace['runtime']['config'])
+                declared,services_config=compile_settings(workspace['runtime']['config'],config)
                 remote_capabilities.extend('adapter:'+name for name in declared)
                 if services_config:remote_capabilities.append('adapter:integrated-environment')
         repos = discover(workspace['root_path'], roots)

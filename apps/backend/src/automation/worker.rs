@@ -4704,6 +4704,10 @@ fn requires_factory_model_config(executor: &str, template_key: &str) -> bool {
         && matches!(template_key, "github_issue_resolver" | "github_pr_reviewer")
 }
 
+fn uses_factory_gateway(config:&serde_json::Value,executor:&str,template:&str)->bool {
+    let source=config.get("model_source").and_then(serde_json::Value::as_str);
+    source==Some("factory_roles") || (source!=Some("agent") && requires_factory_model_config(executor,template))
+}
 async fn execute_claim(
     store: &SqliteStore,
     config: &Config,
@@ -4721,9 +4725,12 @@ async fn execute_claim(
             return ("blocked_runtime".into(), json!({"code":code,"fallback":false}));
         }
     }
-    // Other executors still cannot honor the persisted per-role preferences.
-    // Never silently charge another provider or claim those roles are wired.
-    if requires_factory_model_config(executor, &claim.template_key) {
+    // The agent's explicit executor/model is the execution source of truth.
+    // Historical global role preferences are not a default provider override.
+    // An explicit request for that still-unwired gateway must continue to block,
+    // never fall back to a different provider or consume subscription credentials.
+    if uses_factory_gateway(&claim.config,executor,&claim.template_key) {
+        if !requires_factory_model_config(executor,&claim.template_key) {return ("blocked_runtime".into(),json!({"code":"factory_provider_runtime_not_wired","fallback":false}));}
         let db = store.conn();
         let Ok(conn) = db.lock() else {
             return ("blocked_runtime".into(), json!({"code":"factory_model_config_unavailable"}));
@@ -8187,6 +8194,15 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_model_source_requires_explicit_consent_and_never_reactivates_legacy_agents() {
+        for engine in ["claude","codex"] {
+            assert!(super::uses_factory_gateway(&serde_json::json!({}),engine,"github_issue_resolver"));
+            assert!(!super::uses_factory_gateway(&serde_json::json!({"model_source":"agent"}),engine,"github_issue_resolver"));
+        }
+        for engine in ["pi","nexus"] {assert!(!super::uses_factory_gateway(&serde_json::json!({}),engine,"github_issue_resolver"));}
+        assert!(super::uses_factory_gateway(&serde_json::json!({"model_source":"factory_roles"}),"pi","github_issue_resolver"));
+    }
     #[test]
     fn subscription_executors_do_not_require_factory_gateway_credentials() {
         for executor in ["nexus", "pi"] {

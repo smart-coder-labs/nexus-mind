@@ -103,7 +103,7 @@ describe('GitHub review hooks', () => {
     show(permissions)
     expect(await screen.findByRole('link', { name: /Configura un agente/ })).toHaveAttribute(
       'href',
-      '/factory',
+      '/factory/agents',
     )
     expect(screen.getByRole('button', { name: 'Conectar webhook de GitHub' })).toBeDisabled()
   })

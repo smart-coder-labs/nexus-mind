@@ -89,7 +89,28 @@ export type WorkflowIntake = {
   next_poll: number
   last_error: string | null
 }
+export type WorkflowPending = {
+  id: string
+  source_key: string
+  created_at: string
+  title: string | null
+  definition_name: string | null
+  workspace_name: string | null
+  last_event: string | null
+}
 export type WorkflowCatalog = {
+  factory_enabled?: boolean
+  findings?: {
+    run_id: string
+    step_id: string
+    run_status: string
+    definition_name: string | null
+    revision: number
+    title: string
+    severity: string
+    summary: string
+  }[]
+  pending_runs?: WorkflowPending[]
   runners: Runner[]
   workspaces: Workspace[]
   definitions: StoredWorkflow[]
@@ -100,12 +121,12 @@ export type WorkflowCatalog = {
 /** Minimal preparation-only workflow. */
 export function preparationWorkflow(workspace: Workspace): WorkflowDefinition {
   return {
-    name: `${workspace.name}: prepare committed workspace`,
+    name: `${workspace.name} · preparación`,
     workspace_id: workspace.id,
     steps: [
       {
         id: 'prepare',
-        name: 'Prepare isolated committed checkouts',
+        name: 'Preparar copias aisladas de los commits',
         kind: 'prepare',
         depends_on: [],
         adapter: 'prepare-workspace',
@@ -140,17 +161,17 @@ export function deliveryWorkflow(workspace: Workspace): WorkflowDefinition {
     options: kind === 'check' ? { required_checks: [id] } : {},
   })
   return {
-    name: `${workspace.name}: issue to reviewed PR`,
+    name: `${workspace.name} · tarea a draft PR revisado`,
     workspace_id: workspace.id,
     repair_step: 'implement',
     max_repairs: 2,
     max_cost_usd: 20,
     steps: [
       { ...preparationWorkflow(workspace).steps[0] },
-      step('investigate', 'Investigate and plan', 'agent', ['prepare'], 'isolated-investigator'),
+      step('investigate', 'Investigar y planificar', 'agent', ['prepare'], 'isolated-investigator'),
       step(
         'tests',
-        'Create regression tests',
+        'Escribir tests de regresión',
         'agent',
         ['investigate'],
         'isolated-test-author',
@@ -158,7 +179,7 @@ export function deliveryWorkflow(workspace: Workspace): WorkflowDefinition {
       ),
       step(
         'implement',
-        'Implement end to end',
+        'Implementar el cambio completo',
         'agent',
         ['tests'],
         'isolated-implementer',
@@ -167,7 +188,7 @@ export function deliveryWorkflow(workspace: Workspace): WorkflowDefinition {
       {
         ...step(
           'verify',
-          'Tests, build and repository checks',
+          'Ejecutar tests, build y verificaciones',
           'check',
           ['implement'],
           'isolated-verification',
@@ -176,31 +197,49 @@ export function deliveryWorkflow(workspace: Workspace): WorkflowDefinition {
       },
       step(
         'environment',
-        'Start integrated test environment',
+        'Levantar el entorno integrado',
         'check',
         ['verify'],
         'integrated-environment',
       ),
       step(
         'functional',
-        'Functional and integration QA',
+        'QA funcional y de integración',
         'check',
         ['environment'],
         'isolated-functional-qa',
       ),
-      step('design', 'Design and accessibility QA', 'check', ['environment'], 'isolated-design-qa'),
-      step('security', 'Authorized security QA', 'check', ['environment'], 'isolated-security-qa'),
+      step(
+        'design',
+        'QA de diseño y accesibilidad',
+        'check',
+        ['environment'],
+        'isolated-design-qa',
+      ),
+      step(
+        'security',
+        'QA de seguridad autorizado',
+        'check',
+        ['environment'],
+        'isolated-security-qa',
+      ),
       step(
         'gate',
-        'Verify commit-bound evidence',
+        'Verificar evidencias del commit final',
         'gate',
         ['functional', 'design', 'security'],
         'evidence-gate',
       ),
-      step('publish', 'Open policy-controlled draft PRs', 'publish', ['gate'], 'policy-publisher'),
+      step(
+        'publish',
+        'Abrir draft PRs según las políticas',
+        'publish',
+        ['gate'],
+        'policy-publisher',
+      ),
       step(
         'review',
-        'Independent clean-context review',
+        'Revisión independiente con contexto limpio',
         'review',
         ['publish'],
         'isolated-reviewer',

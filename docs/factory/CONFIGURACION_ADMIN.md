@@ -15,11 +15,13 @@ node dev/workflows-preview-proxy.mjs
 
 La política del proxy impide conexiones fetch/WebSocket a APIs externas. No uses este modo como servidor público ni como una prueba de aceptación real.
 
+La navegación completa se ha consolidado después de esta primera guía: consulta [Factory conectada](FACTORY_CONNECTED.md) para catálogo de perfiles, harnesses por fase, pausa compartida y compatibilidad de las rutas anteriores.
+
 ## Recorrido del panel
 
 1. **Resumen:** muestra alcance, conexión y requisitos pendientes. Un runner conectado no implica que haya modelos, tests o QA operativos.
 2. **Configuración → Repositorios:** busca entre los clones, selecciona su alcance y confirma lectura/escritura. La lista se pagina; los permisos no autorizan merges ni despliegues.
-3. **Agentes y modelos:** configura imagen inmutable, conexión al proxy y red interna. El motor de los perfiles remotos actuales es **Claude Code en contenedor**; puedes elegir modelo por investigación, tests, implementación y revisión. Los perfiles locales anteriores siguen siendo otra vía; no se convierten automáticamente a este formato.
+3. **Agentes y modelos:** configura imagen inmutable, conexión al proxy y red interna. Puedes reutilizar perfiles del catálogo y elegir **harness por fase**. Claude mantiene su adaptador compatible; Pi/Codex/Nexus requieren un descriptor local revisado y la autenticación/proxy del runner. Seleccionar un nombre no instala el adaptador. Los perfiles locales anteriores siguen siendo otra vía; no se convierten automáticamente a este formato.
 4. **Tests y QA:** añade comandos por repositorio para tests, build, lint/tipos y QA funcional, diseño/accesibilidad y seguridad. Indica imágenes SDK instaladas y referencias privadas de entorno. Las suites requieren tests y build para **cada repositorio modificado**; no basta una comprobación de otro repositorio.
 5. **Servicios y entornos:** declara los servicios desechables, comando de inicio y healthcheck real. La red de servicios es interna. Los checks de QA verifican los servicios antes y después de ejecutarse.
 6. **Publicación y límites:** selecciona un conector cifrado de publicación, presupuesto y hasta dos ciclos de reparación. No es el conector de webhooks. Crea una definición y revisa sus fases desplegables; los intentos y tiempos se editan en sus opciones técnicas.

@@ -58,6 +58,15 @@ export function ExecutionDetail({
       >
         {run.snapshot.definition.steps.map((step) => {
           const state = run.steps.find((s) => s.id === step.id)
+          const role = (
+            {
+              'isolated-investigator': 'investigation',
+              'isolated-test-author': 'test_author',
+              'isolated-implementer': 'implementation',
+              'isolated-reviewer': 'reviewer',
+            } as Record<string, string>
+          )[step.adapter]
+          const profile = run.snapshot.workspace.runtime?.config.agents.find((a) => a.role === role)
           return (
             <li key={step.id} className="p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -67,6 +76,13 @@ export function ExecutionDetail({
               <p className="mt-1 text-xs text-muted-foreground">
                 {step.adapter} · intento {state?.attempt ?? 0} de {step.max_attempts}
               </p>
+              {profile && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Perfil: {profile.binding?.name ?? 'Rol propio del workflow'}
+                  {profile.binding ? ` · revisión ${profile.binding.revision}` : ''} · harness{' '}
+                  {profile.harness ?? 'claude'} · modelo {profile.model}
+                </p>
+              )}
               {state?.result != null && (
                 <RawJson label="Ver resultado y evidencia" value={state.result} />
               )}

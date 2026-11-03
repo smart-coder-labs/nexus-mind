@@ -404,6 +404,19 @@ pub async fn list_labeled_github_issues(
         .ok_or_else(|| anyhow::anyhow!("issues_unreadable"))
 }
 
+/// Workflow intake must not silently starve older issues behind the first page.
+pub async fn list_labeled_github_issues_bounded(token:&str,repository:&str,label:&str)->Result<Vec<Value>> {
+    let mut issues=list_labeled_github_issues(token,repository,label).await?;
+    if issues.len()<100 {return Ok(issues)}
+    let(owner,repo)=repository_parts(repository)?;
+    for page in 2..=10 {
+        let value=github_get(token,&format!("/repos/{owner}/{repo}/issues?state=open&labels={label}&sort=updated&direction=desc&per_page=100&page={page}")).await?;
+        let batch=value.as_array().ok_or_else(||anyhow::anyhow!("issues_unreadable"))?;
+        issues.extend(batch.iter().cloned());
+        if batch.len()<100 {return Ok(issues)}
+    }
+    anyhow::bail!("github_issue_limit_exceeded")
+}
 pub async fn list_recent_github_issues(token: &str, repository: &str) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(

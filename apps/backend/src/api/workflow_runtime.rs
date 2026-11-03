@@ -30,6 +30,9 @@ pub async fn save(
     let h = store.conn();
     let c = h.lock().map_err(|_| locked())?;
     require_explicit_permission(&c, &auth, None, "factory_policy:write")?;
+    if b.config.agents.iter().any(|a| a.binding.is_some()) {
+        require_explicit_permission(&c, &auth, None, "autonomous_agent:read")?;
+    }
     Ok(Json(
         db::save(
             &c,
@@ -40,6 +43,19 @@ pub async fn save(
             &b.config,
         )
         .map_err(fail)?,
+    ))
+}
+pub async fn agent_profile(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Response {
+    let h = store.conn();
+    let c = h.lock().map_err(|_| locked())?;
+    require_explicit_permission(&c, &auth, None, "factory_policy:read")?;
+    require_explicit_permission(&c, &auth, None, "autonomous_agent:read")?;
+    Ok(Json(
+        db::agent_profile(&c, &auth.org_id, &id).map_err(fail)?,
     ))
 }
 pub async fn report(

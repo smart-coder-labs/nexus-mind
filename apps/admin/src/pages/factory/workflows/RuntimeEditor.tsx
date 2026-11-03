@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Plus, Trash2, ShieldCheck, Info } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Input } from '../../../components/ui/Input'
+import type { AutonomousAgentDefinition } from '../../../types'
+import { AgentRoleEditor } from './AgentRoleEditor'
 import { InlineError, errorMessage } from '../shared/ui'
 import {
   agentRoles,
@@ -13,6 +15,7 @@ import {
   type RuntimeConfig,
   type RuntimeService,
   type RuntimeState,
+  type WorkflowAgentProfile,
 } from './runtime'
 
 const select =
@@ -30,12 +33,16 @@ export function RuntimeEditor({
   onSave,
   draft,
   onDraft,
+  catalog = [],
+  loadAgent,
 }: {
   value?: RuntimeState
+  catalog?: AutonomousAgentDefinition[]
+  loadAgent?: (id: string) => Promise<WorkflowAgentProfile>
   repositories: string[]
   section: 'agents' | 'checks' | 'services'
   disabled: boolean
-  onSave: (revision: number, config: RuntimeConfig) => Promise<void>
+  onSave: (revision: number, config: RuntimeConfig) => Promise<RuntimeState | void>
   draft?: RuntimeDraft
   onDraft?: (draft: RuntimeDraft) => void
 }) {
@@ -45,6 +52,7 @@ export function RuntimeEditor({
   )
   const [revision, setRevision] = useState(draft?.revision ?? runtime.revision)
   const [saving, setSaving] = useState(false)
+  const [loadingRoles, setLoadingRoles] = useState<Set<string>>(() => new Set())
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [image, setImage] = useState(config.agents[0]?.image ?? '')
@@ -55,7 +63,7 @@ export function RuntimeEditor({
   useEffect(() => {
     onDraft?.({ config, revision, commands: commandDrafts })
   }, [config, revision, commandDrafts])
-  const disabled = externalDisabled || saving
+  const disabled = externalDisabled || saving || loadingRoles.size > 0
   const stale = runtime.revision !== revision
   function agents(field: 'image' | 'model_connection' | 'network', text: string) {
     setConfig((c) => ({
@@ -117,9 +125,9 @@ export function RuntimeEditor({
           healthcheck: parseCommand(command(`health-${i}`, s.healthcheck)),
         })),
       }
-      await onSave(revision, updated)
-      setConfig(updated)
-      setRevision(revision + 1)
+      const saved = await onSave(revision, updated)
+      setConfig(saved?.config ?? updated)
+      setRevision(saved?.revision ?? revision + 1)
       setCommandDrafts({})
       setNotice(
         'Configuración guardada. El runner comprobará imágenes, conexiones y permisos antes de aplicarla.',
@@ -141,112 +149,147 @@ export function RuntimeEditor({
           <div>
             <h2 className="text-base font-semibold">Agentes y modelos</h2>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Cada fase comienza una sesión nueva. Elige el modelo por función. Estos perfiles usan
-              Claude Code en contenedor; las credenciales se quedan en el proxy autorizado del
-              runner.
+              Elige un perfil, un harness y un modelo por fase. Cada fase abre una sesión nueva; no
+              hereda credenciales ni permisos.
             </p>
+            {loadAgent ? (
+              <a
+                className="mt-2 inline-block text-sm underline underline-offset-4"
+                href="/factory/agents"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Abrir catálogo o crear un perfil
+              </a>
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground">
+                El catálogo requiere autonomous_agent:read. Puedes configurar roles propios sin
+                vincular un agente.
+              </p>
+            )}
           </div>
-          <div className="grid gap-4 lg:grid-cols-3">
-            <label className="space-y-1.5 text-sm">
-              Imagen de agentes
-              <Input
-                list="runtime-images"
-                value={image}
-                disabled={disabled}
-                placeholder="Imagen instalada @sha256:…"
-                onChange={(e) => {
-                  setImage(e.target.value)
-                  agents('image', e.target.value)
-                }}
-              />
-              <span className="block text-xs text-muted-foreground">
-                Se aplica a las cuatro fases. Solo imágenes instaladas y autorizadas.
-              </span>
-            </label>
-            <label className="space-y-1.5 text-sm">
-              Conexión de modelo
-              <Input
-                list="model-connections"
-                value={connection}
-                disabled={disabled}
-                placeholder="Referencia del proxy, no una API key"
-                onChange={(e) => {
-                  setConnection(e.target.value)
-                  agents('model_connection', e.target.value)
-                }}
-              />
-              <datalist id="model-connections">
-                {runtime.report?.model_connections?.map((n) => <option key={n} value={n} />)}
-              </datalist>
-              <span className="block text-xs text-muted-foreground">
-                {runtime.report?.model_connections?.length
-                  ? 'Conexiones verificadas por el runner.'
-                  : 'Todavía no hay un proxy de modelo conectado.'}
-              </span>
-            </label>
-            <label className="space-y-1.5 text-sm">
-              Red interna del proxy
-              <Input
-                list="model-networks"
-                value={network}
-                disabled={disabled}
-                placeholder="Nombre autorizado en el runner"
-                onChange={(e) => {
-                  setNetwork(e.target.value)
-                  agents('network', e.target.value)
-                }}
-              />
-              <datalist id="model-networks">
-                {runtime.report?.networks?.map((n) => <option key={n} value={n} />)}
-              </datalist>
-              <span className="block text-xs text-muted-foreground">
-                No se permite red del host ni acceso directo a internet.
-              </span>
-            </label>
-          </div>
+          <details className="space-y-3 rounded-lg bg-muted/50 p-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              Infraestructura del runner · preparar una vez
+            </summary>
+            <p className="pt-3 text-xs text-muted-foreground">
+              Puedes guardar los perfiles antes de completar la infraestructura. No se ejecutarán
+              hasta que el runner confirme imágenes, proxy y red. La imagen común se puede
+              sobrescribir por fase.
+            </p>
+            <div className="grid gap-4 lg:grid-cols-3">
+              <label className="space-y-1.5 text-sm">
+                Imagen de agentes
+                <Input
+                  list="runtime-images"
+                  value={image}
+                  disabled={disabled}
+                  placeholder="Imagen instalada @sha256:…"
+                  onChange={(e) => {
+                    setImage(e.target.value)
+                    agents('image', e.target.value)
+                  }}
+                />
+                <span className="block text-xs text-muted-foreground">
+                  Se aplica a las cuatro fases. Solo imágenes instaladas y autorizadas.
+                </span>
+              </label>
+              <label className="space-y-1.5 text-sm">
+                Conexión de modelo
+                <Input
+                  aria-label="Conexión de modelo compartida"
+                  list="model-connections"
+                  value={connection}
+                  disabled={disabled}
+                  placeholder="Referencia del proxy, no una API key"
+                  onChange={(e) => {
+                    setConnection(e.target.value)
+                    agents('model_connection', e.target.value)
+                  }}
+                />
+                <datalist id="model-connections">
+                  {runtime.report?.model_connections?.map((n) => <option key={n} value={n} />)}
+                </datalist>
+                <span className="block text-xs text-muted-foreground">
+                  {runtime.report?.model_connections?.length
+                    ? 'Conexiones verificadas por el runner.'
+                    : 'Todavía no hay un proxy de modelo conectado.'}
+                </span>
+              </label>
+              <label className="space-y-1.5 text-sm">
+                Red interna del proxy
+                <Input
+                  list="model-networks"
+                  value={network}
+                  disabled={disabled}
+                  placeholder="Nombre autorizado en el runner"
+                  onChange={(e) => {
+                    setNetwork(e.target.value)
+                    agents('network', e.target.value)
+                  }}
+                />
+                <datalist id="model-networks">
+                  {runtime.report?.networks?.map((n) => <option key={n} value={n} />)}
+                </datalist>
+                <span className="block text-xs text-muted-foreground">
+                  No se permite red del host ni acceso directo a internet.
+                </span>
+              </label>
+            </div>
+          </details>
           <div className="divide-y divide-border rounded-xl border border-border">
             {agentRoles.map((role) => {
               const current = config.agents.find((a) => a.role === role.id)
               return (
-                <div key={role.id} className="grid gap-3 p-4 sm:grid-cols-[1fr_220px]">
+                <div
+                  key={role.id}
+                  className="grid gap-4 p-4 @3xl:grid-cols-[minmax(200px,1fr)_minmax(320px,1.3fr)]"
+                >
                   <div>
                     <h3 className="text-sm font-medium">{role.label}</h3>
                     <p className="mt-1 max-w-xl text-sm text-muted-foreground">
                       {role.description}
                     </p>
                   </div>
-                  <label className="space-y-1 text-xs">
-                    Modelo · {role.label}
-                    <Input
-                      value={current?.model ?? role.model}
-                      disabled={disabled}
-                      list="agent-models"
-                      onChange={(e) =>
-                        setConfig((c) => ({
-                          ...c,
-                          agents: agentRoles.map((r) =>
-                            r.id === role.id
-                              ? {
-                                  ...(current ?? {
-                                    role: r.id,
-                                    image,
-                                    model_connection: connection,
-                                    network,
-                                  }),
-                                  model: e.target.value,
-                                }
-                              : (c.agents.find((a) => a.role === r.id) ?? {
-                                  role: r.id,
-                                  image,
-                                  model: r.model,
-                                  model_connection: connection,
-                                  network,
-                                }),
-                          ),
-                        }))
+                  <AgentRoleEditor
+                    label={role.label}
+                    value={
+                      current ?? {
+                        role: role.id,
+                        image,
+                        model: role.model,
+                        model_connection: connection,
+                        network,
                       }
-                    />
-                  </label>
+                    }
+                    agents={catalog}
+                    onLoadingChange={(loading) =>
+                      setLoadingRoles((previous) => {
+                        const next = new Set(previous)
+                        if (loading) next.add(role.id)
+                        else next.delete(role.id)
+                        return next
+                      })
+                    }
+                    availableHarnesses={runtime.report.harnesses ?? []}
+                    disabled={disabled}
+                    loadAgent={loadAgent}
+                    onChange={(patch) =>
+                      setConfig((c) => ({
+                        ...c,
+                        agents: agentRoles.map((r) => ({
+                          ...(c.agents.find((a) => a.role === r.id) ?? {
+                            role: r.id,
+                            image,
+                            model: r.model,
+                            model_connection: connection,
+                            network,
+                          }),
+                          ...(r.id === role.id ? patch : {}),
+                        })),
+                      }))
+                    }
+                  />
                 </div>
               )
             })}

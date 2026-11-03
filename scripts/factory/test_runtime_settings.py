@@ -30,6 +30,23 @@ class RuntimeSettingsTests(unittest.TestCase):
   self.assertIn('opus',value['adapters']['isolated-reviewer']['command'])
   self.assertEqual(self.config['adapters'],{})
   job['step']['kind']='prepare';self.assertIs(settings.for_job(self.config,job,[self.root],private_file),self.config)
+ def test_harnesses_use_only_operator_registered_commands_and_never_resume_sessions(self):
+  profile=copy.deepcopy(self.profile);profile['agents'][0].update(harness='codex',model='gpt-example',binding={'id':'agent','revision':2})
+  with self.assertRaisesRegex(settings.RuntimeSettingsError,'runtime_harness_missing'):settings.compile_settings(profile,self.config)
+  self.config['harnesses']={'codex':{'image':self.image,'format':'json','command':['reviewed-wrapper','--model','{model}']}}
+  adapters,_=settings.compile_settings(profile,self.config);adapter=adapters['isolated-reviewer'];self.assertEqual(adapter['command'],['reviewed-wrapper','--model','gpt-example']);self.assertEqual(adapter['format'],'json');self.assertEqual(adapter['agent_binding']['revision'],2)
+  self.config['harnesses']['codex']['command'].append('--resume=old-session')
+  with self.assertRaisesRegex(settings.RuntimeSettingsError,'runtime_harness_missing'):settings.compile_settings(profile,self.config)
+ def test_partial_profiles_never_apply_without_a_model(self):
+  self.profile['agents'][0]['model']=''
+  with self.assertRaisesRegex(settings.RuntimeSettingsError,'runtime_invalid'):settings.apply_settings(self.config,{'id':'w'},self.profile,self.report,[self.root],private_file)
+ def test_openai_compatible_proxy_is_not_a_provider_master_key_or_app_environment(self):
+  self.env.write_text('OPENAI_BASE_URL=http://model-proxy:8080/v1\nOPENAI_API_KEY=proxy-lease-fixture\n')
+  self.assertEqual(settings._model(self.config,'model',[self.root],private_file)[0],self.env)
+  self.env.write_text('OPENAI_BASE_URL=https://api.openai.com/v1\nOPENAI_API_KEY=proxy-lease-fixture\n')
+  with self.assertRaises(settings.RuntimeSettingsError):settings._model(self.config,'model',[self.root],private_file)
+  self.env.write_text('OPENAI_BASE_URL=http://model-proxy/v1\nOPENAI_API_KEY=sk-provider-master-fixture\n')
+  with self.assertRaises(settings.RuntimeSettingsError):settings._model(self.config,'model',[self.root],private_file)
  def test_multiple_repositories_keep_separate_checks_and_images(self):
   self.profile['checks'] += [{'name':'build','image':'sha256:'+'b'*64,'cwd':'api','command':['cargo','build'],'environment_refs':[]}]
   adapters,_=settings.compile_settings(self.profile);self.assertEqual(adapters['isolated-verification']['kind'],'suite');self.assertEqual(len(adapters['isolated-verification']['checks']),2)

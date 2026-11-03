@@ -8,12 +8,39 @@ import { Input } from '../../components/ui/Input'
 import { Skeleton } from '../../components/ui/Skeleton'
 import { SandboxBotPanel } from './SandboxBotPanel'
 import { fmtDateTime, humanize, runtimeStatusMeta } from './shared/format'
-import { PauseAllControl, useFactorySettings, usePiRuntimeHealth, useRuntimeHealth } from './shared/fleet'
-import { InlineError, PageHeader, PermissionNote, SectionTitle, errorMessage, useFactory } from './shared/ui'
+import {
+  PauseAllControl,
+  useFactorySettings,
+  usePiRuntimeHealth,
+  useRuntimeHealth,
+} from './shared/fleet'
+import {
+  InlineError,
+  PageHeader,
+  PermissionNote,
+  SectionTitle,
+  errorMessage,
+  useFactory,
+} from './shared/ui'
 
-function Section({ id, title, description, children, tone }: { id: string; title: string; description: string; children: ReactNode; tone?: 'danger' }) {
+function Section({
+  id,
+  title,
+  description,
+  children,
+  tone,
+}: {
+  id: string
+  title: string
+  description: string
+  children: ReactNode
+  tone?: 'danger'
+}) {
   return (
-    <section aria-labelledby={id} className={`min-w-0 space-y-4 rounded-xl border bg-card p-4 sm:p-5 ${tone === 'danger' ? 'border-status-error/25' : 'border-border-primary'}`}>
+    <section
+      aria-labelledby={id}
+      className={`min-w-0 space-y-4 rounded-xl border bg-card p-4 sm:p-5 ${tone === 'danger' ? 'border-status-error/25' : 'border-border-primary'}`}
+    >
       <div>
         <SectionTitle id={id}>{title}</SectionTitle>
         <p className="mt-1 max-w-2xl text-sm text-text-secondary">{description}</p>
@@ -27,97 +54,253 @@ const RETENTION_MIN = 7
 const RETENTION_MAX = 3650
 
 /** /factory/settings — runtime health, pause all agents, retention and the sandbox bot. */
-export default function FactorySettings() {
+export default function FactorySettings({
+  embedded = false,
+  sharedPauseReady = true,
+}: {
+  embedded?: boolean
+  sharedPauseReady?: boolean
+}) {
   const { can, client, invalidate } = useFactory()
   const { runtime, check } = useRuntimeHealth()
   const piRuntime = usePiRuntimeHealth()
   const { settings, toggle } = useFactorySettings()
   const [retention, setRetention] = useState('')
-  const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
-  useEffect(() => { if (settings.data) setRetention(String(settings.data.retention_days)) }, [settings.data])
+  const saveRetention = useMutation({
+    mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }),
+    onSuccess: () => invalidate('autonomous-settings'),
+  })
+  useEffect(() => {
+    if (settings.data) setRetention(String(settings.data.retention_days))
+  }, [settings.data])
 
   if (!can('autonomous_agent:read')) return <Navigate to="/401" replace />
 
   const canManage = can('autonomous_agent:enable')
   const meta = runtimeStatusMeta(runtime.data?.status)
   const days = Number(retention)
-  const retentionValid = retention.trim() !== '' && Number.isInteger(days) && days >= RETENTION_MIN && days <= RETENTION_MAX
+  const retentionValid =
+    retention.trim() !== '' &&
+    Number.isInteger(days) &&
+    days >= RETENTION_MIN &&
+    days <= RETENTION_MAX
   const retentionDirty = settings.data != null && String(settings.data.retention_days) !== retention
 
   return (
-    <div className="mx-auto min-w-0 max-w-4xl space-y-6 p-6 md:p-8">
-      <PageHeader title="Factory settings" subtitle="The runtime your agents run on, the switch that pauses them all, and how long their history is kept." />
+    <div
+      className={embedded ? 'min-w-0 space-y-6' : 'mx-auto min-w-0 max-w-4xl space-y-6 p-6 md:p-8'}
+    >
+      {!embedded && (
+        <PageHeader
+          title="Factory settings"
+          subtitle="Worker del backend, pausa compartida y conservación del historial."
+        />
+      )}
 
-      <Section id="runtime-title" title="Runtime" description="Agents run inside the Claude Code runtime on this server. While it is not ready, runs wait instead of failing.">
-        {runtime.isLoading ? <Skeleton className="h-6 w-48" /> : runtime.isError ? (
-          <InlineError message="Could not check the runtime." onRetry={() => void runtime.refetch()} />
+      <Section
+        id="runtime-title"
+        title="Claude Code · worker del backend"
+        description="Estado de Claude en el worker. No comprueba Pi, Codex ni los adaptadores instalados en un runner remoto."
+      >
+        {runtime.isLoading ? (
+          <Skeleton className="h-6 w-48" />
+        ) : runtime.isError ? (
+          <InlineError
+            message="Could not check the runtime."
+            onRetry={() => void runtime.refetch()}
+          />
         ) : (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-3">
-              <Badge size="md" variant={meta.variant} dot>{meta.label}</Badge>
-              {runtime.data?.claude_version && <span className="text-sm text-text-secondary">Claude Code {runtime.data.claude_version}</span>}
-              {runtime.data?.reason_code && runtime.data.status !== 'ready' && <span className="text-sm text-text-tertiary">{humanize(runtime.data.reason_code)}</span>}
+              <Badge size="md" variant={meta.variant} dot>
+                {meta.label}
+              </Badge>
+              {runtime.data?.claude_version && (
+                <span className="text-sm text-text-secondary">
+                  Claude Code {runtime.data.claude_version}
+                </span>
+              )}
+              {runtime.data?.reason_code && runtime.data.status !== 'ready' && (
+                <span className="text-sm text-text-tertiary">
+                  {humanize(runtime.data.reason_code)}
+                </span>
+              )}
             </div>
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
-              <dt className="text-text-tertiary">Last checked</dt><dd className="text-text-secondary">{fmtDateTime(runtime.data?.checked_at) || 'Never'}</dd>
-              {runtime.data?.last_success_at && <><dt className="text-text-tertiary">Last healthy</dt><dd className="text-text-secondary">{fmtDateTime(runtime.data.last_success_at)}</dd></>}
-              {runtime.data?.last_failure_at && <><dt className="text-text-tertiary">Last problem</dt><dd className="text-text-secondary">{fmtDateTime(runtime.data.last_failure_at)}</dd></>}
+              <dt className="text-text-tertiary">Last checked</dt>
+              <dd className="text-text-secondary">
+                {fmtDateTime(runtime.data?.checked_at) || 'Never'}
+              </dd>
+              {runtime.data?.last_success_at && (
+                <>
+                  <dt className="text-text-tertiary">Last healthy</dt>
+                  <dd className="text-text-secondary">
+                    {fmtDateTime(runtime.data.last_success_at)}
+                  </dd>
+                </>
+              )}
+              {runtime.data?.last_failure_at && (
+                <>
+                  <dt className="text-text-tertiary">Last problem</dt>
+                  <dd className="text-text-secondary">
+                    {fmtDateTime(runtime.data.last_failure_at)}
+                  </dd>
+                </>
+              )}
             </dl>
             {runtime.data?.status === 'reauth_required' && (
               <p className="flex gap-2 rounded-md border border-status-warning/25 bg-status-warning/[0.08] px-4 py-3 text-sm text-text-primary">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden />
-                <span>Authenticate Claude Code again as the backend OS account, then check again. Schedules stay saved and leasing is paused until then.</span>
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-status-warning"
+                  aria-hidden
+                />
+                <span>
+                  Authenticate Claude Code again as the backend OS account, then check again.
+                  Schedules stay saved and leasing is paused until then.
+                </span>
               </p>
             )}
           </div>
         )}
-        {canManage
-          ? <div className="flex flex-wrap items-center gap-3">
-              <Button size="sm" variant="secondary" leftIcon={<RefreshCw className="h-3.5 w-3.5" />} loading={check.isPending} onClick={() => check.mutate()}>Check again</Button>
-              {check.isError && <span role="alert" className="text-[12px] text-status-error">{errorMessage(check.error, 'The check failed.')} Try again.</span>}
-            </div>
-          : <PermissionNote permission="autonomous_agent:enable" action="re-check the runtime" />}
+        {canManage ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              size="sm"
+              variant="secondary"
+              leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+              loading={check.isPending}
+              onClick={() => check.mutate()}
+            >
+              Check again
+            </Button>
+            {check.isError && (
+              <span role="alert" className="text-[12px] text-status-error">
+                {errorMessage(check.error, 'The check failed.')} Try again.
+              </span>
+            )}
+          </div>
+        ) : (
+          <PermissionNote permission="autonomous_agent:enable" action="re-check the runtime" />
+        )}
       </Section>
 
-      <Section id="pi-runtime-title" title="Pi executor" description="Pi uses the worker's local ChatGPT OAuth login. This check reads auth readiness only and never sends a model prompt.">
-        {piRuntime.isLoading ? <Skeleton className="h-6 w-48" /> : piRuntime.isError ? (
-          <InlineError message="Could not check Pi executor readiness." onRetry={() => void piRuntime.refetch()} />
+      <Section
+        id="pi-runtime-title"
+        title="Pi executor"
+        description="Pi uses the worker's local ChatGPT OAuth login. This check reads auth readiness only and never sends a model prompt."
+      >
+        {piRuntime.isLoading ? (
+          <Skeleton className="h-6 w-48" />
+        ) : piRuntime.isError ? (
+          <InlineError
+            message="Could not check Pi executor readiness."
+            onRetry={() => void piRuntime.refetch()}
+          />
         ) : (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-3">
-              <Badge size="md" variant={piRuntime.data?.status === 'ready' ? 'success' : piRuntime.data?.status === 'blocked' ? 'warning' : 'error'} dot>
-                {piRuntime.data?.status === 'ready' ? 'Pi OAuth ready' : piRuntime.data?.status === 'blocked' ? 'Pi OAuth required' : 'Pi unavailable'}
+              <Badge
+                size="md"
+                variant={
+                  piRuntime.data?.status === 'ready'
+                    ? 'success'
+                    : piRuntime.data?.status === 'blocked'
+                      ? 'warning'
+                      : 'error'
+                }
+                dot
+              >
+                {piRuntime.data?.status === 'ready'
+                  ? 'Pi OAuth ready'
+                  : piRuntime.data?.status === 'blocked'
+                    ? 'Pi OAuth required'
+                    : 'Pi unavailable'}
               </Badge>
-              {piRuntime.data?.reason_code && <span className="text-sm text-text-secondary">{humanize(piRuntime.data.reason_code)}</span>}
+              {piRuntime.data?.reason_code && (
+                <span className="text-sm text-text-secondary">
+                  {humanize(piRuntime.data.reason_code)}
+                </span>
+              )}
             </div>
             {piRuntime.data?.status === 'blocked' && (
               <p className="flex gap-2 rounded-md border border-status-warning/25 bg-status-warning/[0.08] px-4 py-3 text-sm text-text-primary">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden />
-                <span>Sign in to Pi with the OpenAI Codex provider on the worker host. Agent runs using Pi remain blocked until that local login is provisioned.</span>
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-status-warning"
+                  aria-hidden
+                />
+                <span>
+                  Sign in to Pi with the OpenAI Codex provider on the worker host. Agent runs using
+                  Pi remain blocked until that local login is provisioned.
+                </span>
               </p>
             )}
           </div>
         )}
       </Section>
 
-      <Section id="pause-title" title="Pause all agents" tone="danger" description="Stops every agent in this organization at once. Runs in progress are cancelled and nothing new starts until you resume.">
-        {settings.isLoading ? <Skeleton className="h-6 w-40" /> : settings.isError ? (
-          <InlineError message="Could not load the fleet state." onRetry={() => void settings.refetch()} />
+      <Section
+        id="pause-title"
+        title="Pausa de Factory"
+        tone="danger"
+        description="Detiene nuevos inicios de agentes y workflows de esta organización. Revoca el trabajo activo; conserva la cola y los pendientes. Al reactivar no se reinician automáticamente las ejecuciones canceladas."
+      >
+        {settings.isLoading ? (
+          <Skeleton className="h-6 w-40" />
+        ) : settings.isError ? (
+          <InlineError
+            message="Could not load the fleet state."
+            onRetry={() => void settings.refetch()}
+          />
         ) : (
           <div className="flex flex-wrap items-center gap-3">
-            <Badge size="md" variant={settings.data?.enabled ? 'success' : 'warning'} dot>{settings.data?.enabled ? 'Agents are running' : 'All agents are paused'}</Badge>
-            {canManage
-              ? <PauseAllControl enabled={Boolean(settings.data?.enabled)} pending={toggle.isPending} onToggle={value => toggle.mutate(value)} error={toggle.error ?? undefined} />
-              : <PermissionNote permission="autonomous_agent:enable" action="pause or resume agents" />}
+            <Badge size="md" variant={settings.data?.enabled ? 'success' : 'warning'} dot>
+              {settings.data?.enabled ? 'Inicio de trabajo habilitado' : 'Factory pausada'}
+            </Badge>
+            {canManage && can('factory_policy:write') && sharedPauseReady ? (
+              <PauseAllControl
+                enabled={Boolean(settings.data?.enabled)}
+                pending={toggle.isPending}
+                onToggle={(value) => toggle.mutate(value)}
+                error={toggle.error ?? undefined}
+              />
+            ) : !sharedPauseReady ? (
+              <p className="text-xs text-muted-foreground">
+                No se ha confirmado el soporte de pausa compartida. Comprueba el backend y los
+                permisos de lectura antes de usar una parada global.
+              </p>
+            ) : (
+              <PermissionNote
+                permission={canManage ? 'factory_policy:write' : 'autonomous_agent:enable'}
+                action="pausar o reactivar ambos motores de Factory"
+              />
+            )}
           </div>
         )}
       </Section>
 
-      <Section id="retention-title" title="Retention" description={`How long runs, conversations and findings are kept before they are deleted, from ${RETENTION_MIN} to ${RETENTION_MAX} days.`}>
-        {settings.isLoading ? <Skeleton className="h-9 w-40" /> : settings.isSuccess && (
-          canManage ? (
-            <form className="space-y-2" onSubmit={event => { event.preventDefault(); if (retentionValid && retentionDirty) saveRetention.mutate(days) }}>
-              <label htmlFor="retention-days" className="block text-[12px] font-medium text-text-secondary">Keep history for (days)</label>
+      <Section
+        id="retention-title"
+        title="Retention"
+        description={`Conservación de runs, conversaciones y hallazgos de agentes individuales: de ${RETENTION_MIN} a ${RETENTION_MAX} días. Los workflows y sus evidencias se conservan; esta opción no los elimina.`}
+      >
+        {settings.isLoading ? (
+          <Skeleton className="h-9 w-40" />
+        ) : (
+          settings.isSuccess &&
+          (canManage ? (
+            <form
+              className="space-y-2"
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (retentionValid && retentionDirty) saveRetention.mutate(days)
+              }}
+            >
+              <label
+                htmlFor="retention-days"
+                className="block text-[12px] font-medium text-text-secondary"
+              >
+                Keep history for (days)
+              </label>
               <div className="flex flex-wrap items-center gap-3">
                 <div className="w-32">
                   <Input
@@ -129,23 +312,49 @@ export default function FactorySettings() {
                     value={retention}
                     aria-invalid={!retentionValid || undefined}
                     aria-describedby="retention-help"
-                    onChange={event => { setRetention(event.target.value); saveRetention.reset() }}
+                    onChange={(event) => {
+                      setRetention(event.target.value)
+                      saveRetention.reset()
+                    }}
                   />
                 </div>
-                <Button type="submit" size="sm" variant="primary" loading={saveRetention.isPending} disabled={!retentionValid || !retentionDirty}>Save</Button>
-                {saveRetention.isSuccess && !retentionDirty && <span role="status" className="text-[12px] text-text-secondary">Saved.</span>}
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="primary"
+                  loading={saveRetention.isPending}
+                  disabled={!retentionValid || !retentionDirty}
+                >
+                  Save
+                </Button>
+                {saveRetention.isSuccess && !retentionDirty && (
+                  <span role="status" className="text-[12px] text-text-secondary">
+                    Saved.
+                  </span>
+                )}
               </div>
-              <p id="retention-help" className={`text-[12px] ${retentionValid ? 'text-text-tertiary' : 'text-status-error'}`}>
-                {retentionValid ? 'Older history is removed automatically.' : `Enter a whole number from ${RETENTION_MIN} to ${RETENTION_MAX}.`}
+              <p
+                id="retention-help"
+                className={`text-[12px] ${retentionValid ? 'text-text-tertiary' : 'text-status-error'}`}
+              >
+                {retentionValid
+                  ? 'Older history is removed automatically.'
+                  : `Enter a whole number from ${RETENTION_MIN} to ${RETENTION_MAX}.`}
               </p>
-              {saveRetention.isError && <p role="alert" className="text-[12px] text-status-error">{errorMessage(saveRetention.error, 'Could not save retention.')} Try again.</p>}
+              {saveRetention.isError && (
+                <p role="alert" className="text-[12px] text-status-error">
+                  {errorMessage(saveRetention.error, 'Could not save retention.')} Try again.
+                </p>
+              )}
             </form>
           ) : (
             <div className="space-y-2">
-              <p className="text-sm text-text-primary">History is kept for {settings.data.retention_days} days.</p>
+              <p className="text-sm text-text-primary">
+                History is kept for {settings.data.retention_days} days.
+              </p>
               <PermissionNote permission="autonomous_agent:enable" action="change retention" />
             </div>
-          )
+          ))
         )}
       </Section>
 

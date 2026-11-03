@@ -160,7 +160,7 @@ export function GithubReviewHooks() {
           {!agents.isPending && !reviewers.length && (
             <p className="text-sm text-muted-foreground">
               No hay reviewers habilitados con configuración válida.{' '}
-              <Link to="/factory" className="underline underline-offset-4">
+              <Link to="/factory/agents" className="underline underline-offset-4">
                 Configura un agente github_pr_reviewer
               </Link>{' '}
               antes de conectar el repositorio.

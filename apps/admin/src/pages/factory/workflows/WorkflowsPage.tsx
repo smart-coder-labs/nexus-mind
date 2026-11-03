@@ -8,6 +8,7 @@ import { Input } from '../../../components/ui/Input'
 import { InlineError, PageHeader, errorMessage, useFactory } from '../shared/ui'
 import { GithubReviewHooks } from './GithubReviewHooks'
 import { RuntimeEditor, type RuntimeDraft } from './RuntimeEditor'
+import { WorkflowConnectorForm } from './WorkflowConnectorForm'
 import { RepositoryInventory } from './RepositoryInventory'
 import { ExecutionDetail } from './ExecutionDetail'
 import { WorkflowEditor } from './WorkflowEditor'
@@ -38,13 +39,20 @@ function connected(last: string | null | undefined) {
   return Date.now() - Date.parse(value) < 120_000
 }
 
-export default function WorkflowsPage() {
+export default function WorkflowsPage({
+  embedded = false,
+  area,
+}: {
+  embedded?: boolean
+  area?: 'sources' | 'connections' | 'github'
+}) {
   const { client, can } = useFactory()
   const readable = can('factory_policy:read')
   const writable = can('factory_policy:write')
   const [params, setParams] = useSearchParams()
   const runId = params.get('run') ?? ''
-  const tab = tabs.some(([id]) => id === params.get('tab')) ? params.get('tab')! : 'overview'
+  const tab =
+    area ?? (tabs.some(([id]) => id === params.get('tab')) ? params.get('tab')! : 'overview')
   const section = sections.some(([id]) => id === params.get('section'))
     ? params.get('section')!
     : 'repositories'
@@ -73,6 +81,10 @@ export default function WorkflowsPage() {
   const [sentryUrl, setSentryUrl] = useState('https://sentry.io')
   const [sentryOrg, setSentryOrg] = useState('')
   const [sentryProject, setSentryProject] = useState('')
+  const [githubRepository, setGithubRepository] = useState('')
+  const [githubLabels, setGithubLabels] = useState('')
+  const [githubIncludeAssigned, setGithubIncludeAssigned] = useState(false)
+  const [connectorForm, setConnectorForm] = useState<'publication' | 'intake' | null>(null)
   const [openedArtifact, setOpenedArtifact] = useState<{
     mime: string
     content_base64: string
@@ -91,6 +103,11 @@ export default function WorkflowsPage() {
     queryFn: () => client.getFactoryWorkflowRun(runId),
     enabled: readable && !!runId,
     refetchInterval: 2500,
+  })
+  const agentCatalog = useQuery({
+    queryKey: ['autonomous-agents'],
+    queryFn: () => client.listAutonomousAgents(),
+    enabled: readable && can('autonomous_agent:read'),
   })
   const connectors = useQuery({
     queryKey: ['workflow-connectors'],
@@ -115,6 +132,17 @@ export default function WorkflowsPage() {
         c.health !== 'revoked' &&
         c.metadata.purpose === 'factory_workflow_github',
     ) ?? []
+  const githubRepositories = [
+    ...new Set(
+      (workspace?.repositories ?? []).flatMap((r) => {
+        const path = r.remote
+          .replace(/^git@github.com:/, 'https://github.com/')
+          .match(/^https:\/\/github\.com\/([^?#]+)$/)?.[1]
+          ?.replace(/\.git$/, '')
+        return path && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(path) ? [path.toLowerCase()] : []
+      }),
+    ),
+  ].sort()
   const intakeConnectors =
     connectors.data?.filter(
       (c) =>
@@ -138,8 +166,11 @@ export default function WorkflowsPage() {
         runner?.capabilities.includes(`adapter:${s.adapter}`) &&
         s.capabilities.every((c) => runner?.capabilities.includes(c)),
     )
+  const factoryPaused = catalog.data?.factory_enabled === false
   const startAllowed =
-    !!selectedDefinition && (preparationOnly || runtime.ready || locallyManagedReady)
+    !factoryPaused &&
+    !!selectedDefinition &&
+    (preparationOnly || runtime.ready || locallyManagedReady)
   function navigate(values: Record<string, string>) {
     setParams((previous) => {
       const next = new URLSearchParams(previous)
@@ -198,6 +229,9 @@ export default function WorkflowsPage() {
   }, [openedArtifact])
   useEffect(() => {
     setDefinitionId('')
+    setGithubRepository('')
+    setConnectorForm(null)
+    setIntakeConnector('')
     setEditor('')
   }, [workspace?.id])
   if (!readable)
@@ -253,12 +287,16 @@ export default function WorkflowsPage() {
     },
   ]
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6 md:p-8">
+    <div
+      className={embedded ? 'min-w-0 space-y-5' : 'mx-auto max-w-7xl space-y-6 p-4 sm:p-6 md:p-8'}
+    >
       <header className="flex flex-wrap items-start justify-between gap-4">
-        <PageHeader
-          title="Workflows de desarrollo"
-          subtitle="Configura un workspace, ejecuta una tarea y sigue sus evidencias."
-        />
+        {!embedded && (
+          <PageHeader
+            title="Workflows de desarrollo"
+            subtitle="Configura un workspace, ejecuta una tarea y sigue sus evidencias."
+          />
+        )}
         <label className="block w-full space-y-1 text-xs sm:w-72">
           Workspace
           <select
@@ -278,25 +316,29 @@ export default function WorkflowsPage() {
           </select>
         </label>
       </header>
-      <nav
-        className="flex gap-1 overflow-x-auto border-b border-border pb-1"
-        aria-label="Secciones de workflows"
-      >
-        {tabs.map(([id, label]) => (
-          <button
-            type="button"
-            key={id}
-            aria-current={tab === id ? 'page' : undefined}
-            onClick={() => navigate({ tab: id, run: '' })}
-            className={`shrink-0 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${tab === id ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
-          >
-            {label}
-            {id === 'runs' && !!runs.length && (
-              <span className="ml-2 tabular-nums text-xs">{runs.length}</span>
-            )}
-          </button>
-        ))}
-      </nav>
+      {!embedded && (
+        <nav
+          className="flex gap-1 overflow-x-auto border-b border-border pb-1"
+          aria-label="Secciones de workflows"
+        >
+          {tabs
+            .filter(([id]) => ['overview', 'settings', 'runs'].includes(id))
+            .map(([id, label]) => (
+              <button
+                type="button"
+                key={id}
+                aria-current={tab === id ? 'page' : undefined}
+                onClick={() => navigate({ tab: id, run: '' })}
+                className={`shrink-0 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${tab === id ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+              >
+                {label}
+                {id === 'runs' && !!runs.length && (
+                  <span className="ml-2 tabular-nums text-xs">{runs.length}</span>
+                )}
+              </button>
+            ))}
+        </nav>
+      )}
       {(error || catalog.isError) && (
         <InlineError
           message={error || errorMessage(catalog.error, 'No se pudo cargar el workspace.')}
@@ -304,6 +346,14 @@ export default function WorkflowsPage() {
             void catalog.refetch()
           }}
         />
+      )}
+      {factoryPaused && (
+        <p role="status" className="rounded-lg border border-border bg-muted p-4 text-sm">
+          Factory está pausada. No se iniciará trabajo nuevo en el worker ni en los runners.{' '}
+          <Link className="underline underline-offset-4" to="/factory/settings">
+            Abrir configuración
+          </Link>
+        </p>
       )}
       {notice && (
         <p role="status" className="rounded-lg bg-muted p-3 text-sm">
@@ -532,21 +582,38 @@ export default function WorkflowsPage() {
               />
             )}
             {['agents', 'checks', 'services'].includes(section) && (
-              <RuntimeEditor
-                key={workspace.id}
-                draft={runtimeDrafts.current[workspace.id]}
-                onDraft={(d) => {
-                  runtimeDrafts.current[workspace.id] = d
-                }}
-                value={workspace.runtime}
-                repositories={workspace.repositories.map((r) => r.path)}
-                section={section as 'agents' | 'checks' | 'services'}
-                disabled={busy || !writable}
-                onSave={async (revision, config) => {
-                  await client.saveWorkflowRuntime(workspace.id, revision, config)
-                  await catalog.refetch()
-                }}
-              />
+              <>
+                {agentCatalog.isError && (
+                  <InlineError
+                    message="No se pudo cargar el catálogo de agentes. Los perfiles ya vinculados se conservan."
+                    onRetry={() => {
+                      void agentCatalog.refetch()
+                    }}
+                  />
+                )}
+                <RuntimeEditor
+                  catalog={agentCatalog.data ?? []}
+                  loadAgent={
+                    can('autonomous_agent:read')
+                      ? (id) => client.getWorkflowAgentProfile(id)
+                      : undefined
+                  }
+                  key={workspace.id}
+                  draft={runtimeDrafts.current[workspace.id]}
+                  onDraft={(d) => {
+                    runtimeDrafts.current[workspace.id] = d
+                  }}
+                  value={workspace.runtime}
+                  repositories={workspace.repositories.map((r) => r.path)}
+                  section={section as 'agents' | 'checks' | 'services'}
+                  disabled={busy || !writable}
+                  onSave={async (revision, config) => {
+                    const saved = await client.saveWorkflowRuntime(workspace.id, revision, config)
+                    await catalog.refetch()
+                    return saved
+                  }}
+                />
+              </>
             )}
             {section === 'delivery' && (
               <>
@@ -598,6 +665,32 @@ export default function WorkflowsPage() {
                     />
                   </label>
                 </div>
+                {can('autonomous_agent:manage_connectors') &&
+                  can('autonomous_agent:read') &&
+                  writable && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setConnectorForm('publication')}
+                    >
+                      Nuevo conector de publicación
+                    </Button>
+                  )}
+                {connectorForm === 'publication' && (
+                  <WorkflowConnectorForm
+                    kind="publication"
+                    repositories={githubRepositories}
+                    onCancel={() => setConnectorForm(null)}
+                    onCreated={async (id) => {
+                      await connectors.refetch()
+                      setConnectorId(id)
+                      setConnectorForm(null)
+                      setNotice(
+                        'Conector cifrado creado. Sus permisos efectivos también se comprobarán al publicar.',
+                      )
+                    }}
+                  />
+                )}
                 {!publisherConnectors.length && (
                   <p className="text-sm text-muted-foreground">
                     No hay un conector de publicación autorizado. Configura uno cifrado con
@@ -846,8 +939,8 @@ export default function WorkflowsPage() {
           <div>
             <h2 className="text-base font-semibold">Entradas automáticas</h2>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Linear, Slack y Sentry envían tareas al mismo workflow. Se consultan cada cinco
-              minutos mientras el runner está activo y respetan políticas y aprobaciones.
+              GitHub Issues, Linear, Slack y Sentry envían tareas al mismo workflow. Se consultan
+              cada cinco minutos mientras el runner está activo y respetan políticas y aprobaciones.
             </p>
           </div>
           <ul className="divide-y divide-border">
@@ -876,27 +969,65 @@ export default function WorkflowsPage() {
                 </li>
               ))}
           </ul>
+          <div className="space-y-3">
+            {can('autonomous_agent:manage_connectors') &&
+              can('autonomous_agent:read') &&
+              writable && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={intakeKind === 'github' && !githubRepository}
+                  onClick={() => setConnectorForm('intake')}
+                >
+                  Nuevo conector de entrada
+                </Button>
+              )}
+            {connectorForm === 'intake' && (
+              <WorkflowConnectorForm
+                key={intakeKind + githubRepository}
+                kind={intakeKind}
+                repositories={intakeKind === 'github' ? [githubRepository] : []}
+                baseUrl={sentryUrl}
+                onCancel={() => setConnectorForm(null)}
+                onCreated={async (id) => {
+                  await connectors.refetch()
+                  setIntakeConnector(id)
+                  setConnectorForm(null)
+                  setNotice('Conector cifrado creado. Ahora puedes conectar la entrada.')
+                }}
+              />
+            )}
+          </div>
           <form
             className="space-y-4"
             onSubmit={(e) =>
               submit(e, async () => {
                 const config =
-                  intakeKind === 'linear'
-                    ? { team_id: team || undefined, project_id: project || undefined }
-                    : intakeKind === 'slack'
-                      ? {
-                          channel_id: channel,
-                          allowed_reactors: reactors
-                            .split(',')
-                            .map((s) => s.trim())
-                            .filter(Boolean),
-                        }
-                      : {
-                          base_url: sentryUrl,
-                          org_slug: sentryOrg,
-                          project_slug: sentryProject,
-                          query: 'is:unresolved',
-                        }
+                  intakeKind === 'github'
+                    ? {
+                        repository: githubRepository,
+                        ...(githubIncludeAssigned ? { include_assigned: true } : {}),
+                        labels: githubLabels
+                          .split(',')
+                          .map((s) => s.trim())
+                          .filter(Boolean),
+                      }
+                    : intakeKind === 'linear'
+                      ? { team_id: team || undefined, project_id: project || undefined }
+                      : intakeKind === 'slack'
+                        ? {
+                            channel_id: channel,
+                            allowed_reactors: reactors
+                              .split(',')
+                              .map((s) => s.trim())
+                              .filter(Boolean),
+                          }
+                        : {
+                            base_url: sentryUrl,
+                            org_slug: sentryOrg,
+                            project_slug: sentryProject,
+                            query: 'is:unresolved',
+                          }
                 await client.createWorkflowIntake({
                   definition_id: definitionId,
                   kind: intakeKind,
@@ -934,8 +1065,10 @@ export default function WorkflowsPage() {
                   onChange={(e) => {
                     setIntakeKind(e.target.value)
                     setIntakeConnector('')
+                    setConnectorForm(null)
                   }}
                 >
+                  <option value="github">GitHub Issues</option>
                   <option value="linear">Linear</option>
                   <option value="slack">Slack</option>
                   <option value="sentry">Sentry</option>
@@ -958,6 +1091,59 @@ export default function WorkflowsPage() {
                   ))}
                 </select>
               </label>
+              {intakeKind === 'github' && (
+                <>
+                  <label className="space-y-1.5 text-sm">
+                    Repositorio de GitHub
+                    <select
+                      className={select}
+                      required
+                      value={githubRepository}
+                      disabled={!writable || busy}
+                      onChange={(e) => {
+                        setGithubRepository(e.target.value)
+                        setIntakeConnector('')
+                      }}
+                    >
+                      <option value="">Seleccionar repositorio autorizado</option>
+                      {githubRepositories.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    Labels adicionales (separadas por coma)
+                    <Input
+                      value={githubLabels}
+                      disabled={!writable || busy}
+                      placeholder="bug, frontend"
+                      onChange={(e) => setGithubLabels(e.target.value)}
+                    />
+                  </label>
+                  <p className="text-sm text-muted-foreground sm:col-span-2">
+                    Solo issues abiertos con label factory y todas las labels adicionales. Por
+                    defecto, sin asignar para no tomar trabajo de otra persona o duplicar un
+                    resolver. Los PRs se excluyen y cada issue entra una sola vez en este workspace.
+                    El conector requiere github:read y el repositorio en su allowlist.
+                  </p>
+                </>
+              )}
+              {intakeKind === 'github' && (
+                <label className="flex items-start gap-2 text-xs text-muted-foreground sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={githubIncludeAssigned}
+                    disabled={!writable || busy}
+                    onChange={(e) => setGithubIncludeAssigned(e.target.checked)}
+                  />
+                  <span>
+                    Incluir issues asignados · comprueba antes que ningún agente individual procese
+                    el mismo origen. La deduplicación del workflow es por workspace.
+                  </span>
+                </label>
+              )}
               {intakeKind === 'linear' && (
                 <>
                   <label className="space-y-1.5 text-sm">
@@ -1042,7 +1228,13 @@ export default function WorkflowsPage() {
             <div className="flex flex-wrap gap-2">
               <Button
                 type="submit"
-                disabled={busy || !writable || !definitionId || !intakeConnector}
+                disabled={
+                  busy ||
+                  !writable ||
+                  !definitionId ||
+                  !intakeConnector ||
+                  (intakeKind === 'github' && !githubRepositories.includes(githubRepository))
+                }
               >
                 Conectar entrada
               </Button>

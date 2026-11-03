@@ -14,10 +14,32 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub services: Vec<Service>,
 }
+fn default_harness() -> String {
+    "claude".into()
+}
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentBinding {
+    pub id: String,
+    #[serde(default)]
+    pub revision: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub config_hash: String,
+}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Agent {
     pub role: String,
+    #[serde(default = "default_harness")]
+    pub harness: String,
+    #[serde(default)]
+    pub binding: Option<AgentBinding>,
+    #[serde(default)]
+    pub inherit_model: bool,
+    #[serde(default)]
+    pub instructions: String,
     pub image: String,
     pub model: String,
     pub model_connection: String,
@@ -60,6 +82,8 @@ pub struct Report {
     #[serde(default)]
     pub environments: Vec<String>,
     #[serde(default)]
+    pub harnesses: Vec<String>,
+    #[serde(default)]
     pub error: Option<String>,
 }
 const ROLES: [&str; 4] = ["investigation", "test_author", "implementation", "reviewer"];
@@ -69,6 +93,7 @@ fn secret_like(s: &str) -> bool {
     [
         "ghp_",
         "github_pat_",
+        "nmr_",
         "sk-ant-",
         "sk-proj-",
         "bearer ",
@@ -120,13 +145,25 @@ pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
     for a in &config.agents {
         if !ROLES.contains(&a.role.as_str())
             || !roles.insert(&a.role)
-            || !image(&a.image)
-            || a.model.is_empty()
+            || !name(&a.harness)
+            || a.instructions.len() > 16000
+            || secret_like(&a.instructions)
+            || (!a.image.is_empty() && !image(&a.image))
+            || (!a.model.is_empty()
+                && (!a
+                    .model
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                    || !a
+                        .model
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_.:/[]@+".contains(&b))))
             || secret_like(&a.model)
             || a.model.len() > 120
             || a.model.chars().any(char::is_control)
-            || !name(&a.model_connection)
-            || !name(&a.network)
+            || (!a.model_connection.is_empty() && !name(&a.model_connection))
+            || (!a.network.is_empty() && !name(&a.network))
             || ["host", "bridge", "none", "services"].contains(&a.network.as_str())
         {
             bail!("invalid_runtime_agent")
@@ -170,12 +207,15 @@ pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
     Ok(())
 }
 pub fn migrate(c: &Connection) -> Result<()> {
-    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? >= 96 {
+    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? >= 97 {
         return Ok(());
     }
     let tx = rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)?;
     if tx.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? < 96 {
         tx.execute_batch("CREATE TABLE factory_workflow_runtime(workspace_id TEXT PRIMARY KEY REFERENCES factory_workspaces(id) ON DELETE CASCADE,revision INTEGER NOT NULL DEFAULT 0,config_json TEXT NOT NULL DEFAULT '{}',report_json TEXT NOT NULL DEFAULT '{}',reported_at TEXT,updated_by TEXT REFERENCES users(id),updated_at TEXT NOT NULL DEFAULT(datetime('now'))); PRAGMA user_version=96;")?;
+    }
+    if tx.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? < 97 {
+        tx.execute_batch("ALTER TABLE factory_workflow_intakes RENAME TO factory_workflow_intakes_v96; CREATE TABLE factory_workflow_intakes (id TEXT PRIMARY KEY,org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,definition_id TEXT NOT NULL REFERENCES factory_workflow_definitions(id) ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN ('github','linear','slack','sentry')),connector_id TEXT NOT NULL,config_json TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,next_poll INTEGER NOT NULL DEFAULT 0,last_error TEXT,created_by TEXT NOT NULL); INSERT INTO factory_workflow_intakes SELECT * FROM factory_workflow_intakes_v96; DROP TABLE factory_workflow_intakes_v96; CREATE INDEX workflow_intake_due ON factory_workflow_intakes(org_id,enabled,next_poll); PRAGMA user_version=97;")?;
     }
     tx.commit()?;
     Ok(())
@@ -203,7 +243,25 @@ pub fn metadata(c: &Connection, workspace: &str) -> Result<Value> {
     if config.services.is_empty() {
         missing.push("services".into())
     }
+    if config.agents.iter().any(|a| a.binding.is_some()) {
+        let org: String = c.query_row(
+            "SELECT org_id FROM factory_workspaces WHERE id=?1",
+            [workspace],
+            |r| r.get(0),
+        )?;
+        if resolve_bindings(c, &org, &config).is_err() {
+            for a in config.agents.iter().filter(|a| a.binding.is_some()) {
+                missing.push(format!("agent_binding:{}", a.role));
+            }
+        }
+    }
     for a in &config.agents {
+        if a.model.is_empty() {
+            missing.push(format!("model:{}", a.role))
+        }
+        if !report.harnesses.contains(&a.harness) {
+            missing.push(format!("harness:{}", a.harness))
+        }
         if !report.images.contains(&a.image) {
             missing.push(format!("image:{}", a.image))
         }
@@ -246,6 +304,77 @@ pub fn metadata(c: &Connection, workspace: &str) -> Result<Value> {
         json!({"revision":revision,"config":config,"report":report,"reported_at":reported_at,"ready":missing.is_empty(),"missing":missing}),
     )
 }
+/// Project only the reusable, non-secret behavior. Never copy target credentials,
+/// connectors, sessions or tool grants from an autonomous agent into a runner.
+fn profile_model(detail: &crate::models::types::AutonomousAgentDetail) -> Option<String> {
+    match super::queries::autonomous_executor(&detail.revision.config).ok()? {
+        "pi" => Some(crate::automation::pi::MODEL.into()),
+        "nexus" => None,
+        _ => detail
+            .revision
+            .config
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+    }
+}
+pub fn agent_profile(c: &Connection, org: &str, id: &str) -> Result<Value> {
+    let detail = super::queries::get_autonomous_agent_detail(c, org, id)?
+        .ok_or_else(|| anyhow::anyhow!("workflow_agent_unavailable"))?;
+    let model = profile_model(&detail);
+    Ok(
+        json!({"id":detail.definition.id,"name":detail.definition.name,"template_key":detail.definition.template_key,"status":detail.definition.status,"validation_status":detail.revision.validation_status,"revision":{"revision":detail.revision.revision,"config_hash":detail.revision.config_hash,"config":{"executor":super::queries::autonomous_executor(&detail.revision.config)?,"model":model}}}),
+    )
+}
+pub fn resolve_bindings(
+    c: &Connection,
+    org: &str,
+    incoming: &RuntimeConfig,
+) -> Result<RuntimeConfig> {
+    let mut config = incoming.clone();
+    for agent in &mut config.agents {
+        if let Some(binding) = &agent.binding {
+            let detail = super::queries::get_autonomous_agent_detail(c, org, &binding.id)?
+                .ok_or_else(|| anyhow::anyhow!("workflow_agent_unavailable"))?;
+            if detail.definition.status != "enabled" || detail.revision.validation_status != "valid"
+            {
+                bail!("workflow_agent_unavailable")
+            }
+            if !["github_issue_resolver", "github_pr_reviewer"]
+                .contains(&detail.definition.template_key.as_str())
+            {
+                bail!("workflow_agent_template_incompatible")
+            }
+            if agent.inherit_model {
+                agent.model = profile_model(&detail)
+                    .ok_or_else(|| anyhow::anyhow!("workflow_agent_model_missing"))?;
+            }
+            agent.instructions = detail
+                .revision
+                .config
+                .get("custom_instructions")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            if agent.instructions.len() > 16000 || secret_like(&agent.instructions) {
+                bail!("workflow_agent_instructions_unsafe")
+            }
+            agent.binding = Some(AgentBinding {
+                id: detail.definition.id,
+                revision: detail.revision.revision,
+                name: detail.definition.name,
+                config_hash: detail.revision.config_hash,
+            });
+        } else {
+            agent.instructions.clear();
+            if agent.inherit_model {
+                bail!("workflow_agent_model_missing")
+            }
+        }
+    }
+    Ok(config)
+}
 pub fn save(
     c: &Connection,
     org: &str,
@@ -261,13 +390,14 @@ pub fn save(
         .flatten()
         .filter_map(|r| r["path"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
-    validate(config, &repos)?;
     let tx = rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)?;
+    let config = resolve_bindings(&tx, org, config)?;
+    validate(&config, &repos)?;
     let version = metadata(&tx, workspace)?["revision"].as_u64().unwrap_or(0) as u32;
     if version != expected {
         bail!("runtime_revision_conflict")
     }
-    tx.execute("INSERT INTO factory_workflow_runtime(workspace_id,revision,config_json,updated_by) VALUES (?1,1,?2,?3) ON CONFLICT(workspace_id) DO UPDATE SET revision=revision+1,config_json=excluded.config_json,updated_by=excluded.updated_by,updated_at=datetime('now')",params![workspace,serde_json::to_string(config)?,user])?;
+    tx.execute("INSERT INTO factory_workflow_runtime(workspace_id,revision,config_json,updated_by) VALUES (?1,1,?2,?3) ON CONFLICT(workspace_id) DO UPDATE SET revision=revision+1,config_json=excluded.config_json,updated_by=excluded.updated_by,updated_at=datetime('now')",params![workspace,serde_json::to_string(&config)?,user])?;
     super::queries::append_audit_chained(
         &tx,
         org,
@@ -298,6 +428,7 @@ pub fn report(
             &report.networks,
             &report.model_connections,
             &report.environments,
+            &report.harnesses,
         ]
         .iter()
         .any(|v| v.len() > 100 || v.iter().any(|s| !name(s)))
@@ -308,6 +439,7 @@ pub fn report(
                 "runtime_model_connection_missing",
                 "runtime_environment_missing",
                 "runtime_invalid",
+                "runtime_harness_missing",
             ]
             .contains(&s.as_str())
         })
@@ -349,6 +481,10 @@ mod tests {
                 .iter()
                 .map(|r| Agent {
                     role: (*r).into(),
+                    harness: "claude".into(),
+                    binding: None,
+                    inherit_model: false,
+                    instructions: String::new(),
                     image: img.clone(),
                     model: "sonnet".into(),
                     model_connection: "proxy".into(),
@@ -388,6 +524,7 @@ mod tests {
             networks: vec!["model-net".into()],
             model_connections: vec!["proxy".into()],
             environments: vec![],
+            harnesses: vec!["claude".into()],
             error: None,
         };
         assert!(report(&c, &org.id, "another-runner", wid, &r).is_err());
@@ -415,6 +552,73 @@ mod tests {
                 .len(),
             4
         );
+    }
+    #[test]
+    fn catalog_bindings_are_tenant_scoped_versioned_and_project_no_credentials() {
+        let c = super::super::connection::connect(":memory:").unwrap();
+        super::super::migrations::run(&c).unwrap();
+        let (org, user, _) =
+            super::super::queries::bootstrap(&c, "Acme", "acme", "b@test.com", "Owner").unwrap();
+        let request = crate::models::types::CreateAutonomousAgentRequest {
+            name: "Code profile".into(),
+            description: None,
+            template_key: "github_issue_resolver".into(),
+            config: json!({"executor":"claude","model":"sonnet","custom_instructions":"Respect acceptance criteria","target_password":"fixture-never-copy"}),
+            budgets: json!({}),
+        };
+        let d = super::super::queries::create_autonomous_agent_definition(
+            &c, &org.id, &user.id, &request,
+        )
+        .unwrap();
+        let valid = |detail: &crate::models::types::AutonomousAgentDetail| {
+            c.execute(
+                "UPDATE autonomous_agent_definitions SET status='enabled' WHERE id=?1",
+                [&detail.definition.id],
+            )
+            .unwrap();
+            c.execute("INSERT INTO autonomous_agent_validations(id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by) VALUES(?1,?2,?3,?4,?5,'valid','{}',?6)",params![uuid::Uuid::new_v4().to_string(),org.id,detail.definition.id,detail.revision.id,detail.revision.config_hash,user.id]).unwrap();
+        };
+        valid(&d);
+        let projected = agent_profile(&c, &org.id, &d.definition.id).unwrap();
+        assert_eq!(projected["revision"]["config"]["model"], "sonnet");
+        assert!(!projected.to_string().contains("fixture-never-copy"));
+        assert!(agent_profile(&c, "other-org", &d.definition.id).is_err());
+        let config:RuntimeConfig=serde_json::from_value(json!({"agents":[{"role":"reviewer","image":format!("sha256:{}","a".repeat(64)),"model":"unused","model_connection":"proxy","network":"model-net","binding":{"id":d.definition.id,"revision":999,"name":"forged"},"inherit_model":true}]})).unwrap();
+        let frozen = resolve_bindings(&c, &org.id, &config).unwrap();
+        assert_eq!(frozen.agents[0].model, "sonnet");
+        assert_eq!(frozen.agents[0].binding.as_ref().unwrap().revision, 1);
+        assert_eq!(frozen.agents[0].instructions, "Respect acceptance criteria");
+        assert!(!serde_json::to_string(&frozen)
+            .unwrap()
+            .contains("fixture-never-copy"));
+        assert!(resolve_bindings(&c, "other-org", &config).is_err());
+        let next = super::super::queries::update_autonomous_agent_definition(
+            &c,
+            &org.id,
+            &user.id,
+            &d.definition.id,
+            &crate::models::types::UpdateAutonomousAgentRequest {
+                name: None,
+                description: None,
+                config: Some(json!({"executor":"claude","model":"haiku"})),
+                budgets: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(resolve_bindings(&c, &org.id, &config).is_err());
+        valid(&next);
+        assert_eq!(
+            resolve_bindings(&c, &org.id, &config).unwrap().agents[0].model,
+            "haiku"
+        );
+        assert_eq!(frozen.agents[0].model, "sonnet");
+        c.execute(
+            "UPDATE autonomous_agent_definitions SET status='disabled' WHERE id=?1",
+            [&d.definition.id],
+        )
+        .unwrap();
+        assert!(resolve_bindings(&c, &org.id, &config).is_err());
     }
     #[test]
     fn settings_cannot_carry_credentials_host_paths_or_mutable_images() {

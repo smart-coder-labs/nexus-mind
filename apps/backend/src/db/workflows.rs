@@ -255,7 +255,7 @@ pub fn start_run(
         .optional()?
         .ok_or_else(|| anyhow::anyhow!("not_found"))?;
     let d: Definition = serde_json::from_str(&text)?;
-    let w = workspace_by_id(&tx, org, &d.workspace_id)?;
+    let mut w = workspace_by_id(&tx, org, &d.workspace_id)?;
     if w["confirmed_revision"].is_null() || w["confirmed_revision"] != w["inventory_revision"] {
         bail!("workspace_not_confirmed");
     }
@@ -276,7 +276,34 @@ pub fn start_run(
         tx.commit()?;
         return run_detail(conn, org, &existing);
     }
-    if w["runtime"]["revision"].as_u64().unwrap_or(0)>0 && w["runtime"]["ready"]!=true && d.steps.iter().any(|s|!matches!(s.kind,StepKind::Prepare|StepKind::Notify)) {bail!("runtime_configuration_incomplete")}
+    if !factory_enabled(&tx, org)? {
+        bail!("factory_paused")
+    }
+    if w["runtime"]["revision"].as_u64().unwrap_or(0) > 0
+        && w["runtime"]["ready"] != true
+        && d.steps
+            .iter()
+            .any(|s| !matches!(s.kind, StepKind::Prepare | StepKind::Notify))
+    {
+        bail!("runtime_configuration_incomplete")
+    }
+    if w["runtime"]["revision"].as_u64().unwrap_or(0) > 0
+        && d.steps
+            .iter()
+            .any(|s| matches!(s.kind, StepKind::Agent | StepKind::Review))
+    {
+        let config: super::workflow_runtime::RuntimeConfig =
+            serde_json::from_value(w["runtime"]["config"].clone())?;
+        let resolved = super::workflow_runtime::resolve_bindings(&tx, org, &config)?;
+        super::workflow_runtime::validate(
+            &resolved,
+            &serde_json::from_value::<Vec<Repository>>(w["repositories"].clone())?
+                .into_iter()
+                .map(|r| r.path)
+                .collect::<Vec<_>>(),
+        )?;
+        w["runtime"]["config"] = serde_json::to_value(resolved)?;
+    }
     let run = id();
     let snapshot = json!({"definition":d,"workspace":w});
     tx.execute("INSERT INTO factory_workflow_runs(id,org_id,definition_id,workspace_id,runner_id,source_key,task_json,snapshot_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![run,org,definition,d.workspace_id,w["runner_id"].as_str(),source_key,task.to_string(),snapshot.to_string()])?;
@@ -302,6 +329,62 @@ pub fn start_run(
     )?;
     tx.commit()?;
     run_detail(conn, org, &run)
+}
+pub fn factory_enabled(conn: &Connection, org: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT autonomous_agents_enabled FROM organizations WHERE id=?1",
+        [org],
+        |r| r.get::<_, bool>(0),
+    )?)
+}
+/// Revoke active native leases atomically with the shared organization switch.
+/// Queued work and pending human decisions are retained, not deleted.
+pub fn pause_active_runs(conn: &Connection, org: &str) -> Result<()> {
+    let ids=conn.prepare("SELECT DISTINCT r.id FROM factory_workflow_runs r JOIN factory_workflow_steps s ON s.run_id=r.id WHERE r.org_id=?1 AND r.status IN ('queued','running','blocked') AND s.status='running'")?.query_map([org],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in ids {
+        conn.execute(
+            "UPDATE factory_workflow_runs SET status='cancelled' WHERE id=?1",
+            [&id],
+        )?;
+        conn.execute("UPDATE factory_workflow_steps SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE run_id=?1 AND status!='succeeded'",[&id])?;
+        event(
+            conn,
+            &id,
+            None,
+            "run.cancelled",
+            json!({"reason":"organization_kill_switch"}),
+        )?;
+    }
+    Ok(())
+}
+pub fn list_findings(conn: &Connection, org: &str) -> Result<Vec<Value>> {
+    let mut q=conn.prepare("SELECT r.id,s.step_id,r.status,json_extract(r.snapshot_json,'$.definition.name'),CAST(f.value AS TEXT),r.change_revision FROM factory_workflow_runs r JOIN factory_workflow_steps s ON s.run_id=r.id JOIN json_each(CASE WHEN json_type(s.result_json,'$.output.findings')='array' THEN json_extract(s.result_json,'$.output.findings') ELSE '[]' END) f WHERE r.org_id=?1 AND s.status IN ('succeeded','blocked') AND json_extract(s.result_json,'$.input_revision')=r.change_revision ORDER BY r.created_at DESC,s.step_id LIMIT 100")?;
+    let rows = q
+        .query_map([org], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, u32>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (run, step, status, name, text, revision) in rows {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            if v.is_object() {
+                out.push(json!({"run_id":run,"step_id":step,"run_status":status,"definition_name":name,"revision":revision,"title":v["title"].as_str().unwrap_or("Observación del workflow").chars().take(300).collect::<String>(),"severity":v["severity"].as_str().unwrap_or("info").chars().take(30).collect::<String>(),"summary":v["summary"].as_str().or_else(||v["description"].as_str()).unwrap_or("").chars().take(2000).collect::<String>()}));
+            }
+        }
+    }
+    Ok(out)
+}
+pub fn list_pending_runs(conn: &Connection, org: &str) -> Result<Vec<Value>> {
+    let mut q=conn.prepare("SELECT r.id,r.source_key,r.created_at,json_extract(r.task_json,'$.title'),json_extract(r.snapshot_json,'$.definition.name'),json_extract(r.snapshot_json,'$.workspace.name'),(SELECT kind FROM factory_workflow_events e WHERE e.run_id=r.id ORDER BY seq DESC LIMIT 1) FROM factory_workflow_runs r WHERE r.org_id=?1 AND r.status='blocked' ORDER BY r.created_at LIMIT 100")?;
+    let rows=q.query_map([org],|r|Ok(json!({"id":r.get::<_,String>(0)?,"source_key":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?,"title":r.get::<_,Option<String>>(3)?,"definition_name":r.get::<_,Option<String>>(4)?,"workspace_name":r.get::<_,Option<String>>(5)?,"last_event":r.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 pub fn list_runs(conn: &Connection, org: &str) -> Result<Vec<Value>> {
     let mut s=conn.prepare("SELECT id,status,source_key,definition_id,created_at FROM factory_workflow_runs WHERE org_id=?1 ORDER BY created_at DESC LIMIT 100")?;
@@ -364,6 +447,10 @@ pub fn claim(
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     tx.execute("UPDATE factory_runners SET last_seen=datetime('now'),capabilities_json=?1 WHERE id=?2 AND org_id=?3 AND revoked=0",params![serde_json::to_string(capabilities)?,runner,org])?;
+    if !factory_enabled(&tx, org)? {
+        tx.commit()?;
+        return Ok(None);
+    }
     let mut s=tx.prepare("SELECT id,snapshot_json,task_json FROM factory_workflow_runs WHERE org_id=?1 AND runner_id=?2 AND status IN ('queued','running') ORDER BY created_at,id LIMIT 100")?;
     let runs = s
         .query_map(params![org, runner], |r| {
