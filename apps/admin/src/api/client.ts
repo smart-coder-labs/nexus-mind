@@ -1437,7 +1437,7 @@ export class NexusMindClient {
   deleteWorkflowIntake(id:string): Promise<void> { return this.request(`/v1/factory/workflow-intakes/${encodeURIComponent(id)}`, {method:'DELETE'}) }
   pollWorkflowIntakes(): Promise<{polling:boolean}> { return this.request('/v1/factory/workflow-intakes/poll', {method:'POST'}) }
   getGithubReviewHooks(): Promise<{login:string|null;hooks:{id:string;health:string;metadata:{repository?:string;reviewer_login?:string;callback_url?:string;hook_id?:number}}[]}> { return this.request('/v1/autonomous-agents/github/review-hooks') }
-  registerGithubReviewHook(definition_id:string,public_base_url:string): Promise<{id:string;login:string}> {return this.request('/v1/autonomous-agents/github/review-hooks',{method:'POST',body:JSON.stringify({definition_id,public_base_url})})}
+  registerGithubReviewHook(definition_id:string,public_base_url:string,administration_token?:string): Promise<{id:string;login:string;status?:string}> {return this.request('/v1/autonomous-agents/github/review-hooks',{method:'POST',body:JSON.stringify({definition_id,public_base_url,administration_token})})}
   disconnectGithubReviewHook(id:string): Promise<{remote_deleted:boolean}> {return this.request(`/v1/autonomous-agents/github/review-hooks/${encodeURIComponent(id)}`,{method:'DELETE'})}
   getWorkflowCatalog(): Promise<WorkflowCatalog> { return this.request('/v1/factory/workflow-catalog') }
   registerFactoryRunner(name: string): Promise<{ id: string; name: string; token: string }> {
