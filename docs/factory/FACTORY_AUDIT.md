@@ -2,7 +2,7 @@
 
 ## Alcance
 
-**Auditoría previa a la consolidación.** Sus pendientes describen la base `98b86c8`, no el estado del trabajo local posterior. Para la implementación, permisos y limitaciones actuales, consulta [Factory conectada](FACTORY_CONNECTED.md). Nada de esa consolidación está desplegado todavía.
+**Auditoría previa a la consolidación.** Sus pendientes describen la base `98b86c8`, no el estado del trabajo local posterior. Para la implementación, permisos y limitaciones actuales, consulta [Factory conectada](FACTORY_CONNECTED.md). La consolidación posterior está publicada: [recibo de producción](PUBLICACION_2026-11-03.md). El contenido siguiente sigue siendo la auditoría histórica, no una descripción actualizada de la interfaz.
 
 Revisión estática del admin y sus rutas, consultas, workers y políticas, sobre `feat/factory-admin-guided-setup` (base local `98b86c8`). No es una nueva aceptación end-to-end ni un análisis de frecuencia de uso en producción. No se ejecutaron modelos, merges, despliegues ni cambios productivos para esta auditoría.
 

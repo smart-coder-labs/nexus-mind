@@ -1,6 +1,6 @@
 # Configuración guiada del admin
 
-**Estado: diseño aprobado y publicación autorizada por el propietario.** El proceso controlado actualiza backend/admin a schema **97** y también el programa del runner, conservando su configuración privada. Comprueba el resultado y SHA del workflow `Factory workflows release` antes de considerar completado un despliegue; la vista previa no acredita producción.
+**Publicado y verificado en producción**, schema **97**, backend/admin y programa del runner actualizados conservando su configuración privada. [Recibo y comprobaciones](PUBLICACION_2026-11-03.md), release `41666357163`, SHA `63125d2`. La vista previa sigue siendo ilustrativa, no una conexión productiva.
 
 Vista previa: <http://127.0.0.1:3016/factory/workflows>. Usa datos ilustrativos, no credenciales reales. Permite recorrer formularios; el proxy rechaza todos los cambios y no conecta con producción. Los ejemplos de ejecuciones no prueban una ejecución nueva en Oracle.
 

@@ -4,7 +4,7 @@ Panel: https://admin.nexusmind.smartcoderlabs.com/factory/workflows
 
 API pública: `https://api.nexusmind.smartcoderlabs.com`
 
-La configuración guiada y la consolidación del menú han recibido aprobación del propietario para su publicación controlada. Recorrido y requisitos: [Configuración del admin](CONFIGURACION_ADMIN.md) y [Factory conectada](FACTORY_CONNECTED.md). Verifica el run de `Factory workflows release` y su SHA para conocer el resultado productivo; una vista previa o configuración guardada no demuestra que modelos y QA estén operativos.
+La configuración guiada y la consolidación del menú están **publicadas y verificadas**, schema 97, release [41666357163](https://github.com/smart-coder-labs/nexus-mind/actions/runs/41666357163). [Recibo de publicación](PUBLICACION_2026-11-03.md). Recorrido y requisitos: [Configuración del admin](CONFIGURACION_ADMIN.md) y [Factory conectada](FACTORY_CONNECTED.md). Verifica el run de `Factory workflows release` y su SHA para conocer el resultado productivo; una vista previa o configuración guardada no demuestra que modelos y QA estén operativos.
 
 ## 1. Reviews automáticos de GitHub
 
@@ -52,7 +52,7 @@ Rutas instaladas del runner administrado:
 | Elemento | Ruta en Oracle |
 |---|---|
 | Clones separados | `/home/ubuntu/nexusmind-workspaces/kasymir/` |
-| Programa del runner | `/home/ubuntu/.local/lib/nexusmind/runner-v95/` |
+| Programa del runner | `/home/ubuntu/.local/lib/nexusmind/runner-v97-96e7405/` |
 | Configuración privada | `/home/ubuntu/.config/nexusmind/kasymir-runner.json` |
 | Estado y checkouts temporales | `/home/ubuntu/.local/state/nexusmind/kasymir-runner/` |
 | Servicio de usuario | `nexusmind-kasymir-runner.service` |

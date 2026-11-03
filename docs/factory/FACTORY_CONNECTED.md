@@ -1,6 +1,6 @@
 # Factory: operación conectada
 
-Estado: diseño revisado y publicación autorizada por el propietario. El despliegue usa el workflow `Factory workflows release` sobre `deploy/factory-workflows-v95`, con backup previo y comprobaciones antes de publicar el admin. El resultado verificable es el run de GitHub Actions y su SHA, no la vista previa. No se activan nuevas cuentas, permisos, secretos, modelos pagados ni despliegues de aplicaciones Kasymir.
+**Publicado y verificado en producción**, schema **97**, SHA `63125d281263a6c333495ffb02c836d4e3e5fcac`. [Recibo de publicación, backups y comprobaciones](PUBLICACION_2026-11-03.md). El workflow `Factory workflows release` pasó todos sus jobs y publicó el panel después del backend. No se activan nuevas cuentas, permisos, secretos, modelos pagados ni despliegues de aplicaciones Kasymir.
 
 ## Navegación
 
