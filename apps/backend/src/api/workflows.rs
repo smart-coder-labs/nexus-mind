@@ -24,7 +24,9 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
         "lease_conflict"
         | "inventory_conflict"
         | "run_conflict"
-        | "retry_limit_or_step_conflict" => StatusCode::CONFLICT,
+        | "retry_limit_or_step_conflict"
+        | "runtime_revision_conflict"
+        | "runtime_configuration_incomplete" => StatusCode::CONFLICT,
         _ => StatusCode::UNPROCESSABLE_ENTITY,
     };
     // Do not disclose SQL statements or database internals.
@@ -41,7 +43,14 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
         },
         Json(ApiError {
             code: public.into(),
-            error: public.into(),
+            error: match public {
+                "runtime_revision_conflict"=>"Otra persona guardó una revisión nueva. Recarga antes de guardar.",
+                "runtime_configuration_incomplete"=>"Completa los perfiles y espera a que el runner aplique la configuración antes de iniciar el workflow completo.",
+                "invalid_runtime_agent"=>"Completa imagen por digest, modelo, conexión de proxy y red interna de cada agente. No introduzcas credenciales.",
+                "invalid_runtime_check"=>"Cada comprobación necesita tipo, repositorio autorizado, imagen por digest y un comando válido sin credenciales incrustadas.",
+                "invalid_runtime_service"=>"Cada servicio necesita nombre único, repositorio, imagen por digest, comando de inicio y healthcheck, sin credenciales incrustadas.",
+                _=>public,
+            }.into(),
         }),
     )
 }

@@ -18,6 +18,7 @@ pub mod factory_evals;
 pub mod factory_lookback;
 pub mod workflows;
 pub mod workflow_execution;
+pub mod workflow_runtime;
 pub mod github_auth;
 pub mod github_review_hooks;
 pub mod harnesses;

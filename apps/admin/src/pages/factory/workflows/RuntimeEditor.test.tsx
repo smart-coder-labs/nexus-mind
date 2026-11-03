@@ -1,0 +1,90 @@
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { RuntimeEditor } from './RuntimeEditor'
+import { emptyRuntime, parseCommand, formatCommand } from './runtime'
+describe('runtime settings', () => {
+  it('parses argv without executing or interpolating a host shell', () => {
+    const args = ['python3', '-c', 'print("hello world")']
+    expect(parseCommand(formatCommand(args))).toEqual(args)
+    expect(parseCommand('npm run test -- "a b"')).toEqual(['npm', 'run', 'test', '--', 'a b'])
+    expect(() => parseCommand('npm "unterminated')).toThrow()
+    expect(parseCommand('echo $TOKEN; rm -rf /')).toEqual(['echo', '$TOKEN;', 'rm', '-rf', '/'])
+  })
+  it('saves four independent roles, model choices and references instead of credentials', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(
+      <RuntimeEditor repositories={['web']} section="agents" disabled={false} onSave={onSave} />,
+    )
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText(/^Imagen de agentes/), 'sha256:' + 'a'.repeat(64))
+    await user.type(screen.getByLabelText(/^Conexión de modelo/), 'proxy')
+    await user.type(screen.getByLabelText(/^Red interna del proxy/), 'model-net')
+    await user.click(screen.getByRole('button', { name: 'Guardar configuración' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const [revision, config] = onSave.mock.calls[0]
+    expect(revision).toBe(0)
+    expect(config.agents.map((a: { role: string }) => a.role)).toEqual([
+      'investigation',
+      'test_author',
+      'implementation',
+      'reviewer',
+    ])
+    expect(config.agents.every((a: { image: string }) => a.image.startsWith('sha256:'))).toBe(true)
+    expect(JSON.stringify(config)).not.toMatch(/ANTHROPIC_AUTH_TOKEN|api_key/)
+    expect(await screen.findByRole('status')).toHaveTextContent(/guardada/i)
+  })
+  it('does not silently adopt a concurrent runtime revision', async () => {
+    const { rerender } = render(
+      <RuntimeEditor repositories={['web']} section="agents" disabled={false} onSave={vi.fn()} />,
+    )
+    rerender(
+      <RuntimeEditor
+        value={{ ...emptyRuntime(), revision: 2 }}
+        repositories={['web']}
+        section="agents"
+        disabled={false}
+        onSave={vi.fn()}
+      />,
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent('otra revisión')
+    expect(screen.getByRole('button', { name: 'Guardar configuración' })).toBeDisabled()
+  })
+  it('reports invalid argv before sending a profile', async () => {
+    const onSave = vi.fn()
+    render(
+      <RuntimeEditor repositories={['web']} section="checks" disabled={false} onSave={onSave} />,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Añadir comprobación' }))
+    await user.type(screen.getByLabelText('Comando'), 'npm "')
+    await user.click(screen.getByRole('button', { name: 'Guardar configuración' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('comillas')
+    expect(onSave).not.toHaveBeenCalled()
+  })
+  it('keeps local drafts in memory when navigating away and back', async () => {
+    const onDraft = vi.fn()
+    const { unmount } = render(
+      <RuntimeEditor
+        repositories={['web']}
+        section="agents"
+        disabled={false}
+        onSave={vi.fn()}
+        onDraft={onDraft}
+      />,
+    )
+    await userEvent.setup().type(screen.getByLabelText(/^Conexión de modelo/), 'private-alias')
+    const draft = onDraft.mock.calls.at(-1)![0]
+    unmount()
+    render(
+      <RuntimeEditor
+        repositories={['web']}
+        section="agents"
+        disabled={false}
+        onSave={vi.fn()}
+        draft={draft}
+      />,
+    )
+    expect(screen.getByLabelText(/^Conexión de modelo/)).toHaveValue('private-alias')
+  })
+})

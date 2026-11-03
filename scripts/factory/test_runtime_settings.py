@@ -1,0 +1,56 @@
+import copy,json,os,tempfile,unittest
+from pathlib import Path
+from unittest.mock import patch
+import runtime_settings as settings
+from runner import private_file
+
+class RuntimeSettingsTests(unittest.TestCase):
+ def setUp(self):
+  self.tmp=tempfile.TemporaryDirectory();self.base=Path(self.tmp.name);self.root=self.base/'repos';self.root.mkdir();self.env=self.base/'model.env';self.env.write_text('ANTHROPIC_BASE_URL=http://model-proxy:8080\nANTHROPIC_AUTH_TOKEN=lease-fixture\nANTHROPIC_API_KEY=sandbox-placeholder-not-a-credential\n');self.env.chmod(0o600)
+  self.image='sha256:'+'a'*64
+  self.config={'runner_token':'nmr_private','allowed_images':[self.image],'allow_remote_configuration':True,'model_connections':{'model':{'env_file':str(self.env),'network':'model-net'}},'environments':{},'adapters':{}}
+  self.profile={'agents':[{'role':'reviewer','model':'opus','image':self.image,'network':'model-net','model_connection':'model'}],'checks':[{'name':'tests','image':self.image,'cwd':'web','command':['npm','test'],'environment_refs':[]}],'services':[]}
+  self.report={'remote_enabled':True,'images':[self.image],'networks':['model-net'],'model_connections':['model'],'environments':[]}
+ def tearDown(self):self.tmp.cleanup()
+ def test_local_opt_in_and_image_network_reference_allowlists_are_required(self):
+  for changed,code in [({'remote_enabled':False},'runtime_invalid'),({'images':[]},'runtime_image_not_allowed'),({'networks':[]},'runtime_network_not_allowed'),({'model_connections':[]},'runtime_model_connection_missing')]:
+   report=dict(self.report,**changed)
+   with self.assertRaisesRegex(settings.RuntimeSettingsError,code):settings.apply_settings(self.config,{'id':'w'},self.profile,report,[self.root],private_file)
+  result=settings.apply_settings(self.config,{'id':'w'},self.profile,self.report,[self.root],private_file)
+  reviewer=result['adapters']['isolated-reviewer'];self.assertEqual(reviewer['model_connection'],'model');self.assertNotIn('environment_refs',reviewer);self.assertEqual(reviewer['command'][-1],'Read,Grep,Glob');self.assertNotIn('lease-fixture',json.dumps(result['adapters']))
+ def test_model_credentials_are_distinct_from_application_environment_and_master_keys(self):
+  path,secrets=settings._model(self.config,'model',[self.root],private_file);self.assertEqual(path,self.env);self.assertIn('lease-fixture',secrets)
+  for text in ['ANTHROPIC_BASE_URL=http://proxy\nDATABASE_PASSWORD=private\n','ANTHROPIC_BASE_URL=https://api.anthropic.com\n','ANTHROPIC_BASE_URL=http://proxy\nANTHROPIC_API_KEY=sk-master-fixture\n']:
+   self.env.write_text(text)
+   with self.assertRaises(settings.RuntimeSettingsError):settings._model(self.config,'model',[self.root],private_file)
+ def test_run_uses_immutable_snapshot_not_newest_remote_profile(self):
+  job={'step':{'kind':'agent'},'snapshot':{'workspace':{'id':'w','runtime':{'revision':1,'config':self.profile}}}}
+  with patch.object(settings,'inventory',return_value=self.report):
+   value=settings.for_job(self.config,job,[self.root],private_file)
+  self.assertIn('opus',value['adapters']['isolated-reviewer']['command'])
+  self.assertEqual(self.config['adapters'],{})
+  job['step']['kind']='prepare';self.assertIs(settings.for_job(self.config,job,[self.root],private_file),self.config)
+ def test_multiple_repositories_keep_separate_checks_and_images(self):
+  self.profile['checks'] += [{'name':'build','image':'sha256:'+'b'*64,'cwd':'api','command':['cargo','build'],'environment_refs':[]}]
+  adapters,_=settings.compile_settings(self.profile);self.assertEqual(adapters['isolated-verification']['kind'],'suite');self.assertEqual(len(adapters['isolated-verification']['checks']),2)
+ def test_missing_tests_or_build_for_a_changed_repository_blocks_before_execution(self):
+  job={'step':{'options':{'required_checks':['tests','build']}},'snapshot':{'workspace':{'repositories':[{'path':'api','head_sha':'base'}]}},'execution':{'heads':{'api':'candidate'}}}
+  with self.assertRaisesRegex(settings.RuntimeSettingsError,'every changed repository'):settings.suite({},job,{'checks':self.profile['checks']},[],None,None,None)
+ @unittest.skipUnless(os.environ.get('FACTORY_TEST_IMAGE'),'Requires a locally installed immutable Docker fixture image')
+ def test_real_multi_repository_suite_verifies_final_commits_and_keeps_unique_artifacts(self):
+  import test_execution as fixtures,runner,delivery
+  f=fixtures.ExecutionTests();f.setUp()
+  try:
+   checks=[]
+   for repo in ['api','web']:
+    directory=Path(f.config['state_dir'])/f.job['run_id']/repo;(directory/'module.py').write_text('VALUE=2\n');runner.git(['add','module.py'],directory);runner.git(['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','candidate'],directory);f.job['execution']['heads'][repo]=runner.git(['rev-parse','HEAD'],directory)
+    checks += [{'name':'tests','cwd':repo,'image':os.environ['FACTORY_TEST_IMAGE'],'command':['python3','-c',f"from pathlib import Path;ns={{}};exec(Path('/work/{repo}/module.py').read_text(),ns);assert ns['VALUE']==2"],'environment_refs':[]},{'name':'build','cwd':repo,'image':os.environ['FACTORY_TEST_IMAGE'],'command':['python3','-c',f"import py_compile;py_compile.compile('/work/{repo}/module.py',cfile='/output/{repo}.pyc',doraise=True)"],'environment_refs':[]}]
+   f.job['step']={'id':'verify','kind':'check','adapter':'qa','write_repositories':[],'timeout_seconds':60,'options':{'required_checks':['tests','build']}}
+   passed,evidence,result=settings.suite(f.config,f.job,{'checks':checks},[f.root],f.api,runner.git,runner.private_file)
+   self.assertTrue(passed,repr(f.api.artifacts));self.assertEqual(len(evidence),4);self.assertEqual(result['heads'],f.job['execution']['heads']);names=[name for name,_ in f.api.artifacts];self.assertEqual(len(names),len(set(names)))
+  finally:f.tearDown()
+ def test_report_contains_only_aliases_and_no_environment_contents_or_paths(self):
+  self.config['allowed_images']=[]
+  report=settings.inventory(self.config,{'id':'w'},[self.root],private_file)
+  self.assertEqual(report['model_connections'],['model']);self.assertNotIn(str(self.env),json.dumps(report));self.assertNotIn('lease-fixture',json.dumps(report))
+if __name__=='__main__':unittest.main()

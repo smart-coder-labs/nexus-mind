@@ -257,6 +257,10 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         # Reviews should reason about code/evidence, never need application secrets.
         raise ValueError('Independent reviewers cannot receive environment secrets')
     env_files, secrets = environment(config, job['snapshot']['workspace']['id'], refs, roots, private_file)
+    if adapter.get('model_connection'):
+        from runtime_settings import _model
+        model_file, model_secrets = _model(config,adapter['model_connection'],roots,private_file)
+        env_files.append(model_file);secrets.extend(model_secrets)
     secrets.append(config['runner_token'])
     context = {k: job[k] for k in ['run_id', 'step', 'task', 'dependency_results']}
     context['commits'] = job['execution']['heads']

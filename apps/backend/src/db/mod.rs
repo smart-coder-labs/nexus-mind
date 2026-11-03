@@ -1,5 +1,6 @@
 pub mod workflows;
 pub mod workflow_execution;
+pub mod workflow_runtime;
 pub mod github_review_hooks;
 pub mod connection;
 pub mod doc_queries;

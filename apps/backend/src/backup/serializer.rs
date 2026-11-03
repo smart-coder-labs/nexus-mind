@@ -37,7 +37,7 @@ pub const BACKUP_TABLES: &[&str] = &[
     "autonomous_agent_connectors", "github_review_subscriptions",
     "factory_runners", "factory_workspaces", "factory_workflow_definitions", "factory_workflow_runs",
     "factory_workflow_steps", "factory_workflow_events", "factory_workflow_artifacts",
-    "factory_workflow_approvals", "factory_workflow_publications", "factory_workflow_intakes",
+    "factory_workflow_approvals", "factory_workflow_publications", "factory_workflow_intakes", "factory_workflow_runtime",
 ];
 
 /// One table's dump: row count + the rows themselves as a JSON array of objects.

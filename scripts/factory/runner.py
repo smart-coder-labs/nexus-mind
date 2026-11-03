@@ -244,7 +244,15 @@ def tick_locked(config, roots):
     # Polling has its own persisted due times and scoped connectors; no intake
     # credential is ever downloaded to the runner.
     api.call('/poll-intakes', {})
+    from runtime_settings import sync, compile_settings, for_job, suite
+    remote_capabilities=[]
     for workspace in api.call('/workspaces')['workspaces']:
+        if 'runtime' in workspace:
+            report=sync(config,workspace,api,roots,private_file)
+            if report['applied_revision'] and report['applied_revision']==workspace['runtime']['revision']:
+                declared,services_config=compile_settings(workspace['runtime']['config'])
+                remote_capabilities.extend('adapter:'+name for name in declared)
+                if services_config:remote_capabilities.append('adapter:integrated-environment')
         repos = discover(workspace['root_path'], roots)
         if repos:
             api.call('/workspaces/' + workspace['id'] + '/inventory', {'repositories': repos})
@@ -255,13 +263,14 @@ def tick_locked(config, roots):
     for name in adapters:
         if not safe_id(name): raise ValueError('Invalid adapter name')
         capabilities.append('adapter:' + name)
-    capabilities += config.get('capabilities', [])
+    capabilities += config.get('capabilities', []) + remote_capabilities
     job = api.call('/claim', {'capabilities': capabilities})['job']
     if not job:
         return
     evidence, success = [], False
     outcome = {'input_revision': job['execution']['revision'], 'heads': job['execution']['heads'], 'output': {}, 'cost_usd': 0}
     try:
+        config=for_job(config,job,roots,private_file)
         adapter = job['step']['adapter']
         if adapter == 'prepare-workspace' and job['step']['kind'] == 'prepare':
             validate_environment_references(config, job['snapshot']['workspace']['id'], roots)
@@ -277,11 +286,14 @@ def tick_locked(config, roots):
         elif adapter == 'policy-publisher':
             success, evidence, outcome = publish(config, job, api, git)
         else:
-            profile = adapters[adapter]
+            profile = config.get('adapters',{})[adapter]
             if job['step']['write_repositories']:
                 cleanup(config, job['run_id'], config['state_dir'])
             if profile.get('network') == 'services': validate_services(config, job)
-            success, evidence, outcome = isolated_adapter(config, job, profile, roots, api, git, private_file)
+            if profile.get('kind')=='suite':
+                success,evidence,outcome=suite(config,job,profile,roots,api,git,private_file)
+            else:
+                success, evidence, outcome = isolated_adapter(config, job, profile, roots, api, git, private_file)
             if profile.get('network') == 'services': validate_services(config, job)
     except (ValueError, OSError, subprocess.SubprocessError, KeyError) as error:
         success, evidence = False, []

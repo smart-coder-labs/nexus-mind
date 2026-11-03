@@ -4,6 +4,8 @@ Panel: https://admin.nexusmind.smartcoderlabs.com/factory/workflows
 
 API pública: `https://api.nexusmind.smartcoderlabs.com`
 
+La nueva configuración guiada está **en vista previa local, no desplegada**. Recorrido de formularios y requisitos: [Configuración del admin](CONFIGURACION_ADMIN.md).
+
 ## 1. Reviews automáticos de GitHub
 
 Este flujo no necesita el runner de workspaces.
@@ -14,6 +16,8 @@ Este flujo no necesita el runner de workspaces.
 4. Pulsa **Connect GitHub webhook**.
 5. Abre un PR normal del mismo repositorio, desde una cuenta distinta del bot, y solicita revisión a **CesarRuizBotAgents**.
 6. Consulta el resultado en GitHub y la ejecución en **Factory → Runs**.
+
+**Autor y reviewer no pueden ser la misma cuenta de GitHub.** Si el resolver abrió el PR como `CesarRuizBotAgents`, no podrás solicitar revisión a ese mismo bot, aunque uses otra cuenta en el navegador o inicies otro agente/modelo. Además, un draft debe marcarse **Ready for review** antes de solicitar revisión. Para probar el webhook, usa un PR no-draft creado por `cr8297408` u otra cuenta. Para una revisión formal de GitHub de PRs generados por el bot, necesitas otra identidad de reviewer o de publicación. La fase interna `review` del workflow sí usa una invocación independiente con contexto limpio, aunque publique el mismo bot; no equivale a una aprobación formal de GitHub. El webhook y reviewer autónomo mantienen su exclusión de PRs propios.
 
 Los nuevos commits se revisan con contexto nuevo. Los forks y PRs propios del bot se excluyen. La cuenta revisora es la autenticada en el `gh` del backend, no tu sesión del navegador.
 
@@ -34,9 +38,16 @@ Nunca pegues tokens en chats, issues, código o archivos versionados.
 
 ## 2. Runner de Kasymir en Oracle
 
+**Estado instalado (2026-11-03):** runner `Oracle Kasymir` activo y persistente, workspace `Kasymir · Oracle`, 49 repositorios descubiertos y confirmados, todos con escritura habilitada por petición explícita del usuario. La prueba `manual:oracle-kasymir-runner-bootstrap-v1` terminó en `succeeded`, sin modelos ni cambios de código. Los adaptadores de modelos, QA y entornos de pruebas aún no están configurados: el runner no se presenta como listo para resolver tareas end-to-end hasta completar esos perfiles.
+
+- Runner ID: `607a6a06-9b74-4fdb-b83a-caa4879567f2`.
+- Workspace ID: `f0bec300-6964-4e81-aaa7-bed0653621e6`.
+- Definición de prueba disponible: `Kasymir Oracle - preparation check`.
+- Ejecución de prueba: `6dae93e5-2a1e-4944-a6b7-89208b36ea8b`.
+
 El runner es el proceso que descubre los clones y ejecuta los pasos autorizados. No se ejecuta dentro del backend HTTP.
 
-Rutas previstas del runner administrado:
+Rutas instaladas del runner administrado:
 
 | Elemento | Ruta en Oracle |
 |---|---|
@@ -46,7 +57,7 @@ Rutas previstas del runner administrado:
 | Estado y checkouts temporales | `/home/ubuntu/.local/state/nexusmind/kasymir-runner/` |
 | Servicio de usuario | `nexusmind-kasymir-runner.service` |
 
-No se reutilizan ni modifican los clones de despliegue ni `kasymir-app-ui-dev`. Los clones nuevos no reciben archivos `.env` de producción. Inicialmente el inventario debe mantenerse de solo lectura hasta autorizar explícitamente los repositorios que podrán cambiar.
+No se reutilizan ni modifican los clones de despliegue ni `kasymir-app-ui-dev`. Los clones nuevos no reciben archivos `.env` de producción. El usuario autorizó explícitamente escritura en los 49 repositorios actuales. Esto no autoriza merges, despliegues ni acceso a secretos de producción. Los snapshots de ejecuciones anteriores no se modifican; los workflows y runs nuevos utilizarán el inventario confirmado actualizado.
 
 ### Consultar el servicio
 

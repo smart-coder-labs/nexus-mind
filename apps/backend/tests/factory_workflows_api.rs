@@ -10,6 +10,126 @@ use nexusmind::{
 };
 use serde_json::{json, Value};
 use tower::util::ServiceExt;
+#[tokio::test]
+async fn runtime_settings_require_owner_permission_and_runner_scoped_reports() {
+    let app = app("super_user");
+    let cookie = login(&app).await;
+    let (_, r) = request(
+        &app,
+        "POST",
+        "/v1/factory/runners",
+        Some(&cookie),
+        None,
+        Some(json!({"name":"Runtime"})),
+    )
+    .await;
+    let (_, w) = request(
+        &app,
+        "POST",
+        "/v1/factory/workspaces",
+        Some(&cookie),
+        None,
+        Some(json!({"runner_id":r["id"],"name":"Runtime","root_path":"/work/runtime"})),
+    )
+    .await;
+    let id = w["id"].as_str().unwrap();
+    let settings = format!("/v1/factory/workspaces/{id}/runtime");
+    let reports = format!("/v1/factory/runner/workspaces/{id}/runtime-report");
+    let token = r["token"].as_str().unwrap();
+    let body = json!({"revision":0,"config":{"agents":[],"checks":[],"services":[]}});
+    assert!(request(
+        &app,
+        "PUT",
+        &settings,
+        None,
+        Some(token),
+        Some(body.clone())
+    )
+    .await
+    .0
+    .is_client_error());
+    assert!(
+        request(&app, "POST", &reports, Some(&cookie), None, Some(json!({})))
+            .await
+            .0
+            .is_client_error()
+    );
+    let (status, saved) = request(
+        &app,
+        "PUT",
+        &settings,
+        Some(&cookie),
+        None,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(saved["ready"], false);
+    assert_eq!(
+        request(&app, "PUT", &settings, Some(&cookie), None, Some(body))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let (status, reported) = request(
+        &app,
+        "POST",
+        &reports,
+        None,
+        Some(token),
+        Some(json!({"remote_enabled":false,"applied_revision":1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reported["ready"], false);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &reports,
+            None,
+            Some(token),
+            Some(json!({"applied_revision":99}))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let (_, other) = request(
+        &app,
+        "POST",
+        "/v1/factory/runners",
+        Some(&cookie),
+        None,
+        Some(json!({"name":"Other"})),
+    )
+    .await;
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &reports,
+            None,
+            other["token"].as_str(),
+            Some(json!({}))
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert!(request(
+        &app,
+        "PUT",
+        &settings,
+        Some(&cookie),
+        None,
+        Some(json!({"revision":1,"config":{"api_key":"fixture-not-a-secret"}}))
+    )
+    .await
+    .0
+    .is_client_error());
+}
 #[cfg(unix)]
 #[tokio::test]
 async fn real_python_runner_discovers_and_prepares_without_touching_personal_changes() {

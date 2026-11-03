@@ -162,7 +162,7 @@ pub fn list_workspaces(conn: &Connection, org: &str, runner: Option<&str>) -> Re
 pub fn workspace_by_id(conn: &Connection, org: &str, workspace: &str) -> Result<Value> {
     let row=conn.query_row("SELECT runner_id,name,root_path,discovered_json,repositories_json,inventory_revision,confirmed_revision FROM factory_workspaces WHERE id=?1 AND org_id=?2",params![workspace,org],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,Option<i64>>(6)?))).optional()?.ok_or_else(||anyhow::anyhow!("not_found"))?;
     Ok(
-        json!({"id":workspace,"runner_id":row.0,"name":row.1,"root_path":row.2,"discovered":parse(row.3)?,"repositories":parse(row.4)?,"inventory_revision":row.5,"confirmed_revision":row.6}),
+        json!({"id":workspace,"runner_id":row.0,"name":row.1,"root_path":row.2,"discovered":parse(row.3)?,"repositories":parse(row.4)?,"inventory_revision":row.5,"confirmed_revision":row.6,"runtime":super::workflow_runtime::metadata(conn,workspace)?}),
     )
 }
 pub fn report_inventory(
@@ -276,6 +276,7 @@ pub fn start_run(
         tx.commit()?;
         return run_detail(conn, org, &existing);
     }
+    if w["runtime"]["revision"].as_u64().unwrap_or(0)>0 && w["runtime"]["ready"]!=true && d.steps.iter().any(|s|!matches!(s.kind,StepKind::Prepare|StepKind::Notify)) {bail!("runtime_configuration_incomplete")}
     let run = id();
     let snapshot = json!({"definition":d,"workspace":w});
     tx.execute("INSERT INTO factory_workflow_runs(id,org_id,definition_id,workspace_id,runner_id,source_key,task_json,snapshot_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![run,org,definition,d.workspace_id,w["runner_id"].as_str(),source_key,task.to_string(),snapshot.to_string()])?;

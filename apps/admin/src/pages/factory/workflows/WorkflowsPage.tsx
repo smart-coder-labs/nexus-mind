@@ -1,155 +1,1267 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { ArrowRight, CheckCircle2, Circle, GitPullRequest, Play, Server, X } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Badge } from '../../../components/ui/Badge'
 import { Input } from '../../../components/ui/Input'
-import { InlineError, PageHeader, RawJson, SectionTitle, useFactory, errorMessage } from '../shared/ui'
-import { WorkflowEditor } from './WorkflowEditor'
+import { InlineError, PageHeader, errorMessage, useFactory } from '../shared/ui'
 import { GithubReviewHooks } from './GithubReviewHooks'
-import { deliveryWorkflow, preparationWorkflow, type Repository, type Workspace, type WorkflowDefinition, type WorkflowRun } from './types'
+import { RuntimeEditor, type RuntimeDraft } from './RuntimeEditor'
+import { RepositoryInventory } from './RepositoryInventory'
+import { ExecutionDetail } from './ExecutionDetail'
+import { WorkflowEditor } from './WorkflowEditor'
+import { blockerLabel, emptyRuntime } from './runtime'
+import { deliveryWorkflow, preparationWorkflow, type WorkflowDefinition } from './types'
 
-const control = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground'
-const card = 'space-y-4 rounded-xl border border-border-primary bg-card p-5'
-
-function Inventory({ workspace, save, disabled }: { workspace: Workspace; save: (repos: Repository[]) => void; disabled: boolean }) {
-  const [selected, setSelected] = useState(() => workspace.discovered.map(repo => ({ ...repo, selected: true, writable: workspace.repositories.some(r => r.path === repo.path && r.writable) })))
-  return <div className="space-y-3">
-    <p className="text-xs text-text-tertiary">Inventory revision {workspace.inventory_revision} · {workspace.confirmed_revision === workspace.inventory_revision ? 'Confirmed' : 'Needs confirmation'}</p>
-    {!selected.length && <p className="text-sm text-text-secondary">Waiting for the runner to discover repositories. Your browser cannot scan remote folders.</p>}
-    {selected.map(repo => <div key={repo.path} className="flex flex-wrap items-center gap-3 rounded-md border border-border-primary p-3">
-      <label className="flex min-w-0 flex-1 items-center gap-2 text-sm"><input type="checkbox" checked={repo.selected} disabled={disabled} onChange={e => setSelected(rows => rows.map(r => r.path === repo.path ? { ...r, selected: e.target.checked } : r))} /><span className="break-all font-mono">{repo.path}</span></label>
-      <code className="text-xs text-text-tertiary">{repo.head_sha.slice(0, 12)}</code>
-      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={repo.writable} disabled={disabled || !repo.selected} onChange={e => setSelected(rows => rows.map(r => r.path === repo.path ? { ...r, writable: e.target.checked } : r))} />Allow implementation writes</label>
-    </div>)}
-    {selected.length > 0 && <Button size="sm" disabled={disabled || !selected.some(r => r.selected)} onClick={() => save(selected.filter(r => r.selected).map(({ selected: _selected, ...repo }) => repo))}>Confirm selected repositories</Button>}
-  </div>
-}
-
-function RunView({ run, controlRun, approve, artifact, disabled }: { run: WorkflowRun; controlRun: (action: 'cancel' | 'retry' | 'resume', step?: string) => void; approve: (action:string, revision:number)=>void; artifact:(id:string)=>void; disabled: boolean }) {
-  return <section className={card} aria-label="Workflow execution">
-    <div className="flex flex-wrap items-center justify-between gap-3"><SectionTitle>{run.snapshot.definition.name}</SectionTitle><Badge>{run.status}</Badge></div>
-    <p className="break-all font-mono text-xs text-text-tertiary">{run.id}</p>
-    {run.execution && <div className="space-y-2 text-sm"><p>Change revision {run.execution.revision} · repair cycles {run.execution.repairs}/{run.snapshot.definition.max_repairs ?? 2} · ${run.execution.cost_usd.toFixed(3)} / ${run.snapshot.definition.max_cost_usd ?? 20}</p><RawJson label="Pinned change set" value={run.execution.heads} />{run.execution.publications.map(p => <p key={p.path}>{p.path}: {p.result.url?.startsWith('https://github.com/') ? <a className="underline" href={p.result.url} target="_blank" rel="noopener noreferrer">PR #{p.result.number}</a> : p.state} <code>{p.head_sha.slice(0,12)}</code></p>)}</div>}
-    {run.status === 'blocked' && <div className="space-y-2 rounded-md border border-border-primary p-3"><p className="text-sm">Approve only after inspecting the task, change set and verification evidence. Each action is independent; never policies and missing verification cannot be overridden.</p><div className="flex flex-wrap gap-2">{['fix','publish','open_pr'].map(action => <Button key={action} size="sm" variant="secondary" disabled={disabled} onClick={() => {if(window.confirm(`Approve ${action} for this exact workflow change set?`)) approve(action, action==='fix'?0:(run.execution?.revision ?? 0))}}>Approve {action}</Button>)}<Button size="sm" variant="ghost" disabled={disabled} onClick={() => controlRun('resume')}>Resume reconciled queue</Button></div></div>}
-    <ol aria-label="Workflow phases" className="space-y-2">
-      {run.snapshot.definition.steps.map(step => {
-        const state = run.steps.find(s => s.id === step.id)
-        return <li key={step.id} className="rounded-md border border-border-primary p-3">
-          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm font-medium">{step.name}</span><Badge>{state?.status ?? 'pending'}</Badge></div>
-          <p className="mt-1 text-xs text-text-tertiary">{step.kind} · {step.adapter} · attempt {state?.attempt ?? 0}/{step.max_attempts}</p>
-          {step.depends_on.length > 0 && <p className="mt-1 text-xs text-text-tertiary">After: {step.depends_on.join(', ')}</p>}
-          {state?.result != null && <RawJson label="Evidence and result" value={state.result} />}
-          {run.status === 'blocked' && state?.status === 'blocked' && (state.attempt < step.max_attempts) && <Button size="sm" variant="secondary" disabled={disabled} onClick={() => { if (window.confirm('Have you reconciled any external effects and stopped the previous worker? Retrying can repeat work.')) controlRun('retry', step.id) }}>Retry after reconciliation</Button>}
-        </li>
-      })}
-    </ol>
-    {['running', 'queued', 'blocked'].includes(run.status) && <Button size="sm" variant="secondary" disabled={disabled} onClick={() => controlRun('cancel')}>Cancel execution</Button>}
-    <p className="text-xs text-text-tertiary">Cancellation fences future results; it does not undo external side effects or instantly terminate a disconnected runner.</p>
-    <SectionTitle>Logs & artifacts</SectionTitle><ul className="space-y-1">{run.artifacts?.map(a => <li key={a.id}><button type="button" className="text-left text-sm underline" onClick={() => artifact(a.id)}>{a.step_id} · attempt {a.attempt} · {a.name} ({Math.ceil(a.size/1024)} KB)</button></li>)}</ul>
-    <SectionTitle>Event log</SectionTitle>
-    <ol className="max-h-96 space-y-2 overflow-auto" aria-label="Workflow event log">{[...run.events].reverse().map(event => <li key={event.seq} className="border-b border-border-primary pb-2 text-xs"><span className="text-text-tertiary">{event.created_at} · </span>{event.step_id && <code>{event.step_id} · </code>}{event.kind}<RawJson label="Event details" value={event.payload} /></li>)}</ol>
-  </section>
+const select =
+  'h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring'
+const panel = 'rounded-xl border border-border bg-card p-5 sm:p-6'
+const tabs = [
+  ['overview', 'Resumen'],
+  ['settings', 'Configuración'],
+  ['runs', 'Ejecuciones'],
+  ['github', 'GitHub'],
+  ['sources', 'Entradas'],
+  ['connections', 'Conexiones'],
+] as const
+const sections = [
+  ['repositories', 'Repositorios'],
+  ['agents', 'Agentes y modelos'],
+  ['checks', 'Tests y QA'],
+  ['services', 'Servicios y entornos'],
+  ['delivery', 'Publicación y límites'],
+] as const
+function connected(last: string | null | undefined) {
+  if (!last) return false
+  const value = last.includes('T') ? last : last.replace(' ', 'T') + 'Z'
+  return Date.now() - Date.parse(value) < 120_000
 }
 
 export default function WorkflowsPage() {
   const { client, can } = useFactory()
+  const readable = can('factory_policy:read')
+  const writable = can('factory_policy:write')
+  const [params, setParams] = useSearchParams()
+  const runId = params.get('run') ?? ''
+  const tab = tabs.some(([id]) => id === params.get('tab')) ? params.get('tab')! : 'overview'
+  const section = sections.some(([id]) => id === params.get('section'))
+    ? params.get('section')!
+    : 'repositories'
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [runnerName, setRunnerName] = useState('')
-  const [newToken, setNewToken] = useState<{ id: string; token: string } | null>(null)
   const [runnerId, setRunnerId] = useState('')
+  const [token, setToken] = useState<string | null>(null)
   const [workspaceName, setWorkspaceName] = useState('')
   const [rootPath, setRootPath] = useState('')
-  const [editor, setEditor] = useState('')
   const [definitionId, setDefinitionId] = useState('')
   const [sourceKey, setSourceKey] = useState('')
   const [taskTitle, setTaskTitle] = useState('')
-  const [selectedRun, setSelectedRun] = useState('')
-  const [linearConnector, setLinearConnector] = useState('')
-  const [linearTeam, setLinearTeam] = useState('')
-  const [linearProject, setLinearProject] = useState('')
-  const [intakeNotice, setIntakeNotice] = useState('')
+  const [criteria, setCriteria] = useState('')
+  const [editor, setEditor] = useState('')
+  const [connectorId, setConnectorId] = useState('')
+  const [budget, setBudget] = useState(20)
+  const [repairs, setRepairs] = useState(2)
   const [intakeKind, setIntakeKind] = useState('linear')
   const [intakeConnector, setIntakeConnector] = useState('')
-  const [intakeConfig, setIntakeConfig] = useState('{}')
-  const [openedArtifact, setOpenedArtifact] = useState<{mime:string;content_base64:string}|null>(null)
-  const readable = can('factory_policy:read')
-  const writable = can('factory_policy:write')
-  const catalog = useQuery({ queryKey: ['workflow-catalog'], queryFn: () => client.getWorkflowCatalog(), enabled: readable, refetchInterval: 5000 })
-  const run = useQuery({ queryKey: ['workflow-run', selectedRun], queryFn: () => client.getFactoryWorkflowRun(selectedRun), enabled: readable && Boolean(selectedRun), refetchInterval: 2500 })
-  async function perform(work: () => Promise<unknown>) {
-    setBusy(true); setError('')
-    try { await work(); await catalog.refetch(); if (selectedRun) await run.refetch() }
-    catch (failure) { setError(errorMessage(failure, 'Operation failed')) }
-    finally { setBusy(false) }
+  const [team, setTeam] = useState('')
+  const [project, setProject] = useState('')
+  const [channel, setChannel] = useState('')
+  const [reactors, setReactors] = useState('')
+  const [sentryUrl, setSentryUrl] = useState('https://sentry.io')
+  const [sentryOrg, setSentryOrg] = useState('')
+  const [sentryProject, setSentryProject] = useState('')
+  const [openedArtifact, setOpenedArtifact] = useState<{
+    mime: string
+    content_base64: string
+  } | null>(null)
+  const detail = useRef<HTMLDivElement>(null)
+  const artifact = useRef<HTMLElement>(null)
+  const runtimeDrafts = useRef<Record<string, RuntimeDraft>>({})
+  const catalog = useQuery({
+    queryKey: ['workflow-catalog'],
+    queryFn: () => client.getWorkflowCatalog(),
+    enabled: readable,
+    refetchInterval: 5000,
+  })
+  const run = useQuery({
+    queryKey: ['workflow-run', runId],
+    queryFn: () => client.getFactoryWorkflowRun(runId),
+    enabled: readable && !!runId,
+    refetchInterval: 2500,
+  })
+  const connectors = useQuery({
+    queryKey: ['workflow-connectors'],
+    queryFn: () => client.listAutonomousAgentConnectors(),
+    enabled: readable && can('autonomous_agent:read'),
+  })
+  const workspace =
+    catalog.data?.workspaces.find(
+      (w) => w.id === (params.get('workspace') ?? run.data?.snapshot.workspace.id),
+    ) ?? catalog.data?.workspaces[0]
+  const runner = catalog.data?.runners.find((r) => r.id === workspace?.runner_id)
+  const runtime = workspace?.runtime ?? emptyRuntime()
+  const definitions =
+    catalog.data?.definitions.filter((d) => d.definition.workspace_id === workspace?.id) ?? []
+  const selectedDefinition = definitions.find((d) => d.id === definitionId)
+  const runs =
+    catalog.data?.runs.filter((r) => definitions.some((d) => d.id === r.definition_id)) ?? []
+  const publisherConnectors =
+    connectors.data?.filter(
+      (c) =>
+        c.kind === 'target_secret' &&
+        c.health !== 'revoked' &&
+        c.metadata.purpose === 'factory_workflow_github',
+    ) ?? []
+  const intakeConnectors =
+    connectors.data?.filter(
+      (c) =>
+        c.kind === 'target_secret' &&
+        c.health !== 'revoked' &&
+        ((c.metadata.purpose === 'factory_workflow_intake' &&
+          c.metadata.source_kind === intakeKind) ||
+          (intakeKind === 'linear' && c.metadata.purpose === 'factory_workflow_linear')),
+    ) ?? []
+  const preparationOnly =
+    selectedDefinition?.definition.steps.every((s) => s.kind === 'prepare') ?? false
+  const localSteps =
+    selectedDefinition?.definition.steps.filter((s) =>
+      ['agent', 'check', 'review'].includes(s.kind),
+    ) ?? []
+  const locallyManagedReady =
+    runtime.revision === 0 &&
+    localSteps.length > 0 &&
+    localSteps.every(
+      (s) =>
+        runner?.capabilities.includes(`adapter:${s.adapter}`) &&
+        s.capabilities.every((c) => runner?.capabilities.includes(c)),
+    )
+  const startAllowed =
+    !!selectedDefinition && (preparationOnly || runtime.ready || locallyManagedReady)
+  function navigate(values: Record<string, string>) {
+    setParams((previous) => {
+      const next = new URLSearchParams(previous)
+      for (const [key, value] of Object.entries(values)) {
+        if (value) next.set(key, value)
+        else next.delete(key)
+      }
+      return next
+    })
   }
-  let editorWorkspaceId = ''
-  try { editorWorkspaceId = (JSON.parse(editor) as WorkflowDefinition).workspace_id } catch { /* Advanced drafts may be incomplete. */ }
-  const submit = (event: FormEvent, work: () => Promise<unknown>) => { event.preventDefault(); void perform(work) }
-  if (!readable) return <div className="p-6"><InlineError message="The factory_policy:read permission is required." /></div>
-  return <div className="mx-auto max-w-7xl space-y-6 p-6 md:p-8">
-    <PageHeader title="Workspaces & workflows" subtitle="Register folders on a runner, authorize repositories, and follow durable execution phases." />
-    <div role="note" className="rounded-md border border-border-primary bg-muted p-4 text-sm text-text-secondary">Repository code runs only in locally configured container/VM adapters. Configure pinned images, platform capabilities, test services and dedicated development environment references on the runner. Missing adapters wait visibly; missing QA evidence blocks publication. Draft PRs are never automatically merged.</div>
-    {(error || catalog.isError || run.isError) && <InlineError message={error || errorMessage(catalog.error ?? run.error, 'Could not load workflows')} onRetry={() => { void catalog.refetch(); if (selectedRun) void run.refetch() }} />}
-    {catalog.isPending && <p role="status">Loading workspaces…</p>}
-    <GithubReviewHooks />
-    <div className="grid gap-6 lg:grid-cols-2">
-      <section className={card}>
-        <SectionTitle>Runners</SectionTitle>
-        <p className="text-sm text-text-secondary">A runner lives on the machine with your clones. Its credential cannot edit policies or workflows.</p>
-        {catalog.data?.runners.map(r => <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-border-primary py-2"><div><p className="text-sm font-medium">{r.name} {r.revoked && '(revoked)'}</p><p className="text-xs text-text-tertiary">Last seen: {r.last_seen ?? 'Not connected'}</p></div>{writable && <Button size="sm" variant="ghost" disabled={busy} onClick={() => {if(window.confirm('Rotate this runner credential and fence active jobs?')) void perform(async()=>setNewToken(await client.rotateFactoryRunner(r.id)))}}>Rotate credential</Button>}{!r.revoked && writable && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { if (window.confirm(`Revoke ${r.name}?`)) void perform(() => client.revokeFactoryRunner(r.id)) }}>Revoke</Button>}</div>)}
-        {writable && <form className="flex gap-2" onSubmit={e => submit(e, async () => { const runner = await client.registerFactoryRunner(runnerName); setNewToken(runner); setRunnerId(runner.id); setRunnerName('') })}><Input aria-label="Runner name" placeholder="My workstation" value={runnerName} onChange={e => setRunnerName(e.target.value)} required maxLength={120} /><Button type="submit" size="sm" disabled={busy}>Register runner</Button></form>}
-        {newToken && <div className="space-y-3 rounded-md border border-border-primary p-3" role="status"><p className="text-sm">Save this runner credential in a local 0600 configuration file. It is shown only now.</p><pre className="overflow-auto whitespace-pre-wrap break-all text-xs">{newToken.token}</pre><Button size="sm" variant="secondary" onClick={() => setNewToken(null)}>I saved it — hide credential</Button></div>}
-      </section>
-      <section className={card}>
-        <SectionTitle>Register a workspace folder</SectionTitle>
-        <p className="text-sm text-text-secondary">Use an absolute path on the runner, for example /home/you/work/kasymir. Clones are never reorganized or edited in place.</p>
-        {writable && <form className="space-y-3" onSubmit={e => submit(e, async () => { await client.createFactoryWorkspace({ runner_id: runnerId, name: workspaceName, root_path: rootPath }); setWorkspaceName(''); setRootPath('') })}>
-          <label className="block text-xs">Runner<select className={control} value={runnerId} onChange={e => setRunnerId(e.target.value)} required><option value="">Choose a runner</option>{catalog.data?.runners.filter(r => !r.revoked).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
-          <label className="block text-xs">Workspace name<Input value={workspaceName} onChange={e => setWorkspaceName(e.target.value)} placeholder="Kasymir" required maxLength={120} /></label>
-          <label className="block text-xs">Folder on runner<Input value={rootPath} onChange={e => setRootPath(e.target.value)} placeholder="/home/you/work/kasymir" required pattern="/.*" /></label>
-          <Button type="submit" size="sm" disabled={busy}>Register folder</Button>
-        </form>}
-      </section>
+  function runLink(id: string) {
+    const next = new URLSearchParams(params)
+    next.set('run', id)
+    next.set('tab', 'runs')
+    return `?${next}`
+  }
+  async function perform(work: () => Promise<unknown>) {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await work()
+      await catalog.refetch()
+      if (runId) await run.refetch()
+    } catch (e) {
+      setError(errorMessage(e, 'No se pudo completar la operación.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+  function submit(e: FormEvent, work: () => Promise<unknown>) {
+    e.preventDefault()
+    void perform(work)
+  }
+  function newDefinition(full: boolean) {
+    if (!workspace) return
+    const d = full ? deliveryWorkflow(workspace) : preparationWorkflow(workspace)
+    if (full) {
+      d.max_cost_usd = budget
+      d.max_repairs = repairs
+      const publish = d.steps.find((s) => s.kind === 'publish')
+      if (publish) publish.options = { ...publish.options, connector_id: connectorId }
+    }
+    setEditor(JSON.stringify(d, null, 2))
+    navigate({ tab: 'settings', section: 'delivery' })
+  }
+  useEffect(() => {
+    setOpenedArtifact(null)
+    if (runId) {
+      detail.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+      detail.current?.focus({ preventScroll: true })
+    }
+  }, [runId])
+  useEffect(() => {
+    if (openedArtifact) artifact.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }, [openedArtifact])
+  useEffect(() => {
+    setDefinitionId('')
+    setEditor('')
+  }, [workspace?.id])
+  if (!readable)
+    return (
+      <div className="p-6">
+        <InlineError message="Necesitas el permiso factory_policy:read para ver los workflows." />
+      </div>
+    )
+  const setup = [
+    {
+      label: 'Runner conectado',
+      done: connected(runner?.last_seen) && !runner?.revoked,
+      section: 'connections',
+      detail: runner?.name ?? 'Registra el servidor que contiene tus clones',
+    },
+    {
+      label: 'Repositorios autorizados',
+      done:
+        !!workspace?.repositories.length &&
+        workspace.confirmed_revision === workspace.inventory_revision,
+      section: 'repositories',
+      detail: workspace
+        ? `${workspace.repositories.length} repositorios · ${workspace.repositories.filter((r) => r.writable).length} con escritura`
+        : 'Selecciona una carpeta',
+    },
+    {
+      label: 'Agentes y modelos',
+      done:
+        runtime.config.agents.length === 4 &&
+        !runtime.missing.some((s) => /^(agent:|model_connection:|network:)/.test(s)),
+      section: 'agents',
+      detail: 'Investigación, tests, implementación y revisor independiente',
+    },
+    {
+      label: 'Tests, build y QA',
+      done: !runtime.missing.some((s) => s.startsWith('check:')),
+      section: 'checks',
+      detail: 'Comprobaciones reales por repositorio',
+    },
+    {
+      label: 'Servicios de pruebas',
+      done: runtime.config.services.length > 0,
+      section: 'services',
+      detail: 'Entorno integrado desechable, sin producción',
+    },
+    {
+      label: 'Configuración aplicada',
+      done: runtime.ready,
+      section: 'agents',
+      detail: runtime.revision
+        ? `Guardada: ${runtime.revision} · aplicada: ${runtime.report.applied_revision}`
+        : 'El runner debe validar y aplicar los perfiles',
+    },
+  ]
+  return (
+    <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6 md:p-8">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <PageHeader
+          title="Workflows de desarrollo"
+          subtitle="Configura un workspace, ejecuta una tarea y sigue sus evidencias."
+        />
+        <label className="block w-full space-y-1 text-xs sm:w-72">
+          Workspace
+          <select
+            className={select}
+            aria-label="Workspace activo"
+            value={workspace?.id ?? ''}
+            onChange={(e) => navigate({ workspace: e.target.value, run: '' })}
+          >
+            <option value="" disabled>
+              Selecciona un workspace
+            </option>
+            {catalog.data?.workspaces.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </header>
+      <nav
+        className="flex gap-1 overflow-x-auto border-b border-border pb-1"
+        aria-label="Secciones de workflows"
+      >
+        {tabs.map(([id, label]) => (
+          <button
+            type="button"
+            key={id}
+            aria-current={tab === id ? 'page' : undefined}
+            onClick={() => navigate({ tab: id, run: '' })}
+            className={`shrink-0 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${tab === id ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+          >
+            {label}
+            {id === 'runs' && !!runs.length && (
+              <span className="ml-2 tabular-nums text-xs">{runs.length}</span>
+            )}
+          </button>
+        ))}
+      </nav>
+      {(error || catalog.isError) && (
+        <InlineError
+          message={error || errorMessage(catalog.error, 'No se pudo cargar el workspace.')}
+          onRetry={() => {
+            void catalog.refetch()
+          }}
+        />
+      )}
+      {notice && (
+        <p role="status" className="rounded-lg bg-muted p-3 text-sm">
+          {notice}
+        </p>
+      )}
+      {catalog.isPending && (
+        <div role="status" className="space-y-3 py-5">
+          <p className="text-sm text-muted-foreground">Cargando workspaces…</p>
+          <div className="h-16 rounded-lg bg-muted" />
+          <div className="h-32 rounded-lg bg-muted" />
+        </div>
+      )}
+      {runId && (
+        <div
+          ref={detail}
+          tabIndex={-1}
+          className={`${panel} scroll-mt-6 space-y-5`}
+          aria-label="Ejecución seleccionada"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-medium">Detalle de ejecución</h2>
+            <Button size="sm" variant="ghost" onClick={() => navigate({ run: '' })}>
+              <X className="mr-1 size-4" />
+              Cerrar ejecución
+            </Button>
+          </div>
+          {run.isPending && <p role="status">Cargando ejecución…</p>}
+          {run.isError && (
+            <InlineError
+              message={errorMessage(run.error, 'No se pudo abrir la ejecución.')}
+              onRetry={() => {
+                void run.refetch()
+              }}
+            />
+          )}
+          {run.data && (
+            <ExecutionDetail
+              run={run.data}
+              disabled={busy || !writable}
+              control={(action, step) => {
+                void perform(() => client.controlFactoryWorkflowRun(run.data.id, action, step))
+              }}
+              approve={(action, revision) => {
+                void perform(() => client.approveWorkflowAction(run.data.id, action, revision))
+              }}
+              artifact={(id) => {
+                void perform(async () => setOpenedArtifact(await client.getWorkflowArtifact(id)))
+              }}
+            />
+          )}
+        </div>
+      )}
+      {openedArtifact && (
+        <section
+          ref={artifact}
+          className={`${panel} scroll-mt-6 space-y-4`}
+          aria-label="Contenido del artefacto"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="font-medium">Contenido del artefacto</h2>
+            <Button variant="ghost" onClick={() => setOpenedArtifact(null)}>
+              Cerrar artefacto
+            </Button>
+          </div>
+          {openedArtifact.mime.startsWith('image/') ? (
+            <img
+              className="max-w-full"
+              alt="Evidencia de QA"
+              src={`data:${openedArtifact.mime};base64,${openedArtifact.content_base64}`}
+            />
+          ) : (
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs">
+              {new TextDecoder().decode(
+                Uint8Array.from(atob(openedArtifact.content_base64), (c) => c.charCodeAt(0)),
+              )}
+            </pre>
+          )}
+        </section>
+      )}
+      {!catalog.isPending && !workspace && tab !== 'github' && tab !== 'connections' && (
+        <section className={`${panel} space-y-3`}>
+          <h2 className="text-lg font-semibold">Conecta la máquina donde están tus repositorios</h2>
+          <p className="max-w-xl text-sm text-muted-foreground">
+            Registra un runner y su carpeta. Después podrás seleccionar repositorios, configurar
+            agentes y crear tu primer workflow.
+          </p>
+          <Button onClick={() => navigate({ tab: 'connections' })}>
+            <Server className="mr-2 size-4" />
+            Registrar runner y carpeta
+          </Button>
+        </section>
+      )}
+      {tab === 'overview' && workspace && (
+        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(280px,1fr)]">
+          <section className={`${panel} space-y-5`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {runtime.ready
+                    ? 'Workspace configurado'
+                    : 'Completa la configuración del workspace'}
+                </h2>
+                <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+                  {runtime.ready
+                    ? 'Los perfiles están aplicados. El QA se verificará en cada ejecución.'
+                    : 'El runner y los permisos no bastan para ejecutar agentes. Aquí puedes ver exactamente qué falta.'}
+                </p>
+              </div>
+              <Badge>{runtime.ready ? 'Configurado' : 'Preparación pendiente'}</Badge>
+            </div>
+            <Button
+              onClick={() =>
+                navigate(runtime.ready ? { tab: 'runs' } : { tab: 'settings', section: 'agents' })
+              }
+            >
+              {runtime.ready ? 'Ejecutar una tarea' : 'Configurar agentes y QA'}
+              <ArrowRight className="ml-2 size-4" />
+            </Button>
+            <ul className="divide-y divide-border">
+              {setup.map((item) => (
+                <li key={item.label} className="flex items-start gap-3 py-4">
+                  {item.done ? (
+                    <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-status-success" />
+                  ) : (
+                    <Circle className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-medium">{item.label}</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">{item.detail}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      navigate(
+                        item.section === 'connections'
+                          ? { tab: 'connections' }
+                          : { tab: 'settings', section: item.section },
+                      )
+                    }
+                  >
+                    {item.done ? 'Revisar' : 'Configurar'}
+                    <ArrowRight className="ml-1 size-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </section>
+          <aside className="space-y-5">
+            <section className={`${panel} space-y-3`}>
+              <div className="flex items-center gap-2">
+                <Server className="size-4" />
+                <h2 className="text-sm font-semibold">{runner?.name ?? 'Runner'}</h2>
+                <Badge>
+                  {connected(runner?.last_seen) && !runner?.revoked ? 'Conectado' : 'Sin conexión'}
+                </Badge>
+              </div>
+              <p className="break-all text-sm text-muted-foreground">{workspace.root_path}</p>
+              <p className="text-sm text-muted-foreground">
+                {workspace.repositories.length} repositorios ·{' '}
+                {workspace.repositories.filter((r) => r.writable).length} con escritura
+              </p>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={
+                  busy || !writable || workspace.confirmed_revision !== workspace.inventory_revision
+                }
+                onClick={() => newDefinition(false)}
+              >
+                Probar solo la preparación
+              </Button>
+            </section>
+            <section className="space-y-3 px-1">
+              <h2 className="text-sm font-semibold">Dos formas de revisión</h2>
+              <p className="text-sm text-muted-foreground">
+                <strong className="font-medium text-foreground">Dentro del workflow:</strong> un
+                agente nuevo revisa código y evidencias, incluso si el bot publicó el PR.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                <strong className="font-medium text-foreground">En GitHub:</strong> una aprobación
+                formal requiere otra identidad. El autor no puede aprobarse a sí mismo.
+              </p>
+              <Button variant="ghost" size="sm" onClick={() => navigate({ tab: 'github' })}>
+                <GitPullRequest className="mr-2 size-4" />
+                Configurar reviews de GitHub
+              </Button>
+            </section>
+          </aside>
+        </div>
+      )}
+      {tab === 'settings' && workspace && (!editor || section !== 'delivery') && (
+        <div className="grid items-start gap-6 lg:grid-cols-[210px_minmax(0,1fr)]">
+          <nav
+            aria-label="Pasos de configuración"
+            className="flex gap-1 overflow-x-auto lg:flex-col"
+          >
+            {sections.map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => navigate({ section: id })}
+                aria-current={section === id ? 'step' : undefined}
+                className={`shrink-0 rounded-lg px-3 py-2.5 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${section === id ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          <div className={`${panel} min-w-0 space-y-6`}>
+            {section === 'repositories' && (
+              <RepositoryInventory
+                key={`${workspace.id}:${workspace.inventory_revision}:${workspace.confirmed_revision}`}
+                workspace={workspace}
+                disabled={busy || !writable}
+                onSave={(repos) => {
+                  void perform(() =>
+                    client.confirmFactoryWorkspace(
+                      workspace.id,
+                      workspace.inventory_revision,
+                      repos,
+                    ),
+                  )
+                }}
+              />
+            )}
+            {['agents', 'checks', 'services'].includes(section) && (
+              <RuntimeEditor
+                key={workspace.id}
+                draft={runtimeDrafts.current[workspace.id]}
+                onDraft={(d) => {
+                  runtimeDrafts.current[workspace.id] = d
+                }}
+                value={workspace.runtime}
+                repositories={workspace.repositories.map((r) => r.path)}
+                section={section as 'agents' | 'checks' | 'services'}
+                disabled={busy || !writable}
+                onSave={async (revision, config) => {
+                  await client.saveWorkflowRuntime(workspace.id, revision, config)
+                  await catalog.refetch()
+                }}
+              />
+            )}
+            {section === 'delivery' && (
+              <>
+                <div>
+                  <h2 className="text-base font-semibold">Publicación y límites</h2>
+                  <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                    Crea una definición inmutable con permisos y presupuesto acotados. La
+                    publicación usa el conector del control plane; su token nunca llega al runner.
+                  </p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="space-y-1.5 text-sm sm:col-span-2">
+                    Conector de publicación GitHub
+                    <select
+                      className={select}
+                      value={connectorId}
+                      disabled={!writable}
+                      onChange={(e) => setConnectorId(e.target.value)}
+                    >
+                      <option value="">Seleccionar conector autorizado</option>
+                      {publisherConnectors.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    Presupuesto máximo (USD)
+                    <Input
+                      type="number"
+                      min="0.01"
+                      max="1000"
+                      step="0.01"
+                      value={budget}
+                      disabled={!writable}
+                      onChange={(e) => setBudget(Number(e.target.value))}
+                    />
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    Ciclos de reparación
+                    <Input
+                      type="number"
+                      min="0"
+                      max="2"
+                      value={repairs}
+                      disabled={!writable}
+                      onChange={(e) => setRepairs(Number(e.target.value))}
+                    />
+                  </label>
+                </div>
+                {!publisherConnectors.length && (
+                  <p className="text-sm text-muted-foreground">
+                    No hay un conector de publicación autorizado. Configura uno cifrado con
+                    propósito factory_workflow_github, scopes target:use y github:write, y una lista
+                    explícita de repositorios. El conector de webhooks no sirve para publicar
+                    código.
+                  </p>
+                )}
+                <p className="text-sm text-muted-foreground">
+                  Los PRs son draft. La revisión interna tiene contexto limpio y no equivale a una
+                  aprobación de GitHub. No se fusiona ni despliega automáticamente.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={
+                      busy ||
+                      !writable ||
+                      !connectorId ||
+                      !Number.isFinite(budget) ||
+                      budget < 0.01 ||
+                      budget > 1000 ||
+                      !Number.isInteger(repairs) ||
+                      repairs < 0 ||
+                      repairs > 2 ||
+                      !workspace.repositories.some((r) => r.writable) ||
+                      workspace.confirmed_revision !== workspace.inventory_revision
+                    }
+                    onClick={() => newDefinition(true)}
+                  >
+                    Crear workflow completo
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={
+                      busy ||
+                      !writable ||
+                      workspace.confirmed_revision !== workspace.inventory_revision
+                    }
+                    onClick={() => newDefinition(false)}
+                  >
+                    Crear prueba de preparación
+                  </Button>
+                </div>
+              </>
+            )}
+            {runtime.missing.length > 0 && section !== 'repositories' && (
+              <details className="border-t border-border pt-4 text-sm">
+                <summary className="cursor-pointer text-muted-foreground">
+                  Bloqueos detectados por el runner ({runtime.missing.length})
+                </summary>
+                <ul className="mt-3 list-disc space-y-1 pl-5 text-muted-foreground">
+                  {[...new Set(runtime.missing.map(blockerLabel))].map((m) => (
+                    <li key={m}>{m}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        </div>
+      )}
+      {editor && tab === 'settings' && section === 'delivery' && (
+        <form
+          className={`${panel} space-y-4`}
+          onSubmit={(e) =>
+            submit(e, async () => {
+              const d = await client.createFactoryWorkflow(JSON.parse(editor) as WorkflowDefinition)
+              setDefinitionId(d.id)
+              setEditor('')
+              navigate({ tab: 'runs' })
+              setNotice('Definición guardada. Ya puedes seleccionarla para una tarea.')
+            })
+          }
+        >
+          <h2 className="text-base font-semibold">Revisar definición antes de guardarla</h2>
+          <fieldset disabled={busy || !writable}>
+            <WorkflowEditor
+              value={editor}
+              onChange={setEditor}
+              adapters={
+                runner?.capabilities
+                  .filter((c) => c.startsWith('adapter:'))
+                  .map((c) => c.slice(8)) ?? []
+              }
+              repositories={
+                workspace?.repositories.filter((r) => r.writable).map((r) => r.path) ?? []
+              }
+            />
+          </fieldset>
+          <div className="flex gap-2">
+            <Button type="submit" disabled={busy || !writable}>
+              Guardar definición
+            </Button>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => setEditor('')}>
+              Descartar
+            </Button>
+          </div>
+        </form>
+      )}
+      {tab === 'runs' && workspace && (
+        <div className="space-y-6">
+          <section className={`${panel} space-y-4`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold">Nueva tarea</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Elige una definición guardada. La misma clave de origen no crea ejecuciones
+                  duplicadas.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => navigate({ tab: 'settings', section: 'delivery' })}
+              >
+                Crear una definición
+              </Button>
+            </div>
+            <form
+              className="space-y-4"
+              onSubmit={(e) =>
+                submit(e, async () => {
+                  const r = await client.startFactoryWorkflow(definitionId, sourceKey.trim(), {
+                    title: taskTitle,
+                    acceptance_criteria: criteria,
+                    origin_trust: 'untrusted',
+                  })
+                  navigate({ run: r.id, tab: 'runs' })
+                })
+              }
+            >
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1.5 text-sm">
+                  Workflow
+                  <select
+                    className={select}
+                    value={definitionId}
+                    required
+                    disabled={!writable}
+                    onChange={(e) => setDefinitionId(e.target.value)}
+                  >
+                    <option value="">Seleccionar definición</option>
+                    {definitions.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.definition.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1.5 text-sm">
+                  Clave de origen
+                  <Input
+                    value={sourceKey}
+                    disabled={!writable}
+                    required
+                    maxLength={512}
+                    placeholder="manual:kasymir-prueba-003"
+                    onChange={(e) => setSourceKey(e.target.value)}
+                  />
+                </label>
+                <label className="space-y-1.5 text-sm sm:col-span-2">
+                  Tarea
+                  <Input
+                    value={taskTitle}
+                    disabled={!writable}
+                    required
+                    placeholder="Describe el problema y el resultado esperado"
+                    onChange={(e) => setTaskTitle(e.target.value)}
+                  />
+                </label>
+                <label className="space-y-1.5 text-sm sm:col-span-2">
+                  Criterios de aceptación
+                  <textarea
+                    className={`${select} h-24 py-2`}
+                    value={criteria}
+                    disabled={!writable}
+                    placeholder="Cómo reproducirlo y qué debe cumplirse para considerarlo resuelto"
+                    onChange={(e) => setCriteria(e.target.value)}
+                  />
+                </label>
+              </div>
+              {!preparationOnly && !runtime.ready && !locallyManagedReady && (
+                <p role="note" className="text-sm text-muted-foreground">
+                  Completa agentes, QA y servicios antes de ejecutar el flujo completo. La prueba de
+                  preparación sí puede ejecutarse sin modelos.
+                </p>
+              )}
+              <Button type="submit" disabled={busy || !writable || !startAllowed}>
+                <Play className="mr-2 size-4" />
+                Iniciar ejecución
+              </Button>
+            </form>
+          </section>
+          <section className={`${panel} space-y-4`}>
+            <h2 className="text-base font-semibold">Ejecuciones del workspace</h2>
+            {!runs.length ? (
+              <p className="text-sm text-muted-foreground">
+                Todavía no hay ejecuciones. Empieza con una prueba de preparación para comprobar el
+                runner sin consumir modelos.
+              </p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {runs.map((r) => (
+                  <li key={r.id}>
+                    <Link
+                      to={runLink(r.id)}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg px-2 py-4 hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                    >
+                      <span className="min-w-0 break-all text-sm font-medium">{r.source_key}</span>
+                      <span className="flex items-center gap-3">
+                        <Badge>{r.status}</Badge>
+                        <span className="flex items-center gap-1 text-sm underline underline-offset-4">
+                          Abrir ejecución
+                          <ArrowRight className="size-4" />
+                        </span>
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      )}
+      {tab === 'github' && (
+        <div className="space-y-5">
+          <div className="max-w-3xl">
+            <h2 className="text-lg font-semibold">Reviews de GitHub</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Esta integración funciona en el backend y no depende del runner de Oracle. Solicita
+              revisión a la cuenta configurada en un PR no-draft creado por otra identidad. Para PRs
+              que publica el mismo bot, usa la revisión interna del workflow; GitHub no admite
+              autoaprobación.
+            </p>
+            <Link
+              className="mt-3 inline-block text-sm underline underline-offset-4"
+              to="/factory/runs"
+            >
+              Ver ejecuciones del reviewer de GitHub
+            </Link>
+          </div>
+          <GithubReviewHooks />
+        </div>
+      )}
+      {tab === 'sources' && workspace && (
+        <section className={`${panel} space-y-5`}>
+          <div>
+            <h2 className="text-base font-semibold">Entradas automáticas</h2>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Linear, Slack y Sentry envían tareas al mismo workflow. Se consultan cada cinco
+              minutos mientras el runner está activo y respetan políticas y aprobaciones.
+            </p>
+          </div>
+          <ul className="divide-y divide-border">
+            {catalog.data?.intakes
+              ?.filter((i) => definitions.some((d) => d.id === i.definition_id))
+              .map((i) => (
+                <li
+                  key={i.id}
+                  className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
+                >
+                  <span>
+                    {i.kind} · {i.enabled ? 'Activa' : 'Desactivada'} ·{' '}
+                    {i.last_error ?? 'Sin errores de consulta'}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy || !writable}
+                    onClick={() => {
+                      if (window.confirm('¿Quitar esta entrada?'))
+                        void perform(() => client.deleteWorkflowIntake(i.id))
+                    }}
+                  >
+                    Quitar entrada
+                  </Button>
+                </li>
+              ))}
+          </ul>
+          <form
+            className="space-y-4"
+            onSubmit={(e) =>
+              submit(e, async () => {
+                const config =
+                  intakeKind === 'linear'
+                    ? { team_id: team || undefined, project_id: project || undefined }
+                    : intakeKind === 'slack'
+                      ? {
+                          channel_id: channel,
+                          allowed_reactors: reactors
+                            .split(',')
+                            .map((s) => s.trim())
+                            .filter(Boolean),
+                        }
+                      : {
+                          base_url: sentryUrl,
+                          org_slug: sentryOrg,
+                          project_slug: sentryProject,
+                          query: 'is:unresolved',
+                        }
+                await client.createWorkflowIntake({
+                  definition_id: definitionId,
+                  kind: intakeKind,
+                  connector_id: intakeConnector,
+                  config,
+                })
+                setNotice('Entrada conectada. Su primer inicio puede requerir aprobación.')
+              })
+            }
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1.5 text-sm">
+                Workflow destino
+                <select
+                  className={select}
+                  value={definitionId}
+                  required
+                  disabled={!writable}
+                  onChange={(e) => setDefinitionId(e.target.value)}
+                >
+                  <option value="">Seleccionar definición</option>
+                  {definitions.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.definition.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5 text-sm">
+                Aplicación
+                <select
+                  className={select}
+                  value={intakeKind}
+                  disabled={!writable}
+                  onChange={(e) => {
+                    setIntakeKind(e.target.value)
+                    setIntakeConnector('')
+                  }}
+                >
+                  <option value="linear">Linear</option>
+                  <option value="slack">Slack</option>
+                  <option value="sentry">Sentry</option>
+                </select>
+              </label>
+              <label className="space-y-1.5 text-sm sm:col-span-2">
+                Conector dedicado
+                <select
+                  className={select}
+                  required
+                  disabled={!writable}
+                  value={intakeConnector}
+                  onChange={(e) => setIntakeConnector(e.target.value)}
+                >
+                  <option value="">Seleccionar conector cifrado</option>
+                  {intakeConnectors.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {intakeKind === 'linear' && (
+                <>
+                  <label className="space-y-1.5 text-sm">
+                    Team ID (opcional)
+                    <Input
+                      value={team}
+                      disabled={!writable}
+                      onChange={(e) => setTeam(e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    Project ID (opcional)
+                    <Input
+                      value={project}
+                      disabled={!writable}
+                      onChange={(e) => setProject(e.target.value)}
+                    />
+                  </label>
+                </>
+              )}
+              {intakeKind === 'slack' && (
+                <>
+                  <label className="space-y-1.5 text-sm">
+                    Canal de Slack
+                    <Input
+                      value={channel}
+                      required
+                      disabled={!writable}
+                      onChange={(e) => setChannel(e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    Usuarios autorizados a reaccionar (IDs separados por coma)
+                    <Input
+                      value={reactors}
+                      required
+                      disabled={!writable}
+                      onChange={(e) => setReactors(e.target.value)}
+                    />
+                  </label>
+                </>
+              )}
+              {intakeKind === 'sentry' && (
+                <>
+                  <label className="space-y-1.5 text-sm">
+                    URL de Sentry
+                    <Input
+                      type="url"
+                      value={sentryUrl}
+                      required
+                      disabled={!writable}
+                      onChange={(e) => setSentryUrl(e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    Organización
+                    <Input
+                      value={sentryOrg}
+                      required
+                      disabled={!writable}
+                      onChange={(e) => setSentryOrg(e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    Proyecto
+                    <Input
+                      value={sentryProject}
+                      required
+                      disabled={!writable}
+                      onChange={(e) => setSentryProject(e.target.value)}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+            {!intakeConnectors.length && (
+              <p className="text-sm text-muted-foreground">
+                No hay conectores dedicados disponibles para esta fuente. Sus claves se configuran
+                cifradas; no las pegues en la descripción de la tarea.
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="submit"
+                disabled={busy || !writable || !definitionId || !intakeConnector}
+              >
+                Conectar entrada
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={busy || !writable}
+                onClick={() => {
+                  void perform(() => client.pollWorkflowIntakes())
+                }}
+              >
+                Consultar entradas pendientes
+              </Button>
+              {intakeKind === 'linear' && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={busy || !writable || !definitionId || !intakeConnector}
+                  onClick={() => {
+                    void perform(async () => {
+                      const r = await client.startNextLinearWorkflow(
+                        definitionId,
+                        intakeConnector,
+                        team,
+                        project,
+                      )
+                      if (r.run) navigate({ run: r.run.id, tab: 'runs' })
+                      else setNotice('No hay issues asignados elegibles sin tomar.')
+                    })
+                  }}
+                >
+                  Tomar siguiente issue asignado
+                </Button>
+              )}
+            </div>
+          </form>
+        </section>
+      )}
+      {tab === 'connections' && (
+        <div className="grid items-start gap-6 lg:grid-cols-2">
+          <section className={`${panel} space-y-5`}>
+            <h2 className="text-base font-semibold">Runners</h2>
+            <p className="text-sm text-muted-foreground">
+              Procesos instalados en las máquinas que contienen tus clones. Su credencial no permite
+              administrar workflows ni políticas.
+            </p>
+            <ul className="divide-y divide-border">
+              {catalog.data?.runners.map((r) => (
+                <li key={r.id} className="space-y-2 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium">{r.name}</h3>
+                    <Badge>
+                      {r.revoked
+                        ? 'Revocado'
+                        : connected(r.last_seen)
+                          ? 'Conectado'
+                          : 'Sin conexión'}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Última conexión: {r.last_seen ?? 'Nunca'}
+                  </p>
+                  {writable && (
+                    <details className="text-sm">
+                      <summary className="cursor-pointer text-muted-foreground">
+                        Administrar credencial
+                      </summary>
+                      <div className="mt-3 flex gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                '¿Rotar la credencial y detener la autoridad de los trabajos activos?',
+                              )
+                            )
+                              void perform(async () => {
+                                setToken((await client.rotateFactoryRunner(r.id)).token)
+                                setRunnerId(r.id)
+                              })
+                          }}
+                        >
+                          Rotar credencial
+                        </Button>
+                        {!r.revoked && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => {
+                              if (window.confirm(`¿Revocar ${r.name}?`))
+                                void perform(() => client.revokeFactoryRunner(r.id))
+                            }}
+                          >
+                            Revocar
+                          </Button>
+                        )}
+                      </div>
+                    </details>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {writable && (
+              <form
+                className="space-y-3 border-t border-border pt-4"
+                onSubmit={(e) =>
+                  submit(e, async () => {
+                    const r = await client.registerFactoryRunner(runnerName)
+                    setToken(r.token)
+                    setRunnerId(r.id)
+                    setRunnerName('')
+                  })
+                }
+              >
+                <label className="block space-y-1.5 text-sm">
+                  Nombre del runner
+                  <Input
+                    value={runnerName}
+                    required
+                    maxLength={120}
+                    onChange={(e) => setRunnerName(e.target.value)}
+                    placeholder="Servidor de desarrollo"
+                  />
+                </label>
+                <Button type="submit" disabled={busy}>
+                  Registrar runner
+                </Button>
+              </form>
+            )}
+            {token && (
+              <div role="status" className="space-y-3 rounded-lg bg-muted p-4">
+                <p className="text-sm">
+                  Guarda esta credencial en un archivo privado 0600. Se muestra una sola vez; no la
+                  pegues en código ni issues.
+                </p>
+                <pre className="overflow-auto whitespace-pre-wrap break-all text-xs">{token}</pre>
+                <Button variant="secondary" size="sm" onClick={() => setToken(null)}>
+                  Ya la guardé · ocultar
+                </Button>
+              </div>
+            )}
+          </section>
+          <section className={`${panel} space-y-4`}>
+            <h2 className="text-base font-semibold">Registrar una carpeta</h2>
+            <p className="text-sm text-muted-foreground">
+              La ruta pertenece a la máquina del runner, no a tu navegador. Usa la carpeta padre que
+              contiene los repositorios.
+            </p>
+            <form
+              className="space-y-4"
+              onSubmit={(e) =>
+                submit(e, async () => {
+                  const w = await client.createFactoryWorkspace({
+                    runner_id: runnerId,
+                    name: workspaceName,
+                    root_path: rootPath,
+                  })
+                  setWorkspaceName('')
+                  setRootPath('')
+                  navigate({ workspace: w.id, tab: 'settings', section: 'repositories' })
+                })
+              }
+            >
+              <label className="block space-y-1.5 text-sm">
+                Runner
+                <select
+                  className={select}
+                  value={runnerId}
+                  required
+                  disabled={!writable}
+                  onChange={(e) => setRunnerId(e.target.value)}
+                >
+                  <option value="">Seleccionar runner</option>
+                  {catalog.data?.runners
+                    .filter((r) => !r.revoked)
+                    .map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="block space-y-1.5 text-sm">
+                Nombre del workspace
+                <Input
+                  value={workspaceName}
+                  required
+                  maxLength={120}
+                  disabled={!writable}
+                  onChange={(e) => setWorkspaceName(e.target.value)}
+                  placeholder="Kasymir"
+                />
+              </label>
+              <label className="block space-y-1.5 text-sm">
+                Carpeta en el runner
+                <Input
+                  value={rootPath}
+                  required
+                  pattern="/.*"
+                  disabled={!writable}
+                  onChange={(e) => setRootPath(e.target.value)}
+                  placeholder="/home/ubuntu/nexusmind-workspaces/kasymir"
+                />
+              </label>
+              <Button type="submit" disabled={busy || !writable}>
+                Registrar carpeta
+              </Button>
+            </form>
+          </section>
+        </div>
+      )}
+      {!writable && (
+        <p className="text-sm text-muted-foreground">
+          Vista de solo lectura. Necesitas factory_policy:write para configurar o iniciar workflows.
+        </p>
+      )}
     </div>
-    {catalog.data?.workspaces.length === 0 && <p className="text-sm text-text-secondary">No workspaces yet. Register a runner and its folder to begin.</p>}
-    {catalog.data?.workspaces.map(w => <section key={w.id} className={card}><SectionTitle>{w.name}</SectionTitle><p className="break-all font-mono text-xs text-text-tertiary">{w.root_path}</p>
-      <Inventory key={`${w.id}:${w.inventory_revision}:${w.confirmed_revision}`} workspace={w} disabled={!writable || busy} save={repos => { void perform(() => client.confirmFactoryWorkspace(w.id, w.inventory_revision, repos)) }} />
-      {writable && w.confirmed_revision !== null && w.confirmed_revision === w.inventory_revision && <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" onClick={() => setEditor(JSON.stringify(preparationWorkflow(w), null, 2))}>Prepare workspace workflow</Button><Button size="sm" variant="secondary" disabled={!w.repositories.some(r=>r.writable)} onClick={() => setEditor(JSON.stringify(deliveryWorkflow(w), null, 2))}>New end-to-end workflow</Button></div>}
-    </section>)}
-    {editor && writable && <form className={card} onSubmit={e => submit(e, async () => { const definition = JSON.parse(editor) as WorkflowDefinition; await client.createFactoryWorkflow(definition); setEditor('') })}><SectionTitle>New immutable workflow revision</SectionTitle><WorkflowEditor value={editor} onChange={setEditor} adapters={catalog.data?.runners.find(r=>r.id===catalog.data?.workspaces.find(w=>w.id===editorWorkspaceId)?.runner_id)?.capabilities.filter(c=>c.startsWith('adapter:')).map(c=>c.slice(8))??[]} repositories={catalog.data?.workspaces.find(w=>w.id===editorWorkspaceId)?.repositories.filter(r=>r.writable).map(r=>r.path)??[]} /><div className="flex gap-2"><Button type="submit" size="sm" disabled={busy}>Save definition</Button><Button size="sm" variant="ghost" onClick={() => setEditor('')}>Discard</Button></div></form>}
-    <section className={card}><SectionTitle>Start a workflow</SectionTitle>
-      {writable && <form className="space-y-3" onSubmit={e => submit(e, async () => { const started = await client.startFactoryWorkflow(definitionId, sourceKey, { title: taskTitle, origin_trust: 'untrusted' }); setSelectedRun(started.id) })}>
-        <label className="block text-xs">Workflow<select className={control} required value={definitionId} onChange={e => setDefinitionId(e.target.value)}><option value="">Choose a workflow</option>{catalog.data?.definitions.map(d => <option key={d.id} value={d.id}>{d.definition.name} · {d.id.slice(0, 8)}</option>)}</select></label>
-        <label className="block text-xs">Source key (stable deduplication ID)<Input value={sourceKey} onChange={e => setSourceKey(e.target.value)} placeholder="linear:issue-uuid or manual:task-id" required maxLength={512} /></label>
-        <label className="block text-xs">Task title<Input value={taskTitle} onChange={e => setTaskTitle(e.target.value)} required /></label><Button type="submit" size="sm" disabled={busy}>Start execution</Button>
-      </form>}
-    </section>
-    {writable && <section className={card}><SectionTitle>Linear intake</SectionTitle>
-      <p className="text-sm text-text-secondary">Uses the selected Linear key’s assigned issues, excluding completed/canceled states. Urgent first, unprioritized last; oldest wins ties. An existing source key is not started again in this workspace. Unresolved blockers and incomplete dependency information are excluded.</p>
-      <p className="text-xs text-text-tertiary">Register an encrypted target_secret connector with purpose factory_workflow_linear and scope linear:read. The key stays on the control plane.</p>
-      <form className="space-y-3" onSubmit={e => submit(e, async () => {
-        setIntakeNotice(''); const result = await client.startNextLinearWorkflow(definitionId, linearConnector, linearTeam, linearProject)
-        if (result.run) setSelectedRun(result.run.id); else setIntakeNotice('No unclaimed assigned issue was found.')
-      })}>
-        <label className="block text-xs">Workflow<select className={control} required value={definitionId} onChange={e => setDefinitionId(e.target.value)}><option value="">Choose a workflow</option>{catalog.data?.definitions.map(d => <option key={d.id} value={d.id}>{d.definition.name}</option>)}</select></label>
-        <label className="block text-xs">Linear connector ID<Input value={linearConnector} onChange={e => setLinearConnector(e.target.value)} required /></label>
-        <label className="block text-xs">Team ID (optional)<Input value={linearTeam} onChange={e => setLinearTeam(e.target.value)} /></label>
-        <label className="block text-xs">Project ID (optional)<Input value={linearProject} onChange={e => setLinearProject(e.target.value)} /></label>
-        <Button type="submit" size="sm" disabled={busy}>Take next assigned issue</Button>
-      </form>{intakeNotice && <p role="status" className="text-sm">{intakeNotice}</p>}
-    </section>}
-    <section className={card}><SectionTitle>Executions</SectionTitle>{catalog.data?.runs.length === 0 && <p className="text-sm text-text-secondary">No workflow executions yet.</p>}<ul className="space-y-2">{catalog.data?.runs.map(r => <li key={r.id}><button type="button" className="flex w-full flex-wrap items-center justify-between gap-2 rounded-md border border-border-primary p-3 text-left focus-visible:outline focus-visible:outline-2" onClick={() => setSelectedRun(r.id)}><span className="break-all text-sm">{r.source_key}</span><Badge>{r.status}</Badge></button></li>)}</ul></section>
-    {writable && <section className={card}><SectionTitle>Connected intakes</SectionTitle><p className="text-sm text-text-secondary">Linear, Slack and Sentry feed the same workflow. Sources poll every five minutes while the runner is active, one outstanding task per workspace. New tasks obey fix policies and may require human approval.</p>
-      <ul className="space-y-2">{catalog.data?.intakes?.map(i=><li key={i.id} className="flex flex-wrap items-center gap-3 text-sm"><span>{i.kind} · {i.enabled?'Enabled':'Disabled'} · {i.last_error ?? 'No polling errors'}</span><Button size="sm" variant="ghost" disabled={busy} onClick={()=>{void perform(()=>client.deleteWorkflowIntake(i.id))}}>Remove source</Button></li>)}</ul>
-      <form className="space-y-3" onSubmit={e=>submit(e,async()=>{await client.createWorkflowIntake({definition_id:definitionId,kind:intakeKind,connector_id:intakeConnector,config:JSON.parse(intakeConfig)});setIntakeConnector('')})}>
-        <label className="block text-xs">Target workflow<select className={control} value={definitionId} onChange={e=>setDefinitionId(e.target.value)} required><option value="">Choose a workflow</option>{catalog.data?.definitions.map(d=><option key={d.id} value={d.id}>{d.definition.name}</option>)}</select></label>
-        <label className="block text-xs">Intake app<select className={control} value={intakeKind} onChange={e=>{setIntakeKind(e.target.value);setIntakeConfig(e.target.value==='slack'?'{"channel_id":"","allowed_reactors":[]}':e.target.value==='sentry'?'{"base_url":"https://sentry.io","org_slug":"","project_slug":"","query":"is:unresolved"}':'{}')}}><option>linear</option><option>slack</option><option>sentry</option></select></label>
-        <label className="block text-xs">Dedicated intake connector ID<Input value={intakeConnector} onChange={e=>setIntakeConnector(e.target.value)} required /></label>
-        <label className="block text-xs">Source configuration (no credentials)<textarea className={`${control} h-28 font-mono`} value={intakeConfig} onChange={e=>setIntakeConfig(e.target.value)} /></label>
-        <Button type="submit" size="sm" disabled={busy}>Connect intake</Button><Button size="sm" variant="secondary" disabled={busy} onClick={()=>{void perform(()=>client.pollWorkflowIntakes())}}>Poll due sources</Button>
-      </form></section>}
-    {openedArtifact && <section className={card} aria-label="Artifact content"><div className="flex items-center justify-between"><SectionTitle>Artifact content</SectionTitle><Button size="sm" variant="ghost" onClick={()=>setOpenedArtifact(null)}>Close artifact</Button></div>{openedArtifact.mime.startsWith('image/')?<img className="max-w-full" alt="QA evidence" src={`data:${openedArtifact.mime};base64,${openedArtifact.content_base64}`} />:<pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs">{new TextDecoder().decode(Uint8Array.from(atob(openedArtifact.content_base64),c=>c.charCodeAt(0)))}</pre>}</section>}
-    {run.data && <RunView run={run.data} disabled={busy || !writable} artifact={id=>{void perform(async()=>setOpenedArtifact(await client.getWorkflowArtifact(id)))}} approve={(action,revision)=>{void perform(()=>client.approveWorkflowAction(run.data.id,action,revision))}} controlRun={(action, step) => { void perform(() => client.controlFactoryWorkflowRun(run.data.id, action, step)) }} />}
-  </div>
+  )
 }

@@ -1459,6 +1459,7 @@ export class NexusMindClient {
   startNextLinearWorkflow(id: string, connector_id: string, team_id?: string, project_id?: string): Promise<{ run: WorkflowRun | null; reason?: string }> {
     return this.request(`/v1/factory/workflows/${encodeURIComponent(id)}/linear-next`, { method: 'POST', body: JSON.stringify({ connector_id, team_id: team_id || null, project_id: project_id || null }) })
   }
+  saveWorkflowRuntime(workspace: string, revision: number, config: import('../pages/factory/workflows/runtime').RuntimeConfig): Promise<import('../pages/factory/workflows/runtime').RuntimeState> { return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/runtime`, { method: 'PUT', body: JSON.stringify({ revision, config }) }) }
   getFactoryWorkflowRun(id: string): Promise<WorkflowRun> { return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}`) }
   controlFactoryWorkflowRun(id: string, action: 'cancel' | 'retry' | 'resume', step_id?: string): Promise<WorkflowRun> {
     return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/control`, { method: 'POST', body: JSON.stringify({ action, step_id }) })

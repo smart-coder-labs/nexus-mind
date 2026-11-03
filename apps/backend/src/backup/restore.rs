@@ -35,7 +35,7 @@ pub const RESTORABLE_TABLES: &[&str] = &[
     "autonomous_agent_connectors", "github_review_subscriptions",
     "factory_runners", "factory_workspaces", "factory_workflow_definitions", "factory_workflow_runs",
     "factory_workflow_steps", "factory_workflow_events", "factory_workflow_artifacts",
-    "factory_workflow_approvals", "factory_workflow_publications", "factory_workflow_intakes",
+    "factory_workflow_approvals", "factory_workflow_publications", "factory_workflow_intakes", "factory_workflow_runtime",
 ];
 
 /// Summary returned by `restore_backup`. Tells the caller how many rows each
@@ -95,7 +95,8 @@ pub fn restore_from_dump(
       DELETE FROM factory_workflow_approvals;
       UPDATE factory_workflow_steps SET status='blocked',lease_token=NULL,lease_until=NULL WHERE status='running';
       UPDATE factory_workflow_runs SET status='blocked' WHERE status IN ('queued','running');
-      UPDATE factory_workflow_intakes SET enabled=0;")?;
+      UPDATE factory_workflow_intakes SET enabled=0;
+      UPDATE factory_workflow_runtime SET report_json='{}',reported_at=NULL;")?;
     tx.commit().context("committing restore transaction")?;
     // Restored code chunks bypass insert_code_chunk: re-derive the lexical index.
     crate::retrieval::lexical::ensure_index(conn).context("rebuilding the lexical code index")?;

@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 95;
+pub const LATEST_USER_VERSION: i32 = 96;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -108,6 +108,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     crate::db::workflows::migrate(conn)?;
     crate::db::workflow_execution::migrate(conn)?;
     crate::db::github_review_hooks::migrate(conn)?;
+    crate::db::workflow_runtime::migrate(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
