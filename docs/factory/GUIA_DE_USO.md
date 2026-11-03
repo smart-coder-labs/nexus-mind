@@ -4,7 +4,7 @@ Panel: https://admin.nexusmind.smartcoderlabs.com/factory/workflows
 
 API pública: `https://api.nexusmind.smartcoderlabs.com`
 
-La nueva configuración guiada está **en vista previa local, no desplegada**. Recorrido de formularios y requisitos: [Configuración del admin](CONFIGURACION_ADMIN.md). La consolidación posterior del menú, perfiles/harnesses y pausa se documenta en [Factory conectada](FACTORY_CONNECTED.md), también **local, sin desplegar**.
+La configuración guiada y la consolidación del menú han recibido aprobación del propietario para su publicación controlada. Recorrido y requisitos: [Configuración del admin](CONFIGURACION_ADMIN.md) y [Factory conectada](FACTORY_CONNECTED.md). Verifica el run de `Factory workflows release` y su SHA para conocer el resultado productivo; una vista previa o configuración guardada no demuestra que modelos y QA estén operativos.
 
 ## 1. Reviews automáticos de GitHub
 

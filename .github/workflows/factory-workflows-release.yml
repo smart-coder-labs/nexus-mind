@@ -56,7 +56,8 @@ jobs:
           VITE_API_URL: https://api.nexusmind.smartcoderlabs.com
         run: |
           npm ci
-          npx vitest run src/pages/factory/workflows/WorkflowsPage.test.tsx src/pages/factory/workflows/GithubReviewHooks.test.tsx src/pages/FactoryIntake.test.tsx src/pages/FactoryPolicies.test.tsx
+          npx tsc --noEmit
+          npx vitest run src/pages/factory src/pages/FactoryDigest.test.tsx src/pages/FactoryIntake.test.tsx src/pages/FactoryPolicies.test.tsx src/pages/AutonomousAgents.test.tsx src/pages/AutonomousAgentWizard.config.test.tsx src/components/Layout.test.tsx src/components/Layout.only-context.test.tsx
           npm run build
       - uses: actions/upload-artifact@v4
         with:

@@ -1,6 +1,6 @@
 # Factory: operación conectada
 
-Estado: implementación local en `feat/factory-admin-guided-setup`, pendiente de revisión visual del propietario y despliegue. No se han cambiado cuentas, permisos, secretos ni procesos productivos para activar este trabajo.
+Estado: diseño revisado y publicación autorizada por el propietario. El despliegue usa el workflow `Factory workflows release` sobre `deploy/factory-workflows-v95`, con backup previo y comprobaciones antes de publicar el admin. El resultado verificable es el run de GitHub Actions y su SHA, no la vista previa. No se activan nuevas cuentas, permisos, secretos, modelos pagados ni despliegues de aplicaciones Kasymir.
 
 ## Navegación
 
@@ -101,7 +101,7 @@ Verificación local de esta entrega:
 - Runner: **55** tests Python pasados, con imagen Docker local fijada para los casos de contenedor.
 - Admin: **125** tests pasados, TypeScript y build productivo correctos. Con Node 26 se desactiva el WebStorage experimental del proceso de tests, no el almacenamiento del navegador.
 - Vista previa: **20** estados desktop/móvil, sin errores JS, peticiones externas ni overflow; enlace Pendientes → detalle de ejecución y rutas antiguas de modelos/políticas comprobados en navegador. GET 200 y PATCH 405.
-- `git diff --check` sin incidencias. No se ha ejecutado CI remoto ni publicado esta entrega.
+- `git diff --check` sin incidencias. Estos resultados son locales; el CI y despliegue correspondientes se consultan en el workflow de publicación del SHA liberado.
 
 Logs y capturas locales: `/tmp/nexusmind-build-tools/factory-connected-*` (`schema97.log`, `python-final.log`, `ui-confirm.log`, `visual-confirm.log`, `smoke.log` y carpeta `factory-connected-confirm/`).
 

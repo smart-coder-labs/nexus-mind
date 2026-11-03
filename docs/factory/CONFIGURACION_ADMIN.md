@@ -1,6 +1,6 @@
 # Configuración guiada del admin
 
-**Estado: cambios locales en `feat/factory-admin-guided-setup`; no desplegados.** El propietario debe revisar la vista previa antes de publicarlos. Producción continúa con schema 95 y el runner instalado v95; este cambio requiere schema 96 y actualizar también el programa del runner.
+**Estado: diseño aprobado y publicación autorizada por el propietario.** El proceso controlado actualiza backend/admin a schema **97** y también el programa del runner, conservando su configuración privada. Comprueba el resultado y SHA del workflow `Factory workflows release` antes de considerar completado un despliegue; la vista previa no acredita producción.
 
 Vista previa: <http://127.0.0.1:3016/factory/workflows>. Usa datos ilustrativos, no credenciales reales. Permite recorrer formularios; el proxy rechaza todos los cambios y no conecta con producción. Los ejemplos de ejecuciones no prueban una ejecución nueva en Oracle.
 
