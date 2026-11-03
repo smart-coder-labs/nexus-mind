@@ -1,6 +1,6 @@
 # Factory: operación conectada
 
-**Publicado y verificado en producción**, schema **97**, SHA `63125d281263a6c333495ffb02c836d4e3e5fcac`. [Recibo de publicación, backups y comprobaciones](PUBLICACION_2026-11-03.md). El workflow `Factory workflows release` pasó todos sus jobs y publicó el panel después del backend. No se activan nuevas cuentas, permisos, secretos, modelos pagados ni despliegues de aplicaciones Kasymir.
+**Publicado y verificado en producción**, schema **97**. Parche actual: SHA `f2673a99c396b03d89c5ba2eb5e0f42effd4ce15`, [entorno Node automático](PUBLICACION_NODE_2026-11-03.md). Versión guiada inicial: `63125d281263a6c333495ffb02c836d4e3e5fcac`. [Recibo de publicación, backups y comprobaciones](PUBLICACION_2026-11-03.md). El workflow `Factory workflows release` pasó todos sus jobs y publicó el panel después del backend. No se activan nuevas cuentas, permisos, secretos, modelos pagados ni despliegues de aplicaciones Kasymir.
 
 ## Navegación
 

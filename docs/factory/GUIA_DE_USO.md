@@ -52,7 +52,7 @@ Rutas instaladas del runner administrado:
 | Elemento | Ruta en Oracle |
 |---|---|
 | Clones separados | `/home/ubuntu/nexusmind-workspaces/kasymir/` |
-| Programa del runner | `/home/ubuntu/.local/lib/nexusmind/runner-v97-96e7405/` |
+| Programa del runner | `/home/ubuntu/.local/lib/nexusmind/runner-f2673a9/` |
 | Configuración privada | `/home/ubuntu/.config/nexusmind/kasymir-runner.json` |
 | Estado y checkouts temporales | `/home/ubuntu/.local/state/nexusmind/kasymir-runner/` |
 | Servicio de usuario | `nexusmind-kasymir-runner.service` |

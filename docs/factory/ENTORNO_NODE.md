@@ -1,5 +1,7 @@
 # Entorno Node preparado por el workflow
 
+**Publicado y verificado en Oracle:** [release y comprobaciones](PUBLICACION_NODE_2026-11-03.md).
+
 En **Tests y QA → Entorno de las comprobaciones**, elige **Node.js 22 · preparación automática**. No hay que instalar Docker images o copiar digests por cada comprobación.
 
 1. El runner anuncia un SDK inmutable aprobado localmente (`managed_images.node`).

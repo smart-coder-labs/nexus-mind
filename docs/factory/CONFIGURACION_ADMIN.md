@@ -1,6 +1,6 @@
 # Configuración guiada del admin
 
-**Publicado y verificado en producción**, schema **97**, backend/admin y programa del runner actualizados conservando su configuración privada. [Recibo y comprobaciones](PUBLICACION_2026-11-03.md), release `41666357163`, SHA `63125d2`. La vista previa sigue siendo ilustrativa, no una conexión productiva.
+**Publicado y verificado en producción**, schema **97**, backend/admin y programa del runner actualizados conservando su configuración privada. [Recibo inicial](PUBLICACION_2026-11-03.md) y [parche Node automático](PUBLICACION_NODE_2026-11-03.md), release actual `41739545278`, SHA `f2673a9`. La vista previa sigue siendo ilustrativa, no una conexión productiva.
 
 Vista previa: <http://127.0.0.1:3016/factory/workflows>. Usa datos ilustrativos, no credenciales reales. Permite recorrer formularios; el proxy rechaza todos los cambios y no conecta con producción. Los ejemplos de ejecuciones no prueban una ejecución nueva en Oracle.
 
