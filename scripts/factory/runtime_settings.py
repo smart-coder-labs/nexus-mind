@@ -24,7 +24,7 @@ def _model(config,name,roots,private_file):
     return path,list(values.values())
 
 def inventory(config,workspace,roots,private_file):
-    report={'remote_enabled':bool(config.get('allow_remote_configuration',False)),'applied_revision':0,'images':[],'networks':[],'model_connections':[],'environments':[],'harnesses':['claude']}
+    report={'remote_enabled':bool(config.get('allow_remote_configuration',False)),'applied_revision':0,'images':[],'networks':[],'model_connections':[],'environments':[],'harnesses':['claude'],'managed_images':{k:v for k,v in config.get('managed_images',{}).items() if k=='node' and v in config.get('allowed_images',[])}}
     runtime=config.get('container_runtime','docker')
     if runtime not in ('docker','podman'):return report
     def inspect(args,output):
@@ -32,6 +32,13 @@ def inventory(config,workspace,roots,private_file):
         except (OSError,subprocess.TimeoutExpired):return None
     for image in config.get('allowed_images',[])[:100]:
         r=inspect(['image','inspect',image],subprocess.DEVNULL)
+        requested={c.get('image') for c in workspace.get('runtime',{}).get('config',{}).get('checks',[])}
+        if (r is None or r.returncode!=0) and report['remote_enabled'] and image in report['managed_images'].values() and image in requested:
+            try:
+                from execution import pinned_image
+                subprocess.run([runtime,'pull',pinned_image(image)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=240,check=True)
+                r=inspect(['image','inspect',image],subprocess.DEVNULL)
+            except (ValueError,OSError,subprocess.SubprocessError):report['error']='runtime_image_pull_failed'
         if r is not None and r.returncode==0:report['images'].append(image)
     for network in config.get('allowed_egress_networks',[])[:100]:
         r=inspect(['network','inspect','--format','{{.Internal}}',network],subprocess.PIPE)
@@ -84,7 +91,7 @@ def apply_settings(config,workspace,profile,report,roots,private_file):
 def sync(config,workspace,api,roots,private_file):
     report=inventory(config,workspace,roots,private_file)
     runtime=workspace.get('runtime',{})
-    if runtime.get('revision',0)>0 and report['remote_enabled']:
+    if runtime.get('revision',0)>0 and report['remote_enabled'] and not report.get('error'):
         try:apply_settings(config,workspace,runtime['config'],report,roots,private_file);report['applied_revision']=runtime['revision']
         except RuntimeSettingsError as e:report['error']=str(e)
     api.call('/workspaces/'+workspace['id']+'/runtime-report',report)
@@ -111,6 +118,7 @@ def suite(config,job,profile,roots,api,git,private_file):
         child['step'].setdefault('options',{})['required_checks']=[unique]
         child['step']['timeout_seconds']=max(1,int(job['step']['timeout_seconds']-(time.monotonic()-start)))
         adapter={'kind':'checks','image':check['image'],'environment_refs':check.get('environment_refs',[]),'checks':[{'name':unique,'cwd':check['cwd'],'command':check['command']}]}
+        if check['image']==config.get('managed_images',{}).get('node'):adapter['node_bootstrap']=True
         if role in ('functional','design','security'):adapter['network']='services';validate_services(config,job)
         class NamedArtifacts:
             def call(self,path,data=None):

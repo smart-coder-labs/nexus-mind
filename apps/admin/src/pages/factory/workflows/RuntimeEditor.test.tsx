@@ -62,6 +62,64 @@ describe('runtime settings', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('comillas')
     expect(onSave).not.toHaveBeenCalled()
   })
+  it('applies the selected Node environment to existing inherited rows, preserving explicit overrides', async () => {
+    const value = emptyRuntime()
+    const old = 'sha256:' + 'a'.repeat(64),
+      node = 'sha256:' + 'b'.repeat(64),
+      custom = 'sha256:' + 'c'.repeat(64)
+    value.report.managed_images = { node }
+    value.config.checks = ['tests', 'build', 'lint'].map((name, i) => ({
+      name,
+      cwd: 'web',
+      image: i === 2 ? custom : old,
+      command: ['npm', name === 'tests' ? 'test' : 'run', ...(name === 'tests' ? [] : [name])],
+      environment_refs: [],
+    }))
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(
+      <RuntimeEditor
+        value={value}
+        repositories={['web']}
+        section="checks"
+        disabled={false}
+        onSave={onSave}
+      />,
+    )
+    const user = userEvent.setup()
+    await user.selectOptions(screen.getByLabelText('Entorno de las comprobaciones'), 'node')
+    await user.click(screen.getByRole('button', { name: 'Guardar configuración' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    expect(onSave.mock.calls[0][1].checks.map((r: { image: string }) => r.image)).toEqual([
+      node,
+      node,
+      custom,
+    ])
+  })
+  it('explains the invalid image before saving rather than a generic four-field error', async () => {
+    const value = emptyRuntime()
+    value.config.checks = [
+      {
+        name: 'tests',
+        image: 'node:22',
+        cwd: 'web',
+        command: ['npm', 'test'],
+        environment_refs: [],
+      },
+    ]
+    const onSave = vi.fn()
+    render(
+      <RuntimeEditor
+        value={value}
+        repositories={['web']}
+        section="checks"
+        disabled={false}
+        onSave={onSave}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Guardar configuración' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Comprobación 1')
+    expect(onSave).not.toHaveBeenCalled()
+  })
   it('keeps local drafts in memory when navigating away and back', async () => {
     const onDraft = vi.fn()
     const { unmount } = render(

@@ -109,11 +109,11 @@ def network_name(run):
     return 'nm-' + run.replace('-', '')[:28]
 
 
-def restrictions():
+def restrictions(node_bootstrap=False):
     if os.getuid()==0: raise ValueError('Run the workspace runner as an unprivileged user')
     return ['--user', str(os.getuid()) + ':' + str(os.getgid()), '--read-only', '--cap-drop=ALL',
             '--security-opt=no-new-privileges', '--pids-limit=256', '--memory=2g', '--cpus=2',
-            '--ulimit', 'nofile=1024:1024', '--ulimit', 'fsize=16777216:16777216', '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m',
+            '--ulimit', 'nofile=1024:1024', '--ulimit', ('fsize=268435456:268435456' if node_bootstrap else 'fsize=16777216:16777216'), '--tmpfs', ('/tmp:rw,nosuid,nodev,size=1024m' if node_bootstrap else '/tmp:rw,nosuid,nodev,size=128m'),
             '--tmpfs', '/home/runner:rw,nosuid,nodev,size=64m,mode=1777', '--env', 'HOME=/home/runner']
 
 
@@ -279,13 +279,28 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         if len(diff.encode()) > 256 * 1024:
             raise ValueError('Diff context exceeds review budget')
         context['diffs'][repo['path']] = diff
+    if adapter.get('node_bootstrap'):
+        if adapter['kind']!='checks' or adapter['image']!=config.get('managed_images',{}).get('node'):
+            raise ValueError('Node environment must be registered by the operator')
+        from node_environment import prepare
+        started=time.monotonic();last_heartbeat=started
+        def heartbeat():
+            nonlocal last_heartbeat
+            if time.monotonic()-last_heartbeat>=5:
+                api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/lease',{'lease_token':job['lease_token']});last_heartbeat=time.monotonic()
+        log_event(api,job,'environment.preparing','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
+        prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']))
+        remaining=job['step']['timeout_seconds']-(time.monotonic()-started)
+        if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
+        import copy
+        job=copy.deepcopy(job);job['step']['timeout_seconds']=int(remaining)
     (inp / 'context.json').write_text(json.dumps(context))
     (inp / 'adapter.json').write_text(json.dumps(adapter))
     name = None
     if adapter.get('driver', 'container') == 'container':
         runtime = runtime_command(config)
         name = 'nm-' + uuid.uuid4().hex
-        command = [runtime, 'run', '--rm', '--pull=never', '--name', name, *restrictions(),
+        command = [runtime, 'run', '--rm', '--pull=never', '--name', name, *restrictions(bool(adapter.get('node_bootstrap'))),
                    '--network', adapter_network(config, adapter, job['run_id']), '--workdir', '/work',
                    '--mount', 'type=bind,src=' + str(work) + ',dst=/work' + (',readonly' if adapter.get('role') in ('investigation','reviewer') or job['step']['kind']=='review' else ''),
                    '--mount', 'type=bind,src=' + str(inp) + ',dst=/input,readonly',

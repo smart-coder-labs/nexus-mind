@@ -4,8 +4,32 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import tempfile
 import sys
 import threading
+
+
+def bootstrap_node(root, output):
+    """Install from verified tarballs offline, without project npmrc or lifecycle scripts."""
+    cache='/tmp/nm-npm-cache'
+    clean_env={'PATH':os.environ['PATH'],'HOME':'/home/runner','LANG':'C.UTF-8'}
+    cache_script="""const fs=require('fs');const c=require('/usr/local/lib/node_modules/npm/node_modules/cacache');(async()=>{for(const p of JSON.parse(fs.readFileSync('/input/node-dependencies/manifest.json')).packages){await c.put('/tmp/nm-npm-cache/_cacache',p.url,fs.readFileSync('/input/node-dependencies/'+p.file),{integrity:p.integrity})}})().catch(e=>{console.error(e.message);process.exit(1)})"""
+    with (output/'dependencies.log').open('ab') as log:
+        prepared=subprocess.run(['node','-e',cache_script],stdout=log,stderr=subprocess.STDOUT,env=clean_env)
+        if prepared.returncode:return prepared.returncode
+        with tempfile.TemporaryDirectory(prefix='nm-npm-',dir='/tmp') as temporary:
+            for filename in ('package.json','package-lock.json'):shutil.copyfile(root/filename,Path(temporary)/filename)
+            user_config=Path(temporary)/'.user.npmrc';global_config=Path(temporary)/'.global.npmrc'
+            user_config.write_text('');global_config.write_text('')
+            env={**clean_env,'NPM_CONFIG_USERCONFIG':str(user_config),'NPM_CONFIG_GLOBALCONFIG':str(global_config),'NPM_CONFIG_CACHE':cache,'NPM_CONFIG_REGISTRY':'https://registry.npmjs.org','NPM_CONFIG_IGNORE_SCRIPTS':'true','NPM_CONFIG_AUDIT':'false','NPM_CONFIG_FUND':'false'}
+            installed=subprocess.run(['npm','ci','--offline','--ignore-scripts','--no-audit','--no-fund','--cache',cache],cwd=temporary,env=env,stdout=log,stderr=subprocess.STDOUT)
+            if installed.returncode:return installed.returncode
+            target=root/'node_modules'
+            if target.exists() or target.is_symlink():raise ValueError('Unexpected existing dependencies')
+            source=Path(temporary)/'node_modules'
+            if source.exists():shutil.move(str(source),target)
+    return 0
 
 
 def main():
@@ -71,6 +95,7 @@ def main():
                 result = {'success': False, 'error': 'agent_invalid_json', 'hold': True, 'cost_usd': 0}
     elif mode == 'checks':
         checks = []
+        prepared_repositories=set()
         for check in adapter['checks']:
             if check.get('not_applicable_reason'):
                 checks.append({'name':check['name'],'status':'not_applicable','reason':check['not_applicable_reason'],'exit_code':None})
@@ -79,6 +104,12 @@ def main():
             cwd = cwd.resolve()
             if cwd != Path('/work') and Path('/work') not in cwd.parents:
                 raise ValueError('Unsafe check directory')
+            if adapter.get('node_bootstrap') and str(cwd) not in prepared_repositories:
+                preparation=bootstrap_node(cwd,output)
+                if preparation:
+                    checks.append({'name':check['name'],'exit_code':preparation,'preparation_error':'node_dependency_install_failed'})
+                    continue
+                prepared_repositories.add(str(cwd))
             completed = subprocess.run(check['command'], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             (output / (check['name'] + '.log')).write_bytes(completed.stdout)
             checks.append({'name': check['name'], 'exit_code': completed.returncode})

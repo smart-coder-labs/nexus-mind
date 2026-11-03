@@ -66,6 +66,15 @@ class RuntimeSettingsTests(unittest.TestCase):
    passed,evidence,result=settings.suite(f.config,f.job,{'checks':checks},[f.root],f.api,runner.git,runner.private_file)
    self.assertTrue(passed,repr(f.api.artifacts));self.assertEqual(len(evidence),4);self.assertEqual(result['heads'],f.job['execution']['heads']);names=[name for name,_ in f.api.artifacts];self.assertEqual(len(names),len(set(names)))
   finally:f.tearDown()
+ def test_only_requested_operator_managed_digest_images_are_pulled_automatically(self):
+  from types import SimpleNamespace
+  self.config['managed_images']={'node':self.image};workspace={'id':'w','runtime':{'config':self.profile}}
+  with patch.object(settings.subprocess,'run',side_effect=[SimpleNamespace(returncode=1),SimpleNamespace(returncode=0),SimpleNamespace(returncode=0)]) as run:
+   report=settings.inventory(self.config,workspace,[self.root],private_file)
+  self.assertEqual(report['images'],[self.image]);self.assertEqual(report['managed_images'],{'node':self.image});self.assertEqual(run.call_args_list[1].args[0],['docker','pull',self.image])
+  with patch.object(settings.subprocess,'run',return_value=SimpleNamespace(returncode=1)) as run:
+   settings.inventory(self.config,{'id':'w'},[self.root],private_file)
+  self.assertFalse(any('pull' in call.args[0] for call in run.call_args_list))
  def test_report_contains_only_aliases_and_no_environment_contents_or_paths(self):
   self.config['allowed_images']=[]
   report=settings.inventory(self.config,{'id':'w'},[self.root],private_file)

@@ -38,6 +38,8 @@ jobs:
           cargo test --locked --manifest-path apps/backend/Cargo.toml --lib -- --test-threads=1
           docker pull python:3.12-alpine
           export FACTORY_TEST_IMAGE=$(docker image inspect python:3.12-alpine --format '{{.Id}}')
+          export FACTORY_NODE_IMAGE=node@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd
+          docker pull "$FACTORY_NODE_IMAGE"
           cargo test --locked --manifest-path apps/backend/Cargo.toml --test factory_workflows --test factory_workflows_api --test backup_api_test --test backup_restore_test
           python3 -m unittest discover -s scripts/factory -p 'test_*.py' -v
 

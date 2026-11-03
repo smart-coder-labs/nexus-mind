@@ -91,7 +91,9 @@ La deduplicación del workflow conserva la identidad de origen dentro del worksp
 
 Schema 96 incorpora perfiles versionados; schema **97** amplía el CHECK de entradas para GitHub conservando filas e índice. También actualiza bases locales que ya habían aplicado la primera revisión guiada 96, sin depender de reejecutar una migración histórica. Los reportes locales y el estado de aplicación se vuelven a comprobar tras restaurar backups. Los perfiles de agentes fijados en snapshots no contienen credenciales.
 
-El runner debe actualizarse junto al backend/admin: `runner.py`, `execution.py`, `runtime_settings.py`, `delivery.py` y `container_entry.py`, conservando configuración privada y estado. Actualizar solo la interfaz no instala un harness ni autoriza una red.
+Para npm, [Node se prepara automáticamente](ENTORNO_NODE.md): entorno común registrado, descarga del SDK y dependencias verificadas, instalación offline sin scripts. Los paquetes privados requieren una conexión autorizada, no otro digest pegado a mano.
+
+El runner debe actualizarse junto al backend/admin: `runner.py`, `execution.py`, `runtime_settings.py`, `node_environment.py`, `delivery.py` y `container_entry.py`, conservando configuración privada y estado. Actualizar solo la interfaz no instala un harness ni autoriza una red.
 
 Vista previa: <http://127.0.0.1:3016/factory>. Datos ilustrativos, sin acceso productivo ni guardado; todas las operaciones mutables reciben 405. Instrucciones de arranque en [CONFIGURACION_ADMIN.md](CONFIGURACION_ADMIN.md).
 

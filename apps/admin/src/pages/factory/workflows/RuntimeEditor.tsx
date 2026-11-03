@@ -58,7 +58,24 @@ export function RuntimeEditor({
   const [image, setImage] = useState(config.agents[0]?.image ?? '')
   const [connection, setConnection] = useState(config.agents[0]?.model_connection ?? '')
   const [network, setNetwork] = useState(config.agents[0]?.network ?? '')
-  const [qaImage, setQaImage] = useState(config.checks[0]?.image ?? '')
+  const nodeImage = runtime.report.managed_images?.node ?? ''
+  const [qaImage, setQaImage] = useState(config.checks[0]?.image || nodeImage)
+  useEffect(() => {
+    if (!qaImage && nodeImage) setCheckImage(nodeImage)
+  }, [nodeImage])
+  function setCheckImage(next: string) {
+    next =
+      ['node', 'node:22', 'node:22-bookworm'].includes(next.trim()) && nodeImage
+        ? nodeImage
+        : next.trim()
+    setQaImage(next)
+    setConfig((c) => ({
+      ...c,
+      checks: c.checks.map((row) =>
+        !row.image.trim() || row.image === qaImage ? { ...row, image: next } : row,
+      ),
+    }))
+  }
   const [commandDrafts, setCommandDrafts] = useState<Record<string, string>>(draft?.commands ?? {})
   useEffect(() => {
     onDraft?.({ config, revision, commands: commandDrafts })
@@ -117,6 +134,11 @@ export function RuntimeEditor({
         ...config,
         checks: config.checks.map((c, i) => ({
           ...c,
+          image: !c.image.trim()
+            ? qaImage || nodeImage
+            : ['node', 'node:22', 'node:22-bookworm'].includes(c.image.trim())
+              ? nodeImage
+              : c.image.trim(),
           command: parseCommand(command(`check-${i}`, c.command)),
         })),
         services: config.services.map((s, i) => ({
@@ -124,6 +146,24 @@ export function RuntimeEditor({
           command: parseCommand(command(`service-${i}`, s.command)),
           healthcheck: parseCommand(command(`health-${i}`, s.healthcheck)),
         })),
+      }
+      for (const [i, row] of updated.checks.entries()) {
+        const label = `Comprobación ${i + 1} (${row.name})`
+        if (!repositories.includes(row.cwd))
+          throw new Error(`${label}: selecciona un repositorio autorizado.`)
+        if (!/^(?:[a-zA-Z0-9._/:\-]+@)?sha256:[a-fA-F0-9]{64}$/.test(row.image))
+          throw new Error(
+            `${label}: elige el entorno Node.js. La imagen escrita no es un digest válido; no basta con un tag como node:22.`,
+          )
+        if (
+          updated.checks.findIndex(
+            (other) =>
+              other.name === row.name &&
+              other.cwd === row.cwd &&
+              JSON.stringify(other.command) === JSON.stringify(row.command),
+          ) !== i
+        )
+          throw new Error(`${label}: ya existe ese mismo comando y tipo para ese repositorio.`)
       }
       const saved = await onSave(revision, updated)
       setConfig(saved?.config ?? updated)
@@ -316,15 +356,39 @@ export function RuntimeEditor({
             </p>
           </div>
           <label className="block max-w-xl space-y-1.5 text-sm">
-            Imagen por defecto para nuevas comprobaciones
-            <Input
-              list="runtime-images"
-              value={qaImage}
+            Entorno de las comprobaciones
+            <select
+              className={select}
+              aria-label="Entorno de las comprobaciones"
               disabled={disabled}
-              placeholder="SDK y herramientas de pruebas @sha256:…"
-              onChange={(e) => setQaImage(e.target.value)}
-            />
+              value={nodeImage && qaImage === nodeImage ? 'node' : 'custom'}
+              onChange={(e) => setCheckImage(e.target.value === 'node' ? nodeImage : '')}
+            >
+              <option value="node" disabled={!nodeImage}>
+                Node.js 22 · preparación automática{!nodeImage ? ' (pendiente del runner)' : ''}
+              </option>
+              <option value="custom">Otro entorno · configuración avanzada</option>
+            </select>
+            <span className="block text-xs text-muted-foreground">
+              El workflow descarga el entorno autorizado y prepara las dependencias del lockfile sin
+              credenciales ni scripts de instalación. No necesitas instalar imágenes a mano.
+            </span>
           </label>
+          <details className="max-w-xl text-sm">
+            <summary className="cursor-pointer text-muted-foreground">
+              Imagen avanzada por digest
+            </summary>
+            <label className="mt-2 block space-y-1.5 text-sm">
+              Imagen común para las comprobaciones
+              <Input
+                list="runtime-images"
+                value={qaImage}
+                disabled={disabled}
+                placeholder="SDK y herramientas de pruebas @sha256:…"
+                onChange={(e) => setCheckImage(e.target.value)}
+              />
+            </label>
+          </details>
           {!config.checks.length && (
             <div className="rounded-xl border border-dashed border-border px-5 py-7">
               <h3 className="font-medium">Todavía no hay comprobaciones</h3>

@@ -42,6 +42,7 @@ export type RuntimeState = {
     model_connections: string[]
     environments: string[]
     harnesses?: string[]
+    managed_images?: Record<string, string>
     error?: string | null
   }
 }
@@ -117,7 +118,8 @@ export function blockerLabel(code: string): string {
     return `Configurar ${agentRoles.find((r) => r.id === code.slice(6))?.label.toLowerCase() ?? code.slice(6)}`
   if (code.startsWith('check:'))
     return `Añadir ${checkTypes.find((r) => r.id === code.slice(6))?.label.toLowerCase() ?? code.slice(6)}`
-  if (code.startsWith('image:')) return 'Instalar y autorizar la imagen en el runner'
+  if (code.startsWith('image:'))
+    return 'Preparar el entorno autorizado en el runner; Node se descarga automáticamente'
   if (code.startsWith('model_connection:'))
     return `Conectar el proxy de modelo «${code.slice(17)}» en el runner`
   if (code.startsWith('environment:'))

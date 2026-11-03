@@ -84,6 +84,8 @@ pub struct Report {
     #[serde(default)]
     pub harnesses: Vec<String>,
     #[serde(default)]
+    pub managed_images: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     pub error: Option<String>,
 }
 const ROLES: [&str; 4] = ["investigation", "test_author", "implementation", "reviewer"];
@@ -182,12 +184,32 @@ pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
             "security",
         ]
         .contains(&c.name.as_str())
-            || !names.insert((&c.name, &c.cwd))
+            || !names.insert((&c.name, &c.cwd, &c.command))
             || !image(&c.image)
             || !repos.contains(&c.cwd)
             || !argv(&c.command)
             || !refs(&c.environment_refs)
         {
+            if !image(&c.image) {
+                bail!("runtime_check_image_invalid")
+            }
+            if !repos.contains(&c.cwd) {
+                bail!("runtime_check_repository_invalid")
+            }
+            if !argv(&c.command) {
+                bail!("runtime_check_command_invalid")
+            }
+            if config
+                .checks
+                .iter()
+                .filter(|other| {
+                    other.name == c.name && other.cwd == c.cwd && other.command == c.command
+                })
+                .count()
+                > 1
+            {
+                bail!("runtime_check_duplicate")
+            }
             bail!("invalid_runtime_check")
         }
     }
@@ -422,7 +444,12 @@ pub fn report(
     if w["runner_id"] != runner {
         bail!("not_found")
     }
-    if report.images.len() > 100
+    if report.managed_images.len() > 16
+        || report
+            .managed_images
+            .iter()
+            .any(|(key, value)| !name(key) || !image(value))
+        || report.images.len() > 100
         || report.images.iter().any(|s| !image(s))
         || [
             &report.networks,
@@ -435,6 +462,7 @@ pub fn report(
         || report.error.as_ref().is_some_and(|s| {
             ![
                 "runtime_image_not_allowed",
+                "runtime_image_pull_failed",
                 "runtime_network_not_allowed",
                 "runtime_model_connection_missing",
                 "runtime_environment_missing",
@@ -456,6 +484,43 @@ pub fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn check_validation_identifies_the_actual_field_and_duplicate() {
+        let mut config = RuntimeConfig::default();
+        config.checks.push(Check {
+            name: "tests".into(),
+            image: "node:22".into(),
+            cwd: "web".into(),
+            command: vec!["npm".into(), "test".into()],
+            environment_refs: vec![],
+        });
+        let repos = vec!["web".into()];
+        assert_eq!(
+            validate(&config, &repos).unwrap_err().to_string(),
+            "runtime_check_image_invalid"
+        );
+        config.checks[0].image = format!("node@sha256:{}", "a".repeat(64));
+        validate(&config, &repos).unwrap();
+        config.checks[0].cwd = "unauthorized".into();
+        assert_eq!(
+            validate(&config, &repos).unwrap_err().to_string(),
+            "runtime_check_repository_invalid"
+        );
+        config.checks[0].cwd = "web".into();
+        config.checks[0].command.clear();
+        assert_eq!(
+            validate(&config, &repos).unwrap_err().to_string(),
+            "runtime_check_command_invalid"
+        );
+        config.checks[0].command.push("npm".into());
+        config.checks.push(config.checks[0].clone());
+        assert_eq!(
+            validate(&config, &repos).unwrap_err().to_string(),
+            "runtime_check_duplicate"
+        );
+        config.checks[1].command.push("test:integration".into());
+        validate(&config, &repos).unwrap();
+    }
     #[test]
     fn revisions_reports_and_snapshots_are_scoped_and_fenced() {
         let c = super::super::connection::connect(":memory:").unwrap();
@@ -525,6 +590,7 @@ mod tests {
             model_connections: vec!["proxy".into()],
             environments: vec![],
             harnesses: vec!["claude".into()],
+            managed_images: Default::default(),
             error: None,
         };
         assert!(report(&c, &org.id, "another-runner", wid, &r).is_err());
