@@ -1802,6 +1802,7 @@ export class NexusMindClient {
       }),
     })
   }
+  getWorkflowPublicationIdentity(): Promise<{enabled:boolean;login:string|null;error:string|null}> {return this.request('/v1/factory/github/publication-identity')}
   getWorkflowAgentProfile(
     id: string,
   ): Promise<import('../pages/factory/workflows/runtime').WorkflowAgentProfile> {

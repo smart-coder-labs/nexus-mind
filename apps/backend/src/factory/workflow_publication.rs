@@ -179,6 +179,17 @@ fn verified(
     }
     Ok(gate && roles.contains("tests") && roles.contains("build"))
 }
+pub fn backend_account_enabled(org: &str) -> bool {
+    std::env::var("FACTORY_GITHUB_PUBLISH_ORG_ID")
+        .ok()
+        .as_deref()
+        == Some(org)
+}
+#[derive(PartialEq)]
+enum PublicationCredential {
+    Connector(String),
+    Backend(String),
+}
 fn authorize(
     store: &SqliteStore,
     org: &str,
@@ -187,7 +198,7 @@ fn authorize(
     step: &str,
     request: &Request,
     paths: &[String],
-) -> Result<(Value, String)> {
+) -> Result<(Value, PublicationCredential)> {
     let h = store.conn();
     let c = h
         .lock()
@@ -215,8 +226,37 @@ fn authorize(
     }
     workflow_policy::require(&c, org, run, "publish", paths, true)?;
     workflow_policy::require(&c, org, run, "open_pr", paths, true)?;
+    if s.options["github_auth"] == "server_gh_cli" {
+        if !backend_account_enabled(org) {
+            bail!("backend_github_publication_not_authorized")
+        }
+        if s.options["connector_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+        {
+            bail!("ambiguous_github_publication_identity")
+        }
+        let login = s.options["github_login"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 100)
+            .ok_or_else(|| anyhow::anyhow!("backend_github_login_required"))?;
+        let repos: Vec<Repository> =
+            serde_json::from_value(d["snapshot"]["workspace"]["repositories"].clone())?;
+        for export in &request.repositories {
+            let repo = repos
+                .iter()
+                .find(|r| r.path == export.path && r.writable)
+                .ok_or_else(|| anyhow::anyhow!("unauthorized_repository"))?;
+            github_repository(&repo.remote)?;
+        }
+        return Ok((
+            d,
+            PublicationCredential::Backend(login.to_ascii_lowercase()),
+        ));
+    }
     let connector_id = s.options["connector_id"]
         .as_str()
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("github_connector_required"))?;
     let (connector, token) =
         crate::db::queries::get_autonomous_agent_connector_secret(&c, org, connector_id)?
@@ -243,7 +283,7 @@ fn authorize(
             bail!("connector_repository_scope")
         }
     }
-    Ok((d, token))
+    Ok((d, PublicationCredential::Connector(token)))
 }
 struct Github {
     client: reqwest::Client,
@@ -407,7 +447,13 @@ pub async fn publish(
     step: &str,
     request: &Request,
 ) -> Result<Value> {
-    let (_, token) = authorize(store, org, runner, run, step, request, &[])?;
+    let (_, credential) = authorize(store, org, runner, run, step, request, &[])?;
+    let token = match credential {
+        PublicationCredential::Connector(token) => token,
+        PublicationCredential::Backend(_) => crate::automation::worker::server_github_token()
+            .await
+            .map_err(|_| anyhow::anyhow!("backend_github_authentication_required"))?,
+    };
     let github = Github::new(token)?;
     publish_using(store, org, runner, run, step, request, &github).await
 }
@@ -420,9 +466,21 @@ async fn publish_using(
     request: &Request,
     github: &Github,
 ) -> Result<Value> {
-    let (initial, token) = authorize(store, org, runner, run, step, request, &[])?;
-    if token != github.token {
-        bail!("connector_changed")
+    let (initial, credential) = authorize(store, org, runner, run, step, request, &[])?;
+    match &credential {
+        PublicationCredential::Connector(token) if token != &github.token => {
+            bail!("connector_changed")
+        }
+        PublicationCredential::Backend(login) => {
+            let identity = github.get("/user").await?;
+            if !identity["login"]
+                .as_str()
+                .is_some_and(|actual| actual.eq_ignore_ascii_case(login))
+            {
+                bail!("backend_github_identity_changed")
+            }
+        }
+        _ => {}
     }
     if request.repositories.is_empty() {
         bail!("no_changes_to_publish")
@@ -436,8 +494,8 @@ async fn publish_using(
     let mut published = Vec::new();
     let check_authority = || -> Result<()> {
         let (_, current) = authorize(store, org, runner, run, step, request, &paths)?;
-        if current != github.token {
-            bail!("connector_changed")
+        if current != credential {
+            bail!("publication_authority_changed")
         };
         Ok(())
     };
@@ -451,6 +509,11 @@ async fn publish_using(
         let repository = github_repository(&repo.remote)?;
         let prefix = format!("/repos/{repository}");
         let info = github.get(&prefix).await?;
+        if matches!(credential, PublicationCredential::Backend(_))
+            && info["permissions"]["push"] != true
+        {
+            bail!("github_repository_write_required")
+        }
         let default = info["default_branch"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("github_repository_unavailable"))?;

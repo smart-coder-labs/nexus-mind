@@ -218,6 +218,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/factory/runners/:id/rotate", post(workflow_execution::rotate_runner))
         .route("/v1/factory/workspaces", post(workflows::create_workspace))
         .route("/v1/factory/workspaces/:id/confirm", post(workflows::confirm_workspace))
+        .route("/v1/factory/github/publication-identity",get(super::workflows::publication_identity))
         .route("/v1/factory/workflow-agent-profiles/:id", get(super::workflow_runtime::agent_profile))
         .route("/v1/factory/workspaces/:id/runtime", axum::routing::put(super::workflow_runtime::save))
         .route("/v1/factory/workflows", post(workflows::create_definition))

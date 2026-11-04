@@ -18647,7 +18647,8 @@ pub fn enqueue_github_webhook_agents(
         "SELECT d.id FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
          ON r.definition_id=d.id AND r.revision=d.current_revision
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key=?2
-           AND lower(json_extract(r.config_json,'$.repository'))=lower(?3) AND r.validation_status='valid'",
+           AND lower(json_extract(r.config_json,'$.repository'))=lower(?3)
+           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'",
     )?;
     let ids = stmt
         .query_map(rusqlite::params![org_id, template, repository], |row| {
@@ -18733,7 +18734,8 @@ pub fn list_github_reconciliation_sources(
            ON c.id=json_extract(r.config_json,'$.github_connector_id')
           AND c.org_id=d.org_id
          WHERE d.status='enabled' AND o.autonomous_agents_enabled=1
-           AND r.validation_status='valid' AND (c.health='ready' OR json_extract(r.config_json,'$.github_connector_id') IS NULL)
+           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'
+           AND (c.health='ready' OR json_extract(r.config_json,'$.github_connector_id') IS NULL)
            AND d.template_key IN('github_issue_resolver','github_pr_reviewer')
            AND json_extract(r.config_json,'$.repository') IS NOT NULL
          ORDER BY d.org_id,d.template_key,json_extract(r.config_json,'$.repository')

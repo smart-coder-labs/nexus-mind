@@ -127,7 +127,14 @@ export function WorkflowEditor({
                         }
                       />
                     </label>
-                    {step.kind === 'publish' && (
+                    {step.kind === 'publish' && step.options?.github_auth === 'server_gh_cli' && (
+                      <p className="text-sm text-muted-foreground">
+                        Publicación con la cuenta del backend:{' '}
+                        <strong>{String(step.options.github_login ?? 'sin autenticar')}</strong>. No
+                        se transfieren credenciales al runner.
+                      </p>
+                    )}
+                    {step.kind === 'publish' && step.options?.github_auth !== 'server_gh_cli' && (
                       <label className="block space-y-1.5 text-sm">
                         ID del conector GitHub autorizado
                         <Input

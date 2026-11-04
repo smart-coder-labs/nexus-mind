@@ -69,7 +69,7 @@ export default function WorkflowsPage({
   const [taskTitle, setTaskTitle] = useState('')
   const [criteria, setCriteria] = useState('')
   const [editor, setEditor] = useState('')
-  const [connectorId, setConnectorId] = useState('')
+  const [connectorId, setConnectorId] = useState('server_gh_cli')
   const [budget, setBudget] = useState(20)
   const [repairs, setRepairs] = useState(2)
   const [intakeKind, setIntakeKind] = useState('linear')
@@ -98,6 +98,14 @@ export default function WorkflowsPage({
     enabled: readable,
     refetchInterval: 5000,
   })
+  const publicationIdentity = useQuery({
+    queryKey: ['workflow-publication-identity'],
+    queryFn: () => client.getWorkflowPublicationIdentity(),
+    enabled: readable && tab === 'settings' && section === 'delivery',
+    retry: false,
+  })
+  const backendPublisherReady =
+    publicationIdentity.data?.enabled && !!publicationIdentity.data?.login
   const run = useQuery({
     queryKey: ['workflow-run', runId],
     queryFn: () => client.getFactoryWorkflowRun(runId),
@@ -212,7 +220,15 @@ export default function WorkflowsPage({
       d.max_cost_usd = budget
       d.max_repairs = repairs
       const publish = d.steps.find((s) => s.kind === 'publish')
-      if (publish) publish.options = { ...publish.options, connector_id: connectorId }
+      if (publish)
+        publish.options =
+          connectorId === 'server_gh_cli'
+            ? {
+                ...publish.options,
+                github_auth: 'server_gh_cli',
+                github_login: publicationIdentity.data?.login,
+              }
+            : { ...publish.options, connector_id: connectorId }
     }
     setEditor(JSON.stringify(d, null, 2))
     navigate({ tab: 'settings', section: 'delivery' })
@@ -620,20 +636,27 @@ export default function WorkflowsPage({
                 <div>
                   <h2 className="text-base font-semibold">Publicación y límites</h2>
                   <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                    Crea una definición inmutable con permisos y presupuesto acotados. La
-                    publicación usa el conector del control plane; su token nunca llega al runner.
+                    Publica ramas y PRs draft con la cuenta de GitHub del backend. Sus credenciales
+                    nunca llegan al runner. Se conservan verificaciones, permisos por repositorio,
+                    presupuesto y aprobaciones; no se hacen merges ni despliegues.
                   </p>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="space-y-1.5 text-sm sm:col-span-2">
-                    Conector de publicación GitHub
+                    Cuenta para publicar en GitHub
                     <select
                       className={select}
                       value={connectorId}
                       disabled={!writable}
                       onChange={(e) => setConnectorId(e.target.value)}
                     >
-                      <option value="">Seleccionar conector autorizado</option>
+                      <option value="server_gh_cli">
+                        Cuenta autenticada del backend
+                        {publicationIdentity.data?.login
+                          ? ` · ${publicationIdentity.data.login}`
+                          : ''}{' '}
+                        · predeterminada
+                      </option>
                       {publisherConnectors.map((c) => (
                         <option key={c.id} value={c.id}>
                           {c.name}
@@ -665,38 +688,48 @@ export default function WorkflowsPage({
                     />
                   </label>
                 </div>
-                {can('autonomous_agent:manage_connectors') &&
-                  can('autonomous_agent:read') &&
-                  writable && (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => setConnectorForm('publication')}
-                    >
-                      Nuevo conector de publicación
-                    </Button>
+                <details className="space-y-3 text-sm">
+                  <summary className="cursor-pointer text-muted-foreground">
+                    Otra identidad de GitHub · avanzado
+                  </summary>
+                  <p className="mt-2 text-muted-foreground">
+                    Solo necesitas un conector adicional para publicar con otra cuenta o una GitHub
+                    App.
+                  </p>
+                  {can('autonomous_agent:manage_connectors') &&
+                    can('autonomous_agent:read') &&
+                    writable && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setConnectorForm('publication')}
+                      >
+                        Nuevo conector de publicación
+                      </Button>
+                    )}
+                  {connectorForm === 'publication' && (
+                    <WorkflowConnectorForm
+                      kind="publication"
+                      repositories={githubRepositories}
+                      onCancel={() => setConnectorForm(null)}
+                      onCreated={async (id) => {
+                        await connectors.refetch()
+                        setConnectorId(id)
+                        setConnectorForm(null)
+                        setNotice(
+                          'Conector cifrado creado. Sus permisos efectivos también se comprobarán al publicar.',
+                        )
+                      }}
+                    />
                   )}
-                {connectorForm === 'publication' && (
-                  <WorkflowConnectorForm
-                    kind="publication"
-                    repositories={githubRepositories}
-                    onCancel={() => setConnectorForm(null)}
-                    onCreated={async (id) => {
-                      await connectors.refetch()
-                      setConnectorId(id)
-                      setConnectorForm(null)
-                      setNotice(
-                        'Conector cifrado creado. Sus permisos efectivos también se comprobarán al publicar.',
-                      )
-                    }}
-                  />
-                )}
-                {!publisherConnectors.length && (
-                  <p className="text-sm text-muted-foreground">
-                    No hay un conector de publicación autorizado. Configura uno cifrado con
-                    propósito factory_workflow_github, scopes target:use y github:write, y una lista
-                    explícita de repositorios. El conector de webhooks no sirve para publicar
-                    código.
+                </details>
+                {connectorId === 'server_gh_cli' && !backendPublisherReady && (
+                  <p role="status" className="text-sm text-status-warning">
+                    {publicationIdentity.isPending
+                      ? 'Comprobando la cuenta del backend…'
+                      : publicationIdentity.data?.enabled
+                        ? 'La cuenta del backend no está autenticada. El operador debe iniciar sesión en GitHub.'
+                        : 'La cuenta del backend aún no está autorizada para publicar en esta organización. El operador debe habilitarla; no necesitas crear un token en el formulario.'}
                   </p>
                 )}
                 <p className="text-sm text-muted-foreground">
@@ -709,6 +742,7 @@ export default function WorkflowsPage({
                       busy ||
                       !writable ||
                       !connectorId ||
+                      (connectorId === 'server_gh_cli' && !backendPublisherReady) ||
                       !Number.isFinite(budget) ||
                       budget < 0.01 ||
                       budget > 1000 ||

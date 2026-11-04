@@ -19,6 +19,7 @@ struct Remote {
     prs: u32,
     refs: u32,
     conclusion: Option<String>,
+    login: Option<String>,
 }
 async fn github(
     State(state): State<Arc<Mutex<Remote>>>,
@@ -29,8 +30,10 @@ async fn github(
     let data: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let path = uri.path();
     let mut remote = state.lock().unwrap();
-    let value = if path == "/repos/acme/api" {
-        json!({"default_branch":"main"})
+    let value = if path == "/user" {
+        json!({"login":remote.login.as_deref().unwrap_or("test-bot")})
+    } else if path == "/repos/acme/api" {
+        json!({"default_branch":"main","permissions":{"push":true}})
     } else if path.ends_with("/branches/main") {
         json!({"commit":{"sha":"a".repeat(40)}})
     } else if path.contains("/git/commits/") {
@@ -88,6 +91,10 @@ async fn github(
 }
 #[tokio::test]
 async fn publishes_exact_git_objects_once_and_rejects_revocation() {
+    exercise_publication(false).await;
+    exercise_publication(true).await;
+}
+async fn exercise_publication(backend: bool) {
     std::env::set_var(
         "NEXUSMIND_TOKEN_ENCRYPTION_KEY",
         "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
@@ -111,11 +118,20 @@ async fn publishes_exact_git_objects_once_and_rejects_revocation() {
     workflows::confirm_inventory(&c, &org.id, wid, 1, &[repo]).unwrap();
     let secret = crate::crypto::encrypt("test-github-token").unwrap();
     c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,created_by) VALUES ('github',?1,'target_secret','GitHub',?2,?3,'[\"github:write\"]','ready',?4)",params![org.id,secret,json!({"purpose":"factory_workflow_github","repositories":["acme/api"]}).to_string(),user.id]).unwrap();
-    let definition:Definition=serde_json::from_value(json!({"name":"Delivery","workspace_id":wid,"steps":[
+    let mut definition:Definition=serde_json::from_value(json!({"name":"Delivery","workspace_id":wid,"steps":[
         {"id":"qa","name":"QA","kind":"check","adapter":"qa"},
         {"id":"gate","name":"Gate","kind":"gate","adapter":"gate","depends_on":["qa"]},
         {"id":"publish","name":"Publish","kind":"publish","adapter":"publisher","depends_on":["gate"],"options":{"connector_id":"github","github_required_checks":["ci"]}}
     ]})).unwrap();
+    if backend {
+        std::env::set_var("FACTORY_GITHUB_PUBLISH_ORG_ID", &org.id);
+        definition
+            .steps
+            .iter_mut()
+            .find(|s| s.id == "publish")
+            .unwrap()
+            .options = json!({"github_auth":"server_gh_cli","github_login":"test-bot","github_required_checks":["ci"]});
+    }
     let d = workflows::create_definition(&c, &org.id, &user.id, &definition).unwrap();
     let run = workflows::start_run(
         &c,
@@ -181,6 +197,18 @@ async fn publishes_exact_git_objects_once_and_rejects_revocation() {
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let mut client = Github::new("test-github-token".into()).unwrap();
     client.base = format!("http://{address}");
+    if backend {
+        state.lock().unwrap().login = Some("different-account".into());
+        assert_eq!(
+            publish_using(&store, &org.id, rid, id, "publish", &request, &client)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "backend_github_identity_changed"
+        );
+        assert_eq!(state.lock().unwrap().prs, 0);
+        state.lock().unwrap().login = None;
+    }
     let result = publish_using(&store, &org.id, rid, id, "publish", &request, &client)
         .await
         .unwrap();
@@ -213,7 +241,9 @@ async fn publishes_exact_git_objects_once_and_rejects_revocation() {
         assert_eq!(status, "awaiting_ci");
     }
     assert_eq!(state.lock().unwrap().prs, 1);
-    {
+    if backend {
+        std::env::set_var("FACTORY_GITHUB_PUBLISH_ORG_ID", "another-org");
+    } else {
         let h = store.conn();
         let c = h.lock().unwrap();
         c.execute(
@@ -228,5 +258,8 @@ async fn publishes_exact_git_objects_once_and_rejects_revocation() {
             .is_err()
     );
     server.abort();
+    if backend {
+        std::env::remove_var("FACTORY_GITHUB_PUBLISH_ORG_ID");
+    }
     std::env::remove_var("NEXUSMIND_TOKEN_ENCRYPTION_KEY");
 }

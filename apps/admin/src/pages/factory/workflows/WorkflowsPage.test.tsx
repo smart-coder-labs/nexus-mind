@@ -7,6 +7,7 @@ import WorkflowsPage from './WorkflowsPage'
 import { deliveryWorkflow, preparationWorkflow, type Workspace } from './types'
 const api = vi.hoisted(() => ({
   getWorkflowCatalog: vi.fn(),
+  getWorkflowPublicationIdentity: vi.fn(),
   getFactoryWorkflowRun: vi.fn(),
   confirmFactoryWorkspace: vi.fn(),
   registerFactoryRunner: vi.fn(),
@@ -72,12 +73,48 @@ beforeEach(() => {
       },
     ],
   })
+  api.getWorkflowPublicationIdentity.mockResolvedValue({
+    enabled: true,
+    login: 'test-bot',
+    error: null,
+  })
   api.getFactoryWorkflowRun.mockResolvedValue(detail)
   api.confirmFactoryWorkspace.mockResolvedValue(workspace)
 })
 const read = ['factory_policy:read']
 const write = [...read, 'factory_policy:write']
 describe('guided workspace workflows', () => {
+  it('uses the authenticated backend account without requiring a publication connector', async () => {
+    const confirmed = {
+      ...workspace,
+      confirmed_revision: 1,
+      repositories: [
+        {
+          path: 'api',
+          remote: 'https://github.com/acme/api.git',
+          head_sha: 'a'.repeat(40),
+          writable: true,
+        },
+      ],
+    }
+    api.getWorkflowCatalog.mockResolvedValue({
+      runners: [],
+      workspaces: [confirmed],
+      definitions: [],
+      runs: [],
+    })
+    show(write, '/factory/workflows?tab=settings&section=delivery')
+    const account = await screen.findByRole('combobox', { name: /Cuenta para publicar/ })
+    expect(account).toHaveValue('server_gh_cli')
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Crear workflow completo' })).toBeEnabled(),
+    )
+    expect(
+      screen.queryByText(/No hay un conector de publicación autorizado/),
+    ).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Crear workflow completo' }))
+    expect(screen.getByText('test-bot', { exact: true })).toBeInTheDocument()
+  })
   it('requires explicit read permission without API calls', () => {
     show([])
     expect(screen.getByRole('alert')).toHaveTextContent('factory_policy:read')

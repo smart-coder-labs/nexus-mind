@@ -314,8 +314,9 @@ mod tests {
         crate::db::migrations::run(&c).unwrap();
         let (o, u, _) = queries::bootstrap(&c, "Org", "org", "owner@test.com", "Owner").unwrap();
         c.execute("INSERT INTO autonomous_agent_definitions(id,org_id,template_key,template_version,name,status,current_revision,created_by) VALUES ('reviewer',?1,'github_pr_reviewer',1,'Reviewer','enabled',1,?2)",rusqlite::params![o.id,u.id]).unwrap();
-        c.execute("INSERT INTO autonomous_agent_revisions(id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by) VALUES ('rev','reviewer',1,'{\"repository\":\"acme/api\"}','hash','[]','{}','valid',?1)",[&u.id]).unwrap();
+        c.execute("INSERT INTO autonomous_agent_revisions(id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by) VALUES ('rev','reviewer',1,'{\"repository\":\"acme/api\"}','hash','[]','{}','pending',?1)",[&u.id]).unwrap();
         c.execute("INSERT INTO autonomous_agent_validations(id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by) VALUES ('valid',?1,'reviewer','rev','hash','valid','{}',?2)",rusqlite::params![o.id,u.id]).unwrap();
+        assert_eq!(queries::list_github_reconciliation_sources(&c).unwrap().len(),1,"Validation comes from the append-only ledger, not the immutable pending column");
         c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES ('hook',?1,'target_secret','Hook','ready','{}',?2)",rusqlite::params![o.id,u.id]).unwrap();
         let apply = |delivery: &str, payload: &serde_json::Value, current: bool| {
             let tx =

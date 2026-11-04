@@ -219,6 +219,8 @@ export function fixture(path) {
       ...catalog,
       runners: catalog.runners.map((r) => ({ ...r, last_seen: new Date().toISOString() })),
     }
+  if (path.endsWith('/github/publication-identity'))
+    return { enabled: true, login: 'CesarRuizBotAgents', error: null }
   if (path.endsWith('/review-hooks')) return { login: 'CesarRuizBotAgents', hooks: [] }
   if (path.includes('/workflow-runs/')) return path.endsWith('preview-blocked') ? blocked : run
   if (path === '/v1/autonomous-agents') return agents

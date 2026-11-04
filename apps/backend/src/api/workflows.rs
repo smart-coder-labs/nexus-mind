@@ -68,6 +68,15 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
         }),
     )
 }
+pub async fn publication_identity(State(store):State<SqliteStore>,Extension(auth):Extension<AuthContext>)->Response {
+    {let h=store.conn();let c=h.lock().map_err(|_|locked())?;require_explicit_permission(&c,&auth,None,"factory_policy:read")?;}
+    let enabled=crate::factory::workflow_publication::backend_account_enabled(&auth.org_id);
+    if !enabled {return Ok(Json(json!({"enabled":false,"login":null,"error":"backend_github_publication_not_authorized"})))}
+    match crate::automation::worker::server_github_identity().await {
+        Ok(login)=>Ok(Json(json!({"enabled":true,"login":login,"error":null}))),
+        Err(_)=>Ok(Json(json!({"enabled":true,"login":null,"error":"backend_github_authentication_required"}))),
+    }
+}
 pub(super) fn locked() -> Failure {
     fail(anyhow::anyhow!("storage_unavailable"))
 }

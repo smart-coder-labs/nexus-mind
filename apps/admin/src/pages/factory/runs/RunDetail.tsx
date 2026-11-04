@@ -1,15 +1,58 @@
 import { useState, type ReactNode } from 'react'
-import { AlertTriangle, Archive, ArchiveRestore, Ban, Camera, CheckCircle2, Circle, ExternalLink, GitPullRequest, Loader2, MessagesSquare, RefreshCw, XCircle } from 'lucide-react'
+import {
+  AlertTriangle,
+  Archive,
+  ArchiveRestore,
+  Ban,
+  Camera,
+  CheckCircle2,
+  Circle,
+  ExternalLink,
+  GitPullRequest,
+  Loader2,
+  MessagesSquare,
+  RefreshCw,
+  XCircle,
+} from 'lucide-react'
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmModal } from '../../../components/ConfirmModal'
-import type { AutonomousAgentEvent, AutonomousAgentRun, StoredVerificationReport } from '../../../types'
+import type {
+  AutonomousAgentEvent,
+  AutonomousAgentRun,
+  StoredVerificationReport,
+} from '../../../types'
 import { VerificationReports } from '../VerificationReports'
 import {
-  CONTINUABLE_RUN_STATUSES, RESULT_CODE, SANDBOX_FAILURE_CODES, asArr, asDict, asNum, asStr, dur, fmtDateTime, humanize,
-  isActiveRun, parseLenient, round, runDurationSeconds, runStatusMeta, templateName, triggerName, usd, type Dict, type Tone,
+  CONTINUABLE_RUN_STATUSES,
+  RESULT_CODE,
+  SANDBOX_FAILURE_CODES,
+  asArr,
+  asDict,
+  asNum,
+  asStr,
+  dur,
+  fmtDateTime,
+  humanize,
+  isActiveRun,
+  parseLenient,
+  round,
+  runDurationSeconds,
+  runStatusMeta,
+  templateName,
+  triggerName,
+  usd,
+  type Dict,
+  type Tone,
 } from '../shared/format'
-import { OverflowMenu, RawJson, RunStatusPill, SectionTitle, TEXT_LINK, type MenuItem } from '../shared/ui'
+import {
+  OverflowMenu,
+  RawJson,
+  RunStatusPill,
+  SectionTitle,
+  TEXT_LINK,
+  type MenuItem,
+} from '../shared/ui'
 import { TranscriptView } from './Transcript'
 import { RunLogs } from './RunLogs'
 
@@ -24,20 +67,49 @@ const outcomeToneClass: Record<Tone, string> = {
 // ── Budget meter ──
 
 /** One budget gauge: consumed vs. the configured limit, green → amber → red. */
-function Meter({ label, used, max, format }: { label: string; used?: number; max: number; format: (n: number) => string }) {
+function Meter({
+  label,
+  used,
+  max,
+  format,
+}: {
+  label: string
+  used?: number
+  max: number
+  format: (n: number) => string
+}) {
   const pct = max > 0 && used != null ? Math.min(100, Math.round((used / max) * 100)) : 0
   const fill = pct >= 95 ? 'bg-status-error' : pct >= 70 ? 'bg-status-warning' : 'bg-status-success'
-  const valColor = used == null ? 'text-text-tertiary' : pct >= 95 ? 'text-status-error' : pct >= 70 ? 'text-status-warning' : 'text-text-primary'
+  const valColor =
+    used == null
+      ? 'text-text-tertiary'
+      : pct >= 95
+        ? 'text-status-error'
+        : pct >= 70
+          ? 'text-status-warning'
+          : 'text-text-primary'
   return (
     <div className="min-w-0">
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
         <span className="text-[12px] text-text-tertiary">{label}</span>
-        <span className={`text-sm font-semibold tabular-nums ${valColor}`}>{used != null ? format(used) : '—'}</span>
+        <span className={`text-sm font-semibold tabular-nums ${valColor}`}>
+          {used != null ? format(used) : '—'}
+        </span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-foreground/[0.06]" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-valuetext={used != null ? `${format(used)} of ${format(max)}` : 'Not started'}>
+      <div
+        className="h-2 overflow-hidden rounded-full bg-foreground/[0.06]"
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+        aria-valuetext={used != null ? `${format(used)} of ${format(max)}` : 'Not started'}
+      >
         <div className={`h-full rounded-full ${fill}`} style={{ width: `${pct}%` }} />
       </div>
-      <div className="mt-1 text-[12px] text-text-tertiary tabular-nums">of {format(max)} max{used != null ? ` · ${pct}% used` : ''}</div>
+      <div className="mt-1 text-[12px] text-text-tertiary tabular-nums">
+        of {format(max)} max{used != null ? ` · ${pct}% used` : ''}
+      </div>
     </div>
   )
 }
@@ -48,54 +120,156 @@ type StageState = 'done' | 'current' | 'failed' | 'warn' | 'cancelled' | 'pendin
 type Stage = { name: string; state: StageState; note?: string }
 
 const STAGE_STYLE: Record<StageState, { bar: string; icon: ReactNode; word: string }> = {
-  done: { bar: 'bg-status-success', icon: <CheckCircle2 className="h-3.5 w-3.5 text-status-success" aria-hidden />, word: 'Done' },
-  current: { bar: 'bg-status-info', icon: <Loader2 className="h-3.5 w-3.5 animate-spin text-text-primary motion-reduce:animate-none" aria-hidden />, word: 'In progress' },
-  failed: { bar: 'bg-status-error', icon: <XCircle className="h-3.5 w-3.5 text-status-error" aria-hidden />, word: 'Failed' },
-  warn: { bar: 'bg-status-warning', icon: <AlertTriangle className="h-3.5 w-3.5 text-status-warning" aria-hidden />, word: 'Stopped early' },
-  cancelled: { bar: 'bg-text-tertiary', icon: <Ban className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Cancelled' },
-  pending: { bar: 'bg-foreground/[0.08]', icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Not reached' },
-  skipped: { bar: 'bg-foreground/[0.08]', icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />, word: 'Not run' },
+  done: {
+    bar: 'bg-status-success',
+    icon: <CheckCircle2 className="h-3.5 w-3.5 text-status-success" aria-hidden />,
+    word: 'Done',
+  },
+  current: {
+    bar: 'bg-status-info',
+    icon: (
+      <Loader2
+        className="h-3.5 w-3.5 animate-spin text-text-primary motion-reduce:animate-none"
+        aria-hidden
+      />
+    ),
+    word: 'In progress',
+  },
+  failed: {
+    bar: 'bg-status-error',
+    icon: <XCircle className="h-3.5 w-3.5 text-status-error" aria-hidden />,
+    word: 'Failed',
+  },
+  warn: {
+    bar: 'bg-status-warning',
+    icon: <AlertTriangle className="h-3.5 w-3.5 text-status-warning" aria-hidden />,
+    word: 'Stopped early',
+  },
+  cancelled: {
+    bar: 'bg-text-tertiary',
+    icon: <Ban className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />,
+    word: 'Cancelled',
+  },
+  pending: {
+    bar: 'bg-foreground/[0.08]',
+    icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />,
+    word: 'Not reached',
+  },
+  skipped: {
+    bar: 'bg-foreground/[0.08]',
+    icon: <Circle className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />,
+    word: 'Not run',
+  },
 }
 
-export function runStages(run: AutonomousAgentRun, events: AutonomousAgentEvent[], reports: StoredVerificationReport[], code?: string): Stage[] {
+export function runStages(
+  run: AutonomousAgentRun,
+  events: AutonomousAgentEvent[],
+  reports: StoredVerificationReport[],
+  code?: string,
+): Stage[] {
   const names = ['Queued', 'Sandbox', 'Agent', 'Verification', 'Publish']
   const active = isActiveRun(run.status)
-  const s: Stage[] = names.map(name => ({ name, state: 'pending' as StageState, note: active ? 'Waiting' : undefined }))
-  const set = (i: number, state: StageState, note?: string) => { s[i] = { name: names[i], state, note } }
-  const doneThrough = (n: number) => { for (let i = 0; i < n; i += 1) set(i, 'done') }
-  const verification: StageState = reports.length ? (reports.every(r => r.report.passed) ? 'done' : 'failed') : 'skipped'
-  const started = Boolean(run.started_at) || events.some(e => e.kind === 'run.started')
-  const sandboxFailed = run.status === 'blocked_runtime' || (code != null && SANDBOX_FAILURE_CODES.has(code))
+  const s: Stage[] = names.map((name) => ({
+    name,
+    state: 'pending' as StageState,
+    note: active ? 'Waiting' : undefined,
+  }))
+  const set = (i: number, state: StageState, note?: string) => {
+    s[i] = { name: names[i], state, note }
+  }
+  const doneThrough = (n: number) => {
+    for (let i = 0; i < n; i += 1) set(i, 'done')
+  }
+  const verification: StageState = reports.length
+    ? reports.every((r) => r.report.passed)
+      ? 'done'
+      : 'failed'
+    : 'skipped'
+  const started = Boolean(run.started_at) || events.some((e) => e.kind === 'run.started')
+  const sandboxFailed =
+    (run.status === 'blocked_runtime' && code !== 'pull_request_number_missing') ||
+    (code != null && SANDBOX_FAILURE_CODES.has(code))
 
+  if (code === 'pull_request_number_missing') {
+    set(0, 'done')
+    set(1, 'skipped', 'No requerido')
+    set(2, 'failed', 'Falta el PR')
+    return s
+  }
   switch (run.status) {
-    case 'queued': set(0, 'current'); break
-    case 'leased': doneThrough(1); set(1, 'current', 'Starting'); break
-    case 'running': doneThrough(2); set(2, 'current'); break
-    case 'succeeded': doneThrough(3); set(3, verification); set(4, 'done'); break
-    case 'partial': doneThrough(3); set(3, verification); set(4, 'warn', 'Partly done'); break
-    case 'budget_exhausted': doneThrough(2); set(2, 'warn', 'Out of budget'); break
-    case 'blocked_policy': doneThrough(3); set(3, verification); set(4, 'failed', 'Held by policy'); break
+    case 'queued':
+      set(0, 'current')
+      break
+    case 'leased':
+      doneThrough(1)
+      set(1, 'current', 'Starting')
+      break
+    case 'running':
+      doneThrough(2)
+      set(2, 'current')
+      break
+    case 'succeeded':
+      doneThrough(3)
+      set(3, verification)
+      set(4, 'done')
+      break
+    case 'partial':
+      doneThrough(3)
+      set(3, verification)
+      set(4, 'warn', 'Partly done')
+      break
+    case 'budget_exhausted':
+      doneThrough(2)
+      set(2, 'warn', 'Out of budget')
+      break
+    case 'blocked_policy':
+      doneThrough(3)
+      set(3, verification)
+      set(4, 'failed', 'Held by policy')
+      break
     case 'cancelled':
-      if (started) { doneThrough(2); set(2, 'cancelled') } else set(0, 'cancelled')
+      if (started) {
+        doneThrough(2)
+        set(2, 'cancelled')
+      } else set(0, 'cancelled')
       break
     default: // failed, blocked_runtime, dead_letter, anything new
-      if (sandboxFailed) { doneThrough(1); set(1, 'failed', run.status === 'blocked_runtime' ? 'Runtime unavailable' : undefined) }
-      else if (verification === 'failed') { doneThrough(3); set(3, 'failed') }
-      else { doneThrough(2); set(2, 'failed') }
+      if (sandboxFailed) {
+        doneThrough(1)
+        set(1, 'failed', run.status === 'blocked_runtime' ? 'Runtime unavailable' : undefined)
+      } else if (verification === 'failed') {
+        doneThrough(3)
+        set(3, 'failed')
+      } else {
+        doneThrough(2)
+        set(2, 'failed')
+      }
   }
   return s
 }
 
+export function runtimeGuidance(code: string | undefined, status: string): string | undefined {
+  if (code === 'pull_request_number_missing')
+    return 'Falta el número de PR. Si viene de un temporizador, desactívalo: el reviewer debe recibir una solicitud de GitHub o un PR explícito. No se corrige cambiando el runtime ni reintentando sin indicar el PR.'
+  if (code === 'claude_runtime_unavailable' || code === 'claude_auth_required')
+    return 'Restablece la autenticación de Claude en Configuración. Solo estos bloqueos de autenticación se reintentan automáticamente.'
+  if (status === 'blocked_runtime')
+    return 'Consulta el motivo concreto y corrige la configuración antes de iniciar otra ejecución. Este estado no garantiza un reintento automático.'
+}
 function StageStrip({ stages }: { stages: Stage[] }) {
   return (
     <ol aria-label="Run stages" className="grid list-none grid-cols-2 gap-2 p-0 sm:grid-cols-5">
-      {stages.map(stage => {
+      {stages.map((stage) => {
         const style = STAGE_STYLE[stage.state]
         const word = stage.note ?? style.word
         return (
           <li key={stage.name} className="min-w-0" aria-label={`${stage.name}: ${word}`}>
             <div className={`h-1 rounded-full ${style.bar}`} aria-hidden />
-            <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-text-primary">{style.icon}{stage.name}</div>
+            <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-text-primary">
+              {style.icon}
+              {stage.name}
+            </div>
             <div className="mt-0.5 text-[12px] text-text-tertiary">{word}</div>
           </li>
         )
@@ -115,16 +289,22 @@ function eventLine(e: AutonomousAgentEvent, run: AutonomousAgentRun, code?: stri
       return `Started on the ${worker} worker${executor ? ` using ${executor === 'pi' ? 'Pi' : humanize(executor)}` : ''}${run.snapshot_sha ? ` at snapshot ${run.snapshot_sha.slice(0, 7)}` : ''}`
     }
     case 'model.selected': {
-      const model = asStr(p.model); const tier = asStr(p.tier)
+      const model = asStr(p.model)
+      const tier = asStr(p.tier)
       return `Chose ${model ?? 'a model'}${tier ? ` (${humanize(tier).toLowerCase()} tier)` : ''}`
     }
-    case 'run.requeued': return `Put back in the queue${asStr(p.reason) ? `: ${humanize(asStr(p.reason)!).toLowerCase()}` : ''}`
-    case 'run.cancelled': return 'Cancelled on request; partial work discarded'
+    case 'run.requeued':
+      return `Put back in the queue${asStr(p.reason) ? `: ${humanize(asStr(p.reason)!).toLowerCase()}` : ''}`
+    case 'run.cancelled':
+      return 'Cancelled on request; partial work discarded'
     case 'run.finished': {
       const eventCode = asStr(p.code) ?? code
-      return eventCode && RESULT_CODE[eventCode] ? `Agent ${RESULT_CODE[eventCode]}` : `Finished: ${asStr(p.status) ?? runStatusMeta(run.status).label.toLowerCase()}${eventCode ? ` (${eventCode})` : ''}`
+      return eventCode && RESULT_CODE[eventCode]
+        ? `Agent ${RESULT_CODE[eventCode]}`
+        : `Finished: ${asStr(p.status) ?? runStatusMeta(run.status).label.toLowerCase()}${eventCode ? ` (${eventCode})` : ''}`
     }
-    default: return humanize(e.kind.replace(/\./g, ' '))
+    default:
+      return humanize(e.kind.replace(/\./g, ' '))
   }
 }
 
@@ -134,16 +314,21 @@ function Stat({ value, label, tone }: { value: ReactNode; label: string; tone?: 
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-border-primary bg-card px-3 py-2">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={`rounded-md bg-muted px-2 py-0.5 text-xs font-semibold tabular-nums ${tone === 'ok' ? 'text-status-success' : tone === 'bad' ? 'text-status-error' : 'text-text-primary'}`}>{value}</span>
+      <span
+        className={`rounded-md bg-muted px-2 py-0.5 text-xs font-semibold tabular-nums ${tone === 'ok' ? 'text-status-success' : tone === 'bad' ? 'text-status-error' : 'text-text-primary'}`}
+      >
+        {value}
+      </span>
     </div>
   )
 }
 
-const REVIEW_EVENT: Record<string, { label: string; variant: 'warning' | 'success' | 'default' }> = {
-  REQUEST_CHANGES: { label: 'Requested changes', variant: 'warning' },
-  APPROVE: { label: 'Approved', variant: 'success' },
-  COMMENT: { label: 'Commented', variant: 'default' },
-}
+const REVIEW_EVENT: Record<string, { label: string; variant: 'warning' | 'success' | 'default' }> =
+  {
+    REQUEST_CHANGES: { label: 'Requested changes', variant: 'warning' },
+    APPROVE: { label: 'Approved', variant: 'success' },
+    COMMENT: { label: 'Commented', variant: 'default' },
+  }
 
 export type RunDetailProps = {
   run: AutonomousAgentRun
@@ -162,12 +347,26 @@ export type RunDetailProps = {
 }
 
 /** The run's story: header, outcome sentence, stages, budget, evidence, conversation, raw payload last. */
-export function RunDetail({ run, events, transcript, verificationReports = [], agentName, templateKey, onOpenFindings, onContinue, continuing, onCancel, cancelling, onArchive, onRestore }: RunDetailProps) {
+export function RunDetail({
+  run,
+  events,
+  transcript,
+  verificationReports = [],
+  agentName,
+  templateKey,
+  onOpenFindings,
+  onContinue,
+  continuing,
+  onCancel,
+  cancelling,
+  onArchive,
+  onRestore,
+}: RunDetailProps) {
   const [confirmCancel, setConfirmCancel] = useState(false)
   const active = isActiveRun(run.status)
   const canContinue = Boolean(onContinue) && CONTINUABLE_RUN_STATUSES.includes(run.status)
   const meta = runStatusMeta(run.status)
-  const finished = [...events].reverse().find(e => e.kind === 'run.finished')
+  const finished = [...events].reverse().find((e) => e.kind === 'run.finished')
   const payload = asDict(finished?.payload) ?? {}
   const result = asDict(payload.result) ?? {}
   // Template output (PR / review) is nested under `published` in the backend
@@ -178,7 +377,8 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
   const turns = asNum(result.num_turns)
   // Findings come from the parsed model message (see parseLenient), falling back
   // to a direct `findings` array on the result for any structured-output runs.
-  const structured = (asStr(result.result) ? parseLenient(asStr(result.result) as string) : undefined) ?? result
+  const structured =
+    (asStr(result.result) ? parseLenient(asStr(result.result) as string) : undefined) ?? result
   const findings = asArr(structured.findings) ?? asArr(result.findings)
   const screenshots = asDict(payload.screenshots) ?? asDict(result.screenshots)
   const budget = (run.budget ?? {}) as Dict
@@ -194,7 +394,9 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
   const review = asDict(pub.github_review)
   const reviewUrl = asStr(review?.html_url)
   const reviewEvent = asStr(pub.event) ?? asStr(review?.event)
-  const reviewMeta = reviewEvent ? REVIEW_EVENT[reviewEvent] ?? { label: humanize(reviewEvent), variant: 'default' as const } : undefined
+  const reviewMeta = reviewEvent
+    ? (REVIEW_EVENT[reviewEvent] ?? { label: humanize(reviewEvent), variant: 'default' as const })
+    : undefined
 
   // Outcome sentence, assembled only from fields that are actually present.
   const lead = agentName || `${triggerName(run.trigger_kind)} run`
@@ -208,34 +410,93 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
   if (turns != null) bits.push(`${turns} turn${turns === 1 ? '' : 's'}`)
   if (durationSec != null) bits.push(dur(durationSec))
   const tail: string[] = []
-  if (findings && findings.length) tail.push(`Found ${findings.length} finding${findings.length === 1 ? '' : 's'}.`)
+  if (findings && findings.length)
+    tail.push(`Found ${findings.length} finding${findings.length === 1 ? '' : 's'}.`)
   if (prNumber != null) tail.push(`Opened draft PR #${prNumber}.`)
   if (reviewMeta) tail.push(`Review posted: ${reviewMeta.label.toLowerCase()}.`)
-  if (run.status === 'budget_exhausted' || code === 'cost_limit_exceeded' || code === 'wall_time_exceeded') tail.push('Raise the budget or narrow the scope, then continue or run again.')
-  if (run.status === 'blocked_runtime' || code === 'claude_runtime_unavailable' || code === 'claude_auth_required') tail.push('No budget was spent. Fix the runtime in Factory settings and this run is picked up again automatically.')
+  if (
+    run.status === 'budget_exhausted' ||
+    code === 'cost_limit_exceeded' ||
+    code === 'wall_time_exceeded'
+  )
+    tail.push('Raise the budget or narrow the scope, then continue or run again.')
+  const runtimeHint = runtimeGuidance(code, run.status)
+  if (runtimeHint) tail.push(runtimeHint)
 
   const meters = [
     maxCost ? <Meter key="cost" label="Cost" used={cost} max={maxCost} format={usd} /> : null,
     wall ? <Meter key="time" label="Wall time" used={durationSec} max={wall} format={dur} /> : null,
-    maxFiles ? <Meter key="files" label="Files changed" used={filesChanged} max={maxFiles} format={round} /> : null,
+    maxFiles ? (
+      <Meter key="files" label="Files changed" used={filesChanged} max={maxFiles} format={round} />
+    ) : null,
   ].filter(Boolean)
 
   const lc = asDict(pub.lines_changed)
   const linesAdded = asNum(lc?.added)
   const linesRemoved = asNum(lc?.removed)
   const linesTotal = asNum(pub.lines_changed)
-  const verification = asStr(pub.verification) ?? (asDict(pub.verification) ? 'Recorded' : undefined)
+  const verification =
+    asStr(pub.verification) ?? (asDict(pub.verification) ? 'Recorded' : undefined)
 
   // One primary action: open the PR it produced, else continue, else cancel.
   let primary: ReactNode = null
-  if (pr && prUrl) primary = <a href={prUrl} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-2 rounded-md bg-action-primary px-4 text-[12px] font-semibold text-action-foreground transition-colors hover:bg-action-primary-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"><GitPullRequest className="h-3.5 w-3.5" aria-hidden />{prNumber != null ? `Open PR #${prNumber}` : 'Open draft PR'}<ExternalLink className="h-3 w-3" aria-hidden /></a>
-  else if (canContinue) primary = <Button size="sm" variant="primary" leftIcon={<RefreshCw className="h-3.5 w-3.5" />} loading={continuing} onClick={() => onContinue?.(run.id)}>Continue</Button>
-  else if (active && onCancel) primary = <Button size="sm" variant="destructive" leftIcon={<Ban className="h-3.5 w-3.5" />} loading={cancelling} onClick={() => setConfirmCancel(true)}>Cancel run</Button>
+  if (pr && prUrl)
+    primary = (
+      <a
+        href={prUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex h-8 items-center gap-2 rounded-md bg-action-primary px-4 text-[12px] font-semibold text-action-foreground transition-colors hover:bg-action-primary-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
+      >
+        <GitPullRequest className="h-3.5 w-3.5" aria-hidden />
+        {prNumber != null ? `Open PR #${prNumber}` : 'Open draft PR'}
+        <ExternalLink className="h-3 w-3" aria-hidden />
+      </a>
+    )
+  else if (canContinue)
+    primary = (
+      <Button
+        size="sm"
+        variant="primary"
+        leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+        loading={continuing}
+        onClick={() => onContinue?.(run.id)}
+      >
+        Continue
+      </Button>
+    )
+  else if (active && onCancel)
+    primary = (
+      <Button
+        size="sm"
+        variant="destructive"
+        leftIcon={<Ban className="h-3.5 w-3.5" />}
+        loading={cancelling}
+        onClick={() => setConfirmCancel(true)}
+      >
+        Cancel run
+      </Button>
+    )
 
   const menu: MenuItem[] = []
-  if (pr && prUrl && canContinue) menu.push({ label: 'Continue run', icon: <RefreshCw className="h-3.5 w-3.5" />, onSelect: () => onContinue?.(run.id) })
-  if (!active && run.archived_at && onRestore) menu.push({ label: 'Restore run', icon: <ArchiveRestore className="h-3.5 w-3.5" />, onSelect: () => onRestore(run.id) })
-  if (!active && !run.archived_at && onArchive) menu.push({ label: 'Archive run', icon: <Archive className="h-3.5 w-3.5" />, onSelect: () => onArchive(run.id) })
+  if (pr && prUrl && canContinue)
+    menu.push({
+      label: 'Continue run',
+      icon: <RefreshCw className="h-3.5 w-3.5" />,
+      onSelect: () => onContinue?.(run.id),
+    })
+  if (!active && run.archived_at && onRestore)
+    menu.push({
+      label: 'Restore run',
+      icon: <ArchiveRestore className="h-3.5 w-3.5" />,
+      onSelect: () => onRestore(run.id),
+    })
+  if (!active && !run.archived_at && onArchive)
+    menu.push({
+      label: 'Archive run',
+      icon: <Archive className="h-3.5 w-3.5" />,
+      onSelect: () => onArchive(run.id),
+    })
 
   const label = 'text-[12px] font-medium text-text-tertiary'
 
@@ -245,16 +506,45 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{agentName ?? `${triggerName(run.trigger_kind)} run`}</h2>
+            <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">
+              {agentName ?? `${triggerName(run.trigger_kind)} run`}
+            </h2>
             <RunStatusPill status={run.status} />
-            {run.archived_at && <Badge size="sm" variant="default">Archived</Badge>}
+            {run.archived_at && (
+              <Badge size="sm" variant="default">
+                Archived
+              </Badge>
+            )}
           </div>
           <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12px] tabular-nums">
-            {templateKey && <div className="flex gap-1.5"><dt className="text-text-tertiary">Template</dt><dd className="text-text-secondary">{templateName(templateKey)}</dd></div>}
-            <div className="flex gap-1.5"><dt className="text-text-tertiary">Trigger</dt><dd className="text-text-secondary">{triggerName(run.trigger_kind)}</dd></div>
-            {run.started_at && <div className="flex gap-1.5"><dt className="text-text-tertiary">Started</dt><dd className="text-text-secondary">{fmtDateTime(run.started_at)}</dd></div>}
-            {durationSec != null && <div className="flex gap-1.5"><dt className="text-text-tertiary">Ran</dt><dd className="text-text-secondary">{dur(durationSec)}</dd></div>}
-            {run.snapshot_sha && <div className="flex gap-1.5"><dt className="text-text-tertiary">Snapshot</dt><dd className="font-mono text-text-secondary">{run.snapshot_sha.slice(0, 7)}</dd></div>}
+            {templateKey && (
+              <div className="flex gap-1.5">
+                <dt className="text-text-tertiary">Template</dt>
+                <dd className="text-text-secondary">{templateName(templateKey)}</dd>
+              </div>
+            )}
+            <div className="flex gap-1.5">
+              <dt className="text-text-tertiary">Trigger</dt>
+              <dd className="text-text-secondary">{triggerName(run.trigger_kind)}</dd>
+            </div>
+            {run.started_at && (
+              <div className="flex gap-1.5">
+                <dt className="text-text-tertiary">Started</dt>
+                <dd className="text-text-secondary">{fmtDateTime(run.started_at)}</dd>
+              </div>
+            )}
+            {durationSec != null && (
+              <div className="flex gap-1.5">
+                <dt className="text-text-tertiary">Ran</dt>
+                <dd className="text-text-secondary">{dur(durationSec)}</dd>
+              </div>
+            )}
+            {run.snapshot_sha && (
+              <div className="flex gap-1.5">
+                <dt className="text-text-tertiary">Snapshot</dt>
+                <dd className="font-mono text-text-secondary">{run.snapshot_sha.slice(0, 7)}</dd>
+              </div>
+            )}
           </dl>
         </div>
         <div className="flex items-center gap-2">
@@ -264,7 +554,9 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       </div>
 
       {/* outcome sentence */}
-      <p className={`rounded-md border px-4 py-3 text-sm leading-relaxed text-text-secondary ${outcomeToneClass[meta.tone]}`}>
+      <p
+        className={`rounded-md border px-4 py-3 text-sm leading-relaxed text-text-secondary ${outcomeToneClass[meta.tone]}`}
+      >
         <span className="font-semibold text-text-primary">{lead}</span> {phrase}
         {bits.length ? <> and used {bits.join(', ')}</> : null}. {tail.join(' ')}
         {code && !RESULT_CODE[code] && <> Result: {humanize(code).toLowerCase()}.</>}
@@ -290,28 +582,55 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
               <Camera className="h-4 w-4 text-text-secondary" aria-hidden />
               {findings?.length ?? 0} finding{(findings?.length ?? 0) === 1 ? '' : 's'}
-              {screenshots && <span className="font-normal text-text-tertiary">and {Object.keys(screenshots).length} screenshot{Object.keys(screenshots).length === 1 ? '' : 's'}</span>}
+              {screenshots && (
+                <span className="font-normal text-text-tertiary">
+                  and {Object.keys(screenshots).length} screenshot
+                  {Object.keys(screenshots).length === 1 ? '' : 's'}
+                </span>
+              )}
             </div>
             {screenshots && (
               <div className="flex flex-wrap gap-2.5">
-                {Object.entries(screenshots).slice(0, 6).map(([name, url]) => {
-                  // Prefer the stable re-signing endpoint (durable) over the raw
-                  // presigned URL baked into the result, which expires after 7 days.
-                  const src = run.id
-                    ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(run.id)}/${encodeURIComponent(name)}`
-                    : (typeof url === 'string' ? url : undefined)
-                  return (
-                    <a key={name} href={src} target="_blank" rel="noreferrer" className="w-28 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring">
-                      {src
-                        ? <img src={src} alt={`Screenshot ${name}`} className="h-[70px] w-full rounded-md border border-border-primary object-cover" />
-                        : <div className="h-[70px] rounded-md border border-border-primary bg-foreground/[0.03]" />}
-                      <div className="mt-1 truncate text-center text-[11px] text-text-tertiary">{name}</div>
-                    </a>
-                  )
-                })}
+                {Object.entries(screenshots)
+                  .slice(0, 6)
+                  .map(([name, url]) => {
+                    // Prefer the stable re-signing endpoint (durable) over the raw
+                    // presigned URL baked into the result, which expires after 7 days.
+                    const src = run.id
+                      ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(run.id)}/${encodeURIComponent(name)}`
+                      : typeof url === 'string'
+                        ? url
+                        : undefined
+                    return (
+                      <a
+                        key={name}
+                        href={src}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-28 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
+                      >
+                        {src ? (
+                          <img
+                            src={src}
+                            alt={`Screenshot ${name}`}
+                            className="h-[70px] w-full rounded-md border border-border-primary object-cover"
+                          />
+                        ) : (
+                          <div className="h-[70px] rounded-md border border-border-primary bg-foreground/[0.03]" />
+                        )}
+                        <div className="mt-1 truncate text-center text-[11px] text-text-tertiary">
+                          {name}
+                        </div>
+                      </a>
+                    )
+                  })}
               </div>
             )}
-            {onOpenFindings && <button type="button" onClick={onOpenFindings} className={`mt-3 ${TEXT_LINK}`}>Open in Findings</button>}
+            {onOpenFindings && (
+              <button type="button" onClick={onOpenFindings} className={`mt-3 ${TEXT_LINK}`}>
+                Open in Findings
+              </button>
+            )}
           </div>
         </section>
       )}
@@ -323,15 +642,27 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
           <div className="space-y-3 rounded-xl border border-border-primary bg-foreground/[0.02] p-5">
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
               {filesChanged != null && <Stat value={filesChanged} label="Files changed" />}
-              {linesAdded != null && <Stat value={`+${linesAdded}`} label="Lines added" tone="ok" />}
-              {linesRemoved != null && <Stat value={`-${linesRemoved}`} label="Lines removed" tone="bad" />}
+              {linesAdded != null && (
+                <Stat value={`+${linesAdded}`} label="Lines added" tone="ok" />
+              )}
+              {linesRemoved != null && (
+                <Stat value={`-${linesRemoved}`} label="Lines removed" tone="bad" />
+              )}
               {linesTotal != null && <Stat value={linesTotal} label="Lines changed" />}
               {verification && <Stat value={humanize(verification)} label="Verification" />}
             </div>
             <p className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
               <GitPullRequest className="h-4 w-4 text-text-secondary" aria-hidden />
-              {prUrl ? <a href={prUrl} target="_blank" rel="noreferrer" className={TEXT_LINK}>{prNumber != null ? `Draft PR #${prNumber}` : 'Draft PR'}</a> : <span>{prNumber != null ? `Draft PR #${prNumber}` : 'Draft PR'}</span>}
-              <Badge size="sm" variant="default">Draft</Badge>
+              {prUrl ? (
+                <a href={prUrl} target="_blank" rel="noreferrer" className={TEXT_LINK}>
+                  {prNumber != null ? `Draft PR #${prNumber}` : 'Draft PR'}
+                </a>
+              ) : (
+                <span>{prNumber != null ? `Draft PR #${prNumber}` : 'Draft PR'}</span>
+              )}
+              <Badge size="sm" variant="default">
+                Draft
+              </Badge>
             </p>
           </div>
         </section>
@@ -343,8 +674,18 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
           <SectionTitle id="run-result-review">Review</SectionTitle>
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-primary bg-foreground/[0.02] p-5 text-sm">
             <GitPullRequest className="h-4 w-4 text-text-secondary" aria-hidden />
-            {reviewUrl ? <a href={reviewUrl} target="_blank" rel="noreferrer" className={TEXT_LINK}>Review posted on GitHub</a> : <span className="text-text-primary">Review posted</span>}
-            {reviewMeta && <Badge size="sm" variant={reviewMeta.variant}>{reviewMeta.label}</Badge>}
+            {reviewUrl ? (
+              <a href={reviewUrl} target="_blank" rel="noreferrer" className={TEXT_LINK}>
+                Review posted on GitHub
+              </a>
+            ) : (
+              <span className="text-text-primary">Review posted</span>
+            )}
+            {reviewMeta && (
+              <Badge size="sm" variant={reviewMeta.variant}>
+                {reviewMeta.label}
+              </Badge>
+            )}
           </div>
         </section>
       )}
@@ -352,14 +693,25 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
       {/* full agent conversation (streamed) */}
       <section aria-labelledby="run-conversation" className="space-y-3">
         <SectionTitle id="run-conversation" className="flex items-center gap-2">
-          <MessagesSquare className="h-4 w-4 text-text-secondary" aria-hidden />Conversation
-          {transcript.length > 0 && <span className="text-[12px] font-normal text-text-tertiary">{transcript.length} events</span>}
+          <MessagesSquare className="h-4 w-4 text-text-secondary" aria-hidden />
+          Conversation
+          {transcript.length > 0 && (
+            <span className="text-[12px] font-normal text-text-tertiary">
+              {transcript.length} events
+            </span>
+          )}
         </SectionTitle>
         <TranscriptView turns={transcript} live={active} />
       </section>
 
       {/* event log */}
-      <RunLogs key={run.id} events={events} transcript={transcript} live={active} describeEvent={event => eventLine(event, run, code)} />
+      <RunLogs
+        key={run.id}
+        events={events}
+        transcript={transcript}
+        live={active}
+        describeEvent={(event) => eventLine(event, run, code)}
+      />
 
       {finished && <RawJson label="Raw result (JSON)" value={finished.payload} />}
 
@@ -371,7 +723,10 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
         confirmLabel="Cancel run"
         loading={cancelling}
         onClose={() => setConfirmCancel(false)}
-        onConfirm={() => { onCancel?.(run.id); setConfirmCancel(false) }}
+        onConfirm={() => {
+          onCancel?.(run.id)
+          setConfirmCancel(false)
+        }}
       />
     </div>
   )
