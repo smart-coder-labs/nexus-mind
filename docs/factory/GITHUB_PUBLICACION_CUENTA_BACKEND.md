@@ -1,5 +1,7 @@
 # Publicar con la cuenta autenticada del backend
 
+**Publicado y verificado:** [recibo de release y estado del reviewer](PUBLICACION_GITHUB_2026-11-04.md).
+
 La opción predeterminada en **Publicación y límites → Cuenta para publicar en GitHub** es la cuenta del CLI `gh` del backend. No es la sesión del navegador y no requiere pegar otro token en cada workflow.
 
 ## Qué hace

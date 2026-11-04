@@ -1,6 +1,6 @@
 # Factory: operación conectada
 
-**Publicado y verificado en producción**, schema **97**. Parche actual: SHA `f2673a99c396b03d89c5ba2eb5e0f42effd4ce15`, [entorno Node automático](PUBLICACION_NODE_2026-11-03.md). Versión guiada inicial: `63125d281263a6c333495ffb02c836d4e3e5fcac`. [Recibo de publicación, backups y comprobaciones](PUBLICACION_2026-11-03.md). El workflow `Factory workflows release` pasó todos sus jobs y publicó el panel después del backend. No se activan nuevas cuentas, permisos, secretos, modelos pagados ni despliegues de aplicaciones Kasymir.
+**Publicado y verificado en producción**, schema **97**. Parche actual: SHA `0fdfb2e79625925dd167fcc074aea980470b13bb`, [cuenta GitHub y reviewer](PUBLICACION_GITHUB_2026-11-04.md). Anterior: [entorno Node automático](PUBLICACION_NODE_2026-11-03.md). Versión guiada inicial: `63125d281263a6c333495ffb02c836d4e3e5fcac`. [Recibo de publicación, backups y comprobaciones](PUBLICACION_2026-11-03.md). El workflow `Factory workflows release` pasó todos sus jobs y publicó el panel después del backend. No se activan nuevas cuentas, permisos, secretos, modelos pagados ni despliegues de aplicaciones Kasymir.
 
 ## Navegación
 
@@ -83,7 +83,7 @@ En Entradas → Workflow, GitHub Issues elige un repositorio del inventario auto
 
 El conector dedicado requiere `github:read`, `target:use`, propósito `factory_workflow_intake`, `source_kind: github` y allowlist del repositorio. El backend vuelve a comprobar alcance y credencial antes de encolar. La lectura pagina con un límite explícito; si se excede, bloquea con error, no trunca silenciosamente.
 
-Se pueden crear conectores cifrados desde el mismo formulario. La publicación usa otro propósito y `github:write`; la selección de repositorios es explícita. Los tokens se limpian del formulario tras cada intento y no se envían a agentes. Un token creado no demuestra por sí mismo que la API remota lo haya aceptado: eso se comprueba al consultar o publicar.
+Se pueden crear conectores cifrados desde el mismo formulario. La publicación usa por defecto la cuenta autenticada del backend, autorizada para esta organización y fijada por login; no exige otro token. Para otra identidad se conserva el conector de propósito de publicación y `github:write`; la selección de repositorios sigue siendo explícita. Los tokens se limpian del formulario tras cada intento y no se envían a agentes. Un token creado no demuestra por sí mismo que la API remota lo haya aceptado: eso se comprueba al consultar o publicar.
 
 La deduplicación del workflow conserva la identidad de origen dentro del workspace. No configures simultáneamente un resolver independiente y una entrada de workflow para procesar el mismo trabajo externo: esta entrega unifica interfaces y permisos, no migra ambos motores a una única cola distribuida ni reescribe sus historiales.
 
