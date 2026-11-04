@@ -1,8 +1,26 @@
 import { describe, it, expect } from 'vitest'
 import { runtimeGuidance, runStages } from './RunDetail'
 import { agentStatus } from '../agents/AgentCard'
+import { triggerName } from '../shared/format'
 import type { AutonomousAgentRun, AutonomousAgentDefinition } from '../../../types'
 describe('truthful reviewer readiness and runtime guidance', () => {
+  it('labels only recorded provenance and never infers historical GitHub webhooks', () => {
+    expect(triggerName('schedule')).toBe('Temporizador')
+    expect(
+      triggerName('github_webhook', { kind: 'github_webhook', delivery_id: 'received-123' }),
+    ).toBe('Webhook recibido de GitHub')
+    expect(triggerName('reconcile', { kind: 'github_reconciliation', scan_id: 'scan-123' })).toBe(
+      'Reconciliación de GitHub (sondeo)',
+    )
+    expect(triggerName('reconcile', { kind: 'agent_chain', source_run_id: 'run-123' })).toBe(
+      'Encadenado de agente',
+    )
+    expect(triggerName('github_webhook')).toContain('histórico no registrado')
+    expect(triggerName('github_webhook', { kind: 'github_webhook' })).toContain(
+      'histórico no registrado',
+    )
+    expect(triggerName('reconcile')).toContain('histórico')
+  })
   it('does not turn missing PR input into a sandbox/authentication error', () => {
     const hint = runtimeGuidance('pull_request_number_missing', 'blocked_runtime')!
     expect(hint).toContain('Falta el número de PR')

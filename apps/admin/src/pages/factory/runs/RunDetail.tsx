@@ -399,7 +399,7 @@ export function RunDetail({
     : undefined
 
   // Outcome sentence, assembled only from fields that are actually present.
-  const lead = agentName || `${triggerName(run.trigger_kind)} run`
+  const lead = agentName || `${triggerName(run.trigger_kind, run.trigger_origin)} run`
   let phrase: string
   if (code && RESULT_CODE[code]) phrase = RESULT_CODE[code]
   else if (run.status === 'running' || run.status === 'leased') phrase = 'is running now'
@@ -507,7 +507,7 @@ export function RunDetail({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">
-              {agentName ?? `${triggerName(run.trigger_kind)} run`}
+              {agentName ?? `${triggerName(run.trigger_kind, run.trigger_origin)} run`}
             </h2>
             <RunStatusPill status={run.status} />
             {run.archived_at && (
@@ -524,8 +524,18 @@ export function RunDetail({
               </div>
             )}
             <div className="flex gap-1.5">
-              <dt className="text-text-tertiary">Trigger</dt>
-              <dd className="text-text-secondary">{triggerName(run.trigger_kind)}</dd>
+              <dt className="text-text-tertiary">Origen</dt>
+              <dd className="min-w-0 text-text-secondary">
+                {triggerName(run.trigger_kind, run.trigger_origin)}
+                {run.trigger_origin && (
+                  <details className="mt-1 text-xs">
+                    <summary className="cursor-pointer">Evidencia del origen</summary>
+                    <pre className="mt-1 whitespace-pre-wrap break-all">
+                      {JSON.stringify(run.trigger_origin, null, 2)}
+                    </pre>
+                  </details>
+                )}
+              </dd>
             </div>
             {run.started_at && (
               <div className="flex gap-1.5">

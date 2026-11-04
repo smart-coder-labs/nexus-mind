@@ -299,7 +299,7 @@ fn process_delivery(
             }
             github_review_hooks::cancel_obsolete(c, org, repo, number, head)?;
         }
-        queries::enqueue_github_webhook_agents(c, org, delivery, repo, kind, number, head, hash)?;
+        queries::enqueue_github_webhook_agents(c, org, queries::GithubRunOrigin::Webhook(delivery), repo, kind, number, head, hash)?;
     }
     Ok(())
 }
@@ -357,6 +357,9 @@ mod tests {
                 .unwrap(),
             1
         );
+        let first=queries::list_autonomous_agent_runs(&c,&o.id,None).unwrap().remove(0);
+        assert_eq!(first.trigger_origin.as_ref().unwrap()["delivery_id"],"requested");
+        assert_eq!(first.trigger_kind,"github_webhook");
         let (active, automation): (String, String) = c
             .query_row(
                 "SELECT id,automation_run_id FROM autonomous_agent_runs LIMIT 1",
@@ -443,6 +446,13 @@ mod tests {
             .unwrap(),
             1
         );
+        assert!(queries::enqueue_github_webhook_agents(&c,&o.id,queries::GithubRunOrigin::Webhook("not-received"),"acme/api","github_pr",13,Some(&"c".repeat(40)),"no-evidence").is_err());
+        queries::enqueue_github_webhook_agents(&c,&o.id,queries::GithubRunOrigin::Reconciliation("scan-test"),"acme/api","github_pr",13,Some(&"c".repeat(40)),"scan-hash").unwrap();
+        let polled=queries::list_autonomous_agent_runs(&c,&o.id,None).unwrap().into_iter().find(|r|r.trigger_kind=="reconcile").unwrap();
+        assert_eq!(polled.trigger_origin.as_ref().unwrap()["kind"],"github_reconciliation");assert_eq!(polled.trigger_origin.as_ref().unwrap()["scan_id"],"scan-test");
+        github_review_hooks::cancel_obsolete(&c,&o.id,"acme/api",13,None).unwrap();
+        assert_eq!(queries::get_autonomous_agent_run(&c,&o.id,&polled.id).unwrap().unwrap().status,"cancelled");
+        let old=queries::enqueue_autonomous_agent_run(&c,&o.id,"reviewer","github_webhook","legacy-no-source",None,None).unwrap().unwrap();assert!(old.trigger_origin.is_none());
     }
     #[test]
     fn live_assignment_and_closed_state_fence_out_of_order_events() {

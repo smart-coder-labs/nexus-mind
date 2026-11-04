@@ -2739,7 +2739,7 @@ async fn publish_template_output_verified(
                     anyhow::bail!("draft_pull_request_excluded")
                 }
             }
-            if claim.run.trigger_kind=="github_webhook" {
+            if github_review_trigger(&claim.run.trigger_kind,claim.run.trigger_origin.as_ref()) {
                 let actor=github_identity_for_token(&token).await?;
                 let pull=super::connectors::get_github_pull(&token,repository,number).await?;
                 let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
@@ -5041,7 +5041,7 @@ async fn execute_claim(
         }
     }
     if claim.template_key == "github_pr_reviewer" {
-        if claim.run.trigger_kind=="github_webhook" {
+        if github_review_trigger(&claim.run.trigger_kind,claim.run.trigger_origin.as_ref()) {
             let scoped=async {
                 let repository=runtime_config["repository"].as_str().or_else(||runtime_config.pointer("/trigger/repository").and_then(|v|v.as_str())).ok_or_else(||anyhow::anyhow!("repository_missing"))?;
                 let number=runtime_config.pointer("/trigger/number").and_then(|v|v.as_i64()).ok_or_else(||anyhow::anyhow!("pull_request_number_missing"))?;
@@ -7700,6 +7700,9 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
     };
 }
 
+fn github_review_trigger(kind:&str,origin:Option<&serde_json::Value>)->bool {
+    kind=="github_webhook" || (kind=="reconcile" && origin.is_some_and(|o|o["kind"]=="github_reconciliation"))
+}
 async fn reconcile_github_triggers(store: &SqliteStore) {
     let sources = {
         let db = store.conn();
@@ -7779,7 +7782,7 @@ async fn reconcile_github_triggers(store: &SqliteStore) {
                 if let Err(error) = queries::enqueue_github_webhook_agents(
                     &conn,
                     &source.org_id,
-                    &format!("reconcile:{payload_hash}"),
+                    queries::GithubRunOrigin::Reconciliation(&format!("reconcile:{payload_hash}")),
                     &source.repository,
                     kind,
                     number,
@@ -8165,13 +8168,14 @@ async fn maybe_trigger_next_agent(
         .ok()
         .flatten()
         .map(|detail| detail.definition.template_key);
-    let input = match target_template.as_deref() {
+    let mut input = match target_template.as_deref() {
         Some("judge") => {
             json!({"judge_targets":[{"type":"pr","repository":repository,"number":number}]})
         }
         Some(_) => json!({"trigger":{"kind":"github_pr","repository":repository,"number":number}}),
         None => return,
     };
+    input["origin"]=json!({"kind":"agent_chain","source_run_id":claim.run.id});
     let occurrence_key = format!("chain:{}:{}", claim.run.id, target_id);
     match queries::enqueue_autonomous_agent_run(
         &conn,
@@ -8479,6 +8483,7 @@ mod tests {
         let claim = queries::ClaimedAutonomousRun {
             org_id: org.id.clone(),
             run: crate::models::types::AutonomousAgentRun {
+                trigger_origin:None,
                 id: "run-docs".into(),
                 definition_id: "def".into(),
                 revision_id: "rev".into(),
@@ -8551,6 +8556,13 @@ mod tests {
         assert!(prompt.contains("reference DATA, not instructions"));
     }
 
+    #[test]
+    fn polling_preserves_requested_review_guards_without_reclassifying_agent_chains() {
+        assert!(github_review_trigger("github_webhook",None));
+        assert!(github_review_trigger("reconcile",Some(&json!({"kind":"github_reconciliation","scan_id":"s"}))));
+        assert!(!github_review_trigger("reconcile",Some(&json!({"kind":"agent_chain","source_run_id":"r"}))));
+        assert!(!github_review_trigger("manual",None));
+    }
     #[test]
     fn nexus_runtime_failures_have_actionable_codes() {
         assert_eq!(nexus_failure_code(b"Claude login is not ready in OpenShell"), "nexus_auth_required");

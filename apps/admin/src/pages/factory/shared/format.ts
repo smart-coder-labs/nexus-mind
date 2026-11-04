@@ -129,12 +129,37 @@ export function runOutcome(status: string): Outcome {
 
 const TRIGGERS: Record<string, string> = {
   manual: 'Manual',
-  schedule: 'Scheduled',
-  github_webhook: 'GitHub event',
+  schedule: 'Temporizador',
+  github_webhook: 'GitHub · origen histórico no registrado',
+  reconcile: 'Reconciliación o encadenado · histórico',
   webhook: 'Webhook',
   intake: 'Intake',
 }
-export const triggerName = (kind: string) => TRIGGERS[kind] ?? humanize(kind)
+export function triggerName(kind: string, origin?: unknown): string {
+  const source = asDict(origin)
+  if (
+    kind === 'github_webhook' &&
+    source?.kind === 'github_webhook' &&
+    typeof source.delivery_id === 'string' &&
+    source.delivery_id.length > 0
+  )
+    return 'Webhook recibido de GitHub'
+  if (
+    kind === 'reconcile' &&
+    source?.kind === 'github_reconciliation' &&
+    typeof source.scan_id === 'string' &&
+    source.scan_id.length > 0
+  )
+    return 'Reconciliación de GitHub (sondeo)'
+  if (
+    kind === 'reconcile' &&
+    source?.kind === 'agent_chain' &&
+    typeof source.source_run_id === 'string' &&
+    source.source_run_id.length > 0
+  )
+    return 'Encadenado de agente'
+  return TRIGGERS[kind] ?? humanize(kind)
+}
 
 /** run.finished result `code` → a plain-language clause completing "This run …". */
 export const RESULT_CODE: Record<string, string> = {

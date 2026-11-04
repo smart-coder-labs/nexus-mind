@@ -1897,6 +1897,9 @@ fn default_misfire_policy() -> String {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct AutonomousAgentRun {
+    /// Recorded by the control plane; absent for legacy runs with ambiguous provenance.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub trigger_origin: Option<serde_json::Value>,
     pub id: String,
     pub definition_id: String,
     pub revision_id: String,

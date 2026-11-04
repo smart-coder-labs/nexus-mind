@@ -17551,7 +17551,10 @@ pub fn get_autonomous_agent_schedule(
 
 fn autonomous_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentRun> {
     let budget: String = row.get(8)?;
+    let input:Option<String>=row.get(13)?;
+    let origin=input.and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v|v.get("origin").cloned());
     Ok(AutonomousAgentRun {
+        trigger_origin: origin,
         id: row.get(0)?,
         definition_id: row.get(1)?,
         revision_id: row.get(2)?,
@@ -17610,7 +17613,7 @@ pub fn get_autonomous_agent_run(
     id: &str,
 ) -> Result<Option<AutonomousAgentRun>> {
     conn.query_row(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at,input_json
          FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
         rusqlite::params![org_id,id], autonomous_run_from_row,
     ).optional().map_err(Into::into)
@@ -17683,7 +17686,7 @@ pub fn list_autonomous_agent_runs(
     definition_id: Option<&str>,
 ) -> Result<Vec<AutonomousAgentRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at,input_json
          FROM autonomous_agent_runs WHERE org_id=?1 AND (?2 IS NULL OR definition_id=?2) ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(
@@ -18627,10 +18630,11 @@ pub fn record_github_webhook_delivery(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub enum GithubRunOrigin<'a> { Webhook(&'a str), Reconciliation(&'a str) }
 pub fn enqueue_github_webhook_agents(
     conn: &Connection,
     org_id: &str,
-    _delivery_id: &str,
+    origin: GithubRunOrigin<'_>,
     repository: &str,
     kind: &str,
     external_number: i64,
@@ -18638,6 +18642,14 @@ pub fn enqueue_github_webhook_agents(
     payload_hash: &str,
 ) -> Result<usize> {
     let repository=repository.to_ascii_lowercase();
+    let (trigger_kind,provenance)=match origin {
+        GithubRunOrigin::Webhook(delivery)=>{
+            let received:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_github_deliveries WHERE org_id=?1 AND delivery_id=?2 AND lower(repository)=?3 AND payload_hash=?4)",rusqlite::params![org_id,delivery,repository,payload_hash],|r|r.get(0))?;
+            if !received {anyhow::bail!("github_delivery_evidence_required")}
+            ("github_webhook",serde_json::json!({"kind":"github_webhook","delivery_id":delivery}))
+        },
+        GithubRunOrigin::Reconciliation(scan)=>("reconcile",serde_json::json!({"kind":"github_reconciliation","scan_id":scan})),
+    };
     let template = match kind {
         "github_issue" => "github_issue_resolver",
         "github_pr" => "github_pr_reviewer",
@@ -18691,10 +18703,10 @@ pub fn enqueue_github_webhook_agents(
             conn,
             org_id,
             &definition_id,
-            "github_webhook",
+            trigger_kind,
             &occurrence,
             None,
-            None,
+            Some(&serde_json::json!({"origin":provenance})),
         ) {
             Ok(Some(run)) => run,
             Err(error) if error.to_string().contains("UNIQUE constraint failed") => continue,

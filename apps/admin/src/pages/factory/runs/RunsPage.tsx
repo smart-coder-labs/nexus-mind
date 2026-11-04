@@ -294,13 +294,14 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
                         >
                           <span className="flex w-full flex-wrap items-start justify-between gap-2">
                             <span className="min-w-0 break-words text-sm font-semibold text-text-primary">
-                              {agent?.name ?? `${triggerName(run.trigger_kind)} run`}
+                              {agent?.name ??
+                                `${triggerName(run.trigger_kind, run.trigger_origin)} run`}
                             </span>
                             <RunStatusPill status={run.status} />
                           </span>
                           <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-text-tertiary tabular-nums">
                             <span>{fmtTime(run.created_at)}</span>
-                            <span>{triggerName(run.trigger_kind)}</span>
+                            <span>{triggerName(run.trigger_kind, run.trigger_origin)}</span>
                             {agent && <span>{templateName(agent.template_key)}</span>}
                             {seconds != null && <span>{dur(seconds)}</span>}
                             {run.archived_at && <span>Archived</span>}

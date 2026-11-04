@@ -51,7 +51,7 @@ pub fn cancel_obsolete(
 ) -> Result<()> {
     let repo = repo.to_ascii_lowercase();
     let ids = {
-        let mut s=c.prepare("SELECT DISTINCT r.id FROM autonomous_agent_runs r JOIN autonomous_agent_work_items w ON w.run_id=r.id WHERE r.org_id=?1 AND lower(w.repository)=?2 AND w.kind='github_pr' AND w.external_number=?3 AND r.trigger_kind='github_webhook' AND r.status IN ('queued','leased','running') AND (?4 IS NULL OR w.head_sha!=?4)")?;
+        let mut s=c.prepare("SELECT DISTINCT r.id FROM autonomous_agent_runs r JOIN autonomous_agent_work_items w ON w.run_id=r.id WHERE r.org_id=?1 AND lower(w.repository)=?2 AND w.kind='github_pr' AND w.external_number=?3 AND (r.trigger_kind='github_webhook' OR (r.trigger_kind='reconcile' AND json_extract(r.input_json,'$.origin.kind')='github_reconciliation')) AND r.status IN ('queued','leased','running') AND (?4 IS NULL OR w.head_sha!=?4)")?;
         let rows = s
             .query_map(params![org, repo, number, keep_head], |r| {
                 r.get::<_, String>(0)
