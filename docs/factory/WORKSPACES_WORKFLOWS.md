@@ -43,6 +43,8 @@ Clone repositories yourself, for example:
 
 Register that parent folder on the runner. Paths belong to the runner machine, not the browser/API host. Discovery accepts original clones, not symlink repositories or existing worktrees. Confirm selected repositories and their write permissions. Unconfirmed or changed inventories cannot start new runs; identical polling does not invalidate confirmation. Existing runs retain their immutable authorization snapshot; cancel them to withdraw in-flight access.
 
+The runner excludes `*.zip` paths (case-sensitive) from sandbox inputs, output adoption and source fingerprints. Existing tracked archives remain unchanged in the committed repository; agent-created archives are not published. Builds/tests requiring those archives must report the missing input, not be marked as passing.
+
 The runner makes separate private clones (`--no-local`), pins committed SHAs, removes their push remotes and leaves personal changes/untracked `.env` files untouched. Preparation is idempotent. There is no monorepo requirement. Git LFS materialization and submodule checkout are not provided automatically.
 
 ## 2. Configure a runner

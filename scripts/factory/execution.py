@@ -63,6 +63,10 @@ class WorkspaceOutputError(ValueError):
                         'limit': limit, 'solution': solution, 'hold': True}
 
 
+def ignored_source(name):
+    return name in IGNORE or name.endswith('.zip')
+
+
 def check_tree(root):
     """No devices, sockets, hard links or escaping symlinks from a container."""
     root = root.resolve()
@@ -71,8 +75,8 @@ def check_tree(root):
     for here, dirs, files in os.walk(root, followlinks=False):
         # Generated dependency/cache paths are never read or adopted on the host.
         # They may link to preinstalled dependencies inside the runtime image.
-        dirs[:] = [d for d in dirs if d not in IGNORE or d=='.git']
-        for name in dirs + [f for f in files if f not in IGNORE or f=='.git']:
+        dirs[:] = [d for d in dirs if not ignored_source(d) or d=='.git']
+        for name in dirs + [f for f in files if not ignored_source(f) or f=='.git']:
             entries += 1
             if entries > 100000: raise ValueError('Workspace file-count quota exceeded')
             p = Path(here) / name
@@ -101,7 +105,7 @@ def check_tree(root):
 
 def copy_source(source, destination):
     def ignored(_directory, names):
-        return [n for n in names if n in IGNORE or n == '.env' or n.startswith('.env.') and not n.endswith(('.example', '.sample', '.template'))]
+        return [n for n in names if ignored_source(n) or n == '.env' or n.startswith('.env.') and not n.endswith(('.example', '.sample', '.template'))]
     shutil.copytree(source, destination, symlinks=True, ignore=ignored)
     try:
         check_tree(destination)
@@ -471,7 +475,7 @@ def adopt_changes(config, job, work, git, secrets):
         if relative not in authorized or before == after:
             continue
         for p in modified.rglob('*'):
-            if p.is_file() and not p.is_symlink() and not any(part in IGNORE for part in p.relative_to(modified).parts):
+            if p.is_file() and not p.is_symlink() and not any(ignored_source(part) for part in p.relative_to(modified).parts):
                 if p.name == '.env' or p.name.startswith('.env.') and not p.name.endswith(('.example', '.sample', '.template')):
                     raise ValueError('Environment files cannot be committed')
                 content = p.read_bytes()
@@ -484,11 +488,18 @@ def adopt_changes(config, job, work, git, secrets):
                 if child.is_dir() and not child.is_symlink(): shutil.rmtree(child)
                 else: child.unlink()
         for child in modified.iterdir():
-            if child.name in IGNORE: continue
+            if ignored_source(child.name): continue
             target = original / child.name
-            if child.is_dir() and not child.is_symlink(): shutil.copytree(child, target, symlinks=True, ignore=lambda _d,names:[n for n in names if n in IGNORE])
+            if child.is_dir() and not child.is_symlink(): shutil.copytree(child, target, symlinks=True, ignore=lambda _d,names:[n for n in names if ignored_source(n)])
             elif child.is_symlink(): target.symlink_to(os.readlink(child))
             else: shutil.copy2(child, target)
+        # ponytail: ZIPs are excluded from execution, not deleted from source control.
+        archives = [p for p in git(['ls-files', '-z'], original, binary=True).split(b'\0')
+                    if p and any(part.endswith('.zip') for part in Path(os.fsdecode(p)).parts)]
+        if archives:
+            git(['--literal-pathspecs', 'restore', '--source=HEAD', '--worktree',
+                 '--pathspec-from-file=-', '--pathspec-file-nul'], original,
+                input_data=b'\0'.join(archives) + b'\0')
         git(['add', '-A', '--', '.'], original)
         # Deterministic metadata lets the control plane reproduce the exact
         # verified Git object over GitHub's Git Database API without sharing a token.
@@ -520,8 +531,8 @@ def without_generated(source, before, after, git):
 def tree_fingerprint(root):
     result = {}
     for here, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in IGNORE]
-        for name in [f for f in files if f not in IGNORE] + [d for d in dirs if (Path(here) / d).is_symlink()]:
+        dirs[:] = [d for d in dirs if not ignored_source(d)]
+        for name in [f for f in files if not ignored_source(f)] + [d for d in dirs if (Path(here) / d).is_symlink()]:
             p = Path(here) / name
             rel = p.relative_to(root).as_posix()
             if p.is_symlink(): data = os.readlink(p).encode()

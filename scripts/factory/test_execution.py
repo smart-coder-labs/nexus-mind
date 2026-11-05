@@ -140,6 +140,47 @@ class ExecutionTests(unittest.TestCase):
             execution.copy_source(tree, destination)
         self.assertEqual(caught.exception.details['path'], 'api-copy/large.bin')
 
+    def test_zip_exclusion_preserves_tracked_archives_when_adopting_source(self):
+        repo = Path(self.config['state_dir'])/self.job['run_id']/'api'
+        (repo/'layer').mkdir()
+        archive = repo/'layer'/'chromium.zip'
+        with archive.open('wb') as stream:
+            stream.write(b'PK-original')
+            stream.truncate(10 * 1024 * 1024 + 1)
+        (repo/'root.zip').write_bytes(b'PK-root')
+        runner.git(['add', '.'], repo)
+        runner.git(['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','add layers'], repo)
+        self.job['execution']['heads']['api'] = runner.git(['rev-parse', 'HEAD'], repo)
+        original_blob = runner.git(['hash-object', str(archive)], repo)
+        _, work = execution.stage_sources(self.job, self.config['state_dir'], runner.git)
+        self.assertFalse((work/'api'/'layer'/'chromium.zip').exists())
+        self.assertFalse((work/'api'/'root.zip').exists())
+        generated = work/'api'/'generated.zip'
+        with generated.open('wb') as stream:
+            stream.truncate(11 * 1024 * 1024)
+        os.link(generated, work/'api'/'linked.zip')
+        execution.check_tree(work)
+        generated.unlink()
+        generated.symlink_to('/etc/passwd')
+        execution.check_tree(work)
+        self.assertNotIn('api/generated.zip', execution.tree_fingerprint(work))
+        self.job['step']['write_repositories'] = []
+        self.assertEqual(execution.adopt_changes(self.config,self.job,work,runner.git,[]), self.job['execution']['heads'])
+        self.job['step']['write_repositories'] = ['api']
+        _, work = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        (work/'api'/'generated.zip').symlink_to('/etc/passwd')
+        (work/'api'/'code.txt').write_text('fixed\n')
+        heads = execution.adopt_changes(self.config,self.job,work,runner.git,[])
+        self.assertNotEqual(heads['api'], self.job['execution']['heads']['api'])
+        self.assertEqual(runner.git(['hash-object', str(archive)], repo), original_blob)
+        self.assertEqual((repo/'root.zip').read_bytes(), b'PK-root')
+        self.assertFalse((repo/'generated.zip').exists())
+        self.assertEqual(runner.git(['diff', '--name-only', self.job['execution']['heads']['api'], heads['api']], repo), 'code.txt')
+        self.job['execution']['heads'] = heads
+        _, fresh = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        self.assertFalse((fresh/'api'/'layer'/'chromium.zip').exists())
+        self.assertEqual((fresh/'api'/'code.txt').read_text(), 'fixed\n')
+
     def test_symlink_escape_is_rejected(self):
         tree = self.base/'tree'; tree.mkdir(); (tree/'escape').symlink_to('/etc/passwd')
         with self.assertRaises(ValueError): execution.check_tree(tree)
