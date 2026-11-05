@@ -340,8 +340,12 @@ def tick_locked(config, roots):
         if isinstance(error, urllib.error.HTTPError):
             try:
                 code = json.load(error).get('code', '')
-                outcome['output'] = {'error': code, 'hold': code in ('policy_approval_required', 'policy_never')}
+                outcome['output'] = {'error': code, 'hold': code in ('policy_approval_required', 'policy_never')
+                                     or (400 <= error.code < 500 and error.code not in (408, 429))}
+                if code == 'invalid_event':
+                    outcome['output']['solution'] = 'El backend rechazó un evento del runner. Actualiza el runner para usar el contrato de eventos admitido; no es un fallo de los tests y no se reintentará automáticamente.'
             except (ValueError, OSError): pass
+            finally: error.close()
         print('Workflow step blocked: ' + json.dumps(outcome['output']), flush=True)
     body = {'lease_token': job['lease_token'], 'success': success, 'evidence': evidence, 'outcome': outcome}
     journal = Path(config['state_dir']) / job['run_id'] / 'pending-completion.json'

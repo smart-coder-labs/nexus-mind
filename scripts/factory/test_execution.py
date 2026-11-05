@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import io
+import urllib.error
 from unittest.mock import Mock, patch
 import uuid
 import runner
@@ -21,7 +23,10 @@ class API:
             content = base64.b64decode(data['content_base64'])
             self.artifacts.append((data['name'], content))
             return {'digest': hashlib.sha256(content).hexdigest(), 'id': str(len(self.artifacts))}
-        if path.endswith('/events'): self.events.append(data)
+        if path.endswith('/events'):
+            assert data['kind'] in {'agent.started', 'agent.tool', 'command.started', 'command.finished', 'service.ready', 'log.chunk'}
+            assert len(data['message'].encode()) <= 4096
+            self.events.append(data)
         return {'active': True}
 
 
@@ -246,6 +251,33 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertNotEqual(outcome['heads']['api'], self.job['execution']['heads']['api'])
         self.assertEqual((Path(self.config['state_dir'])/self.job['run_id']/'api'/'docs'/'requested.md').read_text(), '# Requested document\n')
+
+    def test_dependency_preparation_emits_a_backend_accepted_event(self):
+        self.job['step'].update(id='verify',kind='check',write_repositories=[])
+        adapter = {'kind':'checks','node_bootstrap':True,'image':'sha256' + ':' + 'a'*64,
+                   'checks':[{'name':'tests','cwd':'api','command':['npm','test']}]}
+        with patch.object(execution,'node_bootstrap_image',return_value=True), patch('node_environment.prepare',side_effect=ValueError('stop after preparation event')) as prepare:
+            with self.assertRaisesRegex(ValueError,'stop after preparation event'):
+                execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        prepare.assert_called_once()
+        self.assertEqual(self.api.events[-1]['kind'],'command.started')
+        self.assertIn('dependencias npm',self.api.events[-1]['message'])
+
+    def test_api_contract_rejections_hold_instead_of_exhausting_attempts(self):
+        for status,code,hold in [(400,'invalid_event',True),(403,'policy_never',True),(429,'temporarily_limited',False),(503,'temporary_upstream_failure',False)]:
+            with self.subTest(status=status):
+                error = urllib.error.HTTPError('http://localhost',status,'fixture',{},io.BytesIO(json.dumps({'code':code}).encode()))
+                api = Mock()
+                api.call.side_effect = lambda path,data=None: ({'workspaces':[]} if path=='/workspaces' else {'job':self.job} if path=='/claim' else {})
+                config = {**self.config,'api_url':'http://localhost','adapters':{'agent':{}}}
+                with patch.object(runner,'API',return_value=api), patch.object(runner,'reconcile'), patch.object(execution,'isolated_adapter',side_effect=error):
+                    runner.tick_locked(config,[self.root])
+                completion = next(call.args[1] for call in api.call.call_args_list if call.args[0].endswith('/complete'))
+                self.assertFalse(completion['success'])
+                self.assertEqual(completion['outcome']['output']['error'],code)
+                self.assertEqual(completion['outcome']['output']['hold'],hold)
+                if code=='invalid_event':
+                    self.assertTrue(completion['outcome']['output']['solution'])
 
     def test_symlink_escape_is_rejected(self):
         tree = self.base/'tree'; tree.mkdir(); (tree/'escape').symlink_to('/etc/passwd')

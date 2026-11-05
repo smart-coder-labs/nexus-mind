@@ -328,7 +328,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             nonlocal last_heartbeat
             if time.monotonic()-last_heartbeat>=5:
                 api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/lease',{'lease_token':job['lease_token']});last_heartbeat=time.monotonic()
-        log_event(api,job,'environment.preparing','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
+        log_event(api,job,'command.started','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
         prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']))
         remaining=job['step']['timeout_seconds']-(time.monotonic()-started)
         if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
