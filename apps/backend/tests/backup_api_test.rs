@@ -234,6 +234,10 @@ fn backup_tabs_array_is_stable() {
         "collections",
         "invite_links",
         "audit_logs",
+        "autonomous_agent_connectors", "github_review_subscriptions",
+        "factory_runners", "factory_workspaces", "factory_workflow_definitions", "factory_workflow_runs",
+        "factory_workflow_steps", "factory_workflow_events", "factory_workflow_artifacts",
+        "factory_workflow_approvals", "factory_workflow_publications", "factory_workflow_intakes", "factory_workflow_runtime",
     ];
     assert_eq!(BACKUP_TABLES, expected.as_slice());
 }

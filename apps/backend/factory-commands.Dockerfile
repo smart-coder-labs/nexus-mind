@@ -2,6 +2,7 @@
 # with Cargo added only to this image. The serving backend stays slim.
 ARG BACKEND_IMAGE=ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
 FROM rust:1.98-slim-bookworm AS rust-toolchain
+RUN rustup component add rustfmt clippy
 
 FROM ${BACKEND_IMAGE}
 RUN apt-get update \
@@ -18,5 +19,6 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/tmp/.cargo \
     CARGO_BUILD_JOBS=1 \
     CARGO_PROFILE_TEST_DEBUG=0 \
+    CARGO_PROFILE_DEV_DEBUG=0 \
     RUST_TEST_THREADS=2 \
     PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

@@ -84,7 +84,7 @@ pub async fn github_installation_token(
     Ok(response.json::<InstallationTokenResponse>().await?.token)
 }
 
-async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
+pub(crate) async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
     let response = reqwest::Client::new()
         .post(format!("https://api.github.com{path}"))
         .timeout(GITHUB_TIMEOUT)
@@ -108,7 +108,7 @@ async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
     Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
-async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
+pub(crate) async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
     Ok(reqwest::Client::new()
         .patch(format!("https://api.github.com{path}"))
         .bearer_auth(token)
@@ -134,7 +134,7 @@ fn http_status(error: &anyhow::Error) -> Option<u16> {
 /// No GitHub read may hang the worker: callers run on the tick loop.
 const GITHUB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn github_get(token: &str, path: &str) -> Result<Value> {
+pub(crate) async fn github_get(token: &str, path: &str) -> Result<Value> {
     Ok(reqwest::Client::new()
         .get(format!("https://api.github.com{path}"))
         .timeout(GITHUB_TIMEOUT)
@@ -404,6 +404,19 @@ pub async fn list_labeled_github_issues(
         .ok_or_else(|| anyhow::anyhow!("issues_unreadable"))
 }
 
+/// Workflow intake must not silently starve older issues behind the first page.
+pub async fn list_labeled_github_issues_bounded(token:&str,repository:&str,label:&str)->Result<Vec<Value>> {
+    let mut issues=list_labeled_github_issues(token,repository,label).await?;
+    if issues.len()<100 {return Ok(issues)}
+    let(owner,repo)=repository_parts(repository)?;
+    for page in 2..=10 {
+        let value=github_get(token,&format!("/repos/{owner}/{repo}/issues?state=open&labels={label}&sort=updated&direction=desc&per_page=100&page={page}")).await?;
+        let batch=value.as_array().ok_or_else(||anyhow::anyhow!("issues_unreadable"))?;
+        issues.extend(batch.iter().cloned());
+        if batch.len()<100 {return Ok(issues)}
+    }
+    anyhow::bail!("github_issue_limit_exceeded")
+}
 pub async fn list_recent_github_issues(token: &str, repository: &str) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(
@@ -1004,7 +1017,7 @@ pub async fn close_github_pull(token: &str, repository: &str, number: i64) -> Re
     .await
 }
 
-async fn github_delete(token: &str, path: &str) -> Result<()> {
+pub(crate) async fn github_delete(token: &str, path: &str) -> Result<()> {
     let response = reqwest::Client::new()
         .delete(format!("https://api.github.com{path}"))
         .bearer_auth(token)

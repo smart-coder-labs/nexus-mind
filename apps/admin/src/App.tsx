@@ -10,37 +10,38 @@ import Migrations from './pages/Migrations'
 const DesignSystem = import.meta.env.DEV ? lazy(() => import('./pages/DesignSystem')) : null
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Users     = lazy(() => import('./pages/Users'))
-const Memories  = lazy(() => import('./pages/Memories'))
-const AuditLog  = lazy(() => import('./pages/AuditLog'))
-const Settings  = lazy(() => import('./pages/Settings'))
-const Roles     = lazy(() => import('./pages/Roles'))
-const Projects  = lazy(() => import('./pages/Projects'))
-const Clients   = lazy(() => import('./pages/Clients'))
-const Usage     = lazy(() => import('./pages/Usage'))
-const Code      = lazy(() => import('./pages/Code'))
-const ApiKeys   = lazy(() => import('./pages/ApiKeys'))
-const Agents      = lazy(() => import('./pages/Agents'))
+const Users = lazy(() => import('./pages/Users'))
+const Memories = lazy(() => import('./pages/Memories'))
+const AuditLog = lazy(() => import('./pages/AuditLog'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Roles = lazy(() => import('./pages/Roles'))
+const Projects = lazy(() => import('./pages/Projects'))
+const Clients = lazy(() => import('./pages/Clients'))
+const Usage = lazy(() => import('./pages/Usage'))
+const Code = lazy(() => import('./pages/Code'))
+const ApiKeys = lazy(() => import('./pages/ApiKeys'))
+const Agents = lazy(() => import('./pages/Agents'))
 const AutonomousAgents = lazy(() => import('./pages/AutonomousAgents'))
-const FactoryPolicies = lazy(() => import('./pages/FactoryPolicies'))
+const FactoryHome = lazy(() => import('./pages/factory/FactoryHome'))
+const FactoryRuns = lazy(() => import('./pages/factory/FactoryRuns'))
+const FactoryFindings = lazy(() => import('./pages/factory/FactoryFindings'))
+const FactoryInputs = lazy(() => import('./pages/factory/FactoryInputs'))
+const FactoryConfiguration = lazy(() => import('./pages/factory/FactoryConfiguration'))
+const FactoryLaboratory = lazy(() => import('./pages/factory/FactoryLaboratory'))
 const FactoryDigest = lazy(() => import('./pages/FactoryDigest'))
-const FactoryIntake = lazy(() => import('./pages/FactoryIntake'))
-const FactoryEvaluations = lazy(() => import('./pages/FactoryEvaluations'))
-const FactoryModels = lazy(() => import('./pages/factory/FactoryModels'))
-const DecisionModel = lazy(() => import('./pages/factory/DecisionModel'))
-const FactorySettings = lazy(() => import('./pages/factory/FactorySettings'))
-const Policies    = lazy(() => import('./pages/Policies'))
+const WorkflowsPage = lazy(() => import('./pages/factory/workflows/WorkflowsPage'))
+const Policies = lazy(() => import('./pages/Policies'))
 const Conventions = lazy(() => import('./pages/Conventions'))
-const Webhooks    = lazy(() => import('./pages/Webhooks'))
+const Webhooks = lazy(() => import('./pages/Webhooks'))
 const Collections = lazy(() => import('./pages/Collections'))
-const Tags        = lazy(() => import('./pages/Tags'))
-const Search      = lazy(() => import('./pages/Search'))
-const Sessions    = lazy(() => import('./pages/Sessions'))
-const Backups     = lazy(() => import('./pages/Backups'))
-const Graph       = lazy(() => import('./pages/Graph'))
-const Harnesses   = lazy(() => import('./pages/Harnesses'))
-const Tasks       = lazy(() => import('./pages/Tasks'))
-const Sdd         = lazy(() => import('./pages/Sdd'))
+const Tags = lazy(() => import('./pages/Tags'))
+const Search = lazy(() => import('./pages/Search'))
+const Sessions = lazy(() => import('./pages/Sessions'))
+const Backups = lazy(() => import('./pages/Backups'))
+const Graph = lazy(() => import('./pages/Graph'))
+const Harnesses = lazy(() => import('./pages/Harnesses'))
+const Tasks = lazy(() => import('./pages/Tasks'))
+const Sdd = lazy(() => import('./pages/Sdd'))
 const Unauthorized = lazy(() => import('./pages/Unauthorized'))
 
 /** Redirects to / when the given href is in DISABLED_NAV_HREFS; otherwise renders children. */
@@ -93,49 +94,305 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <Routes>
-                <Route path="/"          element={<Dashboard />} />
+                <Route path="/" element={<Dashboard />} />
                 <Route path="/dashboard" element={<Navigate to="/" replace />} />
-                <Route path="/users"    element={<AdminRoute><Users /></AdminRoute>} />
-                <Route path="/roles"    element={<AdminRoute><Roles /></AdminRoute>} />
-                <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
-                <Route path="/clients"  element={<AdminRoute><Clients /></AdminRoute>} />
-                <Route path="/usage"    element={<MaybeDisabled href="/usage"><AdminRoute><Usage /></AdminRoute></MaybeDisabled>} />
-                <Route path="/code"     element={<AdminRoute><Code /></AdminRoute>} />
-                <Route path="/api-keys" element={<MaybeDisabled href="/api-keys"><AdminRoute><ApiKeys /></AdminRoute></MaybeDisabled>} />
-                <Route path="/agents"  element={<MaybeDisabled href="/agents"><AdminRoute><Agents /></AdminRoute></MaybeDisabled>} />
-                <Route path="/factory"          element={<MaybeDisabled href="/factory"><AutonomousAgents section="agents" /></MaybeDisabled>} />
-                <Route path="/factory/runs"     element={<MaybeDisabled href="/factory/runs"><AutonomousAgents section="runs" /></MaybeDisabled>} />
-                <Route path="/factory/findings" element={<MaybeDisabled href="/factory/findings"><AutonomousAgents section="findings" /></MaybeDisabled>} />
-                <Route path="/factory/templates" element={<MaybeDisabled href="/factory/templates"><AutonomousAgents section="templates" /></MaybeDisabled>} />
-                <Route path="/factory/inbox"    element={<MaybeDisabled href="/factory/inbox"><FactoryDigest /></MaybeDisabled>} />
-                <Route path="/factory/intake"   element={<MaybeDisabled href="/factory/intake"><FactoryIntake /></MaybeDisabled>} />
-                <Route path="/factory/policies" element={<MaybeDisabled href="/factory/policies"><FactoryPolicies /></MaybeDisabled>} />
-                <Route path="/factory/evaluations" element={<MaybeDisabled href="/factory/evaluations"><FactoryEvaluations /></MaybeDisabled>} />
-                <Route path="/factory/models" element={<MaybeDisabled href="/factory/models"><FactoryModels /></MaybeDisabled>} />
-                <Route path="/factory/decision-model" element={<MaybeDisabled href="/factory/decision-model"><DecisionModel /></MaybeDisabled>} />
-                <Route path="/factory/settings" element={<MaybeDisabled href="/factory/settings"><FactorySettings /></MaybeDisabled>} />
+                <Route
+                  path="/users"
+                  element={
+                    <AdminRoute>
+                      <Users />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/roles"
+                  element={
+                    <AdminRoute>
+                      <Roles />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/projects"
+                  element={
+                    <AdminRoute>
+                      <Projects />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/clients"
+                  element={
+                    <AdminRoute>
+                      <Clients />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/usage"
+                  element={
+                    <MaybeDisabled href="/usage">
+                      <AdminRoute>
+                        <Usage />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/code"
+                  element={
+                    <AdminRoute>
+                      <Code />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/api-keys"
+                  element={
+                    <MaybeDisabled href="/api-keys">
+                      <AdminRoute>
+                        <ApiKeys />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/agents"
+                  element={
+                    <MaybeDisabled href="/agents">
+                      <AdminRoute>
+                        <Agents />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory"
+                  element={
+                    <MaybeDisabled href="/factory">
+                      <FactoryHome />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/agents"
+                  element={
+                    <MaybeDisabled href="/factory">
+                      <AutonomousAgents section="agents" />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/workflows"
+                  element={
+                    <MaybeDisabled href="/factory/workflows">
+                      <WorkflowsPage />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/runs"
+                  element={
+                    <MaybeDisabled href="/factory/runs">
+                      <FactoryRuns />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/findings"
+                  element={
+                    <MaybeDisabled href="/factory/findings">
+                      <FactoryFindings />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/templates"
+                  element={
+                    <MaybeDisabled href="/factory/templates">
+                      <AutonomousAgents section="templates" />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/inbox"
+                  element={
+                    <MaybeDisabled href="/factory/inbox">
+                      <FactoryDigest />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/intake"
+                  element={
+                    <MaybeDisabled href="/factory/intake">
+                      <FactoryInputs />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/policies"
+                  element={<Navigate to="/factory/settings?tab=permissions" replace />}
+                />
+                <Route
+                  path="/factory/evaluations"
+                  element={<Navigate to="/factory/laboratory?view=evaluations" replace />}
+                />
+                <Route
+                  path="/factory/laboratory"
+                  element={
+                    <MaybeDisabled href="/factory/evaluations">
+                      <FactoryLaboratory />
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/factory/models"
+                  element={<Navigate to="/factory/settings?tab=execution" replace />}
+                />
+                <Route
+                  path="/factory/decision-model"
+                  element={<Navigate to="/factory/laboratory?view=decision" replace />}
+                />
+                <Route
+                  path="/factory/settings"
+                  element={
+                    <MaybeDisabled href="/factory/settings">
+                      <FactoryConfiguration />
+                    </MaybeDisabled>
+                  }
+                />
                 {/* Pre-Factory URLs, kept so bookmarks and links in old messages still land. */}
-                <Route path="/autonomous-agents" element={<Navigate to="/factory" replace />} />
-                <Route path="/factory-digest"    element={<Navigate to="/factory/inbox" replace />} />
-                <Route path="/factory-intake"    element={<Navigate to="/factory/intake" replace />} />
-                <Route path="/factory-policies"  element={<Navigate to="/factory/policies" replace />} />
-                <Route path="/policies"     element={<MaybeDisabled href="/policies"><AdminRoute><Policies /></AdminRoute></MaybeDisabled>} />
-                <Route path="/conventions" element={<AdminRoute><Conventions /></AdminRoute>} />
-                <Route path="/webhooks"    element={<MaybeDisabled href="/webhooks"><AdminRoute><Webhooks /></AdminRoute></MaybeDisabled>} />
-                <Route path="/collections" element={<MaybeDisabled href="/collections"><AdminRoute><Collections /></AdminRoute></MaybeDisabled>} />
-                <Route path="/search"   element={<Search />} />
-                <Route path="/sessions" element={<MaybeDisabled href="/sessions"><Sessions /></MaybeDisabled>} />
+                <Route
+                  path="/autonomous-agents"
+                  element={<Navigate to="/factory/agents" replace />}
+                />
+                <Route path="/factory-digest" element={<Navigate to="/factory/inbox" replace />} />
+                <Route
+                  path="/factory-intake"
+                  element={<Navigate to="/factory/intake?target=agent" replace />}
+                />
+                <Route
+                  path="/factory-policies"
+                  element={<Navigate to="/factory/policies" replace />}
+                />
+                <Route
+                  path="/policies"
+                  element={
+                    <MaybeDisabled href="/policies">
+                      <AdminRoute>
+                        <Policies />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/conventions"
+                  element={
+                    <AdminRoute>
+                      <Conventions />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/webhooks"
+                  element={
+                    <MaybeDisabled href="/webhooks">
+                      <AdminRoute>
+                        <Webhooks />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/collections"
+                  element={
+                    <MaybeDisabled href="/collections">
+                      <AdminRoute>
+                        <Collections />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route path="/search" element={<Search />} />
+                <Route
+                  path="/sessions"
+                  element={
+                    <MaybeDisabled href="/sessions">
+                      <Sessions />
+                    </MaybeDisabled>
+                  }
+                />
                 <Route path="/memories" element={<Memories />} />
-                <Route path="/tags"     element={<AdminRoute><Tags /></AdminRoute>} />
-                <Route path="/audit"    element={<MaybeDisabled href="/audit"><SuperUserRoute><AuditLog /></SuperUserRoute></MaybeDisabled>} />
+                <Route
+                  path="/tags"
+                  element={
+                    <AdminRoute>
+                      <Tags />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/audit"
+                  element={
+                    <MaybeDisabled href="/audit">
+                      <SuperUserRoute>
+                        <AuditLog />
+                      </SuperUserRoute>
+                    </MaybeDisabled>
+                  }
+                />
                 <Route path="/settings" element={<Settings />} />
-                <Route path="/backups" element={<MaybeDisabled href="/backups"><AdminRoute><Backups /></AdminRoute></MaybeDisabled>} />
-                <Route path="/harnesses" element={<MaybeDisabled href="/harnesses"><AdminRoute><Harnesses /></AdminRoute></MaybeDisabled>} />
-                <Route path="/tasks"    element={<MaybeDisabled href="/tasks"><AdminRoute><Tasks /></AdminRoute></MaybeDisabled>} />
-                <Route path="/sdd"      element={<MaybeDisabled href="/sdd"><AdminRoute><Sdd /></AdminRoute></MaybeDisabled>} />
-                <Route path="/migrations" element={<AdminRoute><Migrations /></AdminRoute>} />
-                <Route path="/graph"   element={<Graph />} />
-                <Route path="/401"    element={<Unauthorized />} />
+                <Route
+                  path="/backups"
+                  element={
+                    <MaybeDisabled href="/backups">
+                      <AdminRoute>
+                        <Backups />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/harnesses"
+                  element={
+                    <MaybeDisabled href="/harnesses">
+                      <AdminRoute>
+                        <Harnesses />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/tasks"
+                  element={
+                    <MaybeDisabled href="/tasks">
+                      <AdminRoute>
+                        <Tasks />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/sdd"
+                  element={
+                    <MaybeDisabled href="/sdd">
+                      <AdminRoute>
+                        <Sdd />
+                      </AdminRoute>
+                    </MaybeDisabled>
+                  }
+                />
+                <Route
+                  path="/migrations"
+                  element={
+                    <AdminRoute>
+                      <Migrations />
+                    </AdminRoute>
+                  }
+                />
+                <Route path="/graph" element={<Graph />} />
+                <Route path="/401" element={<Unauthorized />} />
               </Routes>
             </ProtectedRoute>
           }

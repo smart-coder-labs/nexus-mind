@@ -8,6 +8,7 @@ import type { FactoryDigest as Digest, FactoryEconomics } from '../types'
 
 const api = vi.hoisted(() => ({
   getFactoryDigest: vi.fn(),
+  getWorkflowCatalog: vi.fn(),
   getFactoryEconomics: vi.fn(),
   decideFactoryMerge: vi.fn(),
   listFactoryTrajectoryFeedback: vi.fn(),
@@ -23,10 +24,40 @@ vi.mock('../auth/AuthContext', () => ({
 
 const SUBJECT = 'acme/app#7@0123456789abcdef0123456789abcdef01234567'
 const digest: Digest = {
-  held_merges: [{ subject: SUBJECT, reason: 'decision_model_not_configured', source: 'policy', created_at: '2026-10-04 01:00:00' }],
-  approved_merges: [{ subject: 'acme/app#9@' + 'a'.repeat(40), approved_at: '2026-10-04 01:00:00', merges_after: '2026-10-04 01:10:00' }],
-  blocked_runs: [{ run_id: 'r1', agent: 'Kasymir resolver', template_key: 'github_issue_resolver', status: 'blocked_policy', reason: 'judge_targets_required', finished_at: '2026-10-03T20:00:00Z' }],
-  factory_tasks: [{ id: 't1', project: 'app', title: 'Document the refund flow', status: 'backlog', created_at: '2026-10-03' }],
+  held_merges: [
+    {
+      subject: SUBJECT,
+      reason: 'decision_model_not_configured',
+      source: 'policy',
+      created_at: '2026-10-04 01:00:00',
+    },
+  ],
+  approved_merges: [
+    {
+      subject: 'acme/app#9@' + 'a'.repeat(40),
+      approved_at: '2026-10-04 01:00:00',
+      merges_after: '2026-10-04 01:10:00',
+    },
+  ],
+  blocked_runs: [
+    {
+      run_id: 'r1',
+      agent: 'Kasymir resolver',
+      template_key: 'github_issue_resolver',
+      status: 'blocked_policy',
+      reason: 'judge_targets_required',
+      finished_at: '2026-10-03T20:00:00Z',
+    },
+  ],
+  factory_tasks: [
+    {
+      id: 't1',
+      project: 'app',
+      title: 'Document the refund flow',
+      status: 'backlog',
+      created_at: '2026-10-03',
+    },
+  ],
   unlabeled_shadow: 120,
   unlabeled_shadow_allows: 4,
 }
@@ -34,8 +65,13 @@ const economics: FactoryEconomics = {
   days: 30,
   runs: 12,
   cost_usd: 3.2,
-  by_model: [{ model: 'claude-opus-5[1m]', runs: 7, cost_usd: 1.9, input_tokens: 1, output_tokens: 1 }],
-  tier_choices: [['frontier', 2], ['standard', 6]],
+  by_model: [
+    { model: 'claude-opus-5[1m]', runs: 7, cost_usd: 1.9, input_tokens: 1, output_tokens: 1 },
+  ],
+  tier_choices: [
+    ['frontier', 2],
+    ['standard', 6],
+  ],
   frontier_avoidance: 0.75,
   proposed_changes: 4,
   cost_per_proposed_change: 0.8,
@@ -47,7 +83,9 @@ function renderPage(permissions: string[]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter><FactoryDigest /></MemoryRouter>
+      <MemoryRouter>
+        <FactoryDigest />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -56,26 +94,63 @@ describe('FactoryDigest', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.getFactoryDigest.mockResolvedValue(digest)
+    api.getWorkflowCatalog.mockResolvedValue({
+      runners: [],
+      workspaces: [],
+      definitions: [],
+      runs: [],
+      pending_runs: [],
+      factory_enabled: true,
+    })
     api.getFactoryEconomics.mockResolvedValue(economics)
     api.decideFactoryMerge.mockResolvedValue({ id: 'd1', merges_after: '2026-10-04 01:10:00' })
     api.listFactoryTrajectoryFeedback.mockResolvedValue([])
     api.recordFactoryTrajectoryFeedback.mockResolvedValue({})
     api.getFactoryLookback.mockResolvedValue({
-      recommendations: [], completed_tasks_scanned: 0, bugfix_memories_scanned: 0,
-      history_limit: 500, history_truncated: false,
+      recommendations: [],
+      completed_tasks_scanned: 0,
+      bugfix_memories_scanned: 0,
+      history_limit: 500,
+      history_truncated: false,
     })
   })
 
+  it('includes workflow blocks without pretending they are merge approvals', async () => {
+    api.getWorkflowCatalog.mockResolvedValue({
+      pending_runs: [
+        {
+          id: 'workflow-1',
+          title: 'Repair checkout',
+          source_key: 'github:acme/app#42',
+          workspace_name: 'Kasymir',
+          definition_name: 'Delivery',
+          last_event: 'step.blocked',
+        },
+      ],
+    })
+    renderPage(['factory_policy:read'])
+    expect(await screen.findByRole('link', { name: 'Revisar bloqueo' })).toHaveAttribute(
+      'href',
+      '/factory/runs?kind=workflow&run=workflow-1',
+    )
+    expect(screen.getByText('Repair checkout')).toBeInTheDocument()
+    expect(screen.queryByText(/nothing is waiting on a person/i)).not.toBeInTheDocument()
+  })
   it('lists held merges, blocked runs, waiting tasks and labels to give', async () => {
     renderPage(['factory_policy:read'])
     const held = await screen.findByRole('region', { name: /merges held for a person/i })
-    expect(within(held).getByRole('link', { name: 'acme/app#7' })).toHaveAttribute('href', 'https://github.com/acme/app/pull/7')
+    expect(within(held).getByRole('link', { name: 'acme/app#7' })).toHaveAttribute(
+      'href',
+      'https://github.com/acme/app/pull/7',
+    )
     expect(within(held).queryByRole('button')).not.toBeInTheDocument()
     expect(screen.getByText('judge_targets_required')).toBeInTheDocument()
     expect(screen.getByText('Document the refund flow')).toBeInTheDocument()
     expect(screen.getByText(/120 shadow decisions have no human label/)).toBeInTheDocument()
     const approved = screen.getByRole('region', { name: /approved merges/i })
-    expect(within(approved).getByText(/re-checks and merges after 2026-10-04 01:10/i)).toBeInTheDocument()
+    expect(
+      within(approved).getByText(/re-checks and merges after 2026-10-04 01:10/i),
+    ).toBeInTheDocument()
   })
 
   it('hides blocked runs from viewers who may not read them', async () => {
@@ -89,7 +164,9 @@ describe('FactoryDigest', () => {
     api.decideFactoryMerge.mockRejectedValue(new Error('This head is not held for a person'))
     renderPage(['factory_policy:read', 'factory_policy:write'])
     await userEvent.click(await screen.findByRole('button', { name: `Reject merging ${SUBJECT}` }))
-    expect(await screen.findByText(/the decision on acme\/app#7 was not saved: this head is not held/i)).toBeInTheDocument()
+    expect(
+      await screen.findByText(/the decision on acme\/app#7 was not saved: this head is not held/i),
+    ).toBeInTheDocument()
   })
 
   it('lets a person with write access approve one merge', async () => {
@@ -99,62 +176,84 @@ describe('FactoryDigest', () => {
   })
 
   it('collects human outcomes for completed runs in the factory inbox', async () => {
-    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
-      run_id: 'run-feedback-1',
-      agent_name: 'Issue resolver',
-      run_status: 'succeeded',
-      outcome: 'unknown',
-      created_at: '2026-10-30 12:00:00',
-    }])
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([
+      {
+        run_id: 'run-feedback-1',
+        agent_name: 'Issue resolver',
+        run_status: 'succeeded',
+        outcome: 'unknown',
+        created_at: '2026-10-30 12:00:00',
+      },
+    ])
     renderPage(['factory_policy:read', 'factory_policy:write'])
     const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
     expect(within(section).getByText('Issue resolver')).toBeInTheDocument()
     expect(within(section).getByText('unknown')).toBeInTheDocument()
     await userEvent.click(within(section).getByRole('button', { name: 'Mark accepted' }))
-    await waitFor(() => expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith('run-feedback-1', 'accepted'))
+    await waitFor(() =>
+      expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith(
+        'run-feedback-1',
+        'accepted',
+      ),
+    )
   })
 
   it('records a rejected outcome without changing merge policy', async () => {
-    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
-      run_id: 'run-feedback-rejected',
-      agent_name: 'Issue resolver',
-      run_status: 'succeeded',
-      outcome: 'unknown',
-      created_at: '2026-10-30 12:00:00',
-    }])
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([
+      {
+        run_id: 'run-feedback-rejected',
+        agent_name: 'Issue resolver',
+        run_status: 'succeeded',
+        outcome: 'unknown',
+        created_at: '2026-10-30 12:00:00',
+      },
+    ])
     renderPage(['factory_policy:read', 'factory_policy:write'])
     const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
     await userEvent.click(within(section).getByRole('button', { name: 'Mark rejected' }))
-    await waitFor(() => expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith('run-feedback-rejected', 'rejected'))
+    await waitFor(() =>
+      expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith(
+        'run-feedback-rejected',
+        'rejected',
+      ),
+    )
     expect(api.decideFactoryMerge).not.toHaveBeenCalled()
   })
 
   it('keeps outcome controls read-only without the factory write permission', async () => {
-    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
-      run_id: 'run-feedback-2',
-      agent_name: 'Issue resolver',
-      run_status: 'failed',
-      outcome: 'unknown',
-      created_at: '2026-10-30 12:00:00',
-    }])
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([
+      {
+        run_id: 'run-feedback-2',
+        agent_name: 'Issue resolver',
+        run_status: 'failed',
+        outcome: 'unknown',
+        created_at: '2026-10-30 12:00:00',
+      },
+    ])
     renderPage(['factory_policy:read'])
     const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
-    expect(within(section).queryByRole('button', { name: /mark accepted|mark rejected/i })).not.toBeInTheDocument()
+    expect(
+      within(section).queryByRole('button', { name: /mark accepted|mark rejected/i }),
+    ).not.toBeInTheDocument()
   })
 
   it('shows an inline error when saving human feedback fails', async () => {
-    api.listFactoryTrajectoryFeedback.mockResolvedValue([{
-      run_id: 'run-feedback-3',
-      agent_name: 'Issue resolver',
-      run_status: 'succeeded',
-      outcome: 'unknown',
-      created_at: '2026-10-30 12:00:00',
-    }])
+    api.listFactoryTrajectoryFeedback.mockResolvedValue([
+      {
+        run_id: 'run-feedback-3',
+        agent_name: 'Issue resolver',
+        run_status: 'succeeded',
+        outcome: 'unknown',
+        created_at: '2026-10-30 12:00:00',
+      },
+    ])
     api.recordFactoryTrajectoryFeedback.mockRejectedValue(new Error('Run is no longer reviewable'))
     renderPage(['factory_policy:read', 'factory_policy:write'])
     const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
     await userEvent.click(within(section).getByRole('button', { name: 'Mark accepted' }))
-    expect(await within(section).findByRole('alert')).toHaveTextContent('Could not save this outcome: Run is no longer reviewable.')
+    expect(await within(section).findByRole('alert')).toHaveTextContent(
+      'Could not save this outcome: Run is no longer reviewable.',
+    )
   })
 
   it('shows spend and says accepted changes are not measured yet', async () => {
@@ -167,18 +266,20 @@ describe('FactoryDigest', () => {
 
   it('shows read-only lookback recommendations only when task and memory access are granted', async () => {
     api.getFactoryLookback.mockResolvedValue({
-      recommendations: [{
-        memory_id: 'memory-1',
-        memory_title: 'OAuth refresh timeout',
-        memory_project: 'nexus-mind',
-        recurring_terms: ['oauth', 'refresh'],
-        recurrence_count: 2,
-        task_evidence: [
-          { id: 'task-1', title: 'Fix OAuth refresh timeout', updated_at: '2026-10-29' },
-          { id: 'task-2', title: 'Repair refresh after reconnect', updated_at: '2026-10-30' },
-        ],
-        explanation: 'Review whether the stored fix applies to these repeated tasks.',
-      }],
+      recommendations: [
+        {
+          memory_id: 'memory-1',
+          memory_title: 'OAuth refresh timeout',
+          memory_project: 'nexus-mind',
+          recurring_terms: ['oauth', 'refresh'],
+          recurrence_count: 2,
+          task_evidence: [
+            { id: 'task-1', title: 'Fix OAuth refresh timeout', updated_at: '2026-10-29' },
+            { id: 'task-2', title: 'Repair refresh after reconnect', updated_at: '2026-10-30' },
+          ],
+          explanation: 'Review whether the stored fix applies to these repeated tasks.',
+        },
+      ],
       completed_tasks_scanned: 10,
       bugfix_memories_scanned: 3,
       history_limit: 500,
@@ -187,7 +288,9 @@ describe('FactoryDigest', () => {
     renderPage(['factory_policy:read', 'task:read', 'memory:read'])
     const section = await screen.findByRole('region', { name: /recurring fixes to review/i })
     expect(within(section).getByText('OAuth refresh timeout')).toBeInTheDocument()
-    expect(within(section).getByText('Review whether the stored fix applies to these repeated tasks.')).toBeInTheDocument()
+    expect(
+      within(section).getByText('Review whether the stored fix applies to these repeated tasks.'),
+    ).toBeInTheDocument()
     expect(within(section).getByText(/history is capped at 500 records/i)).toBeInTheDocument()
     await userEvent.click(within(section).getByText('Evidence (2 completed tasks)'))
     expect(within(section).getByText('Fix OAuth refresh timeout')).toBeInTheDocument()
@@ -198,11 +301,20 @@ describe('FactoryDigest', () => {
     renderPage(['factory_policy:read', 'task:read'])
     await screen.findByRole('region', { name: /economics/i })
     expect(api.getFactoryLookback).not.toHaveBeenCalled()
-    expect(screen.queryByRole('region', { name: /recurring fixes to review/i })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('region', { name: /recurring fixes to review/i }),
+    ).not.toBeInTheDocument()
   })
 
   it('says when nothing waits', async () => {
-    api.getFactoryDigest.mockResolvedValue({ held_merges: [], approved_merges: [], blocked_runs: [], factory_tasks: [], unlabeled_shadow: 0, unlabeled_shadow_allows: 0 })
+    api.getFactoryDigest.mockResolvedValue({
+      held_merges: [],
+      approved_merges: [],
+      blocked_runs: [],
+      factory_tasks: [],
+      unlabeled_shadow: 0,
+      unlabeled_shadow_allows: 0,
+    })
     renderPage(['factory_policy:read'])
     expect(await screen.findByText(/nothing is waiting on a person/i)).toBeInTheDocument()
   })

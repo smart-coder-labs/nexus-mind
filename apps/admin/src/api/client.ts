@@ -1,4 +1,12 @@
 import type {
+  WorkflowCatalog,
+  WorkflowDefinition,
+  WorkflowRun,
+  Workspace,
+  Repository,
+  StoredWorkflow,
+} from '../pages/factory/workflows/types'
+import type {
   Org,
   OrgSettings,
   User,
@@ -341,7 +349,9 @@ export class NexusMindClient {
     })
   }
 
-  listProjects(params: { include_archived?: boolean; client_id?: string } = {}): Promise<Project[]> {
+  listProjects(
+    params: { include_archived?: boolean; client_id?: string } = {},
+  ): Promise<Project[]> {
     const qs = new URLSearchParams()
     if (params.include_archived) qs.set('include_archived', 'true')
     if (params.client_id) qs.set('client_id', params.client_id)
@@ -357,14 +367,28 @@ export class NexusMindClient {
     return this.request(`/v1/projects/${id}/restore`, { method: 'POST' })
   }
 
-  createProject(data: { name: string; description?: string; parent_id?: string; client_id?: string }): Promise<Project> {
+  createProject(data: {
+    name: string
+    description?: string
+    parent_id?: string
+    client_id?: string
+  }): Promise<Project> {
     return this.request('/v1/projects', {
       method: 'POST',
       body: JSON.stringify(data),
     })
   }
 
-  updateProject(id: string, data: Partial<{ parent_id: string | null; client_id: string | null; description: string; custom_instructions: string; retention_days: number }>): Promise<void> {
+  updateProject(
+    id: string,
+    data: Partial<{
+      parent_id: string | null
+      client_id: string | null
+      description: string
+      custom_instructions: string
+      retention_days: number
+    }>,
+  ): Promise<void> {
     return this.request(`/v1/projects/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -394,7 +418,10 @@ export class NexusMindClient {
     return this.request(`/v1/projects/${projectId}/settings`)
   }
 
-  updateProjectSettings(projectId: string, overrides: ProjectEventOverrides): Promise<ProjectEventOverrides> {
+  updateProjectSettings(
+    projectId: string,
+    overrides: ProjectEventOverrides,
+  ): Promise<ProjectEventOverrides> {
     const body: UpdateProjectEventOverridesRequest = { overrides }
     return this.request(`/v1/projects/${projectId}/settings`, {
       method: 'PATCH',
@@ -473,7 +500,11 @@ export class NexusMindClient {
     return Array.isArray(res) ? res : (res?.memories ?? [])
   }
 
-  async searchMemories(query: string, limit = 20, mode: 'keyword' | 'hybrid' | 'semantic' = 'hybrid'): Promise<Memory[]> {
+  async searchMemories(
+    query: string,
+    limit = 20,
+    mode: 'keyword' | 'hybrid' | 'semantic' = 'hybrid',
+  ): Promise<Memory[]> {
     // /v1/memory/search returns a paginated MemoryPage — unwrap to the array.
     const res = await this.request<Memory[] | { memories?: Memory[] }>('/v1/memory/search', {
       method: 'POST',
@@ -533,7 +564,10 @@ export class NexusMindClient {
     return this.request(`/v1/memory?${qs}`)
   }
 
-  updateSession(id: string, data: { summary?: string; description?: string }): Promise<SessionSummary> {
+  updateSession(
+    id: string,
+    data: { summary?: string; description?: string },
+  ): Promise<SessionSummary> {
     return this.request(`/v1/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -555,8 +589,14 @@ export class NexusMindClient {
     return this.request('/v1/users/me', { method: 'PATCH', body: JSON.stringify(data) })
   }
 
-  changePassword(data: { current_password: string; new_password: string }): Promise<{ message: string }> {
-    return this.request('/v1/admin/auth/change-password', { method: 'POST', body: JSON.stringify(data) })
+  changePassword(data: {
+    current_password: string
+    new_password: string
+  }): Promise<{ message: string }> {
+    return this.request('/v1/admin/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   }
 
   getAuditLog(filters: AuditFilters = {}): Promise<AuditEntry[]> {
@@ -578,7 +618,13 @@ export class NexusMindClient {
     return this.request(`/v1/code/projects/${id}/restore`, { method: 'POST' })
   }
 
-  indexProject(data: { project: string; repo_url?: string; root_path?: string; github_token?: string; graph_only?: boolean }): Promise<CodeIndexResponse> {
+  indexProject(data: {
+    project: string
+    repo_url?: string
+    root_path?: string
+    github_token?: string
+    graph_only?: boolean
+  }): Promise<CodeIndexResponse> {
     return this.request('/v1/code/index', { method: 'POST', body: JSON.stringify(data) })
   }
 
@@ -608,7 +654,12 @@ export class NexusMindClient {
     return this.request(`/v1/code/projects/${encodeURIComponent(projectId)}/files`)
   }
 
-  searchCode(project: string, query: string, topK = 10, extension?: string): Promise<CodeSearchResult[]> {
+  searchCode(
+    project: string,
+    query: string,
+    topK = 10,
+    extension?: string,
+  ): Promise<CodeSearchResult[]> {
     return this.request('/v1/code/search', {
       method: 'POST',
       body: JSON.stringify({ project, query, top_k: topK, extension }),
@@ -621,10 +672,13 @@ export class NexusMindClient {
    * response is `{ results: [...] }` (unwrapped here to the bare array).
    */
   async locateCode(project: string, query: string, limit?: number): Promise<LocateResult[]> {
-    const res = await this.request<{ results?: LocateResult[] } | LocateResult[]>('/v1/code/locate', {
-      method: 'POST',
-      body: JSON.stringify({ project, query, limit }),
-    })
+    const res = await this.request<{ results?: LocateResult[] } | LocateResult[]>(
+      '/v1/code/locate',
+      {
+        method: 'POST',
+        body: JSON.stringify({ project, query, limit }),
+      },
+    )
     return Array.isArray(res) ? res : (res?.results ?? [])
   }
 
@@ -667,7 +721,12 @@ export class NexusMindClient {
     return this.request<MemoryGraphResponse>(`/v1/memory/graph?${qs}`)
   }
 
-  getCodeSnippet(project: string, file: string, start?: number, end?: number): Promise<CodeSnippet> {
+  getCodeSnippet(
+    project: string,
+    file: string,
+    start?: number,
+    end?: number,
+  ): Promise<CodeSnippet> {
     const qs = new URLSearchParams({ project, file })
     if (start != null) qs.set('start', String(start))
     if (end != null) qs.set('end', String(end))
@@ -706,7 +765,19 @@ export class NexusMindClient {
     return this.request(`/v1/admin/keys/${keyId}`, { method: 'DELETE' })
   }
 
-  createOrgKey(data: { name: string; expires_at?: string; role?: string; description?: string }): Promise<{ id: string; name: string; key: string; role?: string; expires_at?: string; created_at?: string }> {
+  createOrgKey(data: {
+    name: string
+    expires_at?: string
+    role?: string
+    description?: string
+  }): Promise<{
+    id: string
+    name: string
+    key: string
+    role?: string
+    expires_at?: string
+    created_at?: string
+  }> {
     return this.request('/v1/admin/keys', { method: 'POST', body: JSON.stringify(data) })
   }
 
@@ -822,7 +893,13 @@ export class NexusMindClient {
     })
   }
 
-  validateInvite(token: string): Promise<{ valid: boolean; role?: string; org_id?: string; org_name?: string; reason?: string }> {
+  validateInvite(token: string): Promise<{
+    valid: boolean
+    role?: string
+    org_id?: string
+    org_name?: string
+    reason?: string
+  }> {
     return this.request(`/v1/invites/${token}`)
   }
 
@@ -904,14 +981,16 @@ export class NexusMindClient {
     return res.blob()
   }
 
-  async exportMemories(params: {
-    q?: string
-    tags?: string
-    collection_id?: string
-  } = {}): Promise<Blob> {
+  async exportMemories(
+    params: {
+      q?: string
+      tags?: string
+      collection_id?: string
+    } = {},
+  ): Promise<Blob> {
     const qs = new URLSearchParams()
-    if (params.q)             qs.set('q',             params.q)
-    if (params.tags)          qs.set('tags',          params.tags)
+    if (params.q) qs.set('q', params.q)
+    if (params.tags) qs.set('tags', params.tags)
     if (params.collection_id) qs.set('collection_id', params.collection_id)
     const res = await fetch(`${this.baseUrl}/v1/memory/export?${qs}`, {
       credentials: 'include',
@@ -926,14 +1005,16 @@ export class NexusMindClient {
     return res.blob()
   }
 
-  async exportAuditLog(params: {
-    user_id?: string
-    action?: string
-    resource_type?: string
-    from?: string
-    to?: string
-    search?: string
-  } = {}): Promise<Blob> {
+  async exportAuditLog(
+    params: {
+      user_id?: string
+      action?: string
+      resource_type?: string
+      from?: string
+      to?: string
+      search?: string
+    } = {},
+  ): Promise<Blob> {
     const qs = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => v != null && v !== '' && qs.set(k, String(v)))
     const res = await fetch(`${this.baseUrl}/v1/audit/export?${qs}`, {
@@ -1014,7 +1095,10 @@ export class NexusMindClient {
     return this.request(`/v1/policies/${id}`, { method: 'DELETE' })
   }
 
-  checkPolicy(data: { model: string; prompt_tokens?: number }): Promise<{ allowed: boolean; violations: Array<{ rule_type: string; reason: string }> }> {
+  checkPolicy(data: {
+    model: string
+    prompt_tokens?: number
+  }): Promise<{ allowed: boolean; violations: Array<{ rule_type: string; reason: string }> }> {
     return this.request('/v1/policy/check', { method: 'POST', body: JSON.stringify(data) })
   }
 
@@ -1043,7 +1127,12 @@ export class NexusMindClient {
     return this.request(`/v1/conventions/${id}`, { method: 'DELETE' })
   }
 
-  storeMemory(data: { content: string; tags?: string[]; project_id?: string; metadata?: object }): Promise<Memory> {
+  storeMemory(data: {
+    content: string
+    tags?: string[]
+    project_id?: string
+    metadata?: object
+  }): Promise<Memory> {
     return this.request('/v1/memory/store', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -1116,28 +1205,43 @@ export class NexusMindClient {
   }
 
   archiveHarness(harnessId: string): Promise<Harness> {
-    return this.request<Harness>(`/v1/harnesses/${encodeURIComponent(harnessId)}/archive`, { method: 'POST' })
+    return this.request<Harness>(`/v1/harnesses/${encodeURIComponent(harnessId)}/archive`, {
+      method: 'POST',
+    })
   }
 
   getHarnessVersion(harnessId: string, version: string): Promise<HarnessVersion> {
-    return this.request<HarnessVersion>(`/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}`)
+    return this.request<HarnessVersion>(
+      `/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}`,
+    )
   }
 
-  publishHarnessVersion(harnessId: string, data: PublishHarnessVersionRequest): Promise<HarnessVersion> {
+  publishHarnessVersion(
+    harnessId: string,
+    data: PublishHarnessVersionRequest,
+  ): Promise<HarnessVersion> {
     return this.request<HarnessVersion>(`/v1/harnesses/${encodeURIComponent(harnessId)}/versions`, {
       method: 'POST',
       body: JSON.stringify(data),
     })
   }
 
-  approveHarnessInstall(harnessId: string, version: string, data: HarnessApprovalRequest): Promise<HarnessApproval> {
+  approveHarnessInstall(
+    harnessId: string,
+    version: string,
+    data: HarnessApprovalRequest,
+  ): Promise<HarnessApproval> {
     return this.request<HarnessApproval>(
       `/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}/approval`,
       { method: 'POST', body: JSON.stringify(data) },
     )
   }
 
-  recordHarnessInstallResult(harnessId: string, version: string, data: HarnessInstallResultRequest): Promise<HarnessApproval> {
+  recordHarnessInstallResult(
+    harnessId: string,
+    version: string,
+    data: HarnessInstallResultRequest,
+  ): Promise<HarnessApproval> {
     return this.request<HarnessApproval>(
       `/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}/install-result`,
       { method: 'POST', body: JSON.stringify(data) },
@@ -1153,7 +1257,9 @@ export class NexusMindClient {
   listHarnessRecommendations(params: { target?: string } = {}): Promise<HarnessRecommendation[]> {
     const qs = new URLSearchParams()
     if (params.target) qs.set('target', params.target)
-    return this.request<HarnessRecommendation[]>(`/v1/harness-recommendations${qs.toString() ? `?${qs}` : ''}`)
+    return this.request<HarnessRecommendation[]>(
+      `/v1/harness-recommendations${qs.toString() ? `?${qs}` : ''}`,
+    )
   }
 
   createHarnessConfigReview(data: CreateHarnessConfigReviewRequest): Promise<HarnessConfigReview> {
@@ -1170,18 +1276,28 @@ export class NexusMindClient {
   listHarnessConfigReviews(params: { status?: string } = {}): Promise<HarnessConfigReview[]> {
     const qs = new URLSearchParams()
     if (params.status) qs.set('status', params.status)
-    return this.request<HarnessConfigReview[]>(`/v1/harness-config-reviews${qs.toString() ? `?${qs}` : ''}`)
+    return this.request<HarnessConfigReview[]>(
+      `/v1/harness-config-reviews${qs.toString() ? `?${qs}` : ''}`,
+    )
   }
 
   listHarnessConfigReviewComments(reviewId: string): Promise<HarnessConfigReviewComment[]> {
-    return this.request<HarnessConfigReviewComment[]>(`/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`)
+    return this.request<HarnessConfigReviewComment[]>(
+      `/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`,
+    )
   }
 
-  createHarnessConfigReviewComment(reviewId: string, data: CreateHarnessConfigReviewCommentRequest): Promise<HarnessConfigReviewComment> {
-    return this.request<HarnessConfigReviewComment>(`/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    })
+  createHarnessConfigReviewComment(
+    reviewId: string,
+    data: CreateHarnessConfigReviewCommentRequest,
+  ): Promise<HarnessConfigReviewComment> {
+    return this.request<HarnessConfigReviewComment>(
+      `/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      },
+    )
   }
 
   // ── Tasks ────────────────────────────────────────────────────────────────────
@@ -1220,9 +1336,12 @@ export class NexusMindClient {
   }
 
   unassignTask(id: string, userId: string): Promise<void> {
-    return this.request(`/v1/tasks/${encodeURIComponent(id)}/assignees/${encodeURIComponent(userId)}`, {
-      method: 'DELETE',
-    })
+    return this.request(
+      `/v1/tasks/${encodeURIComponent(id)}/assignees/${encodeURIComponent(userId)}`,
+      {
+        method: 'DELETE',
+      },
+    )
   }
 
   listTaskComments(id: string): Promise<TaskComment[]> {
@@ -1265,9 +1384,12 @@ export class NexusMindClient {
   }
 
   unlinkTaskSpec(id: string, specChangeName: string): Promise<void> {
-    return this.request(`/v1/tasks/${encodeURIComponent(id)}/spec-links/${encodeURIComponent(specChangeName)}`, {
-      method: 'DELETE',
-    })
+    return this.request(
+      `/v1/tasks/${encodeURIComponent(id)}/spec-links/${encodeURIComponent(specChangeName)}`,
+      {
+        method: 'DELETE',
+      },
+    )
   }
 
   listSprints(params: ListSprintsParams = {}): Promise<Sprint[]> {
@@ -1321,9 +1443,7 @@ export class NexusMindClient {
   }
 
   getSddArtifactRevision(id: string, rev: number): Promise<SddRevision> {
-    return this.request<SddRevision>(
-      `/v1/sdd/artifacts/${encodeURIComponent(id)}/revisions/${rev}`,
-    )
+    return this.request<SddRevision>(`/v1/sdd/artifacts/${encodeURIComponent(id)}/revisions/${rev}`)
   }
 
   /** Spans BOTH openspec trees. Each hit's `hit_type` says whether it came from the
@@ -1391,41 +1511,327 @@ export class NexusMindClient {
     )
   }
 
-  listAutonomousAgentTemplates(): Promise<AutonomousAgentTemplate[]> { return this.request('/v1/autonomous-agents/templates') }
-  listAutonomousAgents(): Promise<AutonomousAgentDefinition[]> { return this.request('/v1/autonomous-agents') }
-  getAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`) }
-  createAutonomousAgent(data:{name:string;description?:string;template_key:string;config:Record<string,unknown>;budgets:Record<string,unknown>}): Promise<AutonomousAgentDetail> { return this.request('/v1/autonomous-agents',{method:'POST',body:JSON.stringify(data)}) }
-  updateAutonomousAgent(id:string,data:{name?:string;description?:string;config?:Record<string,unknown>;budgets?:Record<string,unknown>}): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify(data)}) }
-  validateAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/validate`,{method:'POST'}) }
-  enableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/enable`,{method:'POST'}) }
-  disableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/disable`,{method:'POST'}) }
-  archiveAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/archive`,{method:'POST'}) }
-  runAutonomousAgent(id:string, body?:{targets?:Array<{repository:string;type:'pr'|'issue';number:number}>;app_base_url?:string;finding?:unknown;finding_id?:string;issue?:{repository:string;number:number}}): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/run`,{method:'POST', ...(body ? {body:JSON.stringify(body)} : {})}) }
-  createFindingIssue(id:string, repository?:string): Promise<Record<string, unknown>> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/github-issue`,{method:'POST', ...(repository ? {body:JSON.stringify({repository})} : {})}) }
-  linkedinAuthorize(destination:'personal'|'organization'): Promise<{url:string}> { return this.request(`/v1/autonomous-agents/linkedin/authorize?destination=${destination}`) }
-  listLinkedinConnections(): Promise<Array<{destination:string;metadata:Record<string,unknown>;connected_at:string}>> { return this.request('/v1/autonomous-agent-linkedin-connections') }
-  publishFindingLinkedin(id:string, body:{destination:'personal'|'organization';text?:string}): Promise<{url:string;urn:string;already_published?:boolean}> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/publish-linkedin`,{method:'POST',body:JSON.stringify(body)}) }
+  listAutonomousAgentTemplates(): Promise<AutonomousAgentTemplate[]> {
+    return this.request('/v1/autonomous-agents/templates')
+  }
+  listAutonomousAgents(): Promise<AutonomousAgentDefinition[]> {
+    return this.request('/v1/autonomous-agents')
+  }
+  getAutonomousAgent(id: string): Promise<AutonomousAgentDetail> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`)
+  }
+  createAutonomousAgent(data: {
+    name: string
+    description?: string
+    template_key: string
+    config: Record<string, unknown>
+    budgets: Record<string, unknown>
+  }): Promise<AutonomousAgentDetail> {
+    return this.request('/v1/autonomous-agents', { method: 'POST', body: JSON.stringify(data) })
+  }
+  updateAutonomousAgent(
+    id: string,
+    data: {
+      name?: string
+      description?: string
+      config?: Record<string, unknown>
+      budgets?: Record<string, unknown>
+    },
+  ): Promise<AutonomousAgentDetail> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+  validateAutonomousAgent(id: string): Promise<AutonomousAgentDetail> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/validate`, {
+      method: 'POST',
+    })
+  }
+  enableAutonomousAgent(id: string): Promise<AutonomousAgentDetail> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/enable`, {
+      method: 'POST',
+    })
+  }
+  disableAutonomousAgent(id: string): Promise<AutonomousAgentDetail> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/disable`, {
+      method: 'POST',
+    })
+  }
+  archiveAutonomousAgent(id: string): Promise<AutonomousAgentDetail> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
+    })
+  }
+  runAutonomousAgent(
+    id: string,
+    body?: {
+      targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }>
+      app_base_url?: string
+      finding?: unknown
+      finding_id?: string
+      issue?: { repository: string; number: number }
+    },
+  ): Promise<AutonomousAgentRun> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+  }
+  createFindingIssue(id: string, repository?: string): Promise<Record<string, unknown>> {
+    return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/github-issue`, {
+      method: 'POST',
+      ...(repository ? { body: JSON.stringify({ repository }) } : {}),
+    })
+  }
+  linkedinAuthorize(destination: 'personal' | 'organization'): Promise<{ url: string }> {
+    return this.request(`/v1/autonomous-agents/linkedin/authorize?destination=${destination}`)
+  }
+  listLinkedinConnections(): Promise<
+    Array<{ destination: string; metadata: Record<string, unknown>; connected_at: string }>
+  > {
+    return this.request('/v1/autonomous-agent-linkedin-connections')
+  }
+  publishFindingLinkedin(
+    id: string,
+    body: { destination: 'personal' | 'organization'; text?: string },
+  ): Promise<{ url: string; urn: string; already_published?: boolean }> {
+    return this.request(
+      `/v1/autonomous-agent-findings/${encodeURIComponent(id)}/publish-linkedin`,
+      { method: 'POST', body: JSON.stringify(body) },
+    )
+  }
   /** Upload a brand asset (the design system's logo) and get back a URL to store in the agent config. */
-  async uploadBrandAsset(file: File): Promise<{url:string}> {
+  async uploadBrandAsset(file: File): Promise<{ url: string }> {
     const form = new FormData()
     form.append('file', file)
     // No Content-Type header: the browser must set the multipart boundary itself.
     return this.request('/v1/autonomous-agents/brand-assets', { method: 'POST', body: form })
   }
-  getAutonomousAgentSchedule(id:string): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`) }
-  putAutonomousAgentSchedule(id:string,data:{kind:string;expression?:string;timezone:string;misfire_policy:string;enabled:boolean}): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`,{method:'PUT',body:JSON.stringify(data)}) }
-  listAutonomousAgentRuns(definitionId?:string): Promise<AutonomousAgentRun[]> { return this.request(`/v1/autonomous-agent-runs${definitionId?`?definition_id=${encodeURIComponent(definitionId)}`:''}`) }
-  getAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> { return this.request('/v1/autonomous-agents/runtime') }
-  checkAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> { return this.request('/v1/autonomous-agents/runtime',{method:'POST'}) }
-  getAutonomousPiRuntimeHealth(): Promise<PiRuntimeHealth> { return this.request('/v1/autonomous-agents/pi-runtime') }
-  listAutonomousAgentConnectors(): Promise<AutonomousAgentConnector[]> { return this.request('/v1/autonomous-agent-connectors') }
-  putAutonomousAgentConnector(data:{kind:string;name:string;secret?:string;metadata:Record<string,unknown>;scopes:string[]}): Promise<AutonomousAgentConnector> { return this.request('/v1/autonomous-agent-connectors',{method:'PUT',body:JSON.stringify(data)}) }
-  revokeAutonomousAgentConnector(id:string): Promise<void> { return this.request(`/v1/autonomous-agent-connectors/${encodeURIComponent(id)}`,{method:'DELETE'}) }
-  cancelAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/cancel`,{method:'POST'}) }
-  archiveAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/archive`,{method:'POST'}) }
-  unarchiveAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/unarchive`,{method:'POST'}) }
-  archiveAllAutonomousAgentRuns(): Promise<{archived:number}> { return this.request('/v1/autonomous-agent-runs/archive-all',{method:'POST'}) }
-  continueAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/continue`,{method:'POST'}) }
+  getAutonomousAgentSchedule(id: string): Promise<AutonomousAgentSchedule> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`)
+  }
+  putAutonomousAgentSchedule(
+    id: string,
+    data: {
+      kind: string
+      expression?: string
+      timezone: string
+      misfire_policy: string
+      enabled: boolean
+    },
+  ): Promise<AutonomousAgentSchedule> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+  listAutonomousAgentRuns(definitionId?: string): Promise<AutonomousAgentRun[]> {
+    return this.request(
+      `/v1/autonomous-agent-runs${definitionId ? `?definition_id=${encodeURIComponent(definitionId)}` : ''}`,
+    )
+  }
+  getAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> {
+    return this.request('/v1/autonomous-agents/runtime')
+  }
+  checkAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> {
+    return this.request('/v1/autonomous-agents/runtime', { method: 'POST' })
+  }
+  getAutonomousPiRuntimeHealth(): Promise<PiRuntimeHealth> {
+    return this.request('/v1/autonomous-agents/pi-runtime')
+  }
+  listAutonomousAgentConnectors(): Promise<AutonomousAgentConnector[]> {
+    return this.request('/v1/autonomous-agent-connectors')
+  }
+  putAutonomousAgentConnector(data: {
+    kind: string
+    name: string
+    secret?: string
+    metadata: Record<string, unknown>
+    scopes: string[]
+  }): Promise<AutonomousAgentConnector> {
+    return this.request('/v1/autonomous-agent-connectors', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+  revokeAutonomousAgentConnector(id: string): Promise<void> {
+    return this.request(`/v1/autonomous-agent-connectors/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+  }
+  cancelAutonomousAgentRun(id: string): Promise<AutonomousAgentRun> {
+    return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+    })
+  }
+  archiveAutonomousAgentRun(id: string): Promise<AutonomousAgentRun> {
+    return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
+    })
+  }
+  unarchiveAutonomousAgentRun(id: string): Promise<AutonomousAgentRun> {
+    return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/unarchive`, {
+      method: 'POST',
+    })
+  }
+  archiveAllAutonomousAgentRuns(): Promise<{ archived: number }> {
+    return this.request('/v1/autonomous-agent-runs/archive-all', { method: 'POST' })
+  }
+  continueAutonomousAgentRun(id: string): Promise<AutonomousAgentRun> {
+    return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/continue`, {
+      method: 'POST',
+    })
+  }
+
+  approveWorkflowAction(id: string, action: string, revision: number): Promise<WorkflowRun> {
+    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ action, revision }),
+    })
+  }
+  getWorkflowArtifact(id: string): Promise<{ mime: string; content_base64: string }> {
+    return this.request(`/v1/factory/workflow-artifacts/${encodeURIComponent(id)}`)
+  }
+  rotateFactoryRunner(id: string): Promise<{ id: string; token: string }> {
+    return this.request(`/v1/factory/runners/${encodeURIComponent(id)}/rotate`, { method: 'POST' })
+  }
+  createWorkflowIntake(data: {
+    definition_id: string
+    kind: string
+    connector_id: string
+    config: unknown
+  }): Promise<{ id: string }> {
+    return this.request('/v1/factory/workflow-intakes', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+  deleteWorkflowIntake(id: string): Promise<void> {
+    return this.request(`/v1/factory/workflow-intakes/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+  }
+  pollWorkflowIntakes(): Promise<{ polling: boolean }> {
+    return this.request('/v1/factory/workflow-intakes/poll', { method: 'POST' })
+  }
+  getGithubReviewHooks(): Promise<{
+    login: string | null
+    hooks: {
+      id: string
+      health: string
+      metadata: {
+        repository?: string
+        reviewer_login?: string
+        callback_url?: string
+        hook_id?: number
+      }
+    }[]
+  }> {
+    return this.request('/v1/autonomous-agents/github/review-hooks')
+  }
+  registerGithubReviewHook(
+    definition_id: string,
+    public_base_url: string,
+    administration_token?: string,
+    repository?: string,
+  ): Promise<{ id: string; login: string; status?: string }> {
+    return this.request('/v1/autonomous-agents/github/review-hooks', {
+      method: 'POST',
+      body: JSON.stringify({ definition_id, public_base_url, administration_token, repository }),
+    })
+  }
+  disconnectGithubReviewHook(id: string): Promise<{ remote_deleted: boolean }> {
+    return this.request(`/v1/autonomous-agents/github/review-hooks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+  }
+  getWorkflowCatalog(): Promise<WorkflowCatalog> {
+    return this.request('/v1/factory/workflow-catalog')
+  }
+  registerFactoryRunner(name: string): Promise<{ id: string; name: string; token: string }> {
+    return this.request('/v1/factory/runners', { method: 'POST', body: JSON.stringify({ name }) })
+  }
+  revokeFactoryRunner(id: string): Promise<void> {
+    return this.request(`/v1/factory/runners/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+  createFactoryWorkspace(data: {
+    runner_id: string
+    name: string
+    root_path: string
+  }): Promise<Workspace> {
+    return this.request('/v1/factory/workspaces', { method: 'POST', body: JSON.stringify(data) })
+  }
+  confirmFactoryWorkspace(
+    id: string,
+    revision: number,
+    repositories: Repository[],
+  ): Promise<Workspace> {
+    return this.request(`/v1/factory/workspaces/${encodeURIComponent(id)}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ revision, repositories }),
+    })
+  }
+  createFactoryWorkflow(definition: WorkflowDefinition): Promise<StoredWorkflow> {
+    return this.request('/v1/factory/workflows', {
+      method: 'POST',
+      body: JSON.stringify(definition),
+    })
+  }
+  startFactoryWorkflow(
+    definition_id: string,
+    source_key: string,
+    task: unknown,
+  ): Promise<WorkflowRun> {
+    return this.request('/v1/factory/workflow-runs', {
+      method: 'POST',
+      body: JSON.stringify({ definition_id, source_key, task }),
+    })
+  }
+  startNextLinearWorkflow(
+    id: string,
+    connector_id: string,
+    team_id?: string,
+    project_id?: string,
+  ): Promise<{ run: WorkflowRun | null; reason?: string }> {
+    return this.request(`/v1/factory/workflows/${encodeURIComponent(id)}/linear-next`, {
+      method: 'POST',
+      body: JSON.stringify({
+        connector_id,
+        team_id: team_id || null,
+        project_id: project_id || null,
+      }),
+    })
+  }
+  getWorkflowPublicationIdentity(): Promise<{enabled:boolean;login:string|null;error:string|null}> {return this.request('/v1/factory/github/publication-identity')}
+  getWorkflowAgentProfile(
+    id: string,
+  ): Promise<import('../pages/factory/workflows/runtime').WorkflowAgentProfile> {
+    return this.request(`/v1/factory/workflow-agent-profiles/${encodeURIComponent(id)}`)
+  }
+  saveWorkflowRuntime(
+    workspace: string,
+    revision: number,
+    config: import('../pages/factory/workflows/runtime').RuntimeConfig,
+  ): Promise<import('../pages/factory/workflows/runtime').RuntimeState> {
+    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/runtime`, {
+      method: 'PUT',
+      body: JSON.stringify({ revision, config }),
+    })
+  }
+  getFactoryWorkflowRun(id: string): Promise<WorkflowRun> {
+    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}`)
+  }
+  controlFactoryWorkflowRun(
+    id: string,
+    action: 'cancel' | 'retry' | 'resume',
+    step_id?: string,
+  ): Promise<WorkflowRun> {
+    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/control`, {
+      method: 'POST',
+      body: JSON.stringify({ action, step_id }),
+    })
+  }
 
   // Software factory — per-action policies. Requires factory_policy:read / :write.
   listFactoryPolicies(): Promise<FactoryPolicy[]> {
@@ -1445,19 +1851,33 @@ export class NexusMindClient {
   }
 
   createFactoryIntakeSource(input: FactoryIntakeSourceInput): Promise<FactoryIntakeSource> {
-    return this.request('/v1/factory/intake/sources', { method: 'POST', body: JSON.stringify(input) })
+    return this.request('/v1/factory/intake/sources', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
   }
 
-  updateFactoryIntakeSource(id: string, input: FactoryIntakeSourceInput): Promise<FactoryIntakeSource> {
-    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) })
+  updateFactoryIntakeSource(
+    id: string,
+    input: FactoryIntakeSourceInput,
+  ): Promise<FactoryIntakeSource> {
+    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    })
   }
 
   setFactoryIntakeSourceEnabled(id: string, enabled: boolean): Promise<FactoryIntakeSource> {
-    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) })
+    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    })
   }
 
   deleteFactoryIntakeSource(id: string): Promise<void> {
-    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    return this.request(`/v1/factory/intake/sources/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
   }
 
   listFactoryIntakeItems(limit = 50): Promise<FactoryIntakeItem[]> {
@@ -1465,14 +1885,20 @@ export class NexusMindClient {
   }
 
   startFactoryIntakeItem(taskId: string): Promise<FactoryIntakeItem> {
-    return this.request(`/v1/factory/intake/items/${encodeURIComponent(taskId)}/start`, { method: 'POST' })
+    return this.request(`/v1/factory/intake/items/${encodeURIComponent(taskId)}/start`, {
+      method: 'POST',
+    })
   }
 
   getFactoryWatchdog(): Promise<FactoryWatchdog | null> {
     return this.request('/v1/factory/watchdog')
   }
 
-  putFactoryWatchdog(input: { slack_connector_id: string | null; enabled: boolean; daily_hour_utc: number }): Promise<FactoryWatchdog | null> {
+  putFactoryWatchdog(input: {
+    slack_connector_id: string | null
+    enabled: boolean
+    daily_hour_utc: number
+  }): Promise<FactoryWatchdog | null> {
     return this.request('/v1/factory/watchdog', { method: 'PUT', body: JSON.stringify(input) })
   }
 
@@ -1488,7 +1914,10 @@ export class NexusMindClient {
     return this.request('/v1/factory/lookback')
   }
 
-  recordFactoryTrajectoryFeedback(runId: string, outcome: 'accepted' | 'rejected'): Promise<unknown> {
+  recordFactoryTrajectoryFeedback(
+    runId: string,
+    outcome: 'accepted' | 'rejected',
+  ): Promise<unknown> {
     return this.request(`/v1/factory/trajectories/${encodeURIComponent(runId)}/feedback`, {
       method: 'POST',
       body: JSON.stringify({ outcome }),
@@ -1511,7 +1940,9 @@ export class NexusMindClient {
    * Start or resume evaluation sets via the backend-owned runner. Contract:
    * POST /v1/factory/evaluations { set_ids } -> { run }.
    */
-  startFactoryEvaluations(input: StartFactoryEvaluationRequest): Promise<StartFactoryEvaluationResponse> {
+  startFactoryEvaluations(
+    input: StartFactoryEvaluationRequest,
+  ): Promise<StartFactoryEvaluationResponse> {
     return this.request('/v1/factory/evaluations', { method: 'POST', body: JSON.stringify(input) })
   }
 
@@ -1530,7 +1961,11 @@ export class NexusMindClient {
     return this.request('/v1/factory/model-config', { method: 'PUT', body: JSON.stringify(input) })
   }
 
-  decideFactoryMerge(subject: string, approve: boolean, reason?: string): Promise<{ id: string; merges_after: string | null }> {
+  decideFactoryMerge(
+    subject: string,
+    approve: boolean,
+    reason?: string,
+  ): Promise<{ id: string; merges_after: string | null }> {
     return this.request('/v1/factory/decisions', {
       method: 'POST',
       body: JSON.stringify({ subject, action: 'merge', approve, ...(reason ? { reason } : {}) }),
@@ -1560,32 +1995,84 @@ export class NexusMindClient {
   rotateFactoryBotKey(): Promise<{ bot: FactoryBot; api_key: string }> {
     return this.request('/v1/factory/bot/key', { method: 'POST' })
   }
-  listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
-  listRunVerificationReports(id:string): Promise<{reports:StoredVerificationReport[]}> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/verification-reports`) }
+  listAutonomousAgentRunEvents(id: string): Promise<AutonomousAgentEvent[]> {
+    return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`)
+  }
+  listRunVerificationReports(id: string): Promise<{ reports: StoredVerificationReport[] }> {
+    return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/verification-reports`)
+  }
   // Turn-by-turn transcript from `after` (exclusive), paged by sequence. Callers
   // poll incrementally with the last sequence they hold so each poll only pulls
   // new turns instead of re-downloading the whole conversation.
-  async listAutonomousAgentRunTranscript(id:string, after=0): Promise<AutonomousAgentEvent[]> {
+  async listAutonomousAgentRunTranscript(id: string, after = 0): Promise<AutonomousAgentEvent[]> {
     const all: AutonomousAgentEvent[] = []
     let cursor = after
     for (let page = 0; page < 100; page++) {
-      const batch: AutonomousAgentEvent[] = await this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/transcript?after=${cursor}&limit=5000`)
+      const batch: AutonomousAgentEvent[] = await this.request(
+        `/v1/autonomous-agent-runs/${encodeURIComponent(id)}/transcript?after=${cursor}&limit=5000`,
+      )
       all.push(...batch)
       if (batch.length < 5000) break
       cursor = batch[batch.length - 1].sequence
     }
     return all
   }
-  listAutonomousAgentFindings(): Promise<AutonomousAgentFinding[]> { return this.request('/v1/autonomous-agent-findings') }
-  patchAutonomousAgentFinding(id:string,status:'open'|'resolved'|'ignored'): Promise<AutonomousAgentFinding> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify({status})}) }
-  archiveAllAutonomousAgentFindings(): Promise<{archived:number}> { return this.request('/v1/autonomous-agent-findings/archive-all',{method:'POST'}) }
-  listAutonomousAgentDeliveries(): Promise<AutonomousAgentDelivery[]> { return this.request('/v1/autonomous-agent-deliveries') }
-  retryAutonomousAgentDelivery(id:string): Promise<AutonomousAgentDelivery> { return this.request(`/v1/autonomous-agent-deliveries/${encodeURIComponent(id)}/retry`,{method:'POST'}) }
-  listAutonomousAgentTargets(id:string): Promise<AutonomousAgentTarget[]> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/targets`) }
-  putAutonomousAgentTarget(id:string,data:{kind:string;name:string;config:Record<string,unknown>;credential_connector_id?:string;enabled:boolean}): Promise<AutonomousAgentTarget> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/targets`,{method:'POST',body:JSON.stringify(data)}) }
-  getAutonomousAgentSettings(): Promise<AutonomousAgentOrgSettings> { return this.request('/v1/autonomous-agents/settings') }
-  patchAutonomousAgentSettings(data:{enabled?:boolean;retention_days?:number}): Promise<AutonomousAgentOrgSettings> { return this.request('/v1/autonomous-agents/settings',{method:'PATCH',body:JSON.stringify(data)}) }
-  getAutonomousAgentMetrics(): Promise<AutonomousAgentMetrics> { return this.request('/v1/autonomous-agents/metrics') }
+  listAutonomousAgentFindings(): Promise<AutonomousAgentFinding[]> {
+    return this.request('/v1/autonomous-agent-findings')
+  }
+  patchAutonomousAgentFinding(
+    id: string,
+    status: 'open' | 'resolved' | 'ignored',
+  ): Promise<AutonomousAgentFinding> {
+    return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    })
+  }
+  archiveAllAutonomousAgentFindings(): Promise<{ archived: number }> {
+    return this.request('/v1/autonomous-agent-findings/archive-all', { method: 'POST' })
+  }
+  listAutonomousAgentDeliveries(): Promise<AutonomousAgentDelivery[]> {
+    return this.request('/v1/autonomous-agent-deliveries')
+  }
+  retryAutonomousAgentDelivery(id: string): Promise<AutonomousAgentDelivery> {
+    return this.request(`/v1/autonomous-agent-deliveries/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+    })
+  }
+  listAutonomousAgentTargets(id: string): Promise<AutonomousAgentTarget[]> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/targets`)
+  }
+  putAutonomousAgentTarget(
+    id: string,
+    data: {
+      kind: string
+      name: string
+      config: Record<string, unknown>
+      credential_connector_id?: string
+      enabled: boolean
+    },
+  ): Promise<AutonomousAgentTarget> {
+    return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/targets`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+  getAutonomousAgentSettings(): Promise<AutonomousAgentOrgSettings> {
+    return this.request('/v1/autonomous-agents/settings')
+  }
+  patchAutonomousAgentSettings(data: {
+    enabled?: boolean
+    retention_days?: number
+  }): Promise<AutonomousAgentOrgSettings> {
+    return this.request('/v1/autonomous-agents/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+  getAutonomousAgentMetrics(): Promise<AutonomousAgentMetrics> {
+    return this.request('/v1/autonomous-agents/metrics')
+  }
 }
 
 export function createClient(): NexusMindClient {
@@ -1600,7 +2087,10 @@ export async function listOrgs(superuserKey: string): Promise<Org[]> {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
-    throw Object.assign(new Error(body.error ?? res.statusText), { code: body.code, status: res.status })
+    throw Object.assign(new Error(body.error ?? res.statusText), {
+      code: body.code,
+      status: res.status,
+    })
   }
   return res.json()
 }
@@ -1617,7 +2107,10 @@ export async function createOrg(
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
-    throw Object.assign(new Error(body.error ?? res.statusText), { code: body.code, status: res.status })
+    throw Object.assign(new Error(body.error ?? res.statusText), {
+      code: body.code,
+      status: res.status,
+    })
   }
   return res.json()
 }
@@ -1643,9 +2136,7 @@ export async function loginWithEmail(
   return res.json()
 }
 
-export async function loginWithApiKey(
-  apiKey: string,
-): Promise<{ org: Org; user: User }> {
+export async function loginWithApiKey(apiKey: string): Promise<{ org: Org; user: User }> {
   const baseUrl = import.meta.env.VITE_API_URL ?? ''
   const res = await fetch(`${baseUrl}/v1/admin/auth/login`, {
     method: 'POST',

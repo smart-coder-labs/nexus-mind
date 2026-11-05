@@ -106,5 +106,6 @@ opentelemetry_sdk = { version = "0.31", default-features = false, features = ["t
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 
 [dev-dependencies]
+sha1 = "0.10"
 tower = { version = "0.5", features = ["util"] }
 jsonschema = { version = "0.58", default-features = false }

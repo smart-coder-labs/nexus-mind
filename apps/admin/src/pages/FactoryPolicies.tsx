@@ -10,17 +10,29 @@ import type { FactoryAction, FactoryActionPolicy, FactoryPolicy } from '../types
 import { PolicyEditor, toDraft, toPolicy, type PolicyDraft } from './factory/govern/PolicyEditor'
 import { SafetyFloors } from './factory/govern/SafetyFloors'
 import { InlineAlert, PageHeader, PermissionDenied } from './factory/govern/ui'
-import { ACTION_DESCRIPTION, ACTIONS, RUNGS, modeMeta, rungOf, taskClassLabel, type Rung } from './factory/govern/words'
+import {
+  ACTION_DESCRIPTION,
+  ACTIONS,
+  RUNGS,
+  modeMeta,
+  rungOf,
+  taskClassLabel,
+  type Rung,
+} from './factory/govern/words'
 
 function saveErrorMessage(error: unknown): string {
   const failure = error as { status?: number; code?: string; message?: string }
-  if (failure.status === 409) return 'Someone changed this policy since you opened it. Reload the page and apply your change again.'
+  if (failure.status === 409)
+    return 'Someone changed this policy since you opened it. Reload the page and apply your change again.'
   if (failure.code === 'invalid_policy') return failure.message ?? 'The policy is not valid.'
   return failure.message ?? 'The policy could not be saved.'
 }
 
 function scopeLabel(policy: FactoryPolicy): string {
-  const parts = [policy.scope.project, policy.scope.task_class ? taskClassLabel(policy.scope.task_class) : undefined].filter(Boolean)
+  const parts = [
+    policy.scope.project,
+    policy.scope.task_class ? taskClassLabel(policy.scope.task_class) : undefined,
+  ].filter(Boolean)
   return parts.join(', ')
 }
 
@@ -36,7 +48,7 @@ function conditionsLabel(policy: FactoryPolicy): string {
  * placed on the Never / Person / Gated / Model ladder, scoped overrides as chips.
  * An action with no policy waits for a person.
  */
-export default function FactoryPolicies() {
+export default function FactoryPolicies({ embedded = false }: { embedded?: boolean }) {
   const { session } = useAuth()
   const permissions = session?.user.permissions ?? []
   const canRead = permissions.includes('factory_policy:read')
@@ -66,7 +78,7 @@ export default function FactoryPolicies() {
       close()
       queryClient.invalidateQueries({ queryKey: ['factory-policies'] })
     },
-    onError: error => setSaveError(saveErrorMessage(error)),
+    onError: (error) => setSaveError(saveErrorMessage(error)),
   })
 
   const remove = useMutation({
@@ -80,7 +92,9 @@ export default function FactoryPolicies() {
     // person while the policy is in fact still active.
     onError: (error, policy) => {
       const message = (error as { message?: string }).message ?? 'unknown error'
-      setDeleteError(`Could not delete the ${policy.action} policy: ${message}. It is still active.`)
+      setDeleteError(
+        `Could not delete the ${policy.action} policy: ${message}. It is still active.`,
+      )
     },
   })
 
@@ -92,49 +106,90 @@ export default function FactoryPolicies() {
   }
 
   if (!canRead) {
-    return <PermissionDenied title="Autonomy policies" permission="factory_policy:read" what="see what agents are allowed to do" />
+    return (
+      <PermissionDenied
+        title="Autonomy policies"
+        permission="factory_policy:read"
+        what="see what agents are allowed to do"
+      />
+    )
   }
 
   const rows = policies.data ?? []
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
-      <PageHeader
-        title="Autonomy policies"
-        subtitle="How far an agent may go on its own, decided per action. Allowing a fix never allows a merge. An action with no policy waits for a person."
-        action={canWrite && <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => open()}>New policy</Button>}
-      />
+    <div className={embedded ? 'space-y-6' : 'p-6 md:p-8 space-y-6 max-w-7xl mx-auto'}>
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">Permisos y aprobaciones</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              Autorizar una implementación no autoriza un merge. Sin política, se espera una
+              decisión humana.
+            </p>
+          </div>
+          {canWrite && (
+            <Button size="sm" onClick={() => open()}>
+              Nueva política
+            </Button>
+          )}
+        </div>
+      ) : (
+        <PageHeader
+          title="Autonomy policies"
+          subtitle="How far an agent may go on its own, decided per action. Allowing a fix never allows a merge. An action with no policy waits for a person."
+          action={
+            canWrite && (
+              <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => open()}>
+                New policy
+              </Button>
+            )
+          }
+        />
+      )}
 
       <SafetyFloors />
 
       {policies.isError && (
-        <InlineAlert onRetry={() => policies.refetch()}>The policies could not be loaded, so this page cannot show what agents may do.</InlineAlert>
+        <InlineAlert onRetry={() => policies.refetch()}>
+          The policies could not be loaded, so this page cannot show what agents may do.
+        </InlineAlert>
       )}
 
       {policies.isLoading && (
         <div className="space-y-2" aria-hidden="true">
-          {ACTIONS.map(action => <Skeleton key={action} className="h-[72px] w-full rounded-xl" />)}
+          {ACTIONS.map((action) => (
+            <Skeleton key={action} className="h-[72px] w-full rounded-xl" />
+          ))}
         </div>
       )}
 
       {policies.isSuccess && (
         <section aria-labelledby="matrix-title" className="space-y-3">
           <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
-            <h2 id="matrix-title" className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Actions</h2>
+            <h2
+              id="matrix-title"
+              className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary"
+            >
+              Actions
+            </h2>
             <p className="text-[12px] text-text-tertiary">
               {rows.length === 0
                 ? 'No policies yet, so every action waits for a person.'
                 : 'The highlighted step applies to all work unless an override matches.'}
             </p>
           </div>
-          <ul aria-label="Policy per action" className="m-0 list-none divide-y divide-border-secondary rounded-xl border border-border-primary p-0">
-            {ACTIONS.map(action => (
+          <ul
+            aria-label="Policy per action"
+            className="m-0 list-none divide-y divide-border-secondary rounded-xl border border-border-primary p-0"
+          >
+            {ACTIONS.map((action) => (
               <ActionRow
                 key={action}
                 action={action}
-                policies={rows.filter(policy => policy.action === action)}
+                policies={rows.filter((policy) => policy.action === action)}
                 canWrite={canWrite}
-                onEdit={policy => open(policy)}
+                onEdit={(policy) => open(policy)}
                 onAdd={() => open(undefined, action)}
               />
             ))}
@@ -159,7 +214,12 @@ export default function FactoryPolicies() {
         onDelete={
           editingPolicy
             ? () => {
-                if (window.confirm(`Delete the ${editingPolicy.action} policy? That action will wait for a person again.`)) remove.mutate(editingPolicy)
+                if (
+                  window.confirm(
+                    `Delete the ${editingPolicy.action} policy? That action will wait for a person again.`,
+                  )
+                )
+                  remove.mutate(editingPolicy)
               }
             : undefined
         }
@@ -185,20 +245,36 @@ function ActionRow({
   onAdd: () => void
 }) {
   const base = policies.find(isDefaultScope)
-  const overrides = policies.filter(policy => !isDefaultScope(policy))
+  const overrides = policies.filter((policy) => !isDefaultScope(policy))
   const meta = base ? modeMeta(base.mode) : null
   const labelId = `policy-row-${action}`
-  const gatedDetail = base?.mode === 'after_fix' ? 'after fix' : base?.mode === 'after_merge' ? 'after merge' : undefined
+  const gatedDetail =
+    base?.mode === 'after_fix'
+      ? 'after fix'
+      : base?.mode === 'after_merge'
+        ? 'after merge'
+        : undefined
 
   return (
-    <li aria-labelledby={labelId} className="grid gap-3 px-5 py-4 lg:grid-cols-[minmax(0,13rem)_minmax(0,1fr)_auto] lg:items-center lg:gap-6">
+    <li
+      aria-labelledby={labelId}
+      className="grid gap-3 px-5 py-4 lg:grid-cols-[minmax(0,13rem)_minmax(0,1fr)_auto] lg:items-center lg:gap-6"
+    >
       <div className="min-w-0">
-        <p id={labelId} className="font-mono text-sm font-medium text-text-primary">{action}</p>
-        <p className="mt-0.5 text-[12px] leading-normal text-text-tertiary">{ACTION_DESCRIPTION[action]}</p>
+        <p id={labelId} className="font-mono text-sm font-medium text-text-primary">
+          {action}
+        </p>
+        <p className="mt-0.5 text-[12px] leading-normal text-text-tertiary">
+          {ACTION_DESCRIPTION[action]}
+        </p>
       </div>
 
       <div className="min-w-0 space-y-2">
-        <Ladder current={base ? rungOf(base.mode) : 'person'} implicit={!base} gatedDetail={gatedDetail} />
+        <Ladder
+          current={base ? rungOf(base.mode) : 'person'}
+          implicit={!base}
+          gatedDetail={gatedDetail}
+        />
         <p className="text-sm leading-normal text-text-secondary">
           {base && meta ? (
             <>
@@ -210,8 +286,11 @@ function ActionRow({
           )}
         </p>
         {overrides.length > 0 && (
-          <ul aria-label={`Overrides for ${action}`} className="m-0 flex list-none flex-wrap gap-1.5 p-0">
-            {overrides.map(policy => {
+          <ul
+            aria-label={`Overrides for ${action}`}
+            className="m-0 flex list-none flex-wrap gap-1.5 p-0"
+          >
+            {overrides.map((policy) => {
               const label = `${scopeLabel(policy)}: ${modeMeta(policy.mode).short}`
               return (
                 <li key={policy.id}>
@@ -241,11 +320,23 @@ function ActionRow({
       {canWrite && (
         <div className="flex lg:justify-end">
           {base ? (
-            <Button size="sm" variant="secondary" aria-label={`Edit ${action} policy`} leftIcon={<Pencil className="h-4 w-4" />} onClick={() => onEdit(base)}>
+            <Button
+              size="sm"
+              variant="secondary"
+              aria-label={`Edit ${action} policy`}
+              leftIcon={<Pencil className="h-4 w-4" />}
+              onClick={() => onEdit(base)}
+            >
               Edit
             </Button>
           ) : (
-            <Button size="sm" variant="secondary" aria-label={`Add a policy for ${action}`} leftIcon={<Plus className="h-4 w-4" />} onClick={onAdd}>
+            <Button
+              size="sm"
+              variant="secondary"
+              aria-label={`Add a policy for ${action}`}
+              leftIcon={<Plus className="h-4 w-4" />}
+              onClick={onAdd}
+            >
               Add policy
             </Button>
           )}
@@ -256,7 +347,15 @@ function ActionRow({
 }
 
 /** Never / Person / Gated / Model, with the step that applies highlighted. */
-function Ladder({ current, implicit, gatedDetail }: { current: Rung; implicit: boolean; gatedDetail?: string }) {
+function Ladder({
+  current,
+  implicit,
+  gatedDetail,
+}: {
+  current: Rung
+  implicit: boolean
+  gatedDetail?: string
+}) {
   return (
     <ol aria-label="Who decides" className="m-0 grid max-w-xl list-none grid-cols-4 gap-1 p-0">
       {RUNGS.map(({ rung, label }) => {
@@ -267,14 +366,23 @@ function Ladder({ current, implicit, gatedDetail }: { current: Rung; implicit: b
             aria-current={active ? 'step' : undefined}
             className={cn(
               'flex h-8 min-w-0 items-center justify-center rounded-md border px-1.5 text-[12px]',
-              active && !implicit && 'border-accent-blue/60 bg-action-primary-tint font-medium text-text-primary',
-              active && implicit && 'border-dashed border-border-primary font-medium text-text-secondary',
+              active &&
+                !implicit &&
+                'border-accent-blue/60 bg-action-primary-tint font-medium text-text-primary',
+              active &&
+                implicit &&
+                'border-dashed border-border-primary font-medium text-text-secondary',
               !active && 'border-border-secondary text-text-tertiary',
             )}
           >
             <span className="truncate">
               {label}
-              {active && gatedDetail && <span className="hidden font-normal text-text-secondary sm:inline"> · {gatedDetail}</span>}
+              {active && gatedDetail && (
+                <span className="hidden font-normal text-text-secondary sm:inline">
+                  {' '}
+                  · {gatedDetail}
+                </span>
+              )}
             </span>
           </li>
         )

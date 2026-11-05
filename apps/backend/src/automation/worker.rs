@@ -562,19 +562,53 @@ async fn resolver_verification(
     claim: &queries::ClaimedAutonomousRun,
     workdir: &Path,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    let value = claim.config.get("verification_commands");
-    let sandboxed = crate::factory::sandbox::autonomous_isolation(
-        &claim.config,
-        &claim.template_key,
-        queries::autonomous_executor(&claim.config).unwrap_or("invalid"),
-    )
-    .is_ok_and(|isolation| isolation == crate::factory::sandbox::Isolation::Sandbox);
-    if !sandboxed {
-        return run_allowlisted_commands(workdir, value).await;
+    let baseline={
+        let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+        let base=queries::get_autonomous_agent_run(&conn,&claim.org_id,&claim.run.id)?.and_then(|r|r.snapshot_sha).ok_or_else(||anyhow::anyhow!("base_snapshot_missing"))?;
+        base
+    };
+    let plan=crate::factory::resolver_checks::discover(workdir,&baseline,&claim.config).await?;
+    let head=Command::new("git").current_dir(workdir).args(["rev-parse","HEAD"]).output().await?;
+    if !head.status.success(){anyhow::bail!("verification_head_missing")}
+    let head=String::from_utf8(head.stdout)?.trim().to_string();
+    let clean=Command::new("git").current_dir(workdir).args(["status","--porcelain","--untracked-files=normal"]).output().await?;
+    if !clean.status.success() || !clean.stdout.is_empty(){anyhow::bail!("verification_requires_committed_tree")}
+    let whitespace=Command::new("git").current_dir(workdir).args(["diff","--no-ext-diff","--no-textconv","--check",&baseline,&head,"--"]).output().await?;
+    if !whitespace.status.success(){anyhow::bail!("verification_whitespace_failed")}
+    let integrity=crate::factory::resolver_checks::integrity_manifest(workdir).await?;
+    let agent_isolation = crate::factory::sandbox::autonomous_isolation(
+        &claim.config,&claim.template_key,queries::autonomous_executor(&claim.config)?,
+    )?;
+    // Local CLI authentication does not require tests to share the worker host.
+    // Commands pods have their own registry-only identity and no model token.
+    let sandboxed=match claim.config.get("verification_isolation") {
+        Some(serde_json::Value::String(value)) if value=="sandbox"=>true,
+        Some(serde_json::Value::String(value)) if value=="local" && agent_isolation==crate::factory::sandbox::Isolation::Local=>false,
+        Some(_)=>anyhow::bail!("invalid_verification_isolation"),
+        None=>agent_isolation==crate::factory::sandbox::Isolation::Sandbox || crate::factory::sandbox::default_isolation()==crate::factory::sandbox::Isolation::Sandbox,
+    };
+    let mut commands=plan.commands.clone();
+    let local_manifest=tempfile::NamedTempFile::new()?;
+    let integrity_path=if sandboxed {"/tmp/nexusmind-verified-tree.json".to_string()} else {local_manifest.path().to_string_lossy().into_owned()};
+    if !sandboxed {tokio::fs::write(local_manifest.path(),&integrity).await?;}
+    commands.push(vec!["python3".into(),"-I".into(),"-c".into(),crate::factory::resolver_checks::INTEGRITY_SCRIPT.into(),integrity_path.clone(),if sandboxed {crate::factory::sandbox::WORKSPACE.into()} else {workdir.to_string_lossy().into_owned()},hex::encode(Sha256::digest(&integrity))]);
+    {
+        let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+        queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.started",&json!({"head_sha":head,"plan":plan,"command_count":commands.len()}))?;
     }
-    let commands = crate::factory::verification::parse_verification_commands(value)?;
-    if commands.is_empty() {
-        return Ok(Vec::new());
+    if !sandboxed {
+        let receipts=run_allowlisted_commands(workdir,&commands).await?;
+        let current=Command::new("git").current_dir(workdir).args(["rev-parse","HEAD"]).output().await?;
+        let clean=Command::new("git").current_dir(workdir).args(["status","--porcelain","--untracked-files=normal"]).output().await?;
+        if !current.status.success() || String::from_utf8_lossy(&current.stdout).trim()!=head || !clean.status.success() || !clean.stdout.is_empty(){anyhow::bail!("verification_tree_changed")}
+        let canonical=receipts.iter().map(|r|crate::factory::verification::VerificationReceipt{argv:serde_json::from_value(r["argv"].clone()).unwrap_or_default(),exit_code:r["exit_code"].as_i64().map(|n|n as i32),duration_ms:r["duration_ms"].as_u64().unwrap_or(0)}).collect::<Vec<_>>();
+        let report=crate::factory::verification::build_report(&claim.run.id,&head,&canonical,&[],&[])?;
+        {let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+            crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
+            queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable}))?;}
+        if !report.passed{anyhow::bail!("resolver_verification_failed")}
+        require_publish_authority(store,claim)?;
+        return Ok(crate::factory::resolver_checks::annotate_receipts(receipts.into_iter().map(|mut r|{r["head_sha"]=json!(head);r}).collect(),&plan,&head));
     }
     let slot = claim
         .config
@@ -602,25 +636,31 @@ async fn resolver_verification(
         &run,
         &super::sandboxed::CommandsSpec {
             commands: &commands,
-            extra_env: &[],
+            extra_env: &[("CI".into(),"true".into())],
             timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
             reproduce_failures: false,
             hosts: &[],
             label: "v",
             max_stdout: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
-            files: Vec::new(),
+            files: vec![(integrity_path,integrity)],
             proxy_file: None,
         },
     )
     .await?;
-    let mut receipts = Vec::new();
-    for run in runs {
-        if run.exit_code != Some(0) {
-            anyhow::bail!("verification_failed")
-        }
-        receipts.push(json!({"argv": run.argv, "status": "passed", "duration_ms": run.duration_ms}));
+    let canonical=runs.iter().map(|r|r.receipt()).collect::<Vec<_>>();
+    if canonical.len()!=commands.len(){anyhow::bail!("verification_evidence_missing")}
+    let report=crate::factory::verification::build_report(&claim.run.id,&head,&canonical,&[],&[])?;
+    {
+        let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+        crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
+        queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable,"output":runs.iter().map(|r|json!({"argv":r.argv,"exit_code":r.exit_code,"stdout":sanitize_output(&r.stdout,4000),"stderr":sanitize_output(&r.stderr,4000)})).collect::<Vec<_>>()}))?;
     }
-    Ok(receipts)
+    if !report.passed{anyhow::bail!("resolver_verification_failed")}
+    let current=Command::new("git").current_dir(workdir).args(["rev-parse","HEAD"]).output().await?;
+    let clean=Command::new("git").current_dir(workdir).args(["status","--porcelain","--untracked-files=normal"]).output().await?;
+    if !current.status.success() || String::from_utf8_lossy(&current.stdout).trim()!=head || !clean.status.success() || !clean.stdout.is_empty(){anyhow::bail!("verification_tree_changed")}
+    require_publish_authority(store,claim)?;
+    Ok(crate::factory::resolver_checks::annotate_receipts(runs.into_iter().map(|r|json!({"argv":r.argv,"status":"passed","duration_ms":r.duration_ms,"head_sha":head})).collect(),&plan,&head))
 }
 
 /// Stores the verification report of a sandboxed run for the checked-out head.
@@ -804,19 +844,20 @@ fn restrict_test_environment(
 
 async fn run_allowlisted_commands(
     workdir: &Path,
-    value: Option<&serde_json::Value>,
+    commands: &[Vec<String>],
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let mut receipts = Vec::new();
-    for args in crate::factory::verification::parse_verification_commands(value)? {
+    for args in commands {
         let Some((program, rest)) = args.split_first() else {
             anyhow::bail!("empty_command")
         };
         let mut command = Command::new(program);
         command.current_dir(workdir).args(rest);
-        restrict_test_environment(&mut command, workdir, &[]);
+        restrict_test_environment(&mut command, workdir, &[("CI".into(),"true".into())]);
         let started = chrono::Utc::now();
-        command_ok_as(command, "verification_command_failed").await?;
-        receipts.push(json!({"argv":args,"status":"passed","started_at":started.to_rfc3339()}));
+        let result=timeout(Duration::from_secs(crate::factory::verification::COMMAND_TIMEOUT_SECS),command.kill_on_drop(true).output()).await;
+        let (exit_code,stdout,stderr)=match result {Ok(Ok(output))=>(output.status.code(),sanitize_output(&output.stdout,4000),sanitize_output(&output.stderr,4000)),_=>(None,String::new(),"command unavailable or timed out".to_string())};
+        receipts.push(json!({"argv":args,"status":if exit_code==Some(0){"passed"}else{"failed"},"exit_code":exit_code,"stdout":stdout,"stderr":stderr,"started_at":started.to_rfc3339(),"duration_ms":(chrono::Utc::now()-started).num_milliseconds().max(0) as u64}));
     }
     Ok(receipts)
 }
@@ -1792,6 +1833,18 @@ pub async fn server_github_token() -> anyhow::Result<String> {
     server_gh_token().await
 }
 
+pub async fn server_github_identity()->anyhow::Result<String> {
+    github_identity_for_token(&server_gh_token().await?).await
+}
+pub(crate) async fn github_identity_for_token(token:&str)->anyhow::Result<String> {
+    static IDENTITY:tokio::sync::Mutex<Option<(std::time::Instant,String,String)>>=tokio::sync::Mutex::const_new(None);
+    let fingerprint=hex::encode(Sha256::digest(token.as_bytes()));
+    let mut cached=IDENTITY.lock().await;
+    if let Some((at,hash,login))=cached.as_ref(){if at.elapsed()<Duration::from_secs(60) && hash==&fingerprint{return Ok(login.clone())}}
+    let login=super::connectors::github_authenticated_login(token).await?;
+    *cached=Some((std::time::Instant::now(),fingerprint,login.clone()));Ok(login)
+}
+
 pub(crate) async fn server_gh_token() -> anyhow::Result<String> {
     let mut command = Command::new("gh");
     restrict_claude_environment(&mut command);
@@ -2073,12 +2126,10 @@ async fn bounded_review_diff(
     Ok(sanitize_output(diff.as_bytes(), max_bytes))
 }
 
-async fn ensure_diff_has_no_secrets(workdir: &Path) -> anyhow::Result<()> {
-    let output = Command::new("git")
-        .current_dir(workdir)
-        .args(["diff", "--no-ext-diff", "--"])
-        .output()
-        .await?;
+async fn ensure_diff_has_no_secrets(workdir: &Path, base: &str, head: Option<&str>) -> anyhow::Result<()> {
+    let mut command=Command::new("git");command.current_dir(workdir).args(["diff","--no-ext-diff","--no-textconv",base]);
+    if let Some(head)=head{command.arg(head);}command.arg("--");
+    let output=command.output().await?;
     if !output.status.success() {
         anyhow::bail!("secret_scan_failed")
     }
@@ -2116,6 +2167,7 @@ async fn ensure_diff_has_no_secrets(workdir: &Path) -> anyhow::Result<()> {
 
 /// Make Git report untracked agent-created files to diff-based gates. Intent-to-
 /// add records paths without staging their contents; ignored files remain ignored.
+#[cfg(test)]
 async fn mark_new_files_for_diff(workdir: &Path) -> anyhow::Result<()> {
     let mut add = Command::new("git");
     add.current_dir(workdir)
@@ -2123,7 +2175,47 @@ async fn mark_new_files_for_diff(workdir: &Path) -> anyhow::Result<()> {
     command_ok_as(add, "stage_new_files_failed").await
 }
 
-async fn publish_template_output(
+async fn publish_template_output(store:&SqliteStore,claim:&queries::ClaimedAutonomousRun,workdir:&Path,result:&serde_json::Value)->anyhow::Result<serde_json::Value> {
+    let mut published=publish_template_output_verified(store,claim,workdir,result).await?;
+    if claim.template_key!="github_issue_resolver" || published.get("draft_pull_request").is_none(){return Ok(published)}
+    let token=github_access(store,claim).await?.ok_or_else(||anyhow::anyhow!("github_connector_required"))?;
+    let repository=claim.config["repository"].as_str().or_else(||claim.config.pointer("/trigger/repository").and_then(|v|v.as_str())).ok_or_else(||anyhow::anyhow!("repository_missing"))?;
+    let number=published.pointer("/draft_pull_request/number").and_then(|v|v.as_i64().or_else(||v.as_str().and_then(|s|s.parse().ok()))).ok_or_else(||anyhow::anyhow!("published_pr_number_missing"))?;
+    let head=Command::new("git").current_dir(workdir).args(["rev-parse","HEAD"]).output().await?;
+    if !head.status.success(){anyhow::bail!("verification_head_missing")}
+    let head=String::from_utf8(head.stdout)?.trim().to_string();
+    let base=claim.config["base_branch"].as_str().unwrap_or("main");
+    let mut required=super::connectors::required_status_checks(&token,repository,base).await?;
+    if let Some(value)=claim.config.get("required_checks") {let configured:Vec<String>=serde_json::from_value(value.clone()).map_err(|_|anyhow::anyhow!("required_checks_invalid"))?;required.extend(configured);}
+    required.sort();required.dedup();
+    let wait=async {
+        let deadline=tokio::time::Instant::now()+Duration::from_secs(claim.config["verification_ci_timeout_seconds"].as_u64().unwrap_or(600).clamp(5,1800));
+        loop {
+            require_publish_authority(store,claim)?;
+            let pull=super::connectors::get_github_pull(&token,repository,number).await?;
+            if pull.pointer("/head/sha").and_then(|s|s.as_str())!=Some(head.as_str()){anyhow::bail!("published_pr_head_changed")}
+            if required.is_empty(){return Ok(json!({"status":"not_configured","head_sha":head,"required_checks":required}));}
+            let runs=super::connectors::list_commit_ci_runs(&token,repository,&head).await?;
+            let ci=crate::factory::verification::build_report(&claim.run.id,&head,&[],&required,&runs)?;
+            {
+                let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+                let mut report=crate::db::factory_queries::get_verification_report(&conn,&claim.org_id,&claim.run.id,&head)?.ok_or_else(||anyhow::anyhow!("verification_evidence_missing"))?;
+                report.checks.retain(|c|!c.name.starts_with("ci:"));report.blocking_failures.retain(|name|!name.starts_with("ci:"));
+                report.checks.extend(ci.checks.clone());report.blocking_failures.extend(ci.blocking_failures.clone());report.passed=report.blocking_failures.is_empty();report.eligible_for_merge=report.passed;report.human_approval_required = !report.passed;
+                crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
+                queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.ci",&json!({"head_sha":head,"pull_request":number,"passed":ci.passed,"checks":ci.checks}))?;
+            }
+            if ci.passed{return Ok(json!({"status":"passed","head_sha":head,"required_checks":required}));}
+            if runs.iter().any(|r|required.iter().any(|name|r["name"]==*name) && r["status"]=="completed" && r["conclusion"]!="success"){anyhow::bail!("required_ci_failed")}
+            if tokio::time::Instant::now()>=deadline{anyhow::bail!("required_ci_timeout")}
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    };
+    published["ci"]=tokio::select!{_=run_stop_signal(store,claim)=>return Err(anyhow::anyhow!("cancelled_during_ci")),ci=wait=>ci?};
+    Ok(published)
+}
+
+async fn publish_template_output_verified(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
     workdir: &Path,
@@ -2158,14 +2250,16 @@ async fn publish_template_output(
             // and the budget-exhausted partial PR). It must never land in a finished
             // PR, so drop it from the working tree before we diff and commit.
             let _ = tokio::fs::remove_file(workdir.join("PENDING.md")).await;
-            // Diff based security and size gates must include new files. Do this
-            // before verification so generated artifacts stay untracked.
-            mark_new_files_for_diff(workdir).await?;
-            let verification = resolver_verification(store, claim, workdir).await?;
-            ensure_diff_has_no_secrets(workdir).await?;
+            let pinned_base = {
+                let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+                queries::get_autonomous_agent_run(&conn,&claim.org_id,&claim.run.id)?.and_then(|r|r.snapshot_sha).ok_or_else(||anyhow::anyhow!("base_snapshot_missing"))?
+            };
+            // Include newly-created files and resumed WIP changes in every gate.
+            let mut stage=Command::new("git");stage.current_dir(workdir).args(["add","--all"]);command_ok(stage).await?;
+            ensure_diff_has_no_secrets(workdir,&pinned_base,None).await?;
             let diff = Command::new("git")
                 .current_dir(workdir)
-                .args(["diff", "--numstat"])
+                .args(["-c","core.quotepath=false","diff","--cached","--no-renames","--numstat",&pinned_base,"--"])
                 .output()
                 .await?;
             if !diff.status.success() {
@@ -2179,14 +2273,13 @@ async fn publish_template_output(
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
+            let excluded_matchers=excluded.iter().filter_map(|v|v.as_str()).map(|pattern|globset::Glob::new(pattern).map(|glob|glob.compile_matcher())).collect::<Result<Vec<_>,_>>()?;
             if entries
                 .lines()
                 .filter_map(|line| line.split('\t').nth(2))
                 .any(|path| {
-                    excluded
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .any(|prefix| path == prefix || path.starts_with(&format!("{prefix}/")))
+                    excluded.iter().filter_map(|v|v.as_str()).any(|prefix|path==prefix || path.starts_with(&format!("{prefix}/")))
+                        || excluded_matchers.iter().any(|matcher|matcher.is_match(path))
                 })
             {
                 anyhow::bail!("excluded_path_changed")
@@ -2220,14 +2313,15 @@ async fn publish_template_output(
             // "No changes needed" is a legitimate outcome, not a failure: either the
             // agent explicitly declared it (no_op) or produced an empty diff. Instead
             // of blocking and discarding the run, explain it to the maintainer as an
-            // issue comment and finish successfully. An explicit no_op wins even if
-            // stray changes were left in the tree — the agent's declared intent is
-            // authoritative and we never open a PR it did not ask for.
+            // issue comment only after mandatory verification. A model's no_op
+            // cannot discard unverified edits or close an issue over WIP changes.
             let no_op = structured
                 .get("no_op")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            if no_op && files>0 {anyhow::bail!("no_op_with_unverified_changes")}
             if no_op || files == 0 {
+                tokio::select!{_=run_stop_signal(store,claim)=>return Err(anyhow::anyhow!("cancelled_before_verification")),checked=resolver_verification(store,claim,workdir)=>{checked?;}}
                 // Prefer the agent's own explanation. The ultimate fallback is worded
                 // by signal: an explicit no_op asserts confidently, while a bare empty
                 // diff (no declaration) stays hedged so we never over-claim on a run
@@ -2338,13 +2432,6 @@ async fn publish_template_output(
                 .get("base_branch")
                 .and_then(|v| v.as_str())
                 .unwrap_or("main");
-            let pinned_base = {
-                let db = store.conn();
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-                queries::get_autonomous_agent_run(&conn, &claim.org_id, &claim.run.id)?
-                    .and_then(|run| run.snapshot_sha)
-                    .ok_or_else(|| anyhow::anyhow!("base_snapshot_missing"))?
-            };
             let remote_base =
                 super::connectors::get_github_branch(&token, repository, base).await?;
             if remote_base.pointer("/commit/sha").and_then(|v| v.as_str())
@@ -2375,6 +2462,7 @@ async fn publish_template_output(
                 .env("GIT_COMMITTER_EMAIL", "agents@nexusmind.local")
                 .args([
                     "commit",
+                    "--allow-empty",
                     "-m",
                     &match number {
                         Some(value) => format!("NexusMind: resolve issue #{value}"),
@@ -2382,6 +2470,13 @@ async fn publish_template_output(
                     },
                 ]);
             command_ok_as(commit, "commit_failed").await?;
+            // Gate the EXACT final commit, after staging and committing, before
+            // any push or PR creation. Missing/failed/timed-out checks fail closed.
+            let verification=tokio::select! {
+                _=run_stop_signal(store,claim)=>return Err(anyhow::anyhow!("cancelled_before_verification")),
+                checked=resolver_verification(store,claim,workdir)=>checked?,
+            };
+            let verified_head=verification.first().and_then(|r|r["head_sha"].as_str()).ok_or_else(||anyhow::anyhow!("verification_evidence_missing"))?.to_string();
             let mut push = authenticated_git(&token);
             require_publish_authority(store, claim)?;
             push.current_dir(workdir).args([
@@ -2433,6 +2528,8 @@ async fn publish_template_output(
             let verification_summary = verification
                 .iter()
                 .map(|receipt| {
+                    if let Some(reason)=receipt["not_applicable_reason"].as_str(){return format!("- {}: not applicable — {reason}",receipt["check"].as_str().unwrap_or("check"));}
+                    if receipt["argv"].as_array().is_some_and(|args|args.iter().any(|a|a.as_str()==Some(crate::factory::resolver_checks::INTEGRITY_SCRIPT))){return "- Source tree integrity: passed".to_string();}
                     format!(
                         "- `{}`: {}",
                         receipt
@@ -2474,16 +2571,16 @@ async fn publish_template_output(
                 String::new()
             };
             let body = format!(
-                "{closes_line}## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
+                "{closes_line}## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Verified head: `{verified_head}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
                 claim.run.id,
                 if verification_summary.is_empty() {
-                    "- No verification command was configured.".to_string()
+                    return Err(anyhow::anyhow!("verification_evidence_missing"))
                 } else {
                     verification_summary
                 }
             );
             let delivery_key = format!(
-                "resolver:{}:{repository}:{number_suffix}",
+                "resolver:{}:{repository}:{number_suffix}:{verified_head}",
                 claim.run.definition_id
             );
             let delivery = {
@@ -2509,6 +2606,7 @@ async fn publish_template_output(
             if let Some(existing) =
                 super::connectors::find_github_pull_by_head(&token, repository, &branch).await?
             {
+                if existing.pointer("/head/sha").and_then(|v|v.as_str())!=Some(verified_head.as_str()){anyhow::bail!("published_pr_head_changed")}
                 let db = store.conn();
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
                 let external_id = existing.get("number").map(|value| value.to_string());
@@ -2640,6 +2738,12 @@ async fn publish_template_output(
                 {
                     anyhow::bail!("draft_pull_request_excluded")
                 }
+            }
+            if github_review_trigger(&claim.run.trigger_kind,claim.run.trigger_origin.as_ref()) {
+                let actor=github_identity_for_token(&token).await?;
+                let pull=super::connectors::get_github_pull(&token,repository,number).await?;
+                let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+                if pull["state"]!="open" || (!crate::db::github_review_hooks::explicitly_requested(&pull,&actor) && !crate::db::github_review_hooks::subscribed(&conn,&claim.org_id,repository,number,&actor)?){anyhow::bail!("review_request_removed_before_publish")}
             }
             let findings = structured
                 .get("findings")
@@ -3411,8 +3515,8 @@ pub(crate) fn fixed_prompt(
             // the final message verbatim, so it must be ONLY this JSON object (no
             // prose, no markdown fences). Two shapes: an implemented change, or an
             // explicit no-op delivered to the maintainer as an issue comment.
-            let issue_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences. If you implemented a bounded change, leave your edits in the working tree and return {\"title\":\"<concise pull request title>\",\"summary\":\"<what you changed and why>\"}. If the issue requires NO code change, make no edits and return {\"no_op\":true,\"comment\":\"<explain to the maintainer, in GitHub markdown, why no change is needed>\"}. Never leave the title empty; if you are unsure, still provide your best one-line title.";
-            let progress_clause = " Keep a file named `PENDING.md` at the repository root up to date as you work: a short running list of what you have DONE and what is still LEFT to do. The worker checkpoints your work-in-progress periodically, and if you run out of time/budget it opens a partial pull request whose \"Pending\" section is taken from this file — so keeping it current is how unfinished work is handed off. Update it before you finish.";
+            let issue_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences. If you implemented a bounded change, leave your edits in the working tree and return {\"title\":\"<concise pull request title>\",\"summary\":\"<what you changed and why>\"}. If the issue requires NO code change, make no edits and return {\"no_op\":true,\"comment\":\"<explain to the maintainer, in GitHub markdown, why no change is needed>\"}. Never leave the title empty; if you are unsure, still provide your best one-line title. Never use no_op for a resumed WIP fix: its changes relative to the pinned base still require a verified PR.";
+            let progress_clause = " Keep a file named `PENDING.md` at the repository root up to date as you work: a short running list of what you have DONE and what is still LEFT to do. The worker checkpoints your work-in-progress periodically to a backup branch. If you run out of time/budget it keeps the checkpoint for Continue, but never opens or updates a PR before mandatory verification passes. Update it before you finish.";
             // Hard rule: delegate heavy work to subagents so the orchestrator's own
             // context window stays small and the run doesn't burn its session budget
             // on bulk exploration.
@@ -3731,7 +3835,7 @@ async fn list_eligible_resolver_issues(
 /// Stable per-issue WIP branch: the resolver force-pushes snapshots of the
 /// in-progress work here so nothing is lost if the run dies or exhausts its budget.
 fn resolver_wip_branch(run_id: &str, number: i64) -> String {
-    format!("nexusmind/wip-{}-{number}", &run_id[..run_id.len().min(12)])
+    format!("nexusmind/checkpoint-{}-{number}", &run_id[..run_id.len().min(12)])
 }
 
 /// Force-push a snapshot of the worktree to the WIP branch WITHOUT touching the
@@ -3798,6 +3902,11 @@ async fn checkpoint_wip_push(
         }
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
+    ensure_diff_has_no_secrets(workdir,base_sha,Some(&commit)).await?;
+    let origin=Command::new("git").current_dir(workdir).args(["remote","get-url","origin"]).output().await?;
+    if !origin.status.success(){anyhow::bail!("checkpoint_origin_missing")}
+    let repository=crate::factory::workflow_publication::github_repository(String::from_utf8_lossy(&origin.stdout).trim())?;
+    if super::connectors::find_github_pull_by_head(token,&repository,branch).await?.is_some(){anyhow::bail!("checkpoint_branch_is_a_pull_request_head")}
     {
         let mut push = authenticated_git(token);
         push.current_dir(workdir).args([
@@ -3809,118 +3918,6 @@ async fn checkpoint_wip_push(
         command_ok_as(push, "wip_push_failed").await?;
     }
     Ok(true)
-}
-
-/// Open (or reconcile) a DRAFT pull request from an already-pushed WIP branch when
-/// a resolver attempt could not finish (budget/time). The partial work is durable
-/// on the branch; this surfaces it for review and points at the Continue action.
-async fn open_partial_pr(
-    store: &SqliteStore,
-    claim: &queries::ClaimedAutonomousRun,
-    workdir: &Path,
-    token: &str,
-    repository: &str,
-    number: i64,
-    branch: &str,
-) -> anyhow::Result<serde_json::Value> {
-    mark_new_files_for_diff(workdir).await?;
-    ensure_diff_has_no_secrets(workdir).await?;
-    let base = claim
-        .config
-        .get("base_branch")
-        .and_then(|v| v.as_str())
-        .unwrap_or("main");
-    // Only a regular file: a symlink planted by an agent must never make the
-    // worker read and publish something outside the checkout.
-    let pending_path = workdir.join("PENDING.md");
-    let regular = tokio::fs::symlink_metadata(&pending_path)
-        .await
-        .is_ok_and(|meta| meta.file_type().is_file());
-    let pending = (if regular {
-        tokio::fs::read_to_string(&pending_path).await.ok()
-    } else {
-        None
-    })
-        .map(|body| body.chars().take(8000).collect::<String>())
-        .filter(|body| !body.trim().is_empty())
-        .unwrap_or_else(|| {
-            "The agent ran out of its time/cost budget before finishing. Review the diff and use the run's Continue action to resume.".to_string()
-        });
-    let title = super::connectors::get_github_issue(token, repository, number)
-        .await
-        .ok()
-        .and_then(|issue| {
-            issue
-                .get("title")
-                .and_then(|v| v.as_str())
-                .map(|t| format!("NexusMind (partial): {t}"))
-        })
-        .unwrap_or_else(|| format!("NexusMind (partial): resolve issue #{number}"));
-    let body = format!(
-        "Refs #{number}\n\n⚠️ **Work in progress — opened automatically because the run hit its time/cost budget before finishing.** The branch holds the work done so far; nothing was lost. Use the run's Continue action to resume and finish it.\n\n## Pending\n\n{pending}\n\n## Limitations\n\nDraft only — NexusMind never merges or deploys; requires human review.\n\n- Run: `{}`",
-        claim.run.id
-    );
-    let delivery_key = format!(
-        "resolver-partial:{}:{repository}:{number}",
-        claim.run.definition_id
-    );
-    let delivery = {
-        let db = store.conn();
-        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        queries::create_autonomous_agent_delivery(
-            &conn,
-            &claim.org_id,
-            &claim.run.id,
-            None,
-            "github_pr",
-            &delivery_key,
-        )?
-    };
-    if delivery.status == "delivered" {
-        return Ok(json!({"partial_pull_request":{"reconciled":true,"url":delivery.external_url}}));
-    }
-    require_publish_authority(store, claim)?;
-    let pr = match super::connectors::create_draft_pr(token, repository, &title, branch, base, &body)
-        .await
-    {
-        Ok(value) => value,
-        Err(error) => {
-            let db = store.conn();
-            if let Ok(conn) = db.lock() {
-                let _ = queries::fail_autonomous_agent_delivery(
-                    &conn,
-                    &claim.org_id,
-                    &delivery.id,
-                    "github_pr_failed",
-                );
-            }
-            return Err(error);
-        }
-    };
-    {
-        let db = store.conn();
-        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        let external_id = pr.get("number").map(|v| v.to_string());
-        let url = pr.get("html_url").and_then(|v| v.as_str());
-        queries::complete_autonomous_agent_delivery(
-            &conn,
-            &claim.org_id,
-            &delivery.id,
-            external_id.as_deref(),
-            url,
-        )?;
-        if let Some(external_id) = external_id.as_deref() {
-            queries::create_autonomous_output_link(
-                &conn,
-                &claim.org_id,
-                &claim.run.id,
-                "draft_pr",
-                external_id,
-                url,
-            )?;
-        }
-    }
-    Ok(json!({"partial_pull_request":pr}))
 }
 
 /// What the implementation step ran with, for the repair round.
@@ -4003,8 +4000,8 @@ async fn resolve_issue_worktree(
     max_turns: u64,
     wall_time: u64,
     base_sha: String,
-    // When resuming a prior run, the existing WIP branch to keep pushing to (its
-    // partial PR is updated in place); the success-publish step is skipped.
+    // Resumed checkpoint provenance. Writes go to a new backup branch; success
+    // still goes through final-commit checks before opening a verified PR.
     continue_branch: Option<String>,
 ) -> (i64, String, serde_json::Value) {
     if let Some(object) = claim.config.as_object_mut() {
@@ -4172,9 +4169,8 @@ async fn resolve_issue_worktree(
     // Force-push a WIP snapshot every few minutes so partial work survives a crash
     // or a budget/time cutoff. Race-free (separate index) and only when we can push.
     // When resuming, we keep pushing to the ORIGINAL run's branch so its PR updates.
-    let wip_branch = continue_branch
-        .clone()
-        .unwrap_or_else(|| resolver_wip_branch(&claim.run.id, number));
+    // Checkpoints never share a PR head, including legacy resumed WIP branches.
+    let wip_branch = resolver_wip_branch(&claim.run.id, number);
     let committer = (!nexus_selected && !sandboxed).then(|| token.clone()).flatten().map(|checkpoint_token| {
         let workdir = workdir.clone();
         let branch = wip_branch.clone();
@@ -4314,22 +4310,9 @@ async fn resolve_issue_worktree(
     if let Some((spec, plan)) = planned.as_ref().filter(|_| outcome.0 != "succeeded") {
         super::specialist_run::apply(spec, plan, None, &mut outcome);
     }
-    if continue_branch.is_some() {
-        // Resume mode: never open a new PR. Push the latest work onto the existing
-        // WIP branch so its partial draft PR is updated in place with the progress.
-        if let Some(ref checkpoint_token) = token {
-            let pushed = match checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha).await {
-                Ok(pushed) => pushed,
-                Err(error) => {
-                    outcome.1["continued_push_error"] = failure_payload(&error);
-                    false
-                }
-            };
-            outcome.1["continued_pushed"] = json!(pushed);
-        }
-        outcome.1["continued_branch"] = json!(wip_branch);
-        outcome.1["resumable"] = json!(outcome.0 != "succeeded");
-    } else if outcome.0 == "succeeded" {
+    if let Some(previous)=continue_branch.as_ref() {outcome.1["continued_from_branch"]=json!(previous);}
+    // Continue uses the exact same evaluator and final-commit verification gate.
+    if outcome.0 == "succeeded" {
         match evaluate_structured_result("github_issue_resolver", &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
             // The run still cost what its result says: keep it for telemetry.
@@ -4367,20 +4350,7 @@ async fn resolve_issue_worktree(
         if pushed {
             outcome.1["resumable"] = json!(true);
             outcome.1["wip_branch"] = json!(wip_branch);
-            match open_partial_pr(
-                &store,
-                &claim,
-                &workdir,
-                checkpoint_token,
-                &repository,
-                number,
-                &wip_branch,
-            )
-            .await
-            {
-                Ok(published) => outcome.1["published"] = published,
-                Err(error) => outcome.1["partial_pr_error"] = failure_payload(&error),
-            }
+            outcome.1["partial_pr_held"]=json!("verification_required_before_any_pr");
         }
     }
     (number, outcome.0, outcome.1)
@@ -4398,12 +4368,13 @@ async fn discover_resumable_wip(
     prev_run_id: &str,
 ) -> Vec<(i64, String, String)> {
     let short = &prev_run_id[..prev_run_id.len().min(12)];
-    let pattern = format!("refs/heads/nexusmind/wip-{short}-*");
+    let pattern = format!("refs/heads/nexusmind/checkpoint-{short}-*");
+    let legacy_pattern = format!("refs/heads/nexusmind/wip-{short}-*");
     let mut cmd = match token {
         Some(token) => authenticated_git(token),
         None => Command::new("git"),
     };
-    cmd.current_dir(workdir).args(["ls-remote", "origin", &pattern]);
+    cmd.current_dir(workdir).args(["ls-remote", "origin", &pattern, &legacy_pattern]);
     let Ok(out) = cmd.output().await else {
         return Vec::new();
     };
@@ -4733,11 +4704,23 @@ fn requires_factory_model_config(executor: &str, template_key: &str) -> bool {
         && matches!(template_key, "github_issue_resolver" | "github_pr_reviewer")
 }
 
+fn uses_factory_gateway(config:&serde_json::Value,executor:&str,template:&str)->bool {
+    let source=config.get("model_source").and_then(serde_json::Value::as_str);
+    source==Some("factory_roles") || (source!=Some("agent") && requires_factory_model_config(executor,template))
+}
 async fn execute_claim(
     store: &SqliteStore,
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
+    // Project membership may change after enqueue. Recheck before checkout or model calls.
+    if claim.template_key == "github_pr_reviewer" && claim.config.get("project_id").is_some() {
+        let repository = claim.config.pointer("/trigger/repository").and_then(|value| value.as_str());
+        let db = store.conn();
+        let allowed = repository.is_some_and(|repo| db.lock().ok().is_some_and(|conn|
+            crate::db::autonomous_scope::authorize_review(&conn, &claim.org_id, &claim.config, repo).is_ok()));
+        if !allowed { return ("blocked_policy".into(), json!({"code":"repository_not_allowed"})); }
+    }
     let executor = match queries::autonomous_executor(&claim.config) {
         Ok(executor @ ("nexus" | "claude" | "codex" | "pi")) => executor,
         _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),
@@ -4750,9 +4733,12 @@ async fn execute_claim(
             return ("blocked_runtime".into(), json!({"code":code,"fallback":false}));
         }
     }
-    // Other executors still cannot honor the persisted per-role preferences.
-    // Never silently charge another provider or claim those roles are wired.
-    if requires_factory_model_config(executor, &claim.template_key) {
+    // The agent's explicit executor/model is the execution source of truth.
+    // Historical global role preferences are not a default provider override.
+    // An explicit request for that still-unwired gateway must continue to block,
+    // never fall back to a different provider or consume subscription credentials.
+    if uses_factory_gateway(&claim.config,executor,&claim.template_key) {
+        if !requires_factory_model_config(executor,&claim.template_key) {return ("blocked_runtime".into(),json!({"code":"factory_provider_runtime_not_wired","fallback":false}));}
         let db = store.conn();
         let Ok(conn) = db.lock() else {
             return ("blocked_runtime".into(), json!({"code":"factory_model_config_unavailable"}));
@@ -5063,6 +5049,20 @@ async fn execute_claim(
         }
     }
     if claim.template_key == "github_pr_reviewer" {
+        if github_review_trigger(&claim.run.trigger_kind,claim.run.trigger_origin.as_ref()) {
+            let scoped=async {
+                let repository=runtime_config["repository"].as_str().or_else(||runtime_config.pointer("/trigger/repository").and_then(|v|v.as_str())).ok_or_else(||anyhow::anyhow!("repository_missing"))?;
+                let number=runtime_config.pointer("/trigger/number").and_then(|v|v.as_i64()).ok_or_else(||anyhow::anyhow!("pull_request_number_missing"))?;
+                let token=github_access(store,claim).await?.ok_or_else(||anyhow::anyhow!("github_cli_unavailable"))?;
+                let actor=github_identity_for_token(&token).await?;
+                let pull=super::connectors::get_github_pull(&token,repository,number).await?;
+                if pull["state"]!="open" || pull["user"]["login"].as_str().is_some_and(|s|s.eq_ignore_ascii_case(&actor)){anyhow::bail!("review_not_requested_for_cli_account")}
+                let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+                if !crate::db::github_review_hooks::explicitly_requested(&pull,&actor) && !crate::db::github_review_hooks::subscribed(&conn,&claim.org_id,repository,number,&actor)?{anyhow::bail!("review_not_requested_for_cli_account")}
+                Ok::<(),anyhow::Error>(())
+            }.await;
+            if let Err(error)=scoped {let _=tokio::fs::remove_dir_all(&workdir).await;return ("blocked_policy".into(),json!({"code":error.to_string()}));}
+        }
         if let (Some(repository), Some(head), Ok(Some(token))) = (
             runtime_config
                 .pointer("/trigger/repository")
@@ -5710,7 +5710,9 @@ async fn execute_claim(
             }
             // Every sandboxed run with evidence leaves a report, not only the ones
             // that reach the merge path (which may later replace it with CI checks).
-            if !receipts.is_empty() {
+            // Resolver edits are still uncommitted here. Only its final-SHA
+            // publication gate may persist authoritative verification evidence.
+            if !receipts.is_empty() && claim.template_key!="github_issue_resolver" {
                 store_run_verification_report(store, claim, &workdir, &receipts).await;
             }
         }
@@ -7706,6 +7708,9 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
     };
 }
 
+fn github_review_trigger(kind:&str,origin:Option<&serde_json::Value>)->bool {
+    kind=="github_webhook" || (kind=="reconcile" && origin.is_some_and(|o|o["kind"]=="github_reconciliation"))
+}
 async fn reconcile_github_triggers(store: &SqliteStore) {
     let sources = {
         let db = store.conn();
@@ -7731,6 +7736,7 @@ async fn reconcile_github_triggers(store: &SqliteStore) {
                     continue;
                 }
             };
+        let reviewer=if source.template_key=="github_pr_reviewer" {match github_identity_for_token(&token).await{Ok(login)=>Some(login),Err(_)=>continue}}else{None};
         let (kind, items) = if source.template_key == "github_issue_resolver" {
             match super::connectors::list_recent_github_issues(&token, &source.repository).await {
                 Ok(value) => ("github_issue", value),
@@ -7763,6 +7769,12 @@ async fn reconcile_github_triggers(store: &SqliteStore) {
             let Some(number) = item.get("number").and_then(|value| value.as_i64()) else {
                 continue;
             };
+            if let Some(login)=reviewer.as_deref() {
+                if item["user"]["login"].as_str().is_some_and(|s|s.eq_ignore_ascii_case(login)){continue;}
+                let db=store.conn();let Ok(conn)=db.lock()else{continue};
+                if crate::db::github_review_hooks::explicitly_requested(item,login){let _=crate::db::github_review_hooks::set(&conn,&source.org_id,&source.repository,number,login,true);}
+                else if !crate::db::github_review_hooks::subscribed(&conn,&source.org_id,&source.repository,number,login).unwrap_or(false){continue;}
+            }
             let head = item.pointer("/head/sha").and_then(|value| value.as_str());
             let evidence = format!(
                 "{}|{}|{}",
@@ -7778,7 +7790,7 @@ async fn reconcile_github_triggers(store: &SqliteStore) {
                 if let Err(error) = queries::enqueue_github_webhook_agents(
                     &conn,
                     &source.org_id,
-                    &format!("reconcile:{payload_hash}"),
+                    queries::GithubRunOrigin::Reconciliation(&format!("reconcile:{payload_hash}")),
                     &source.repository,
                     kind,
                     number,
@@ -8164,13 +8176,14 @@ async fn maybe_trigger_next_agent(
         .ok()
         .flatten()
         .map(|detail| detail.definition.template_key);
-    let input = match target_template.as_deref() {
+    let mut input = match target_template.as_deref() {
         Some("judge") => {
             json!({"judge_targets":[{"type":"pr","repository":repository,"number":number}]})
         }
         Some(_) => json!({"trigger":{"kind":"github_pr","repository":repository,"number":number}}),
         None => return,
     };
+    input["origin"]=json!({"kind":"agent_chain","source_run_id":claim.run.id});
     let occurrence_key = format!("chain:{}:{}", claim.run.id, target_id);
     match queries::enqueue_autonomous_agent_run(
         &conn,
@@ -8193,6 +8206,15 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_model_source_requires_explicit_consent_and_never_reactivates_legacy_agents() {
+        for engine in ["claude","codex"] {
+            assert!(super::uses_factory_gateway(&serde_json::json!({}),engine,"github_issue_resolver"));
+            assert!(!super::uses_factory_gateway(&serde_json::json!({"model_source":"agent"}),engine,"github_issue_resolver"));
+        }
+        for engine in ["pi","nexus"] {assert!(!super::uses_factory_gateway(&serde_json::json!({}),engine,"github_issue_resolver"));}
+        assert!(super::uses_factory_gateway(&serde_json::json!({"model_source":"factory_roles"}),"pi","github_issue_resolver"));
+    }
     #[test]
     fn subscription_executors_do_not_require_factory_gateway_credentials() {
         for executor in ["nexus", "pi"] {
@@ -8300,12 +8322,12 @@ mod tests {
         tokio::fs::write(path.join("config.ts"), "export const t = 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\n")
             .await
             .unwrap();
-        ensure_diff_has_no_secrets(path).await.unwrap();
+        ensure_diff_has_no_secrets(path,"HEAD",None).await.unwrap();
         mark_new_files_for_diff(path).await.unwrap();
         let diff = numstat(path).await;
         assert!(diff.contains("config.ts"));
         assert!(!diff.contains("coverage/"));
-        assert!(ensure_diff_has_no_secrets(path).await.is_err());
+        assert!(ensure_diff_has_no_secrets(path,"HEAD",None).await.is_err());
     }
 
     #[test]
@@ -8430,6 +8452,34 @@ mod tests {
     }
     use super::*;
 
+    #[tokio::test]
+    async fn resolver_verification_executes_tests_and_build_and_persists_exact_head() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path().join("repo");tokio::fs::create_dir(&root).await.unwrap();
+        tokio::fs::create_dir(dir.path().join("home")).await.unwrap();tokio::fs::create_dir(dir.path().join("tmp")).await.unwrap();
+        async fn git(root:&Path,args:&[&str])->String {let out=Command::new("git").current_dir(root).args(args).output().await.unwrap();assert!(out.status.success());String::from_utf8(out.stdout).unwrap().trim().into()}
+        git(&root,&["init","-q"]).await;
+        tokio::fs::write(root.join("package.json"),serde_json::to_vec(&json!({"scripts":{"test":"node -e \"require('fs').writeFileSync('tests.executed','ok');if(require('fs').readFileSync('source.txt','utf8')!=='good')process.exit(1)\"","build":"node -e \"require('fs').writeFileSync('build.executed','ok')\""}})).unwrap()).await.unwrap();
+        tokio::fs::write(root.join(".gitignore"),"*.executed\n").await.unwrap();tokio::fs::write(root.join("source.txt"),"good").await.unwrap();
+        git(&root,&["add","."]).await;git(&root,&["-c","user.name=Test","-c","user.email=a@test.com","commit","-qm","base"]).await;
+        let head=git(&root,&["rev-parse","HEAD"]).await;
+        let c=crate::db::connection::connect(":memory:").unwrap();crate::db::migrations::run(&c).unwrap();let(org,user,_)=queries::bootstrap(&c,"Org","org","a@test.com","Owner").unwrap();
+        c.execute("UPDATE organizations SET autonomous_agents_enabled=1 WHERE id=?1",[&org.id]).unwrap();
+        c.execute("INSERT INTO autonomous_agent_definitions(id,org_id,template_key,template_version,name,status,current_revision,created_by) VALUES ('resolver',?1,'github_issue_resolver',1,'Resolver','enabled',1,?2)",rusqlite::params![org.id,user.id]).unwrap();
+        c.execute("INSERT INTO autonomous_agent_revisions(id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by) VALUES ('rev','resolver',1,?1,'h','[]','{}','valid',?2)",rusqlite::params![json!({"repository":"acme/api","executor":"nexus","isolation":"local","verification_isolation":"local"}).to_string(),user.id]).unwrap();
+        c.execute("INSERT INTO autonomous_agent_validations(id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by) VALUES ('valid',?1,'resolver','rev','h','valid','{}',?2)",rusqlite::params![org.id,user.id]).unwrap();
+        let run=queries::enqueue_autonomous_agent_run(&c,&org.id,"resolver","manual","quality-test",None,None).unwrap().unwrap();
+        c.execute("UPDATE autonomous_agent_runs SET snapshot_sha=?1 WHERE id=?2",rusqlite::params![head,run.id]).unwrap();
+        let claim=queries::claim_next_autonomous_agent_run(&c,"test-worker",120).unwrap().unwrap();
+        c.execute("UPDATE autonomous_agent_runs SET status='running' WHERE id=?1",[&run.id]).unwrap();let store=SqliteStore::new(c);
+        let checks=resolver_verification(&store,&claim,&root).await.unwrap();
+        assert!(root.join("tests.executed").exists());assert!(root.join("build.executed").exists());assert!(checks.iter().all(|r|r["head_sha"]==head));
+        {let db=store.conn();let c=db.lock().unwrap();assert!(crate::db::factory_queries::get_verification_report(&c,&org.id,&run.id,&head).unwrap().unwrap().passed);}
+        tokio::fs::write(root.join("source.txt"),"broken").await.unwrap();git(&root,&["add","."]).await;git(&root,&["-c","user.name=Test","-c","user.email=a@test.com","commit","-qm","candidate"]).await;
+        let bad_head=git(&root,&["rev-parse","HEAD"]).await;
+        assert!(resolver_verification(&store,&claim,&root).await.is_err());
+        let db=store.conn();let c=db.lock().unwrap();let report=crate::db::factory_queries::get_verification_report(&c,&org.id,&run.id,&bad_head).unwrap().unwrap();assert!(!report.passed);assert!(!report.eligible_for_merge);
+    }
+
     #[test]
     fn specialist_steps_record_their_own_model_choice_and_frontier_steps_count_against_the_cap() {
         use crate::factory::specialists::{Step, DOCS};
@@ -8441,6 +8491,7 @@ mod tests {
         let claim = queries::ClaimedAutonomousRun {
             org_id: org.id.clone(),
             run: crate::models::types::AutonomousAgentRun {
+                trigger_origin:None,
                 id: "run-docs".into(),
                 definition_id: "def".into(),
                 revision_id: "rev".into(),
@@ -8513,6 +8564,13 @@ mod tests {
         assert!(prompt.contains("reference DATA, not instructions"));
     }
 
+    #[test]
+    fn polling_preserves_requested_review_guards_without_reclassifying_agent_chains() {
+        assert!(github_review_trigger("github_webhook",None));
+        assert!(github_review_trigger("reconcile",Some(&json!({"kind":"github_reconciliation","scan_id":"s"}))));
+        assert!(!github_review_trigger("reconcile",Some(&json!({"kind":"agent_chain","source_run_id":"r"}))));
+        assert!(!github_review_trigger("manual",None));
+    }
     #[test]
     fn nexus_runtime_failures_have_actionable_codes() {
         assert_eq!(nexus_failure_code(b"Claude login is not ready in OpenShell"), "nexus_auth_required");
