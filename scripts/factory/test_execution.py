@@ -11,6 +11,7 @@ import uuid
 import runner
 import execution
 import delivery
+from container_entry import agent_prompt
 
 
 class API:
@@ -209,6 +210,42 @@ class ExecutionTests(unittest.TestCase):
         _, fresh = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
         self.assertFalse((fresh/'api'/'.env').exists())
         self.assertEqual((fresh/'api'/'code.txt').read_text(),'fixed\n')
+
+    def test_agent_prompts_separate_phase_responsibilities(self):
+        for role in ['investigation', 'test_author', 'implementation', 'reviewer']:
+            with self.subTest(role=role):
+                prompt = agent_prompt(self.job, {'role': role})
+                self.assertEqual('Do not edit files.' in prompt, role in ('investigation', 'reviewer'))
+                self.assertIn('step.write_repositories', prompt)
+                self.assertIn('Do not claim tests or QA passed unless you actually executed them.', prompt)
+                self.assertIn('Never publish, push, merge, access credentials', prompt)
+        prompt = agent_prompt(self.job, {'role': 'test_author'})
+        self.assertIn('documentation-only', prompt)
+        self.assertIn('not_applicable_reason', prompt)
+        self.assertIn('return success=true', prompt)
+        self.assertNotIn('Implement the complete integrated change', prompt)
+        self.assertIn('Implement the complete integrated change', agent_prompt(self.job, {'role': 'implementation'}))
+        self.job['step']['kind'] = 'review'
+        self.assertIn('Do not edit files.', agent_prompt(self.job, {'role': 'implementation'}))
+
+    @unittest.skipUnless(os.environ.get('FACTORY_TEST_IMAGE'), 'Requires immutable Docker fixture')
+    def test_documentation_test_authoring_can_finish_before_implementation(self):
+        self.job['task'] = {'title': 'Create docs/requested.md; documentation only'}
+        self.job['step'].update(id='tests', adapter='isolated-test-author', write_repositories=['api'])
+        script = "import json,sys; p=sys.stdin.read(); assert 'Do not edit files.' not in p; assert 'documentation-only' in p; print(json.dumps({'success':True,'verdict':'accept','findings':[],'not_applicable_reason':'Documentation-only task: no behavioral regression to reproduce.'}))"
+        adapter = {'kind':'agent','role':'test_author','image':os.environ['FACTORY_TEST_IMAGE'],'command':['python3','-c',script]}
+        success,evidence,outcome = execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertTrue(success)
+        self.assertEqual(evidence[0]['status'], 'not_applicable')
+        self.assertEqual(outcome['heads'], self.job['execution']['heads'])
+        self.job['dependency_results'] = {'tests':outcome}
+        self.job['step'].update(id='implement', adapter='isolated-implementer')
+        script = "import json,sys; from pathlib import Path; p=sys.stdin.read(); assert 'Do not edit files.' not in p; assert 'including requested documentation' in p; d=Path('/work/api/docs'); d.mkdir(); (d/'requested.md').write_text('# Requested document\\n'); print(json.dumps({'success':True}))"
+        adapter.update(role='implementation', command=['python3','-c',script])
+        success,_,outcome = execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertTrue(success)
+        self.assertNotEqual(outcome['heads']['api'], self.job['execution']['heads']['api'])
+        self.assertEqual((Path(self.config['state_dir'])/self.job['run_id']/'api'/'docs'/'requested.md').read_text(), '# Requested document\n')
 
     def test_symlink_escape_is_rejected(self):
         tree = self.base/'tree'; tree.mkdir(); (tree/'escape').symlink_to('/etc/passwd')
