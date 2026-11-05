@@ -4,6 +4,7 @@
 Repository code runs only in configured container/VM adapters, never on the host.
 """
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -233,6 +234,33 @@ def reconcile(config, api):
                 cleanup(config, manifest.parent.name, state)
 
 
+def exception_diagnostic(error):
+    """Report system failure kinds without exposing commands, paths or secrets."""
+    code = 'adapter_internal_error'
+    solution = 'Revisa los eventos y artefactos de esta fase; no reintentes sin identificar la causa.'
+    if isinstance(error, subprocess.TimeoutExpired):
+        code = 'adapter_operation_timed_out'
+        solution = 'Una operación excedió su tiempo límite. Revisa su fase y disponibilidad del runtime antes de reintentar.'
+    elif isinstance(error, subprocess.CalledProcessError):
+        code = 'adapter_process_failed'
+        solution = 'Un proceso terminó con error. Revisa su log redactado para corregir la causa.'
+    elif isinstance(error, KeyError):
+        code = 'adapter_configuration_missing'
+        solution = 'Falta un campo requerido en la configuración del adaptador; revisa la configuración aplicada al runner.'
+    elif isinstance(error, OSError):
+        code = 'adapter_os_error_' + errno.errorcode.get(error.errno, type(error).__name__)
+        solution = {
+            errno.ENOSPC: 'El runner no tiene espacio libre. Libera espacio o amplía el disco sin borrar datos de las aplicaciones.',
+            errno.EACCES: 'El runner no tiene permisos para un recurso requerido. Revisa propietario y permisos sin desactivar el aislamiento.',
+            errno.ENOENT: 'Falta un archivo o ejecutable requerido en el runner. Revisa la instalación del runtime y sus referencias.',
+            errno.EMFILE: 'El runner agotó los descriptores de archivo. Revisa procesos y límites antes de reintentar.',
+        }.get(error.errno, 'Falló una operación del sistema en el runner. Revisa el tipo de error y los recursos del runtime.')
+        if str(error) == 'AF_UNIX path too long':
+            code = 'model_relay_socket_path_too_long'
+            solution = 'Actualiza el runner: el relay debe admitir rutas largas sin mover los repositorios ni exponer credenciales.'
+    return {'error': code, 'exception_type': type(error).__name__, 'solution': solution, 'hold': True}
+
+
 def tick_locked(config, roots):
     from execution import isolated_adapter, cleanup, upload, WorkspaceOutputError
     from delivery import services, validate_services, gate, publish
@@ -306,9 +334,9 @@ def tick_locked(config, roots):
         # Avoid exception strings from subprocess/network libraries, which can
         # include private arguments. Workspace diagnostics contain only relative
         # paths, counts/sizes and fixed remediation text; never file contents.
-        message = str(error) if isinstance(error, ValueError) else 'isolated_adapter_failed'
         outcome['output'] = (error.details if isinstance(error, WorkspaceOutputError)
-                             else {'error': message[:1000], 'hold': True})
+                             else {'error': str(error)[:1000], 'hold': True} if isinstance(error, ValueError)
+                             else exception_diagnostic(error))
         if isinstance(error, urllib.error.HTTPError):
             try:
                 code = json.load(error).get('code', '')
