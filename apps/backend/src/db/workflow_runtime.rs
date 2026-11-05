@@ -140,7 +140,7 @@ fn refs(names: &[String]) -> bool {
     names.len() <= 16 && names.iter().all(|s| name(s))
 }
 pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
-    if config.agents.len() > 4 || config.checks.len() > 64 || config.services.len() > 16 {
+    if config.agents.len() > 4 || config.checks.len() > 256 || config.services.len() > 16 {
         bail!("runtime_limits_exceeded")
     }
     let mut roles = std::collections::BTreeSet::new();
@@ -521,6 +521,26 @@ pub fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multi_repository_checks_fit_but_remain_bounded() {
+        let repos = (0..49).map(|i| format!("repo-{i}")).collect::<Vec<_>>();
+        let mut config = RuntimeConfig::default();
+        for i in 0..256 {
+            config.checks.push(Check {
+                name: if i % 2 == 0 { "tests" } else { "build" }.into(),
+                image: format!("sha256:{}", "a".repeat(64)),
+                cwd: repos[i % 49].clone(),
+                command: vec!["node".into(), format!("check-{i}.js")],
+                environment_refs: vec![],
+            });
+        }
+        validate(&config, &repos).unwrap();
+        config.checks.push(config.checks[0].clone());
+        assert_eq!(
+            validate(&config, &repos).unwrap_err().to_string(),
+            "runtime_limits_exceeded"
+        );
+    }
     #[test]
     fn managed_pi_resolves_infrastructure_without_overriding_custom_connections() {
         let mut config: RuntimeConfig=serde_json::from_value(json!({"agents":[{"role":"reviewer","harness":"pi","model":"gpt-example","image":"","network":"","model_connection":""}]})).unwrap();
