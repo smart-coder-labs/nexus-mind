@@ -56,6 +56,13 @@ def redact(text, secrets):
     return text
 
 
+class WorkspaceOutputError(ValueError):
+    def __init__(self, code, path, actual, limit, solution):
+        super().__init__(code)
+        self.details = {'error': code, 'path': path, 'actual': actual,
+                        'limit': limit, 'solution': solution, 'hold': True}
+
+
 def check_tree(root):
     """No devices, sockets, hard links or escaping symlinks from a container."""
     root = root.resolve()
@@ -79,8 +86,14 @@ def check_tree(root):
             elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError('Unsupported workspace file type')
             elif stat.S_ISREG(info.st_mode):
-                if info.st_nlink != 1 or info.st_size > 10 * 1024 * 1024:
-                    raise ValueError('Oversized or hard-linked workspace output')
+                if info.st_nlink != 1:
+                    raise WorkspaceOutputError(
+                        'workspace_hard_link', p.relative_to(root).as_posix(), info.st_nlink, 1,
+                        'Sustituye el enlace duro por una copia independiente en el workspace del runner y reintenta la fase. No modifiques el otro archivo enlazado.')
+                if info.st_size > 10 * 1024 * 1024:
+                    raise WorkspaceOutputError(
+                        'workspace_file_too_large', p.relative_to(root).as_posix(), info.st_size, 10 * 1024 * 1024,
+                        'El archivo supera 10 MiB. Si es generado, retíralo de la entrada/salida del sandbox; si es código necesario, reduce o divide su contenido. Conserva el original y reintenta la fase. Una aprobación no permite omitir este control.')
                 total += info.st_size
                 if total > 256 * 1024 * 1024:
                     raise ValueError('Workspace output quota exceeded')
@@ -90,7 +103,11 @@ def copy_source(source, destination):
     def ignored(_directory, names):
         return [n for n in names if n in IGNORE or n == '.env' or n.startswith('.env.') and not n.endswith(('.example', '.sample', '.template'))]
     shutil.copytree(source, destination, symlinks=True, ignore=ignored)
-    check_tree(destination)
+    try:
+        check_tree(destination)
+    except WorkspaceOutputError as error:
+        error.details['path'] = destination.name + '/' + error.details['path']
+        raise
 
 
 def pinned_image(image):

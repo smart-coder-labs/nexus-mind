@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 import uuid
 import runner
 import execution
@@ -98,6 +99,46 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(passed)
         names=[name for name,_ in self.api.artifacts if name.endswith('.png')]
         self.assertEqual(len(names),2);self.assertEqual(len(set(names)),2)
+
+    def test_workspace_file_diagnostics_preserve_guards_and_reach_completion(self):
+        tree = self.base/'tree'; tree.mkdir()
+        file = tree/'large.bin'
+        with file.open('wb') as stream:
+            stream.truncate(10 * 1024 * 1024)
+        execution.check_tree(tree)
+        with file.open('ab') as stream:
+            stream.write(b'x')
+        with self.assertRaises(execution.WorkspaceOutputError) as caught:
+            execution.check_tree(tree)
+        details = caught.exception.details
+        self.assertEqual(details['error'], 'workspace_file_too_large')
+        self.assertEqual(details['path'], 'large.bin')
+        self.assertEqual(details['actual'], details['limit'] + 1)
+        self.assertTrue(details['solution'])
+        api = Mock()
+        api.call.side_effect = lambda path, data=None: ({'workspaces': []} if path == '/workspaces' else {'job': self.job} if path == '/claim' else {})
+        config = {**self.config, 'api_url': 'http://localhost', 'adapters': {'agent': {}}}
+        with patch.object(runner, 'API', return_value=api), patch.object(runner, 'reconcile'), patch.object(execution, 'isolated_adapter', side_effect=caught.exception):
+            runner.tick_locked(config, [self.root])
+        completion = next(call.args[1] for call in api.call.call_args_list if call.args[0].endswith('/complete'))
+        self.assertFalse(completion['success'])
+        self.assertEqual(completion['outcome']['output'], details)
+        file.unlink()
+        file.write_text('small')
+        os.link(file, tree/'linked.bin')
+        with self.assertRaises(execution.WorkspaceOutputError) as caught:
+            execution.check_tree(tree)
+        self.assertEqual(caught.exception.details['error'], 'workspace_hard_link')
+        self.assertEqual(caught.exception.details['actual'], 2)
+        self.assertEqual(caught.exception.details['limit'], 1)
+        (tree/'linked.bin').unlink()
+        execution.check_tree(tree)
+        destination = self.base/'api-copy'
+        with file.open('wb') as stream:
+            stream.truncate(10 * 1024 * 1024 + 1)
+        with self.assertRaises(execution.WorkspaceOutputError) as caught:
+            execution.copy_source(tree, destination)
+        self.assertEqual(caught.exception.details['path'], 'api-copy/large.bin')
 
     def test_symlink_escape_is_rejected(self):
         tree = self.base/'tree'; tree.mkdir(); (tree/'escape').symlink_to('/etc/passwd')

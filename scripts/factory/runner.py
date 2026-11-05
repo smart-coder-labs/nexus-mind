@@ -234,7 +234,7 @@ def reconcile(config, api):
 
 
 def tick_locked(config, roots):
-    from execution import isolated_adapter, cleanup, upload
+    from execution import isolated_adapter, cleanup, upload, WorkspaceOutputError
     from delivery import services, validate_services, gate, publish
     for manifest in list(Path(config['state_dir']).glob('*/services.json')) + list(Path(config['state_dir']).glob('*/application-images.json')):
         if not manifest.exists(): continue
@@ -304,15 +304,17 @@ def tick_locked(config, roots):
                 git(['reset', '--hard', sha], repo); git(['clean', '-fdx'], repo)
             outcome['heads'] = job['execution']['heads']
         # Avoid exception strings from subprocess/network libraries, which can
-        # include private arguments. Our own validation messages contain no values.
+        # include private arguments. Workspace diagnostics contain only relative
+        # paths, counts/sizes and fixed remediation text; never file contents.
         message = str(error) if isinstance(error, ValueError) else 'isolated_adapter_failed'
-        outcome['output'] = {'error': message[:1000], 'hold': True}
+        outcome['output'] = (error.details if isinstance(error, WorkspaceOutputError)
+                             else {'error': message[:1000], 'hold': True})
         if isinstance(error, urllib.error.HTTPError):
             try:
                 code = json.load(error).get('code', '')
                 outcome['output'] = {'error': code, 'hold': code in ('policy_approval_required', 'policy_never')}
             except (ValueError, OSError): pass
-        print('Workflow step blocked; inspect its events and artifacts', flush=True)
+        print('Workflow step blocked: ' + json.dumps(outcome['output']), flush=True)
     body = {'lease_token': job['lease_token'], 'success': success, 'evidence': evidence, 'outcome': outcome}
     journal = Path(config['state_dir']) / job['run_id'] / 'pending-completion.json'
     journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
