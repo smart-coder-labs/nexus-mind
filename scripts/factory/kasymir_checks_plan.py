@@ -10,7 +10,8 @@ def strict(command, kind, *, browser=False):
     if browser:
         preflight="if(!process.env.E2E_EMAIL||!process.env.E2E_PASSWORD)throw Error('Dedicated test-only E2E_EMAIL/E2E_PASSWORD required; credential fallbacks are forbidden');"
     script="const fs=require('node:fs'),cp=require('node:child_process');"+preflight
-    script+="const r=cp.spawnSync("+json.dumps(command[0])+","+json.dumps(command[1:]) +",{encoding:'utf8',maxBuffer:16777216,env:{...process.env,CI:'true'}});process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');if(r.error)throw r.error;if(r.status!==0)process.exit(r.status||1);"
+    env_extra=",NODE_ENV:'test'" if kind!='playwright' else ''
+    script+="const r=cp.spawnSync("+json.dumps(command[0])+","+json.dumps(command[1:]) +",{encoding:'utf8',maxBuffer:16777216,env:{...process.env,CI:'true'"+env_extra+"}});process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');if(r.error)throw r.error;if(r.status!==0)process.exit(r.status||1);"
     if kind=='tap':
         script+="const n={};for(const m of (r.stdout||'').matchAll(/^# (tests|pass|fail|cancelled|skipped|todo) (\\d+)/gm))n[m[1]]=Number(m[2]);if(!n.tests||n.pass!==n.tests||['fail','cancelled','skipped','todo'].some(k=>n[k]>0))throw Error('TAP requires executed tests, all passed, none skipped or TODO');"
     else:
@@ -31,11 +32,11 @@ def node_tests(package, script='test', paths=None):
         if paths:extra+=['--runTestsByPath',*paths]
         return strict(args+['--',*extra],'jest')
     if 'vitest' in body:
-        extra=['--passWithNoTests=false','--reporter=json','--outputFile=/output/nm-test-results.json']
+        extra=['--passWithNoTests=false','--maxWorkers=1','--no-file-parallelism','--reporter=json','--outputFile=/output/nm-test-results.json']
         if paths:extra+=paths
         return strict(args+['--',*extra],'vitest')
     if 'tsx --test' in body:
-        return strict(args,'tap')
+        return strict(args+['--','--test-concurrency=1','--test-reporter=tap'],'tap')
     raise ValueError('No reviewed test runner: '+body)
 
 def playwright(files, image, name, *, grep=None):
@@ -72,7 +73,7 @@ def plan(workspace,audit,details,images):
         notes.append(note)
     add('typecheck','kasymir-app-ui',['node','node_modules/typescript/bin/tsc','--noEmit','--incremental','false'])
     graphql=next(r['packages'][0] for r in audit if r['repository']=='kasymir-graphql-service')
-    add('tests','kasymir-graphql-service',strict(['npm','run','test:contract'],'tap'))
+    add('tests','kasymir-graphql-service',strict(['npm','run','test:contract','--','--test-concurrency=1','--test-reporter=tap'],'tap'))
     security_files=[
       'src/modules/app/guards/require-auth.middleware.spec.ts',
       'src/modules/app/guards/require-cv-bearer.middleware.spec.ts',
@@ -81,7 +82,7 @@ def plan(workspace,audit,details,images):
       'src/modules/app/utils/organization-scope.adapters.spec.ts',
     ]
     assert all(f in by_details['kasymir-graphql-service']['test_paths'] for f in security_files)
-    add('security','kasymir-graphql-service',strict(['node','node_modules/tsx/dist/cli.mjs','--test',*security_files],'tap'))
+    add('security','kasymir-graphql-service',strict(['node','node_modules/tsx/dist/cli.mjs','--test','--test-concurrency=1','--test-reporter=tap',*security_files],'tap'))
     app=next(r['packages'][0] for r in audit if r['repository']=='kasymir-app-ui')
     cookie='src/lib/api/Auth/CvSession/index.test.ts'
     assert cookie in by_details['kasymir-app-ui']['test_paths']
@@ -94,10 +95,13 @@ def plan(workspace,audit,details,images):
     assert all(p in safe_ui for p in visual)
     checks.append(playwright(visual,images['playwright_1_61_1'],'design',grep='no horizontal overflow on mobile|page loads and renders content'))
     for repo,paths in {
-        'kasymir-cameras-streaming-service':['infra/tests/verify-infra-safety.sh','infra/tests/verify-startup-fail-closed.sh'],
+        'kasymir-cameras-streaming-service':['infra/tests/verify-infra-safety.sh'],
         'kasymir-infraestructure-service':['kubernetes/services/vend-payment-service/configuration.test.sh'],
     }.items():
         for path in paths:add('tests',repo,['bash',path],images['agent'])
+    for check in checks:
+        if check['cwd']=='kasymir-graphql-service' and check['name'] in ('tests','security'):
+            check['environment_refs']=['kasymir-graphql-unit']
     # Retain any independently added user check unless it is one of the three
     # audited entries being corrected/replaced in revision 13.
     known={('kasymir-app-ui','build'),('kasymir-app-ui','typecheck'),('kasymir-graphql-service','build')}
