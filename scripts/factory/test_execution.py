@@ -181,6 +181,35 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse((fresh/'api'/'layer'/'chromium.zip').exists())
         self.assertEqual((fresh/'api'/'code.txt').read_text(), 'fixed\n')
 
+    def test_tracked_env_and_caches_are_excluded_without_blocking_or_deletion(self):
+        repo = Path(self.config['state_dir'])/self.job['run_id']/'api'
+        excluded = ['.env', '.env.bak-1787936750', 'node_modules/cache.js', 'target/build.bin', '.next/cache', '__pycache__/module.pyc', '.claude/settings.json']
+        templates = ['.env.example', '.env.local.sample', '.env.local.template']
+        for name in excluded + templates:
+            file = repo/name
+            file.parent.mkdir(parents=True,exist_ok=True)
+            file.write_text('original '+name)
+        runner.git(['add', '-f', '.'],repo)
+        runner.git(['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','existing environment and caches'],repo)
+        self.job['execution']['heads']['api'] = runner.git(['rev-parse','HEAD'],repo)
+        _, work = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        for name in excluded:
+            self.assertFalse((work/'api'/name).exists(),name)
+        for name in templates:
+            self.assertTrue((work/'api'/name).exists(),name)
+        (work/'api'/'.env').write_text('agent-generated secret')
+        (work/'api'/'.env.new').write_text('must not be published')
+        (work/'api'/'code.txt').write_text('fixed\n')
+        heads = execution.adopt_changes(self.config,self.job,work,runner.git,[])
+        for name in excluded:
+            self.assertEqual((repo/name).read_text(),'original '+name)
+        self.assertFalse((repo/'.env.new').exists())
+        self.assertEqual(runner.git(['diff','--name-only',self.job['execution']['heads']['api'],heads['api']],repo),'code.txt')
+        self.job['execution']['heads'] = heads
+        _, fresh = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        self.assertFalse((fresh/'api'/'.env').exists())
+        self.assertEqual((fresh/'api'/'code.txt').read_text(),'fixed\n')
+
     def test_symlink_escape_is_rejected(self):
         tree = self.base/'tree'; tree.mkdir(); (tree/'escape').symlink_to('/etc/passwd')
         with self.assertRaises(ValueError): execution.check_tree(tree)

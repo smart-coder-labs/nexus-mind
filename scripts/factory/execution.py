@@ -64,7 +64,8 @@ class WorkspaceOutputError(ValueError):
 
 
 def ignored_source(name):
-    return name in IGNORE or name.endswith('.zip')
+    return (name in IGNORE or name.endswith('.zip') or name == '.env'
+            or name.startswith('.env.') and not name.endswith(('.example', '.sample', '.template')))
 
 
 def check_tree(root):
@@ -105,7 +106,7 @@ def check_tree(root):
 
 def copy_source(source, destination):
     def ignored(_directory, names):
-        return [n for n in names if ignored_source(n) or n == '.env' or n.startswith('.env.') and not n.endswith(('.example', '.sample', '.template'))]
+        return [n for n in names if ignored_source(n)]
     shutil.copytree(source, destination, symlinks=True, ignore=ignored)
     try:
         check_tree(destination)
@@ -204,11 +205,6 @@ def stage_sources(job, state_dir, git):
         if actual != heads[repo['path']]:
             raise ValueError('Local checkout differs from the server change set; reconcile before retry')
         git(['diff', '--exit-code', 'HEAD'], source)
-        tracked=git(['ls-files','-z'],source,binary=True).split(b'\0')
-        for item in tracked:
-            path=Path(item.decode())
-            if any(p in IGNORE- {'.git','.claude','.codex'} for p in path.parts) or path.name=='.env' or path.name.startswith('.env.') and not path.name.endswith(('.example','.sample','.template')):
-                raise ValueError('Tracked environment/cache files cannot be silently excluded from verification')
         # This is a marked, runner-owned disposable clone, never a personal repo.
         # Remove untracked build output so the sandbox receives only the commit.
         git(['clean','-fdx'],source)
@@ -476,8 +472,6 @@ def adopt_changes(config, job, work, git, secrets):
             continue
         for p in modified.rglob('*'):
             if p.is_file() and not p.is_symlink() and not any(ignored_source(part) for part in p.relative_to(modified).parts):
-                if p.name == '.env' or p.name.startswith('.env.') and not p.name.endswith(('.example', '.sample', '.template')):
-                    raise ValueError('Environment files cannot be committed')
                 content = p.read_bytes()
                 if any(len(s) >= 4 and s.encode() in content for s in secrets):
                     raise ValueError('Credential detected in generated code')
@@ -493,13 +487,13 @@ def adopt_changes(config, job, work, git, secrets):
             if child.is_dir() and not child.is_symlink(): shutil.copytree(child, target, symlinks=True, ignore=lambda _d,names:[n for n in names if ignored_source(n)])
             elif child.is_symlink(): target.symlink_to(os.readlink(child))
             else: shutil.copy2(child, target)
-        # ponytail: ZIPs are excluded from execution, not deleted from source control.
-        archives = [p for p in git(['ls-files', '-z'], original, binary=True).split(b'\0')
-                    if p and any(part.endswith('.zip') for part in Path(os.fsdecode(p)).parts)]
-        if archives:
+        # ponytail: excluded inputs stay unchanged in Git, never copied into the sandbox.
+        excluded = [p for p in git(['ls-files', '-z'], original, binary=True).split(b'\0')
+                    if p and any(ignored_source(part) for part in Path(os.fsdecode(p)).parts)]
+        if excluded:
             git(['--literal-pathspecs', 'restore', '--source=HEAD', '--worktree',
                  '--pathspec-from-file=-', '--pathspec-file-nul'], original,
-                input_data=b'\0'.join(archives) + b'\0')
+                input_data=b'\0'.join(excluded) + b'\0')
         git(['add', '-A', '--', '.'], original)
         # Deterministic metadata lets the control plane reproduce the exact
         # verified Git object over GitHub's Git Database API without sharing a token.
