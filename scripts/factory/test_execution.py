@@ -89,6 +89,16 @@ class ExecutionTests(unittest.TestCase):
         repo=Path(self.config['state_dir'])/self.job['run_id']/'api'
         self.assertEqual((repo/'code.txt').read_text(),'old\n')
 
+    @unittest.skipUnless(os.environ.get('FACTORY_TEST_IMAGE'), 'Requires immutable Docker fixture')
+    def test_nested_browser_screenshots_are_uploaded_without_name_collisions(self):
+        self.job['step']={'id':'visual','kind':'check','adapter':'qa','write_repositories':[],'timeout_seconds':60}
+        script="from pathlib import Path;import base64;data=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=');[(Path('/output')/d).mkdir(parents=True) for d in ('first','second')];[(Path('/output')/d/'screen.png').write_bytes(data) for d in ('first','second')]"
+        adapter={'kind':'checks','image':os.environ['FACTORY_TEST_IMAGE'],'checks':[{'name':'visual','command':['python3','-c',script]}]}
+        passed,_,_=execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertTrue(passed)
+        names=[name for name,_ in self.api.artifacts if name.endswith('.png')]
+        self.assertEqual(len(names),2);self.assertEqual(len(set(names)),2)
+
     def test_symlink_escape_is_rejected(self):
         tree = self.base/'tree'; tree.mkdir(); (tree/'escape').symlink_to('/etc/passwd')
         with self.assertRaises(ValueError): execution.check_tree(tree)

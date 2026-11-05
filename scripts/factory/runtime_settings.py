@@ -124,7 +124,7 @@ def for_job(config,job,roots,private_file):
     return apply_settings(config,workspace,runtime['config'],report,roots,private_file)
 
 def suite(config,job,profile,roots,api,git,private_file):
-    from execution import isolated_adapter
+    from execution import isolated_adapter, node_bootstrap_image
     from delivery import validate_services
     evidence=[];start=time.monotonic();success=True
     required=set(job['step'].get('options',{}).get('required_checks',[]))
@@ -138,7 +138,7 @@ def suite(config,job,profile,roots,api,git,private_file):
         child['step'].setdefault('options',{})['required_checks']=[unique]
         child['step']['timeout_seconds']=max(1,int(job['step']['timeout_seconds']-(time.monotonic()-start)))
         adapter={'kind':'checks','image':check['image'],'environment_refs':check.get('environment_refs',[]),'checks':[{'name':unique,'cwd':check['cwd'],'command':check['command']}]}
-        if check['image']==config.get('managed_images',{}).get('node'):adapter['node_bootstrap']=True
+        if node_bootstrap_image(config, check['image']):adapter['node_bootstrap']=True
         if role in ('functional','design','security'):adapter['network']='services';validate_services(config,job)
         class NamedArtifacts:
             def call(self,path,data=None):

@@ -1,0 +1,17 @@
+# Operator-reviewed QA SDK. Supply an immutable official Playwright base and
+# the exact version locked by the repository. Never build repository Dockerfiles.
+ARG PLAYWRIGHT_IMAGE
+FROM ${PLAYWRIGHT_IMAGE}
+ARG PLAYWRIGHT_VERSION
+RUN test -n "$PLAYWRIGHT_VERSION" \
+    && apt-get update && apt-get install -y --no-install-recommends python3 git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --prefix /opt/nexusmind/qa --ignore-scripts --no-package-lock --no-audit --no-fund "@playwright/test@${PLAYWRIGHT_VERSION}" \
+    && mkdir -p /usr/local/lib/node_modules \
+    && if [ ! -d /usr/local/lib/node_modules/npm ]; then ln -s "$(npm root -g)/npm" /usr/local/lib/node_modules/npm; fi \
+    && node -e "require('/usr/local/lib/node_modules/npm/node_modules/cacache')" \
+    && python3 --version && node --version
+ENV HOME=/home/runner CI=true NODE_PATH=/opt/nexusmind/qa/node_modules PYTHONDONTWRITEBYTECODE=1
+USER 1000:1000
+WORKDIR /work
+ENTRYPOINT ["python3", "/entry.py"]

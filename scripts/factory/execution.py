@@ -99,6 +99,10 @@ def pinned_image(image):
     return image
 
 
+def node_bootstrap_image(config, image):
+    return bool(image) and (image == config.get('managed_images', {}).get('node') or image in config.get('node_bootstrap_images', []))
+
+
 def runtime_command(config):
     runtime = config.get('container_runtime', 'docker')
     if runtime not in ('docker', 'podman'):
@@ -284,7 +288,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             raise ValueError('Diff context exceeds review budget')
         context['diffs'][repo['path']] = diff
     if adapter.get('node_bootstrap'):
-        if adapter['kind']!='checks' or adapter['image']!=config.get('managed_images',{}).get('node'):
+        if adapter['kind']!='checks' or not node_bootstrap_image(config, adapter['image']):
             raise ValueError('Node environment must be registered by the operator')
         from node_environment import prepare
         started=time.monotonic();last_heartbeat=started
@@ -362,10 +366,11 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             upload(api, job, path.name[:80] + '-' + str(offset), 'text/plain', chunk)
             # High-signal tail for live workflow history, full log in artifacts.
             log_event(api, job, 'log.chunk', chunk.decode(errors='replace')[-2000:])
-    for path in sorted(out.iterdir()):
+    for path in sorted(out.rglob('*')):
         if path.suffix in ('.png', '.jpg', '.jpeg') and path.is_file() and not path.is_symlink():
             mime = 'image/png' if path.suffix == '.png' else 'image/jpeg'
-            upload(api, job, path.name, mime, path.read_bytes())
+            name = path.name if path.parent == out else hashlib.sha256(str(path.relative_to(out)).encode()).hexdigest()[:12] + '-' + path.name
+            upload(api, job, name[:120], mime, path.read_bytes())
     if result['success'] and adapter['kind']=='agent':
         import difflib
         for repo in job['snapshot']['workspace']['repositories']:
