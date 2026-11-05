@@ -31,15 +31,15 @@ const QUOTAS: &[(&str, TierQuota)] = &[
     (
         "free",
         TierQuota {
-            capacity: 100.0,
-            refill_per_sec: 100.0 / 60.0,
+            capacity: 2000.0,
+            refill_per_sec: 2000.0 / 60.0,
         },
     ),
     (
         "team",
         TierQuota {
-            capacity: 1000.0,
-            refill_per_sec: 1000.0 / 60.0,
+            capacity: 2000.0,
+            refill_per_sec: 2000.0 / 60.0,
         },
     ),
     (
@@ -305,17 +305,22 @@ mod tests {
     /// rate_limit middleware is inner so it runs second (after auth populates
     /// `Extension<AuthContext>`).
     fn app_with_rate_limit(store: SqliteStore) -> Router {
+        app_with_rate_limit_state(store).0
+    }
+
+    fn app_with_rate_limit_state(store: SqliteStore) -> (Router, RateLimitState) {
         let rate_state = RateLimitState::new(store.conn());
-        Router::new()
+        let app = Router::new()
             .route("/v1/test", get(|| async { "ok" }))
             .route("/v1/admin/auth/me", get(|| async { "me" }))
             .layer(middleware::from_fn_with_state(
-                rate_state,
+                rate_state.clone(),
                 super::rate_limit,
             ))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
-            .with_state(store)
+            .with_state(store);
+        (app, rate_state)
     }
 
     /// The auth/session bootstrap path must never be rate-limited: a 429 there logs
@@ -324,26 +329,18 @@ mod tests {
     #[tokio::test]
     async fn auth_me_bootstrap_is_exempt_from_rate_limit() {
         let store = make_store();
-        let api_key = {
+        let (user_id, api_key) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-            key
+            let (_, user, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            (user.id, key)
         };
-        let app = app_with_rate_limit(store);
-
-        // Drain the non-exempt path until it actually throttles — do NOT assume that
-        // exactly `capacity` requests is enough.
-        //
-        // The bucket refills continuously (free tier: 100/60 = ~1.67 tokens/sec). The old
-        // version fired exactly 100 requests and asserted the 101st was rejected, which
-        // holds only if those 100 complete in under ~0.6s. Under load — the rest of the
-        // suite running in parallel, a build competing for CPU — they do not, the bucket
-        // refills mid-drain, and the 101st is allowed. The test failed intermittently on
-        // main for reasons that had nothing to do with the code under test.
-        //
-        // So: observe the throttle instead of computing it. The cap is a safety net, not
-        // the assertion.
+        let (app, state) = app_with_rate_limit_state(store);
+        // Router behavior uses a small quota; fixed-clock tests cover all 2000 tokens.
+        let quota = TierQuota { capacity: 2.0, refill_per_sec: 2.0 / 60.0 };
+        let mut bucket = Bucket::new(quota, Instant::now());
+        bucket.tokens = 0.0;
+        state.buckets.insert(user_id, bucket);
         let mut throttled = None;
         for _ in 0..500 {
             let resp = app
@@ -362,10 +359,7 @@ mod tests {
                 break;
             }
         }
-        let throttled = throttled.expect(
-            "the non-exempt path must throttle eventually — 500 requests against a 100-token \
-             bucket refilling at ~1.67/sec cannot all pass",
-        );
+        let throttled = throttled.expect("the pre-exhausted bucket must throttle");
         assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
 
         // The auth bootstrap path must STILL succeed — no logout.
@@ -393,24 +387,27 @@ mod tests {
     #[test]
     fn rate_limit_within_quota_passes_through() {
         let now = Instant::now();
-        let quota = quota_for("free"); // capacity = 100
+        let quota = quota_for("free");
+        assert_eq!(quota.capacity, 2000.0);
+        assert_eq!(quota.refill_per_sec, 2000.0 / 60.0);
+        assert!(quota_for("team").capacity >= quota.capacity);
         let mut bucket = Bucket::new(quota, now);
 
-        // Consume 99 tokens — still allowed.
-        for _ in 0..99 {
+        // Every token through the configured capacity must be usable.
+        for _ in 0..(quota.capacity as usize - 1) {
             assert!(
                 bucket.try_consume(now),
-                "each of the first 99 requests must be allowed"
+                "requests within capacity must be allowed"
             );
         }
-        // 100th (last token) — still allowed.
+        // The final token is still allowed.
         assert!(
             bucket.try_consume(now),
-            "100th request must be allowed on free tier"
+            "the final request within capacity must be allowed"
         );
     }
 
-    /// After exhausting the free-tier bucket the 101st call must be rejected and
+    /// After exhausting the free-tier bucket the next call must be rejected and
     /// `retry_after_secs` must be a positive value.
     #[test]
     fn rate_limit_exhausted_returns_429_with_retry_after() {
@@ -418,13 +415,13 @@ mod tests {
         let quota = quota_for("free");
         let mut bucket = Bucket::new(quota, now);
 
-        // Drain all 100 tokens.
-        for _ in 0..100 {
+        // Drain every token at a fixed clock instant.
+        for _ in 0..quota.capacity as usize {
             bucket.try_consume(now);
         }
 
-        // 101st must be denied.
-        assert!(!bucket.try_consume(now), "101st request must be denied");
+        // Capacity + 1 must still be denied.
+        assert!(!bucket.try_consume(now), "request beyond capacity must be denied");
         assert!(
             bucket.retry_after_secs() > 0,
             "retry_after_secs must be positive when bucket is empty"
@@ -440,12 +437,12 @@ mod tests {
         let mut bucket = Bucket::new(quota, now);
 
         // Drain fully.
-        for _ in 0..100 {
+        for _ in 0..quota.capacity as usize {
             bucket.try_consume(now);
         }
         assert!(
             !bucket.try_consume(now),
-            "bucket must be empty after 100 requests"
+            "bucket must be empty after capacity requests"
         );
 
         // Advance the clock by 61 seconds (> 1-minute window).
@@ -456,19 +453,18 @@ mod tests {
         );
     }
 
-    /// A team-tier bucket (capacity 1000) must not be exhausted after 100 requests
-    /// where a free-tier bucket would be.
+    /// Enterprise retains its higher quota above the 2000/min baseline.
     #[test]
-    fn rate_limit_team_key_higher_quota() {
+    fn rate_limit_enterprise_key_higher_quota() {
         let now = Instant::now();
         let free_quota = quota_for("free");
-        let team_quota = quota_for("team");
+        let team_quota = quota_for("enterprise");
 
         let mut free_bucket = Bucket::new(free_quota, now);
         let mut team_bucket = Bucket::new(team_quota, now);
 
-        // Consume 100 tokens from both.
-        for _ in 0..100 {
+        // Consume the baseline capacity from both.
+        for _ in 0..free_quota.capacity as usize {
             free_bucket.try_consume(now);
             team_bucket.try_consume(now);
         }
@@ -476,12 +472,12 @@ mod tests {
         // Free tier is exhausted.
         assert!(
             !free_bucket.try_consume(now),
-            "free bucket must be exhausted after 100 requests"
+            "free bucket must be exhausted after capacity requests"
         );
-        // Team tier still has plenty of capacity.
+        // Enterprise still has additional capacity.
         assert!(
             team_bucket.try_consume(now),
-            "team bucket must still allow requests after 100 (capacity = 1000)"
+            "enterprise bucket must retain capacity beyond the baseline"
         );
     }
 
@@ -496,7 +492,7 @@ mod tests {
         let mut bucket_b = Bucket::new(quota, now);
 
         // Drain user A fully.
-        for _ in 0..100 {
+        for _ in 0..quota.capacity as usize {
             bucket_a.try_consume(now);
         }
         assert!(!bucket_a.try_consume(now), "user A must be rate-limited");
@@ -621,30 +617,31 @@ mod tests {
             .and_then(|s| s.parse().ok())
             .expect("X-RateLimit-Remaining must be a valid integer");
 
-        assert!(limit > 0, "X-RateLimit-Limit must be positive");
+        assert_eq!(limit, 2000, "the deployed baseline must advertise 2000 requests/minute");
         assert!(
             remaining < limit,
             "X-RateLimit-Remaining ({remaining}) must be less than limit ({limit}) after one request"
         );
     }
 
-    /// Sending 101 requests with a free-tier API key must result in the 101st
-    /// request returning 429 with Retry-After, X-RateLimit-Limit, and
+    /// Exhausting a user's bucket must return 429 with Retry-After, X-RateLimit-Limit, and
     /// X-RateLimit-Remaining headers; the remaining value must be 0.
     #[tokio::test]
     async fn router_rate_limit_returns_429_on_exhaustion_integration() {
         let store = make_store();
-        let api_key = {
+        let (user_id, api_key) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-            key
+            let (_, user, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            (user.id, key)
         };
 
-        let app = app_with_rate_limit(store);
+        let (app, state) = app_with_rate_limit_state(store);
+        let quota = TierQuota { capacity: 2.0, refill_per_sec: 2.0 / 60.0 };
+        state.buckets.insert(user_id, Bucket::new(quota, Instant::now()));
 
-        // The first 100 requests must all succeed (free tier = 100 req/min).
-        for i in 0..100 {
+        // Exercise middleware with a small quota, not thousands of auth requests.
+        for i in 0..2 {
             let resp = app
                 .clone()
                 .oneshot(
@@ -664,17 +661,7 @@ mod tests {
             );
         }
 
-        // Keep going until the limiter actually rejects — do NOT assume the 101st is it.
-        //
-        // Same defect as the sibling test: the bucket refills continuously (~1.67
-        // tokens/sec on the free tier), so "exactly 101 requests" only throttles if the
-        // first hundred complete inside ~0.6s. Under load — the rest of the suite in
-        // parallel, a build competing for CPU — they do not, a token is back, and the
-        // 101st passes. The test then fails for reasons that have nothing to do with the
-        // limiter it is testing.
-        //
-        // Observe the rejection rather than counting to it. The bound is a safety net,
-        // not the assertion.
+        // Allow for clock refill without coupling this check to the production quota.
         let mut resp = None;
         for _ in 0..500 {
             let r = app
@@ -693,10 +680,7 @@ mod tests {
                 break;
             }
         }
-        let resp = resp.expect(
-            "the limiter must reject eventually — 500 further requests against a 100-token \
-             bucket refilling at ~1.67/sec cannot all pass",
-        );
+        let resp = resp.expect("the small router-test bucket must throttle");
 
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(
