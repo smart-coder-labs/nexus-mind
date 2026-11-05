@@ -1,6 +1,6 @@
 # Pi administrado: runtime automático y OAuth solo en el backend
 
-Estado: implementación en `fix/factory-managed-runtime`; no equivale a despliegue ni a aceptación del workflow completo.
+Estado: desplegado el 2026-11-05, SHA `ea81f936853f4979abbc9704650c7e0668698a60`, [release 42006713831](https://github.com/smart-coder-labs/nexus-mind/actions/runs/42006713831). No equivale a aceptación del workflow completo. Evidencia y pendientes: [PUBLICACION_PI_2026-11-05.md](PUBLICACION_PI_2026-11-05.md).
 
 ## Uso
 
