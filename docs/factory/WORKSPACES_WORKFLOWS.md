@@ -122,9 +122,9 @@ Configure functional/design/security adapters with real project QA commands (bro
 
 ### Integrated environment
 
-Under `workspace_profiles[WORKSPACE_UUID].services`, configure each service's pinned image, argv `command`, repository-relative `cwd`, `healthcheck` argv and `environment_refs`. Every service must become healthy. All services run the exact current change-set revision; source fingerprints are checked before/after QA. A new implementation tears down the old environment. Successful/cancelled/blocked runs, revoked runner credentials and expired service TTLs trigger cleanup.
+By default, candidate application environments are detected and built automatically when the runner authorizes `allow_application_builds`; see [automatic environments](AUTO_ENVIRONMENT.md). No per-project image digest is required. Existing explicit services retain precedence. For the advanced/manual alternative, configure `workspace_profiles[WORKSPACE_UUID].services` with each service's pinned image, argv `command`, repository-relative `cwd`, `healthcheck` argv and `environment_refs`. Every service must become healthy. All services run the exact current change-set revision; source fingerprints are checked before/after QA. A new implementation tears down the old environment. Successful/cancelled/blocked runs, revoked runner credentials and expired service TTLs trigger cleanup.
 
-Backend/database dependencies, fixture data and migration commands must be declared in reviewed service/check profiles. No production network or production data is assumed.
+Automatic mode resolves supported Compose dependencies, disposable PostgreSQL identities, initialization mounts and explicit Node `test:seed` fixtures from the candidate. External dependencies, private registries, unsupported manifests and ambiguous topology require an explicit decision/reviewed profile; generic migrations or production data are never guessed. No production network or production data is assumed.
 
 ### Mobile and other platforms
 

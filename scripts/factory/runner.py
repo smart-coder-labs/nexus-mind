@@ -226,9 +226,9 @@ def reconcile(config, api):
                 repo = state / saved['run_id'] / path
                 git(['reset', '--hard', sha], repo); git(['clean', '-fdx'], repo)
         journal.unlink()
-    if any(state.glob('*/services.json')):
+    if any(state.glob('*/services.json')) or any(state.glob('*/application-images.json')):
         active = {r['id']: r['status'] for r in api.call('/runs')['runs']}
-        for manifest in state.glob('*/services.json'):
+        for manifest in list(state.glob('*/services.json')) + list(state.glob('*/application-images.json')):
             if active.get(manifest.parent.name) not in ('running', 'queued'):
                 cleanup(config, manifest.parent.name, state)
 
@@ -236,7 +236,8 @@ def reconcile(config, api):
 def tick_locked(config, roots):
     from execution import isolated_adapter, cleanup, upload
     from delivery import services, validate_services, gate, publish
-    for manifest in Path(config['state_dir']).glob('*/services.json'):
+    for manifest in list(Path(config['state_dir']).glob('*/services.json')) + list(Path(config['state_dir']).glob('*/application-images.json')):
+        if not manifest.exists(): continue
         if time.time()-json.loads(manifest.read_text()).get('created_at',0)>7200:
             cleanup(config,manifest.parent.name,config['state_dir'])
     api = API(config['api_url'], config['runner_token'])
@@ -252,7 +253,7 @@ def tick_locked(config, roots):
             if report['applied_revision'] and report['applied_revision']==workspace['runtime']['revision']:
                 declared,services_config=compile_settings(workspace['runtime']['config'],config)
                 remote_capabilities.extend('adapter:'+name for name in declared)
-                if services_config:remote_capabilities.append('adapter:integrated-environment')
+                if services_config or (workspace['runtime']['config'].get('auto_environment',True) and report.get('auto_environment')):remote_capabilities.append('adapter:integrated-environment')
         repos = discover(workspace['root_path'], roots)
         if repos:
             api.call('/workspaces/' + workspace['id'] + '/inventory', {'repositories': repos})
@@ -349,7 +350,7 @@ def main():
         except (ValueError, OSError, urllib.error.URLError, subprocess.TimeoutExpired) as error:
             if isinstance(error,urllib.error.HTTPError) and error.code==401:
                 from execution import cleanup
-                for manifest in Path(config['state_dir']).glob('*/services.json'):
+                for manifest in list(Path(config['state_dir']).glob('*/services.json')) + list(Path(config['state_dir']).glob('*/application-images.json')):
                     cleanup(config,manifest.parent.name,config['state_dir'])
                 raise SystemExit('Runner credential revoked or rotated; update the private configuration and restart')
             print("Runner tick failed; check connectivity, local roots and registration", flush=True)

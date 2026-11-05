@@ -1,6 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { preservedConfig } from './AutonomousAgentWizard'
+import { preservedConfig, defaultState, buildConfig } from './AutonomousAgentWizard'
 describe('agent configuration preservation', () => {
+  it('shares the Workflow publisher by reference without changing reviewer identity', () => {
+    const state = defaultState('github_issue_resolver')
+    state.repository = 'acme/web'
+    state.githubPublicationConnectorId = 'workflow-publisher'
+    expect(buildConfig(state)).toMatchObject({ github_publication_connector_id: 'workflow-publisher', github_auth: 'server_gh_cli' })
+    expect(preservedConfig(buildConfig(state), 'github_issue_resolver')).not.toHaveProperty('github_publication_connector_id')
+    state.template = 'github_pr_reviewer'
+    state.extraConfig = '{"github_publication_connector_id":"injected"}'
+    expect(buildConfig(state)).not.toHaveProperty('github_publication_connector_id')
+  })
   it('keeps advanced verification and provider settings while rebuilding owned fields', () => {
     const config = {
       repository: 'acme/web',

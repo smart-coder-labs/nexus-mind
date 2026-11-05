@@ -545,9 +545,22 @@ export function RuntimeEditor({
               automáticamente ninguna base o archivo .env de producción.
             </p>
           </div>
-          {!config.services.length && (
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={config.auto_environment !== false} disabled={disabled}
+              onChange={(event) => setConfig((c) => ({ ...c, auto_environment: event.target.checked }))} />
+            Detectar y construir el entorno desde el SHA candidato
+          </label>
+          <p className="text-sm text-muted-foreground">Sin servicios manuales, el workflow detecta Compose, Dockerfile o package.json; construye la aplicación y levanta dependencias desechables. No necesitas escribir un digest. Los secretos y dependencias externas no se deducen de tu máquina.</p>
+          {config.auto_environment !== false && <label className="block space-y-1.5 text-sm">
+            Entrypoints del entorno (opcional, uno por coma)
+            <Input key={revision} defaultValue={(config.environment_entrypoints ?? []).join(', ')} disabled={disabled}
+              onChange={(event) => setConfig((c) => ({ ...c, environment_entrypoints: event.target.value.split(',').map((path) => path.trim()).filter(Boolean) }))}
+              placeholder="api/compose.yaml, web/package.json" />
+            <span className="text-xs text-muted-foreground">Déjalo vacío para detectar. Indica archivos solo si hay varias opciones ambiguas.</span>
+          </label>}
+          {!config.services.length && config.auto_environment === false && (
             <div className="rounded-xl border border-dashed border-border px-5 py-7">
-              <h3 className="font-medium">Define el entorno que verificará el cambio</h3>
+              <h3 className="font-medium">Servicios manuales (alternativa avanzada)</h3>
               <p className="mt-1 text-sm text-muted-foreground">
                 Cada servicio necesita imagen, comando de inicio y healthcheck. El QA espera a que
                 todos estén saludables.

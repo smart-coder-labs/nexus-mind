@@ -10,7 +10,7 @@ No hace falta escribir un digest, una conexión de modelo ni una red. Los adapta
 
 ## Frontera de seguridad
 
-- El runner construye una vez la receta SDK revisada e instalada por el operador, con base y versión Pi fijadas. El contexto de construcción está vacío: nunca se construye un Dockerfile del repositorio ni se incluyen secretos.
+- El runner construye una vez la receta SDK revisada e instalada por el operador, con base y versión Pi fijadas. El contexto de construcción **del SDK** está vacío: no usa Dockerfiles del repositorio ni secretos. La construcción separada de la aplicación candidata se describe en [Entorno automático](AUTO_ENVIRONMENT.md).
 - El ID inmutable resultante se anuncia como `managed_images.agent`. Cada ejecución congela ese ID en su snapshot. Una receta nueva no cambia un snapshot existente.
 - Pi y sus herramientas se ejecutan en el contenedor, con `network=none`, sin Docker socket y con los montajes y límites habituales. Investigador y revisor tienen herramientas y código de solo lectura.
 - Un endpoint de loopback dentro del sandbox intercambia solicitudes y SSE acotados por un socket Unix exclusivo del intento. Solo el proceso del runner puede hablar HTTPS con el backend. El sandbox no recibe la credencial del runner, el lease ni OAuth; su clave aparente es un marcador sin autoridad.
@@ -20,7 +20,7 @@ No hace falta escribir un digest, una conexión de modelo ni una red. Los adapta
 
 ## Habilitación del operador, una vez
 
-1. Desplegar backend, admin y los archivos coordinados del runner: `runner.py`, `execution.py`, `delivery.py`, `container_entry.py`, `runtime_settings.py`, `node_environment.py`, `model_relay.py`, `managed_agent.py`, `Dockerfile.agent`.
+1. Desplegar backend, admin y los archivos coordinados del runner: `runner.py`, `execution.py`, `delivery.py`, `container_entry.py`, `runtime_settings.py`, `node_environment.py`, `model_relay.py`, `managed_agent.py`, `application_environment.py`, `application_node.py`, `Dockerfile.agent` y `requirements.txt`.
 2. Autorizar únicamente la organización aprobada mediante `FACTORY_BACKEND_MODEL_ORG_ID` en el contenedor backend. Sin esta variable, ninguna organización puede usar su cuenta.
 3. Conservar el JSON privado del runner y activar `allow_backend_models: true` y `auto_provision_agent_runtime: true`. Mantener su permiso de configuración remota y sus allowlists existentes. No añadir archivos de autenticación ni claves personales.
 4. Reiniciar el servicio y esperar la construcción/inspección del SDK y el reporte del runner. El digest lo obtiene el programa; no se escribe manualmente.

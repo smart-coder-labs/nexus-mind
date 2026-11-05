@@ -251,10 +251,10 @@ export default function FactoryDigest() {
                   <p className="text-[12px] text-text-tertiary">Stopped {when(run.finished_at)}</p>
                 </div>
                 <Link
-                  to="/factory/runs"
+                  to={`/factory/runs?kind=agent&agent_run=${encodeURIComponent(run.run_id)}`}
                   className="inline-flex h-8 items-center rounded-md border border-border-primary bg-background px-3 text-sm font-medium text-text-secondary transition-apple hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
                 >
-                  Open runs
+                  Open run details
                 </Link>
               </li>
             ))}
@@ -286,9 +286,9 @@ export default function FactoryDigest() {
                   <Scale className="h-4 w-4 shrink-0 text-text-tertiary" aria-hidden="true" />
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium text-text-primary">
+                      <Link to={`/factory/runs?kind=agent&agent_run=${encodeURIComponent(item.run_id)}`} className={cn('text-sm font-medium', LINK_CLASS)}>
                         {item.agent_name}
-                      </span>
+                      </Link>
                       <Badge role="none" size="sm" variant="default">
                         {runStatusLabel(item.run_status)}
                       </Badge>
@@ -313,6 +313,9 @@ export default function FactoryDigest() {
                       </p>
                     )}
                   </div>
+                  <Link to={`/factory/runs?kind=agent&agent_run=${encodeURIComponent(item.run_id)}`} className={LINK_CLASS}>
+                    Ver detalle y evidencia
+                  </Link>
                   {canWrite && (
                     <div className="flex shrink-0 gap-2">
                       <Button

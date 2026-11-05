@@ -146,6 +146,7 @@ interface FormState {
   existingCredentialConnectorId: string
   // shared / repo templates
   repository: string
+  githubPublicationConnectorId: string
   baseBranch: string
   contextRepos: string
   labels: string
@@ -226,6 +227,7 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     loginUrl: '',
     existingCredentialConnectorId: '',
     repository: '',
+    githubPublicationConnectorId: '',
     baseBranch: 'main',
     contextRepos: '',
     labels: '',
@@ -254,6 +256,7 @@ function csv(value: string): string[] {
 export function preservedConfig(config: Record<string, unknown>, template: string) {
   const common = [
     'executor',
+    'github_publication_connector_id',
     'isolation',
     'model',
     'model_source',
@@ -459,6 +462,8 @@ export function buildConfig(state: FormState): Record<string, unknown> {
       delete result.project_id;
     }
   }
+  if (['github_issue_resolver', 'qa'].includes(state.template) && state.githubPublicationConnectorId) result.github_publication_connector_id = state.githubPublicationConnectorId
+  else delete result.github_publication_connector_id
   if (state.executionModel.trim()) result.model = state.executionModel.trim()
   else delete result.model
   if (state.useAgentModelConfig) result.model_source = 'agent'
@@ -524,6 +529,7 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
       : '',
     publishComment: config.publish === 'comment',
     repository: typeof config.repository === 'string' ? config.repository : '',
+    githubPublicationConnectorId: typeof config.github_publication_connector_id === 'string' ? config.github_publication_connector_id : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
     contextRepos: Array.isArray(config.context_repos)
       ? (config.context_repos as string[]).join(', ')
@@ -1145,6 +1151,12 @@ function StepConfig({
     queryFn: () => client.listAutonomousAgents(),
     enabled: ['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template),
   })
+  const publicationConnections = useQuery({
+    queryKey: ['github-publication-connectors'],
+    queryFn: () => client.listAutonomousAgentConnectors(),
+    enabled: ['github_issue_resolver', 'qa'].includes(template),
+  })
+  const publishers = (publicationConnections.data ?? []).filter((connector) => connector.kind === 'target_secret' && connector.health === 'ready' && connector.secret_configured && connector.metadata.purpose === 'factory_workflow_github' && connector.scopes.includes('github:write'))
   const judges = (judgesQuery.data ?? []).filter((agent) => agent.template_key === 'judge')
   const chainAgents = (judgesQuery.data ?? []).filter((agent) => agent.status === 'enabled')
   const linkedinQuery = useQuery({
@@ -1450,6 +1462,14 @@ function StepConfig({
         </div>
       )}
 
+      {['github_issue_resolver', 'qa'].includes(template) && <Field label="Cuenta para publicar en GitHub" hint="Reutiliza una cuenta publicadora de Workflows para crear PRs o issues. La cuenta gh del backend sigue siendo la revisora y la usada por los webhooks; no se cambia su login.">
+        <NativeSelect value={state.githubPublicationConnectorId} onChange={(value) => set('githubPublicationConnectorId', value)}>
+          <option value="">Cuenta gh del backend (comportamiento actual)</option>
+          {state.githubPublicationConnectorId && !publishers.some((connector) => connector.id === state.githubPublicationConnectorId) && <option value={state.githubPublicationConnectorId}>Cuenta no disponible: revisa su conexión</option>}
+          {publishers.map((connector) => <option key={connector.id} value={connector.id}>{connector.name}</option>)}
+        </NativeSelect>
+        {publicationConnections.isError && <p role="alert" className="text-sm text-text-secondary">No se pudieron cargar las cuentas publicadoras. Revisa tus permisos.</p>}
+      </Field>}
       {template === 'github_pr_reviewer' && (
         <div className="space-y-4">
           {state.targetKind === 'project' ? <p className="text-sm text-text-secondary">Project-scoped reviewer: repository access is resolved server-side from this project's linked code repositories. Choose the concrete PR when running, or use requested-review webhooks.</p> : <Field label="Repository (owner/repo)">

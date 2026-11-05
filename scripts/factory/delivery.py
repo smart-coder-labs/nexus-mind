@@ -8,21 +8,34 @@ import subprocess
 import time
 import urllib.error
 from execution import (restrictions, runtime_command, network_name, cleanup, pinned_image,
-                       environment, stage_sources, upload, log_event, tree_fingerprint, check_tree)
+                       environment, stage_sources, upload, log_event, tree_fingerprint, check_tree, runtime_environment)
 
 
 def services(config, job, roots, api, git, private_file):
     profile = config.get('workspace_profiles', {}).get(job['snapshot']['workspace']['id'], {})
     configured = profile.get('services', {})
-    if not configured:
-        raise ValueError('Configure integrated services for this workspace')
+    automatic = not configured and job['snapshot']['workspace'].get('runtime', {}).get('config', {}).get('auto_environment', True)
+    if not configured and not automatic:
+        raise ValueError('Configure integrated services or enable automatic environment detection')
     cleanup(config, job['run_id'], config['state_dir'])
     working, work = stage_sources(job, config['state_dir'], git)
+    if automatic:
+        from application_environment import prepare, EnvironmentDecision
+        try:
+            configured = prepare(config, job, work, api, roots, private_file)
+        except EnvironmentDecision as error:
+            upload(api, job, 'environment-decision.json', 'application/json', json.dumps({'decision': str(error), 'revision': job['execution']['revision'], 'heads': job['execution']['heads']}).encode())
+            raise
     runtime = runtime_command(config)
+    client_env = runtime_environment(config, job['run_id'])
     network = network_name(job['run_id'])
-    subprocess.run([runtime, 'network', 'create', '--internal', '--label', 'nexusmind.run=' + job['run_id'], network], check=True, capture_output=True, timeout=30)
+    try:
+        subprocess.run([runtime, 'network', 'create', '--internal', *(['--opt', 'com.docker.network.bridge.inhibit_ipv4=true'] if runtime == 'docker' else []), '--label', 'nexusmind.run=' + job['run_id'], network], check=True, capture_output=True, timeout=30, env=client_env)
+    except BaseException:
+        cleanup(config, job['run_id'], config['state_dir'])
+        raise
     manifest_path = Path(config['state_dir']) / job['run_id'] / 'services.json'
-    manifest = {'containers': [], 'revision': job['execution']['revision'], 'work': str(work), 'fingerprint': tree_fingerprint(work), 'created_at': time.time()}
+    manifest = {'containers': [], 'revision': job['execution']['revision'], 'work': str(work), 'fingerprint': tree_fingerprint(work), 'created_at': time.time(), 'automatic': automatic}
     manifest_path.write_text(json.dumps(manifest))
     try:
         for alias, service in configured.items():
@@ -35,32 +48,72 @@ def services(config, job, roots, api, git, private_file):
             cwd = service.get('cwd', '')
             if cwd.startswith('/') or '..' in Path(cwd).parts:
                 raise ValueError('Invalid service cwd')
-            command = [runtime, 'run', '-d', '--pull=never', '--name', name, *restrictions(),
-                       '--network', network, '--network-alias', alias, '--workdir', '/work/' + cwd,
-                       '--mount', 'type=bind,src=' + str(work) + ',dst=/work']
-            if runtime=='podman': command += ['--userns=keep-id']
-            for path in refs:
-                command += ['--env-file', str(path)]
-            command += [pinned_image(service['image']), *service['command']]
-            subprocess.run(command, check=True, capture_output=True, timeout=60)
+            limits = restrictions()
+            if automatic and service.get('_postgres'): limits[1] = 'postgres'
+            command = [runtime, 'run', '-d', '--pull=never', '--name', name, *limits,
+                       '--network', network, '--network-alias', alias]
+            if automatic:
+                command += ['--log-driver', 'json-file', '--log-opt', 'max-size=1m', '--log-opt', 'max-file=1', '--env-file', service['_env_file']]
+                for source, target in service['_mounts']:
+                    command += ['--mount', 'type=bind,src=' + source + ',dst=' + target + ',readonly']
+                for target in sorted(set(service['_tmpfs'])):
+                    command += ['--tmpfs', target + ':rw,nosuid,nodev,size=256m,mode=1777']
+                entrypoint = service['_entrypoint']
+                if entrypoint: command += ['--entrypoint', entrypoint[0]]
+                if service.get('working_dir'):
+                    if not service['working_dir'].startswith('/') or '..' in Path(service['working_dir']).parts: raise ValueError('Invalid container working directory')
+                    command += ['--workdir', service['working_dir']]
+                command += [service['_image'], *(entrypoint[1:] if entrypoint else []), *service['_command']]
+            else:
+                command += ['--workdir', '/work/' + cwd, '--mount', 'type=bind,src=' + str(work) + ',dst=/work']
+                for path in refs: command += ['--env-file', str(path)]
+                command += [pinned_image(service['image']), *service['command']]
+            if runtime=='podman': command[2:2] = ['--userns=keep-id']
+            subprocess.run(command, check=True, capture_output=True, timeout=60, env=client_env)
             health = service.get('healthcheck')
-            if not isinstance(health, list) or not health:
+            if automatic:
+                from application_environment import health_command
+                health = health_command(config, name, network, alias, service)
+                if health[1] == 'run':
+                    manifest.setdefault('probes', []).append(health[health.index('--name') + 1])
+                    manifest_path.write_text(json.dumps(manifest))
+            elif not isinstance(health, list) or not health:
                 raise ValueError('Every integrated service needs an executable healthcheck')
             deadline = time.monotonic() + min(120, job['step']['timeout_seconds'])
             while True:
                 api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/lease', {'lease_token': job['lease_token']})
-                check = subprocess.run([runtime, 'exec', name, *health], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-                if check.returncode == 0:
+                if automatic:
+                    state = json.loads(subprocess.check_output([runtime, 'inspect', name], timeout=10, env=client_env))[0]['State']
+                    if not state.get('Running'):
+                        from application_environment import startup_log
+                        startup_log(config, job, name, alias, service, api)
+                        raise ValueError('Candidate service exited before readiness: ' + alias)
+                try:
+                    check = subprocess.run(health if automatic else [runtime, 'exec', name, *health], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, env=client_env)
+                    ready = check.returncode == 0
+                except subprocess.TimeoutExpired:
+                    ready = False
+                    if automatic and health[1] == 'run':
+                        subprocess.run([runtime, 'rm', '-f', health[health.index('--name') + 1]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, env=client_env)
+                if ready:
                     break
                 if time.monotonic() > deadline:
+                    if automatic:
+                        from application_environment import startup_log
+                        startup_log(config, job, name, alias, service, api)
                     raise ValueError('Integrated service failed its healthcheck')
                 time.sleep(2)
             log_event(api, job, 'service.ready', alias)
+            if automatic:
+                from application_environment import startup_log
+                startup_log(config, job, name, alias, service, api)
         validate_services(config, job)
     except BaseException:
         cleanup(config, job['run_id'], config['state_dir'])
         raise
-    report = {'services': list(configured), 'revision': job['execution']['revision'], 'heads': job['execution']['heads']}
+    report = {'services': list(configured), 'revision': job['execution']['revision'], 'heads': job['execution']['heads'], 'automatic': automatic}
+    if automatic:
+        report['applications'] = {name: {'image': service['_image'], 'manifest': service['_manifest'], 'environment_names': sorted(service['_env'])} for name, service in configured.items()}
     a = upload(api, job, 'integrated-environment.json', 'application/json', json.dumps(report, sort_keys=True).encode())
     return True, [{'check': 'environment', 'status': 'pass', 'commits': job['execution']['heads'], 'artifact_digest': a['digest']}], outcome(job, report)
 
@@ -72,6 +125,11 @@ def validate_services(config, job):
     manifest = json.loads(manifest_path.read_text())
     if manifest['revision'] != job['execution']['revision'] or time.time() - manifest['created_at'] > 7200:
         raise ValueError('Integrated environment revision/age is stale')
+    if manifest.get('automatic'):
+        state = subprocess.check_output([runtime_command(config), 'inspect', *manifest['containers']], timeout=15, env=runtime_environment(config, job['run_id']))
+        containers = json.loads(state)
+        if len(containers) != len(manifest['containers']) or any(not c.get('State', {}).get('Running') or c.get('State', {}).get('Health', {}).get('Status') == 'unhealthy' for c in containers):
+            raise ValueError('Candidate application service stopped or became unhealthy')
     # Generated build output is not committed source. Every original input must
     # remain byte/mode-identical; modifications or deletions invalidate services.
     check_tree(Path(manifest['work']))
