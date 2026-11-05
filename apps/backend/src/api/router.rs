@@ -12,7 +12,7 @@ use crate::api::{
     admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
     clients, code, context, conventions, docs, factory, factory_evals, factory_lookback,
     factory_model_config, factory_trajectory, github_auth, harnesses, health, internal, memory,
-    middleware as api_mw, migrations as migrations_api, policy, rate_limit, sdd, search, sessions,
+    middleware as api_mw, migrations as migrations_api, policy, sdd, search, sessions,
     tasks, usage, users, webhooks, workflows, workflow_execution, github_review_hooks,
 };
 use crate::config::Config;
@@ -72,8 +72,6 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             None
         }
     };
-
-    let rate_state = rate_limit::RateLimitState::new(store.conn());
 
     let protected = Router::new()
         .route("/v1/memory/store", post(memory::store))
@@ -820,12 +818,6 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         // audit entry for every successful mutating request whose handler does
         // not already self-log (see middleware::AUDIT_SKIP_PATTERNS).
         .layer(middleware::from_fn_with_state(store.conn(), api_mw::audit))
-        // Rate limit runs after auth (inner layer = runs second at runtime).
-        // Auth is outermost (last `.layer()`) so it runs first.
-        .layer(middleware::from_fn_with_state(
-            rate_state,
-            rate_limit::rate_limit,
-        ))
         .layer(middleware::from_fn_with_state(store.conn(), api_mw::auth));
 
     let cors_origins = config.cors_origins.clone();
