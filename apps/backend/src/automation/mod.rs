@@ -1,6 +1,7 @@
 pub mod codex;
 pub mod pi;
 pub mod connectors;
+pub mod github_publication;
 pub mod factory_intake;
 pub mod factory_evals;
 pub mod workflow_intake;

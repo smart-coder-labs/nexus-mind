@@ -17021,6 +17021,9 @@ pub fn validate_autonomous_agent_definition(
         anyhow::bail!("agent_archived");
     }
     let mut errors = Vec::new();
+    if crate::automation::github_publication::connection(conn, org_id, &current.definition.template_key, &current.revision.config).is_err() {
+        errors.push("github_publication_connection_invalid");
+    }
     if let Some(seconds) = current
         .revision
         .budgets

@@ -110,6 +110,15 @@ def runtime_command(config):
     return runtime
 
 
+def runtime_environment(config, run):
+    # Docker otherwise injects personal proxy settings from ~/.docker/config.json
+    # into builds/containers, even when no --env or --secret was requested.
+    root = Path(config['state_dir']) / run / '.docker-client'
+    if root.is_symlink(): raise ValueError('Unsafe Docker client state')
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return {'PATH': os.defpath, 'HOME': str(root), 'DOCKER_CONFIG': str(root), 'BUILDX_CONFIG': str(root / 'buildx'), 'LANG': 'C', 'XDG_RUNTIME_DIR': '/run/user/' + str(os.getuid())}
+
+
 def network_name(run):
     return 'nm-' + run.replace('-', '')[:28]
 
@@ -140,14 +149,20 @@ def cleanup(config, run, state_dir):
     root = Path(state_dir) / run
     manifest = root / 'services.json'
     if not manifest.exists():
+        if (root / 'application-images.json').exists():
+            from application_environment import cleanup as cleanup_application
+            cleanup_application(config, run)
         return
     services = json.loads(manifest.read_text())
     runtime = runtime_command(config)
-    for name in services.get('containers', []):
-        if not re.fullmatch(r'nm-[a-zA-Z0-9-]+', name):
+    client_env = runtime_environment(config, run)
+    for name in services.get('containers', []) + services.get('probes', []):
+        if not re.fullmatch(r'nm-[a-zA-Z0-9_-]+', name):
             raise ValueError('Unsafe service name')
-        subprocess.run([runtime, 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-    subprocess.run([runtime, 'network', 'rm', network_name(run)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        subprocess.run([runtime, 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, env=client_env)
+    subprocess.run([runtime, 'network', 'rm', network_name(run)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, env=client_env)
+    from application_environment import cleanup as cleanup_application
+    cleanup_application(config, run)
     manifest.unlink(missing_ok=True)
 
 
@@ -189,7 +204,7 @@ def monitor(command, config, job, api, name, log_path, secrets=None):
     deadline = min(job['step']['timeout_seconds'], max(1, job['lease_until'] - int(time.time()) - 5))
     with log_path.open('wb') as stream:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
-                                   env={'PATH': os.defpath, 'HOME': os.environ.get('HOME', '/tmp'), 'LANG': 'C'})
+                                   env=runtime_environment(config, job['run_id']) if command[0] in ('docker', 'podman') else {'PATH': os.defpath, 'HOME': os.environ.get('HOME', '/tmp'), 'LANG': 'C'})
         try:
             while process.poll() is None:
                 if time.monotonic() - started > deadline or log_path.stat().st_size > 16 * MAX_LOG:

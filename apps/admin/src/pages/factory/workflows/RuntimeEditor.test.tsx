@@ -4,6 +4,17 @@ import userEvent from '@testing-library/user-event'
 import { RuntimeEditor } from './RuntimeEditor'
 import { emptyRuntime, parseCommand, formatCommand } from './runtime'
 describe('runtime settings', () => {
+  it('defaults to candidate environment detection without asking for service digests', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    render(<RuntimeEditor repositories={['api', 'web']} section="services" disabled={false} onSave={onSave} />)
+    expect(screen.getByRole('checkbox', { name: 'Detectar y construir el entorno desde el SHA candidato' })).toBeChecked()
+    expect(screen.queryByText('Cada servicio necesita imagen, comando de inicio y healthcheck.')).not.toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: /^Entrypoints del entorno/ }), 'api/compose.yaml, web/package.json')
+    await user.click(screen.getByRole('button', { name: 'Guardar configuración' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    expect(onSave.mock.calls[0][1]).toMatchObject({ auto_environment: true, environment_entrypoints: ['api/compose.yaml', 'web/package.json'], services: [] })
+  })
   it('selects managed Pi without asking for images or losing checks, services or existing Pi models', async () => {
     const value = emptyRuntime()
     value.revision = 8

@@ -24,6 +24,8 @@ export type RuntimeCheck = {
 }
 export type RuntimeService = Omit<RuntimeCheck, 'name'> & { name: string; healthcheck: string[] }
 export type RuntimeConfig = {
+  auto_environment?: boolean
+  environment_entrypoints?: string[]
   agents: RuntimeAgent[]
   checks: RuntimeCheck[]
   services: RuntimeService[]
@@ -35,6 +37,7 @@ export type RuntimeState = {
   missing: string[]
   reported_at?: string | null
   report: {
+    auto_environment?: boolean
     remote_enabled: boolean
     applied_revision: number
     images: string[]
@@ -48,7 +51,7 @@ export type RuntimeState = {
 }
 export const emptyRuntime = (): RuntimeState => ({
   revision: 0,
-  config: { agents: [], checks: [], services: [] },
+  config: { auto_environment: true, environment_entrypoints: [], agents: [], checks: [], services: [] },
   ready: false,
   missing: [
     'remote_setup_disabled',
@@ -61,7 +64,7 @@ export const emptyRuntime = (): RuntimeState => ({
     'check:functional',
     'check:design',
     'check:security',
-    'services',
+    'auto_environment',
     'runner_apply',
   ],
   report: {
@@ -132,7 +135,8 @@ export function blockerLabel(code: string): string {
     (
       {
         remote_setup_disabled: 'Permitir configuración remota en el runner',
-        services: 'Configurar servicios de pruebas',
+        services: 'Configurar servicios de pruebas o activar detección automática',
+        auto_environment: 'Actualizar el runner y autorizar la construcción automática de aplicaciones',
         runner_apply: 'Esperar a que el runner aplique la revisión',
         runner_configuration_error: 'Revisar el rechazo de configuración del runner',
       } as Record<string, string>

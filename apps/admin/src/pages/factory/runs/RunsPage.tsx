@@ -79,6 +79,12 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
     queryFn: () => client.listAutonomousAgentRuns(),
     refetchInterval: () => (selectedRunActive() ? 2500 : false),
   })
+  const linkedRun = useQuery({
+    queryKey: ['autonomous-run', preselect],
+    queryFn: () => client.getAutonomousAgentRun(preselect!),
+    enabled: Boolean(preselect) && runs.isSuccess && !runs.data?.some((run) => run.id === preselect),
+  })
+  const openedLink = useRef<string | null>(null)
   // Model/verification/publication events also arrive during the run.
   const events = useQuery({
     queryKey: ['autonomous-run-events', selectedRun?.id],
@@ -123,11 +129,15 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
   }, [selectedLiveStatus, selectedRun?.id])
   // Arriving from "Resolve with agent" (or any link carrying a run id): open it.
   useEffect(() => {
-    if (preselect && !selectedRun) {
-      const found = runs.data?.find((r) => r.id === preselect)
-      if (found) setSelectedRun(found)
+    if (preselect && openedLink.current !== preselect) {
+      const found = runs.data?.find((r) => r.id === preselect) ?? linkedRun.data
+      if (found) {
+        setSelectedRun(found)
+        if (found.archived_at) setShowArchivedRuns(true)
+        openedLink.current = preselect
+      }
     }
-  }, [preselect, runs.data, selectedRun])
+  }, [preselect, runs.data, linkedRun.data])
 
   const onError = (fallback: string) => (value: unknown) =>
     setActionError(errorMessage(value, fallback))
@@ -224,6 +234,7 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       {actionError && <InlineError message={actionError} onDismiss={() => setActionError('')} />}
+      {linkedRun.isError && <InlineError message="No se pudo abrir esta ejecución. Puede que ya no exista o que no tengas permiso para verla." onRetry={() => void linkedRun.refetch()} />}
 
       {/* Fixed-height board: the list and the run detail each scroll on their own; the page itself stays put. */}
       <div className="grid gap-4 lg:h-[calc(100vh-16rem)] lg:min-h-[520px] lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
