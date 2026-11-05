@@ -2,6 +2,7 @@ pub mod workflows;
 pub mod workflow_execution;
 pub mod workflow_runtime;
 pub mod github_review_hooks;
+pub mod autonomous_scope;
 pub mod connection;
 pub mod doc_queries;
 pub mod factory_intake;

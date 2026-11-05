@@ -24,6 +24,16 @@ Neither the GitHub token nor the shared secret is returned to the UI or sent to 
 
 Existing GitHub App webhooks remain supported at `/v1/autonomous-agents/github/webhook` with their installation-scoped encrypted secret. They use the same requested-review routing rules; App transport authentication does not change the account used to post reviews.
 
+## Project reviewers
+
+In **Factory → Agents → Target**, choose **Project** and select a real NexusMind project. The wizard loads active projects from `/v1/projects`, stores `config.project_id` on the target and reviewer revision, and restores it when editing. A project reviewer has no fixed `config.repository`: the two scope modes are mutually exclusive.
+
+The backend resolves permitted GitHub repositories from active `code_projects` explicitly linked to that exact project id and organization, using their GitHub `repo_url`. Names alone, unlinked indexes, archived projects/repositories, other organizations and child projects do not grant access. At least one linked GitHub repository is required to validate/enable a reviewer. This does not change the Code UI's existing repository-linking rules.
+
+Manual runs choose one repository/PR; the backend rejects out-of-scope repositories. Requested-review routing and reconciliation resolve the same scope, and the worker rechecks live membership before checkout/model invocation. Project reviewers use explicit PR events/manual PR runs rather than generic timed runs.
+
+A GitHub webhook still belongs to one repository. For a multi-repository project reviewer, fill **Repositorio del proyecto** when connecting each webhook. If its scope contains only one repository, the backend selects it automatically. The optional setup token never grants the agent authority over repositories outside the project. Existing repository-scoped reviewers and hooks remain supported. No new database migration is required.
+
 ## Routing
 
 - `opened`, `reopened`, `ready_for_review`, `review_requested`: enqueue only when the CLI account is a requested reviewer (or an active previously requested subscription exists).

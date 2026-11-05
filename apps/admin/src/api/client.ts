@@ -1734,10 +1734,11 @@ export class NexusMindClient {
     definition_id: string,
     public_base_url: string,
     administration_token?: string,
+    repository?: string,
   ): Promise<{ id: string; login: string; status?: string }> {
     return this.request('/v1/autonomous-agents/github/review-hooks', {
       method: 'POST',
-      body: JSON.stringify({ definition_id, public_base_url, administration_token }),
+      body: JSON.stringify({ definition_id, public_base_url, administration_token, repository }),
     })
   }
   disconnectGithubReviewHook(id: string): Promise<{ remote_deleted: boolean }> {

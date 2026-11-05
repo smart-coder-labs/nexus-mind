@@ -30,6 +30,7 @@ import type {
   AutonomousAgentDetail,
   AutonomousAgentTemplate,
   AutonomousAgentTemplateKey,
+  Project,
 } from '../types'
 import {
   codexSupported,
@@ -93,6 +94,7 @@ interface FormState {
   targetKind: string
   targetName: string
   targetPrimary: string // owner/repo or URL
+  targetProjectId: string
   // qa config
   outputSlack: boolean
   outputGithubIssue: boolean
@@ -162,7 +164,7 @@ interface FormState {
   timezone: string
 }
 
-function defaultState(template: AutonomousAgentTemplateKey): FormState {
+export function defaultState(template: AutonomousAgentTemplateKey): FormState {
   return {
     name: '',
     description: '',
@@ -181,6 +183,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
           : 'repository',
     targetName: '',
     targetPrimary: '',
+    targetProjectId: '',
     outputSlack: false,
     outputGithubIssue: false,
     assignIssuesToSelf: false,
@@ -279,6 +282,7 @@ export function preservedConfig(config: Record<string, unknown>, template: strin
       'judge_agent_id',
     ],
     github_pr_reviewer: [
+      'project_id',
       'github_auth',
       'publish',
       'include_drafts',
@@ -316,7 +320,7 @@ export function preservedConfig(config: Record<string, unknown>, template: strin
   return Object.fromEntries(Object.entries(config).filter(([key]) => !owned.has(key)))
 }
 /** Assemble the template configuration object from structured fields. */
-function buildConfig(state: FormState): Record<string, unknown> {
+export function buildConfig(state: FormState): Record<string, unknown> {
   let config: Record<string, unknown> = {}
   if (state.template === 'qa') {
     const outputs = ['nexusmind']
@@ -447,6 +451,14 @@ function buildConfig(state: FormState): Record<string, unknown> {
     ...isolationConfig(state, state.template),
     executor: state.executor,
   }
+  if (state.template === 'github_pr_reviewer') {
+    if (state.targetKind === 'project') {
+      result.project_id = state.targetProjectId;
+      delete result.repository;
+    } else {
+      delete result.project_id;
+    }
+  }
   if (state.executionModel.trim()) result.model = state.executionModel.trim()
   else delete result.model
   if (state.useAgentModelConfig) result.model_source = 'agent'
@@ -473,7 +485,7 @@ function parseJsonObject(raw: string): Record<string, unknown> | null {
 }
 
 /** Derive structured fields from an existing agent's config (edit mode). */
-function stateFromAgent(agent: AutonomousAgentDetail): FormState {
+export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
   const base = defaultState(agent.template_key)
   const config = agent.revision.config as Record<string, unknown>
   const outputs = Array.isArray(config.outputs) ? (config.outputs as string[]) : []
@@ -485,6 +497,8 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     ...base,
     name: agent.name,
     description: agent.description ?? '',
+    targetKind: typeof config.project_id === 'string' ? 'project' : base.targetKind,
+    targetProjectId: typeof config.project_id === 'string' ? config.project_id : '',
     executor:
       config.executor === 'nexus' || config.executor === 'codex' || config.executor === 'pi'
         ? config.executor
@@ -573,6 +587,11 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const isEdit = Boolean(editing)
+  const projectsQuery = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => client.listProjects(),
+    enabled: open,
+  })
 
   const [state, setState] = useState<FormState>(() => defaultState(templates[0]?.key ?? 'qa'))
   const [stepIndex, setStepIndex] = useState(0)
@@ -604,7 +623,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
               : null
           setState((prev) => ({
             ...prev,
-            scheduleKind: schedule.kind,
+            scheduleKind: editing.template_key === 'github_pr_reviewer' && typeof editing.revision.config.project_id === 'string' ? 'manual' : schedule.kind,
             scheduleExpression: iv ? iv.value : (schedule.expression ?? prev.scheduleExpression),
             scheduleUnit: iv ? iv.unit : prev.scheduleUnit,
             timezone: schedule.timezone || prev.timezone,
@@ -614,13 +633,17 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
       void client
         .listAutonomousAgentTargets(editing.id)
         .then((targets) => {
-          const first = targets.find((item) => item.enabled) ?? targets[0]
+          const projectId = editing.revision.config.project_id
+          const first = typeof projectId === 'string'
+            ? targets.find((item) => item.enabled && item.kind === 'project' && item.config.project_id === projectId)
+            : targets.find((item) => item.enabled) ?? targets[0]
           if (first)
             setState((prev) => ({
               ...prev,
               targetKind: first.kind,
               targetName: first.name,
               targetPrimary: primaryFromTargetConfig(first.config),
+              targetProjectId: typeof first.config.project_id === 'string' ? first.config.project_id : prev.targetProjectId,
               existingCredentialConnectorId: first.credential_connector_id ?? '',
             }))
         })
@@ -681,7 +704,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
         })
         credentialConnectorId = connector.id
       }
-      if (state.targetName.trim() || state.targetPrimary.trim()) {
+      if (state.targetName.trim() || state.targetPrimary.trim() || state.targetProjectId) {
         await client.putAutonomousAgentTarget(agentId, {
           kind: state.targetKind,
           name: state.targetName.trim() || 'Target',
@@ -777,7 +800,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
             onChange={(key) => setState({ ...defaultState(key) })}
           />
         )}
-        {step.id === 'target' && <StepTarget state={state} set={set} />}
+        {step.id === 'target' && <StepTarget state={state} set={set} projects={projectsQuery.data ?? []} projectsLoading={projectsQuery.isPending} projectsError={projectsQuery.isError} />}
         {step.id === 'config' && (
           <StepConfig
             state={state}
@@ -850,7 +873,7 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'template':
       return Boolean(state.template)
     case 'target':
-      return true // target is optional
+      return state.targetKind !== 'project' || Boolean(state.targetProjectId)
     case 'config':
       if ('error' in parseAllowedHosts(state.allowedHosts)) return false
       if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor))
@@ -895,6 +918,7 @@ function validateStep(id: StepId, state: FormState): boolean {
         return state.judgeAgentId.trim().length > 0
       return true
     case 'schedule':
+      if (state.template === 'github_pr_reviewer' && state.targetKind === 'project') return state.scheduleKind === 'manual'
       if (state.scheduleKind === 'manual') return true
       if (state.scheduleKind === 'interval')
         return intervalToMinutes(state.scheduleExpression, state.scheduleUnit) >= 15
@@ -912,7 +936,8 @@ function primaryFromTargetConfig(config: Record<string, unknown>): string {
   return ''
 }
 
-function buildTargetConfig(state: FormState): Record<string, unknown> {
+export function buildTargetConfig(state: FormState): Record<string, unknown> {
+  if (state.targetKind === 'project') return { project_id: state.targetProjectId }
   const value = state.targetPrimary.trim()
   if (!value) return {}
   if (state.targetKind === 'web_application') {
@@ -1014,12 +1039,18 @@ function NativeSelect({
   )
 }
 
-function StepTarget({
+export function StepTarget({
   state,
   set,
+  projects,
+  projectsLoading,
+  projectsError,
 }: {
   state: FormState
   set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
+  projects: Project[]
+  projectsLoading: boolean
+  projectsError: boolean
 }) {
   const isWeb = state.targetKind === 'web_application'
   if (state.template === 'lead_generation') {
@@ -1046,7 +1077,10 @@ function StepTarget({
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Target type">
-          <NativeSelect value={state.targetKind} onChange={(value) => set('targetKind', value)}>
+          <NativeSelect value={state.targetKind} onChange={(value) => {
+            set('targetKind', value)
+            if (value === 'project' && state.template === 'github_pr_reviewer') set('scheduleKind', 'manual')
+          }}>
             <option value="web_application">Web application</option>
             <option value="repository">Repository</option>
             <option value="project">Project</option>
@@ -1057,11 +1091,23 @@ function StepTarget({
             inputSize="sm"
             value={state.targetName}
             onChange={(event) => set('targetName', event.target.value)}
-            placeholder={isWeb ? 'Staging web app' : 'app repo'}
+            placeholder={isWeb ? 'Staging web app' : state.targetKind === 'project' ? 'Product project' : 'app repo'}
           />
         </Field>
       </div>
-      <Field
+      {state.targetKind === 'project' ? (
+        <>
+          <Field label="Project" hint="Choose the NexusMind project. PR reviewers act only on GitHub repositories explicitly linked to this project in Code.">
+            <NativeSelect value={state.targetProjectId} onChange={(value) => set('targetProjectId', value)}>
+              <option value="">{projectsLoading ? 'Loading projects…' : 'Select a project'}</option>
+              {state.targetProjectId && !projects.some(project => project.id === state.targetProjectId) && <option value={state.targetProjectId}>Unavailable project</option>}
+              {projects.filter(project => !project.archived_at).map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </NativeSelect>
+          </Field>
+          {projectsError && <p role="alert" className="text-sm text-text-secondary">Could not load projects. Check your permissions and try again.</p>}
+          {!projectsLoading && !projectsError && projects.length === 0 && <p className="text-sm text-text-secondary">No projects available. Create a project first.</p>}
+        </>
+      ) : <Field
         label={isWeb ? 'URL' : 'Repository (owner/repo)'}
         hint={
           isWeb
@@ -1075,7 +1121,7 @@ function StepTarget({
           onChange={(event) => set('targetPrimary', event.target.value)}
           placeholder={isWeb ? 'https://staging.example.com' : 'acme/web'}
         />
-      </Field>
+      </Field>}
     </div>
   )
 }
@@ -1406,14 +1452,14 @@ function StepConfig({
 
       {template === 'github_pr_reviewer' && (
         <div className="space-y-4">
-          <Field label="Repository (owner/repo)">
+          {state.targetKind === 'project' ? <p className="text-sm text-text-secondary">Project-scoped reviewer: repository access is resolved server-side from this project's linked code repositories. Choose the concrete PR when running, or use requested-review webhooks.</p> : <Field label="Repository (owner/repo)">
             <Input
               inputSize="sm"
               value={state.repository}
               onChange={(event) => set('repository', event.target.value)}
               placeholder="acme/web"
             />
-          </Field>
+          </Field>}
           <Switch
             checked={state.includeDrafts}
             onCheckedChange={(value) => set('includeDrafts', value)}
@@ -2196,6 +2242,7 @@ function StepSchedule({
   state: FormState
   set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
 }) {
+  if (state.template === 'github_pr_reviewer' && state.targetKind === 'project') return <p className="text-sm text-text-secondary">Project reviewers run for a specific PR, through Run now or requested-review webhooks and reconciliation. Timed generic runs are not supported.</p>
   const manual = state.scheduleKind === 'manual'
   const interval = state.scheduleKind === 'interval'
   const intervalMinutes = interval

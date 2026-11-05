@@ -2201,7 +2201,7 @@ async fn publish_template_output(store:&SqliteStore,claim:&queries::ClaimedAuton
                 let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
                 let mut report=crate::db::factory_queries::get_verification_report(&conn,&claim.org_id,&claim.run.id,&head)?.ok_or_else(||anyhow::anyhow!("verification_evidence_missing"))?;
                 report.checks.retain(|c|!c.name.starts_with("ci:"));report.blocking_failures.retain(|name|!name.starts_with("ci:"));
-                report.checks.extend(ci.checks.clone());report.blocking_failures.extend(ci.blocking_failures.clone());report.passed=report.blocking_failures.is_empty();report.eligible_for_merge=report.passed;report.human_approval_required=!report.passed;
+                report.checks.extend(ci.checks.clone());report.blocking_failures.extend(ci.blocking_failures.clone());report.passed=report.blocking_failures.is_empty();report.eligible_for_merge=report.passed;report.human_approval_required = !report.passed;
                 crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
                 queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.ci",&json!({"head_sha":head,"pull_request":number,"passed":ci.passed,"checks":ci.checks}))?;
             }
@@ -4713,6 +4713,14 @@ async fn execute_claim(
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
+    // Project membership may change after enqueue. Recheck before checkout or model calls.
+    if claim.template_key == "github_pr_reviewer" && claim.config.get("project_id").is_some() {
+        let repository = claim.config.pointer("/trigger/repository").and_then(|value| value.as_str());
+        let db = store.conn();
+        let allowed = repository.is_some_and(|repo| db.lock().ok().is_some_and(|conn|
+            crate::db::autonomous_scope::authorize_review(&conn, &claim.org_id, &claim.config, repo).is_ok()));
+        if !allowed { return ("blocked_policy".into(), json!({"code":"repository_not_allowed"})); }
+    }
     let executor = match queries::autonomous_executor(&claim.config) {
         Ok(executor @ ("nexus" | "claude" | "codex" | "pi")) => executor,
         _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),

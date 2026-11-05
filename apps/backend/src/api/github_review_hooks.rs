@@ -39,6 +39,9 @@ fn callback(base: &str, id: &str) -> anyhow::Result<String> {
 pub struct Register {
     pub definition_id: String,
     pub public_base_url: String,
+    /// Required only when a project reviewer has multiple linked repositories.
+    #[serde(default)]
+    pub repository: Option<String>,
     /// Optional setup-only credential. Never persisted or used by reviewers.
     #[serde(default)]
     pub administration_token: Option<String>,
@@ -113,10 +116,12 @@ pub async fn register(
         {
             return Err(fail(anyhow::anyhow!("enabled_valid_reviewer_required")));
         }
-        d.revision.config["repository"]
-            .as_str()
-            .ok_or_else(|| fail(anyhow::anyhow!("reviewer_repository_missing")))?
-            .to_ascii_lowercase()
+        let allowed = crate::db::autonomous_scope::reviewer_repositories(&c, &auth.org_id, &d.revision.config).map_err(fail)?;
+        let repository = b.repository.as_deref().map(str::trim).filter(|repo| !repo.is_empty())
+            .or_else(|| (allowed.len() == 1).then(|| allowed[0].as_str()))
+            .ok_or_else(|| fail(anyhow::anyhow!("Select a linked repository for this project reviewer")))?;
+        crate::db::autonomous_scope::authorize_review(&c, &auth.org_id, &d.revision.config, repository).map_err(fail)?;
+        repository.to_ascii_lowercase()
     };
     connectors::validate_repository(&repository).map_err(fail)?;
     if !crate::crypto::is_configured() {

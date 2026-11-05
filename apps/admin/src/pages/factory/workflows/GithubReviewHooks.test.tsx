@@ -67,6 +67,7 @@ describe('GitHub review hooks', () => {
         'reviewer',
         'https://api.example.com',
         'setup-only-fixture',
+        undefined,
       ),
     )
     await waitFor(() => expect(input).toHaveValue(''))
@@ -92,11 +93,19 @@ describe('GitHub review hooks', () => {
         'reviewer',
         'https://api.example.com',
         undefined,
+        undefined,
       ),
     )
     expect(
       screen.getByLabelText('Token de administración del webhook (opcional)'),
     ).not.toBeRequired()
+  })
+  it('passes an explicit linked repository for a project reviewer', async () => {
+    show(permissions)
+    const user = await fill()
+    await user.type(screen.getByLabelText('Repositorio del proyecto (opcional)'), 'acme/web')
+    await user.click(screen.getByRole('button', { name: 'Conectar webhook de GitHub' }))
+    await waitFor(() => expect(api.registerGithubReviewHook).toHaveBeenCalledWith('reviewer', 'https://api.example.com', undefined, 'acme/web'))
   })
   it('explains how to configure a missing reviewer instead of showing an unusable selector', async () => {
     api.listAutonomousAgents.mockResolvedValue([])

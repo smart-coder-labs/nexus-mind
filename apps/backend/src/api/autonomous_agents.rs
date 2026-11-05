@@ -52,6 +52,7 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "invalid_configuration"
         | "invalid_status"
         | "invalid_schedule_kind"
+        | "project_reviewer_requires_pr"
         | "schedule_expression_required"
         | "interval_too_short"
         | "invalid_timezone"
@@ -80,6 +81,10 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "invalid_slack_webhook"
         | "invalid_target_kind"
         | "invalid_target"
+        | "invalid_project_scope"
+        | "ambiguous_reviewer_scope"
+        | "project_repository_required"
+        | "repository_not_allowed"
         | "invalid_target_connector"
         | "invalid_finding_status"
         | "invalid_retention_days" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
@@ -243,7 +248,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:review".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 1, "max_cost_usd": 10, "max_changed_lines": 1200, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"publish":{"enum":["comment_or_request_changes"]},"include_drafts":{"type":"boolean","default":false},"custom_instructions":{"type":"string","description":"Optional free-text guidance for what the review should focus on; cannot approve, merge, or publish"}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","description":"Fixed repository; mutually exclusive with project_id"},"project_id":{"type":"string","description":"NexusMind project id; reviews only its explicitly linked, active GitHub code repositories"},"github_auth":{"const":"server_gh_cli"},"publish":{"enum":["comment_or_request_changes"]},"include_drafts":{"type":"boolean","default":false},"custom_instructions":{"type":"string","description":"Optional free-text guidance for what the review should focus on; cannot approve, merge, or publish"}}),
             workflow: vec![
                 "pin_head".into(),
                 "bounded_diff".into(),
@@ -727,8 +732,20 @@ pub async fn run_now(
         }
         Some(serde_json::json!({ "trigger": trigger }))
     } else if definition.template_key == "github_pr_reviewer" {
-        // The PR to review is chosen per run (not baked into the agent).
-        body.as_ref().and_then(|b| b.targets.first()).map(|target| {
+        let revision = queries::get_autonomous_agent_revision(&conn, &id, definition.current_revision)
+            .map_err(store_error)?.ok_or_else(not_found)?;
+        let targets = body.as_ref().map(|body| body.targets.as_slice()).unwrap_or_default();
+        if targets.len() > 1 || (targets.is_empty() && revision.config.get("project_id").is_some()) {
+            return Err(error(StatusCode::BAD_REQUEST, "review_target_required", "Choose one PR and its repository for this project reviewer."));
+        }
+        if let Some(target) = targets.first() {
+            if target.kind != "pr" || target.number == 0 {
+                return Err(error(StatusCode::BAD_REQUEST, "invalid_target", "Choose a PR with a positive number."));
+            }
+            crate::db::autonomous_scope::authorize_review(&conn, &auth.org_id, &revision.config, &target.repository).map_err(store_error)?;
+        }
+        // The PR to review is chosen per run, bounded to the current project/repo scope.
+        targets.first().map(|target| {
             serde_json::json!({
                 "trigger": {
                     "kind": "github_pr",

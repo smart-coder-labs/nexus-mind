@@ -632,6 +632,7 @@ pub fn claim(
     Ok(job)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn complete(
     conn: &Connection,
     org: &str,
@@ -647,6 +648,7 @@ pub fn complete(
         conn, org, runner, run, step_id, fence, success, evidence, None, now,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub fn complete_with_outcome(
     conn: &Connection,
     org: &str,

@@ -26,6 +26,7 @@ export function GithubReviewHooks() {
         a.validation_status === 'valid',
     ) ?? []
   const [agent, setAgent] = useState('')
+  const [repository, setRepository] = useState('')
   const [base, setBase] = useState(import.meta.env.VITE_API_URL ?? '')
   const [administrationToken, setAdministrationToken] = useState('')
   const [busy, setBusy] = useState(false)
@@ -132,6 +133,7 @@ export function GithubReviewHooks() {
                 agent,
                 base,
                 administrationToken.trim() || undefined,
+                repository.trim() || undefined,
               )
               setNotice(
                 `${r.status === 'configured' ? 'Webhook ya configurado' : 'Webhook conectado'} para ${r.login}. Solicita revisión a esa cuenta en GitHub.`,
@@ -145,10 +147,10 @@ export function GithubReviewHooks() {
               className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
               required
               value={agent}
-              onChange={(e) => setAgent(e.target.value)}
+              onChange={(e) => { setAgent(e.target.value); setRepository('') }}
             >
               <option value="">
-                Seleccionar agente · el repositorio viene de su configuración
+                Seleccionar agente · repositorio fijo o proyecto
               </option>
               {reviewers.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -166,6 +168,11 @@ export function GithubReviewHooks() {
               antes de conectar el repositorio.
             </p>
           )}
+          <label className="block space-y-1.5 text-sm">
+            Repositorio del proyecto (opcional)
+            <Input value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="owner/repo" />
+          </label>
+          <p className="text-xs text-muted-foreground">Si el proyecto tiene varios repositorios vinculados, elige cuál conectar. Cada webhook es por repositorio; el backend comprueba que pertenezca al proyecto.</p>
           <label className="block space-y-1.5 text-sm">
             URL pública HTTPS del backend
             <Input

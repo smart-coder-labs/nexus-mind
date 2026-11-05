@@ -17074,7 +17074,16 @@ pub fn validate_autonomous_agent_definition(
                 errors.push("github_configuration_required")
             }
         }
-        "github_issue_resolver" | "github_pr_reviewer" => {
+        "github_pr_reviewer" => {
+            if super::autonomous_scope::reviewer_repositories(conn, org_id, &current.revision.config).is_err() {
+                errors.push("valid_repository_or_project_required");
+            }
+            if current.revision.config.get("project_id").is_some() && get_autonomous_agent_schedule(conn, org_id, id)?
+                .is_some_and(|schedule| schedule.enabled && schedule.kind != "manual") {
+                errors.push("project_reviewer_requires_pr");
+            }
+        }
+        "github_issue_resolver" => {
             match current
                 .revision
                 .config
@@ -17514,6 +17523,13 @@ pub fn put_autonomous_agent_schedule(
     };
     if definition.status == "archived" {
         anyhow::bail!("agent_archived");
+    }
+    if req.enabled && req.kind != "manual" && definition.template_key == "github_pr_reviewer" {
+        let revision = get_autonomous_agent_revision(conn, definition_id, definition.current_revision)?
+            .ok_or_else(|| anyhow::anyhow!("revision_missing"))?;
+        if revision.config.get("project_id").is_some() {
+            anyhow::bail!("project_reviewer_requires_pr");
+        }
     }
     if !matches!(req.misfire_policy.as_str(), "run_once" | "skip") {
         anyhow::bail!("invalid_misfire_policy");
@@ -17969,7 +17985,7 @@ pub fn claim_next_autonomous_agent_run(
         // The wizard stores a repository-based agent's repo in a `repository` target,
         // not in config.repository. Materialize it so prepare_repository and the rest
         // of the run (which read config.repository) find it when it isn't set directly.
-        if object.get("repository").and_then(|v| v.as_str()).is_none() {
+        if object.get("project_id").is_none() && object.get("repository").and_then(|v| v.as_str()).is_none() {
             if let Some(repo) = targets.iter().find_map(|t| {
                 if t.kind == "repository" && t.enabled {
                     t.config
@@ -18629,8 +18645,8 @@ pub fn record_github_webhook_delivery(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub enum GithubRunOrigin<'a> { Webhook(&'a str), Reconciliation(&'a str) }
+#[allow(clippy::too_many_arguments)]
 pub fn enqueue_github_webhook_agents(
     conn: &Connection,
     org_id: &str,
@@ -18656,20 +18672,23 @@ pub fn enqueue_github_webhook_agents(
         _ => anyhow::bail!("invalid_work_item_kind"),
     };
     let mut stmt = conn.prepare(
-        "SELECT d.id FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
+        "SELECT d.id,r.config_json FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
          ON r.definition_id=d.id AND r.revision=d.current_revision
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key=?2
-           AND lower(json_extract(r.config_json,'$.repository'))=lower(?3)
            AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'",
     )?;
     let ids = stmt
-        .query_map(rusqlite::params![org_id, template, repository], |row| {
-            row.get::<_, String>(0)
+        .query_map(rusqlite::params![org_id, template], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
     let mut created = 0;
-    for definition_id in ids {
+    for (definition_id, raw_config) in ids {
+        let config: serde_json::Value = serde_json::from_str(&raw_config)?;
+        let scope = if template == "github_pr_reviewer" { config } else { serde_json::json!({"repository":config["repository"]}) };
+        let allowed = super::autonomous_scope::reviewer_repositories(conn, org_id, &scope).unwrap_or_default();
+        if !allowed.iter().any(|repo| repo.eq_ignore_ascii_case(&repository)) { continue; }
         if kind == "github_issue" {
             let already_owned: bool = conn.query_row(
                 "SELECT EXISTS(
@@ -18736,7 +18755,7 @@ pub fn list_github_reconciliation_sources(
 ) -> Result<Vec<GithubReconciliationSource>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT d.org_id,d.template_key,
-                json_extract(r.config_json,'$.repository'),
+                r.config_json,
                 COALESCE(json_extract(r.config_json,'$.github_connector_id'),'server_gh_cli')
          FROM autonomous_agent_definitions d
          JOIN autonomous_agent_revisions r
@@ -18749,20 +18768,25 @@ pub fn list_github_reconciliation_sources(
            AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'
            AND (c.health='ready' OR json_extract(r.config_json,'$.github_connector_id') IS NULL)
            AND d.template_key IN('github_issue_resolver','github_pr_reviewer')
-           AND json_extract(r.config_json,'$.repository') IS NOT NULL
-         ORDER BY d.org_id,d.template_key,json_extract(r.config_json,'$.repository')
+           AND (json_extract(r.config_json,'$.repository') IS NOT NULL OR (d.template_key='github_pr_reviewer' AND json_extract(r.config_json,'$.project_id') IS NOT NULL))
+         ORDER BY d.org_id,d.template_key,r.config_json
          LIMIT 100",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(GithubReconciliationSource {
-            org_id: row.get(0)?,
-            template_key: row.get(1)?,
-            repository: row.get(2)?,
-            connector_id: row.get(3)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut sources = Vec::new();
+    for (org_id, template_key, raw, connector_id) in rows {
+        let config: serde_json::Value = serde_json::from_str(&raw)?;
+        let scope = if template_key == "github_pr_reviewer" { config } else { serde_json::json!({"repository":config["repository"]}) };
+        for repository in super::autonomous_scope::reviewer_repositories(conn, &org_id, &scope).unwrap_or_default() {
+            if !sources.iter().any(|source: &GithubReconciliationSource| source.org_id == org_id && source.template_key == template_key && source.repository == repository && source.connector_id == connector_id) {
+                sources.push(GithubReconciliationSource {org_id:org_id.clone(),template_key:template_key.clone(),repository,connector_id:connector_id.clone()});
+            }
+            if sources.len() == 100 { return Ok(sources); }
+        }
+    }
+    Ok(sources)
 }
 
 pub fn create_autonomous_output_link(
@@ -19097,6 +19121,14 @@ pub fn put_autonomous_agent_target(
     if req.name.trim().is_empty() || !req.config.is_object() {
         anyhow::bail!("invalid_target")
     }
+    let project_id = if req.kind == "project" {
+        let id = req.config.get("project_id").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("invalid_target"))?;
+        if get_project_by_id(conn, org_id, id)?.filter(|project| project.archived_at.is_none()).is_none() {
+            anyhow::bail!("invalid_target");
+        }
+        Some(id)
+    } else { None };
     if let Some(connector) = req.credential_connector_id.as_deref() {
         let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_connectors WHERE id=?1 AND org_id=?2 AND health!='revoked')",rusqlite::params![connector,org_id],|r|r.get(0))?;
         if !exists {
@@ -19112,7 +19144,7 @@ pub fn put_autonomous_agent_target(
         rusqlite::params![org_id, definition_id, req.name.trim()],
     )?;
     let id = Uuid::new_v4().to_string();
-    conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64])?;
+    conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled,project_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64,project_id])?;
     conn.query_row("SELECT id,definition_id,kind,name,config_json,credential_connector_id,enabled,created_at,updated_at FROM autonomous_agent_targets WHERE id=?1 AND org_id=?2",rusqlite::params![id,org_id],autonomous_target_from_row).optional().map_err(Into::into)
 }
 

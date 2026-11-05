@@ -103,6 +103,7 @@ pub fn artifacts(c: &Connection, run: &str) -> Result<Vec<Value>> {
     let rows=s.query_map([run],|r|Ok(json!({"id":r.get::<_,String>(0)?,"step_id":r.get::<_,String>(1)?,"attempt":r.get::<_,u32>(2)?,"name":r.get::<_,String>(3)?,"mime":r.get::<_,String>(4)?,"digest":r.get::<_,String>(5)?,"size":r.get::<_,usize>(6)?,"created_at":r.get::<_,String>(7)?})))?.collect::<rusqlite::Result<_>>()?;
     Ok(rows)
 }
+#[allow(clippy::too_many_arguments)]
 pub fn put_artifact(
     c: &Connection,
     org: &str,
