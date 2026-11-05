@@ -32,6 +32,22 @@ def bootstrap_node(root, output):
     return 0
 
 
+def parse_pi(raw):
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    if len(events) > 100000 or len(raw) > 16 * 1024 * 1024:
+        raise ValueError('Pi event limit exceeded')
+    settled = next((e for e in reversed(events) if e.get('type') == 'agent_settled'), {})
+    messages = [e['message'] for e in events if e.get('type') == 'message_end' and e.get('message', {}).get('role') == 'assistant']
+    if settled.get('aborted', True) or not messages or messages[-1].get('stopReason') != 'stop':
+        raise ValueError('Pi run incomplete or failed')
+    text = '\n'.join(b['text'] for b in messages[-1].get('content', []) if b.get('type') == 'text')
+    result = json.loads(text)
+    result['cost_usd'] = 0  # Subscription usage, not an API invoice. Never trust model-reported cost.
+    result['billing'] = 'subscription_not_invoice'
+    result['usage'] = {key: sum(max(0, int(m.get('usage', {}).get(key, 0))) for m in messages) for key in ('input', 'output', 'cacheRead', 'cacheWrite')}
+    return result
+
+
 def main():
     context = json.loads(Path('/input/context.json').read_text())
     adapter = json.loads(Path('/input/adapter.json').read_text())
@@ -69,8 +85,16 @@ def main():
         if adapter.get('format') == 'claude':
             command += ['-p', '--output-format', 'stream-json', '--verbose', '--setting-sources', 'user', '--strict-mcp-config',
                         '--max-budget-usd', str(context['remaining_cost_usd'])]
+        env = dict(os.environ)
+        if adapter.get('model_connection') == 'backend':
+            from model_relay import PI_SETTINGS, pi_configuration, serve_local
+            server = serve_local('/model')
+            directory = Path(tempfile.mkdtemp(prefix='nm-pi-', dir='/tmp'))
+            (directory / 'models.json').write_text(json.dumps(pi_configuration(adapter['model'], server.server_port)))
+            (directory / 'settings.json').write_text(json.dumps(PI_SETTINGS))
+            env['PI_CODING_AGENT_DIR'] = str(directory)
         with (output / 'agent.stdout.log').open('wb') as stdout, (output / 'agent.stderr.log').open('wb') as stderr:
-            process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=stderr,cwd='/work')
+            process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=stderr,cwd='/work',env=env)
             def feed():
                 try: process.stdin.write(prompt.encode()); process.stdin.close()
                 except (BrokenPipeError,OSError): pass
@@ -88,6 +112,7 @@ def main():
                     envelope=next(e for e in reversed(events) if e.get('type')=='result')
                     result = json.loads(envelope['result'])
                     result['cost_usd'] = envelope.get('total_cost_usd', 0)
+                elif adapter.get('format') == 'pi': result=parse_pi(raw)
                 else: result=json.loads(raw)
                 if not isinstance(result, dict) or not isinstance(result.get('success'), bool):
                     raise ValueError('invalid result')

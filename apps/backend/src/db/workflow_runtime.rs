@@ -166,7 +166,8 @@ pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
             || a.model.chars().any(char::is_control)
             || (!a.model_connection.is_empty() && !name(&a.model_connection))
             || (!a.network.is_empty() && !name(&a.network))
-            || ["host", "bridge", "none", "services"].contains(&a.network.as_str())
+            || ["host", "bridge", "services"].contains(&a.network.as_str())
+            || (a.network == "none" && (a.model_connection != "backend" || a.harness != "pi"))
         {
             bail!("invalid_runtime_agent")
         }
@@ -246,8 +247,8 @@ pub fn metadata(c: &Connection, workspace: &str) -> Result<Value> {
     let row=c.query_row("SELECT revision,config_json,report_json,reported_at FROM factory_workflow_runtime WHERE workspace_id=?1",[workspace],|r|Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?))).optional()?;
     let (revision, config, report, reported_at) =
         row.unwrap_or((0, "{}".into(), "{}".into(), None));
-    let config: RuntimeConfig = serde_json::from_str(&config)?;
     let report: Report = serde_json::from_str(&report)?;
+    let config = managed_defaults(serde_json::from_str(&config)?, &report);
     let mut missing = Vec::new();
     if !report.remote_enabled {
         missing.push("remote_setup_disabled".to_string())
@@ -397,6 +398,31 @@ pub fn resolve_bindings(
     }
     Ok(config)
 }
+/// Empty Pi infrastructure selects the operator-provisioned SDK and backend OAuth.
+/// Explicit custom images/connections are never silently replaced.
+fn managed_defaults(mut config: RuntimeConfig, report: &Report) -> RuntimeConfig {
+    for agent in &mut config.agents {
+        if agent.harness == "pi"
+            && (agent.model_connection == "backend"
+                || (agent.model_connection.is_empty()
+                    && agent.image.is_empty()
+                    && agent.network.is_empty()))
+        {
+            agent.model_connection = "backend".into();
+            if agent.network.is_empty() {
+                agent.network = "none".into();
+            }
+            if agent.image.is_empty() {
+                agent.image = report
+                    .managed_images
+                    .get("agent")
+                    .cloned()
+                    .unwrap_or_default();
+            }
+        }
+    }
+    config
+}
 pub fn save(
     c: &Connection,
     org: &str,
@@ -413,8 +439,18 @@ pub fn save(
         .filter_map(|r| r["path"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
     let tx = rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)?;
-    let config = resolve_bindings(&tx, org, config)?;
+    let report: Report = serde_json::from_value(w["runtime"]["report"].clone())?;
+    let mut config = managed_defaults(resolve_bindings(&tx, org, config)?, &report);
     validate(&config, &repos)?;
+    // Persist the managed recipe selection, not a machine-specific SDK image.
+    // metadata() resolves it; each run snapshot still pins the actual digest.
+    for agent in &mut config.agents {
+        if agent.model_connection == "backend"
+            && report.managed_images.get("agent") == Some(&agent.image)
+        {
+            agent.image.clear();
+        }
+    }
     let version = metadata(&tx, workspace)?["revision"].as_u64().unwrap_or(0) as u32;
     if version != expected {
         bail!("runtime_revision_conflict")
@@ -463,6 +499,7 @@ pub fn report(
             ![
                 "runtime_image_not_allowed",
                 "runtime_image_pull_failed",
+                "runtime_image_provision_failed",
                 "runtime_network_not_allowed",
                 "runtime_model_connection_missing",
                 "runtime_environment_missing",
@@ -484,6 +521,20 @@ pub fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn managed_pi_resolves_infrastructure_without_overriding_custom_connections() {
+        let mut config: RuntimeConfig=serde_json::from_value(json!({"agents":[{"role":"reviewer","harness":"pi","model":"gpt-example","image":"","network":"","model_connection":""}]})).unwrap();
+        let mut report = Report::default();
+        let sdk = format!("sha256:{}", "a".repeat(64));
+        report.managed_images.insert("agent".into(), sdk.clone());
+        let resolved = managed_defaults(config.clone(), &report);
+        assert_eq!(resolved.agents[0].image, sdk);
+        assert_eq!(resolved.agents[0].network, "none");
+        assert_eq!(resolved.agents[0].model_connection, "backend");
+        validate(&resolved, &[]).unwrap();
+        config.agents[0].model_connection = "custom".into();
+        assert!(managed_defaults(config, &report).agents[0].image.is_empty());
+    }
     #[test]
     fn check_validation_identifies_the_actual_field_and_duplicate() {
         let mut config = RuntimeConfig::default();

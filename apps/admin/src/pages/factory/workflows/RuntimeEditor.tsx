@@ -59,6 +59,16 @@ export function RuntimeEditor({
   const [connection, setConnection] = useState(config.agents[0]?.model_connection ?? '')
   const [network, setNetwork] = useState(config.agents[0]?.network ?? '')
   const nodeImage = runtime.report.managed_images?.node ?? ''
+  const agentImage = runtime.report.managed_images?.agent ?? ''
+  function useBackendPi() {
+    setConfig((c) => ({ ...c, agents: agentRoles.map((r) => {
+      const current = c.agents.find((a) => a.role === r.id)
+      return { ...current, role: r.id, harness: 'pi', inherit_model: false,
+        model: current?.harness === 'pi' && current.model ? current.model : ['investigation', 'implementation'].includes(r.id) ? 'gpt-6.1-sol' : 'gpt-6-luna',
+        image: agentImage, model_connection: 'backend', network: 'none' }
+    }) }))
+    setImage(agentImage); setConnection('backend'); setNetwork('none')
+  }
   const [qaImage, setQaImage] = useState(config.checks[0]?.image || nodeImage)
   useEffect(() => {
     if (!qaImage && nodeImage) setCheckImage(nodeImage)
@@ -208,14 +218,25 @@ export function RuntimeEditor({
               </p>
             )}
           </div>
+          <div className="space-y-3 rounded-lg bg-muted/50 p-3">
+            <p className="text-sm font-medium">Pi administrado · cuenta del backend</p>
+            <p className="text-xs text-muted-foreground">
+              El SDK se prepara automáticamente en el runner. Pi trabaja sin acceso a internet;
+              las solicitudes de modelo usan el OAuth del backend sin copiar credenciales ni conversaciones.
+              Guardar no significa que el runtime esté aplicado ni que el QA haya pasado.
+            </p>
+            <Button variant="outline" className="h-auto whitespace-normal text-left" disabled={disabled} onClick={useBackendPi}>
+              Usar Pi del backend en las cuatro fases
+            </Button>
+            <p className="text-xs text-muted-foreground">Cambia los harnesses y los modelos no compatibles con Pi. Conserva las comprobaciones y los servicios. Revisa y guarda los cambios.</p>
+          </div>
           <details className="space-y-3 rounded-lg bg-muted/50 p-3">
             <summary className="cursor-pointer text-sm font-medium">
-              Infraestructura del runner · preparar una vez
+              Infraestructura personalizada · avanzado
             </summary>
             <p className="pt-3 text-xs text-muted-foreground">
-              Puedes guardar los perfiles antes de completar la infraestructura. No se ejecutarán
-              hasta que el runner confirme imágenes, proxy y red. La imagen común se puede
-              sobrescribir por fase.
+              Pi administrado no necesita que escribas imágenes, proxies ni redes. Estos campos
+              son solo para adaptadores personalizados autorizados por el operador.
             </p>
             <div className="grid gap-4 lg:grid-cols-3">
               <label className="space-y-1.5 text-sm">

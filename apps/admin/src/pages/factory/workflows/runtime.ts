@@ -109,6 +109,9 @@ export const checkTypes = [
   { id: 'security', label: 'Seguridad' },
 ]
 export function blockerLabel(code: string): string {
+  if (code === 'harness:pi' || code === 'model_connection:backend')
+    return 'Verificar el SDK Pi automático, la autorización y el OAuth del backend'
+  if (code === 'image:') return 'Esperar la preparación automática del SDK del runner'
   if (code.startsWith('model:')) return `Seleccionar modelo explícito para ${code.slice(6)}`
   if (code.startsWith('harness:'))
     return `Instalar y autorizar el adaptador ${code.slice(8)} en el runner`
@@ -119,7 +122,7 @@ export function blockerLabel(code: string): string {
   if (code.startsWith('check:'))
     return `Añadir ${checkTypes.find((r) => r.id === code.slice(6))?.label.toLowerCase() ?? code.slice(6)}`
   if (code.startsWith('image:'))
-    return 'Preparar el entorno autorizado en el runner; Node se descarga automáticamente'
+    return 'Verificar la preparación del SDK o entorno autorizado en el runner'
   if (code.startsWith('model_connection:'))
     return `Conectar el proxy de modelo «${code.slice(17)}» en el runner`
   if (code.startsWith('environment:'))

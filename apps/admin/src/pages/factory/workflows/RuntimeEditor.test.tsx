@@ -4,6 +4,31 @@ import userEvent from '@testing-library/user-event'
 import { RuntimeEditor } from './RuntimeEditor'
 import { emptyRuntime, parseCommand, formatCommand } from './runtime'
 describe('runtime settings', () => {
+  it('selects managed Pi without asking for images or losing checks, services or existing Pi models', async () => {
+    const value = emptyRuntime()
+    value.revision = 8
+    const image = 'sha256:' + 'a'.repeat(64)
+    value.report.managed_images = { agent: image }
+    value.config.agents = [
+      { role: 'investigation', harness: 'claude', model: 'opus', image: '', model_connection: '', network: '' },
+      { role: 'implementation', harness: 'pi', model: 'gpt-existing', image: '', model_connection: '', network: '' },
+    ]
+    value.config.checks = [{ name: 'tests', image, cwd: 'web', command: ['npm', 'test'], environment_refs: [] }]
+    value.config.services = [{ name: 'web', image, cwd: 'web', command: ['npm', 'start'], healthcheck: ['node', 'health.js'], environment_refs: [] }]
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(<RuntimeEditor value={value} repositories={['web']} section="agents" disabled={false} onSave={onSave} />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Usar Pi del backend en las cuatro fases' }))
+    await user.click(screen.getByRole('button', { name: 'Guardar configuración' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const [revision, config] = onSave.mock.calls[0]
+    expect(revision).toBe(8)
+    expect(config.checks).toEqual(value.config.checks)
+    expect(config.services).toEqual(value.config.services)
+    expect(config.agents).toHaveLength(4)
+    expect(config.agents.every((a: { harness: string; image: string; model_connection: string; network: string }) => a.harness === 'pi' && a.image === image && a.model_connection === 'backend' && a.network === 'none')).toBe(true)
+    expect(config.agents.find((a: { role: string }) => a.role === 'implementation').model).toBe('gpt-existing')
+  })
   it('parses argv without executing or interpolating a host shell', () => {
     const args = ['python3', '-c', 'print("hello world")']
     expect(parseCommand(formatCommand(args))).toEqual(args)

@@ -68,7 +68,7 @@ describe('catalog agent and harness selection', () => {
     const user = userEvent.setup()
     await user.selectOptions(screen.getByLabelText('Harness · Implementación'), 'pi')
     expect(screen.getByTestId('selection')).toHaveTextContent('"harness":"pi"')
-    expect(screen.getByText(/aún no está anunciado/)).toBeInTheDocument()
+    expect(screen.getByText(/no tienes que escribir una imagen/i)).toBeInTheDocument()
     expect(screen.getByLabelText('Modelo · Implementación')).toHaveValue('haiku')
   })
   it('lets a phase override the inherited model while retaining the agent reference', async () => {

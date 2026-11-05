@@ -41,6 +41,10 @@ jobs:
           export FACTORY_NODE_IMAGE=node@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd
           docker pull "$FACTORY_NODE_IMAGE"
           cargo test --locked --manifest-path apps/backend/Cargo.toml --test factory_workflows --test factory_workflows_api --test backup_api_test --test backup_restore_test
+          SDK_CONTEXT=$(mktemp -d)
+          docker build --tag nexusmind-managed-runtime:test --file scripts/factory/Dockerfile.agent "$SDK_CONTEXT"
+          rmdir "$SDK_CONTEXT"
+          export FACTORY_MANAGED_IMAGE=$(docker image inspect nexusmind-managed-runtime:test --format '{{.Id}}')
           python3 -m unittest discover -s scripts/factory -p 'test_*.py' -v
 
   admin-build:
@@ -157,6 +161,7 @@ jobs:
           SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
           SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
           PUBLISH_ORG_ID: ${{ vars.FACTORY_GITHUB_PUBLISH_ORG_ID }}
+          BACKEND_MODEL_ORG_ID: ${{ vars.FACTORY_BACKEND_MODEL_ORG_ID }}
           BACKEND_IMAGE: ghcr.io/smart-coder-labs/nexusmind-backend@${{ needs.backend-image.outputs.digest }}
           COMMANDS_IMAGE: ghcr.io/smart-coder-labs/nexusmind-factory-commands@${{ needs.commands-image.outputs.digest }}
         run: |
@@ -169,9 +174,10 @@ jobs:
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           REMOTE="${SSH_USER}@${SSH_HOST}"
           [[ "$PUBLISH_ORG_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo 'Configure FACTORY_GITHUB_PUBLISH_ORG_ID for the authorized organization'; exit 1; }
+          [[ -z "$BACKEND_MODEL_ORG_ID" || "$BACKEND_MODEL_ORG_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo 'Invalid FACTORY_BACKEND_MODEL_ORG_ID'; exit 1; }
           SSHOPTS="-i /tmp/oracle_key -o StrictHostKeyChecking=yes -o ConnectTimeout=15"
           ssh $SSHOPTS "$REMOTE" 'kubectl -n nexusmind exec deploy/nexusmind-backend -c backend -- python3 -c '\''import sqlite3,os,datetime; p="/data/pre-workflows-"+datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")+".db"; s=sqlite3.connect("file:/data/nexusmind.db?mode=ro",uri=True); d=sqlite3.connect(p); s.backup(d); assert d.execute("pragma integrity_check").fetchone()[0]=="ok"; d.close(); s.close(); os.chmod(p,0o600); print("Verified backup:",p)'\'''
-          ssh $SSHOPTS "$REMOTE" "kubectl -n nexusmind set env deployment/nexusmind-backend -c backend FACTORY_GITHUB_PUBLISH_ORG_ID=$PUBLISH_ORG_ID && kubectl -n nexusmind set env deployment/nexusmind-backend -c autonomous-worker FACTORY_SANDBOX_IMAGE=$BACKEND_IMAGE FACTORY_COMMANDS_IMAGE=$COMMANDS_IMAGE && kubectl -n nexusmind set image deployment/nexusmind-backend backend=$BACKEND_IMAGE autonomous-worker=$BACKEND_IMAGE && kubectl -n nexusmind rollout status deployment/nexusmind-backend --timeout=600s"
+          ssh $SSHOPTS "$REMOTE" "kubectl -n nexusmind set env deployment/nexusmind-backend -c backend FACTORY_GITHUB_PUBLISH_ORG_ID=$PUBLISH_ORG_ID FACTORY_BACKEND_MODEL_ORG_ID=$BACKEND_MODEL_ORG_ID && kubectl -n nexusmind set env deployment/nexusmind-backend -c autonomous-worker FACTORY_SANDBOX_IMAGE=$BACKEND_IMAGE FACTORY_COMMANDS_IMAGE=$COMMANDS_IMAGE && kubectl -n nexusmind set image deployment/nexusmind-backend backend=$BACKEND_IMAGE autonomous-worker=$BACKEND_IMAGE && kubectl -n nexusmind rollout status deployment/nexusmind-backend --timeout=600s"
           ssh $SSHOPTS "$REMOTE" "kubectl -n nexusmind-egress set image deployment/factory-egress-proxy proxy=$BACKEND_IMAGE && kubectl -n nexusmind-egress rollout status deployment/factory-egress-proxy --timeout=300s"
           curl --fail --retry 12 --retry-delay 5 https://api.nexusmind.smartcoderlabs.com/v1/health
 

@@ -24,7 +24,13 @@ def _model(config,name,roots,private_file):
     return path,list(values.values())
 
 def inventory(config,workspace,roots,private_file):
-    report={'remote_enabled':bool(config.get('allow_remote_configuration',False)),'applied_revision':0,'images':[],'networks':[],'model_connections':[],'environments':[],'harnesses':['claude'],'managed_images':{k:v for k,v in config.get('managed_images',{}).items() if k=='node' and v in config.get('allowed_images',[])}}
+    provisioning_error=None
+    try:
+        from managed_agent import provision
+        provision(config)
+    except (OSError,ValueError,subprocess.SubprocessError):provisioning_error='runtime_image_provision_failed'
+    report={'remote_enabled':bool(config.get('allow_remote_configuration',False)),'applied_revision':0,'images':[],'networks':[],'model_connections':[],'environments':[],'harnesses':['claude'],'managed_images':{k:v for k,v in config.get('managed_images',{}).items() if k in ('node','agent') and v in config.get('allowed_images',[])}}
+    if provisioning_error:report['error']=provisioning_error
     runtime=config.get('container_runtime','docker')
     if runtime not in ('docker','podman'):return report
     def inspect(args,output):
@@ -40,6 +46,8 @@ def inventory(config,workspace,roots,private_file):
                 r=inspect(['image','inspect',image],subprocess.DEVNULL)
             except (ValueError,OSError,subprocess.SubprocessError):report['error']='runtime_image_pull_failed'
         if r is not None and r.returncode==0:report['images'].append(image)
+    if config.get('allow_backend_models') and report['managed_images'].get('agent') in report['images']:
+        report['harnesses'].append('pi');report['model_connections'].append('backend');report['networks'].append('none')
     for network in config.get('allowed_egress_networks',[])[:100]:
         r=inspect(['network','inspect','--format','{{.Internal}}',network],subprocess.PIPE)
         if r is not None and r.returncode==0 and r.stdout.strip()==b'true':report['networks'].append(network)
@@ -60,13 +68,17 @@ def compile_settings(profile,config=None):
     for agent in profile.get('agents',[]):
         role=agent['role'];tools='Read,Grep,Glob' if role in ('investigation','reviewer') else 'Read,Edit,Write,Grep,Glob,Bash,Task'
         harness=agent.get('harness','claude');local=(config or {}).get('harnesses',{}).get(harness)
-        if local:
+        if agent.get('model_connection')=='backend':
+            if harness!='pi' or not (config or {}).get('allow_backend_models') or agent['image']!=(config or {}).get('managed_images',{}).get('agent') or agent['network']!='none':raise RuntimeSettingsError('runtime_harness_missing')
+            pi_tools='read,grep,find,ls' if role in ('investigation','reviewer') else 'read,bash,edit,write,grep,find,ls'
+            command=['pi','--mode','json','--print','--no-session','--no-extensions','--no-skills','--no-prompt-templates','--no-themes','--no-context-files','--no-approve','--no-mcp','--tools',pi_tools,'--model','workflow/'+agent['model']];format_='pi'
+        elif local:
             if local.get('driver','container')!='container' or local.get('format') not in ('json','claude') or local.get('image')!=agent['image'] or not isinstance(local.get('command'),list) or not local['command'] or any(not isinstance(x,str) for x in local['command']):raise RuntimeSettingsError('runtime_harness_missing')
             if any(x.split('=',1)[0] in ('--resume','--continue','--session','--session-id','--session-dir') for x in local['command']):raise RuntimeSettingsError('runtime_harness_missing')
             command=[x.replace('{model}',agent['model']) for x in local['command']];format_=local['format']
         elif harness=='claude':command=['claude','--model',agent['model'],'--permission-mode','bypassPermissions','--allowedTools',tools];format_='claude'
         else:raise RuntimeSettingsError('runtime_harness_missing')
-        adapters[ROLES[role]]={'kind':'agent','format':format_,'role':role,'harness':harness,'agent_binding':agent.get('binding'),'instructions':agent.get('instructions',''),'image':agent['image'],'network':agent['network'],'model_connection':agent['model_connection'],'command':command}
+        adapters[ROLES[role]]={'kind':'agent','format':format_,'role':role,'harness':harness,'model':agent['model'],'agent_binding':agent.get('binding'),'instructions':agent.get('instructions',''),'image':agent['image'],'network':agent['network'],'model_connection':agent['model_connection'],'command':command}
     for phase,alias in [('verify','isolated-verification'),('functional','isolated-functional-qa'),('design','isolated-design-qa'),('security','isolated-security-qa')]:
         checks=[c for c in profile.get('checks',[]) if c['name'] in PHASES] if phase=='verify' else [c for c in profile.get('checks',[]) if c['name']==phase]
         if checks:adapters[alias]={'kind':'suite','checks':checks}
@@ -81,7 +93,9 @@ def apply_settings(config,workspace,profile,report,roots,private_file):
     for agent in profile.get('agents',[]):
         if not agent.get('model'):raise RuntimeSettingsError('runtime_invalid')
         if agent.get('harness','claude') not in report.get('harnesses',['claude']):raise RuntimeSettingsError('runtime_harness_missing')
-        if agent['network'] not in report['networks'] or config.get('model_connections',{}).get(agent['model_connection'],{}).get('network')!=agent['network']:raise RuntimeSettingsError('runtime_network_not_allowed')
+        if agent['model_connection']=='backend':
+            if not config.get('allow_backend_models') or agent['network']!='none':raise RuntimeSettingsError('runtime_network_not_allowed')
+        elif agent['network'] not in report['networks'] or config.get('model_connections',{}).get(agent['model_connection'],{}).get('network')!=agent['network']:raise RuntimeSettingsError('runtime_network_not_allowed')
         if agent['model_connection'] not in report['model_connections']:raise RuntimeSettingsError('runtime_model_connection_missing')
     adapters,services=compile_settings(profile,config)
     value=copy.deepcopy(config);value.setdefault('adapters',{}).update(adapters)
@@ -91,6 +105,12 @@ def apply_settings(config,workspace,profile,report,roots,private_file):
 def sync(config,workspace,api,roots,private_file):
     report=inventory(config,workspace,roots,private_file)
     runtime=workspace.get('runtime',{})
+    if config.get('allow_backend_models'):
+        try:
+            if 'pi' not in api.call('/model-runtime').get('harnesses',[]):
+                report['harnesses']=[h for h in report['harnesses'] if h!='pi'];report['model_connections']=[n for n in report['model_connections'] if n!='backend']
+        except (ValueError,OSError):
+            report['harnesses']=[h for h in report['harnesses'] if h!='pi'];report['model_connections']=[n for n in report['model_connections'] if n!='backend']
     if runtime.get('revision',0)>0 and report['remote_enabled'] and not report.get('error'):
         try:apply_settings(config,workspace,runtime['config'],report,roots,private_file);report['applied_revision']=runtime['revision']
         except RuntimeSettingsError as e:report['error']=str(e)

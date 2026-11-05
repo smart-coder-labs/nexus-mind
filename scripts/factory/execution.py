@@ -4,6 +4,7 @@ Docker/Podman adapters run with immutable images and constrained mounts. Externa
 adapters are explicitly operator-installed VM/device sandbox drivers (e.g. iOS).
 """
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -257,7 +258,10 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         # Reviews should reason about code/evidence, never need application secrets.
         raise ValueError('Independent reviewers cannot receive environment secrets')
     env_files, secrets = environment(config, job['snapshot']['workspace']['id'], refs, roots, private_file)
-    if adapter.get('model_connection'):
+    backend_model = adapter.get('model_connection') == 'backend'
+    if backend_model and (adapter.get('driver', 'container') != 'container' or adapter.get('kind') != 'agent' or adapter.get('harness') != 'pi' or adapter.get('network') != 'none' or not config.get('allow_backend_models') or adapter['image'] != config.get('managed_images', {}).get('agent')):
+        raise ValueError('Backend models require the locally authorized, offline Pi runtime')
+    if adapter.get('model_connection') and not backend_model:
         from runtime_settings import _model
         model_file, model_secrets = _model(config,adapter['model_connection'],roots,private_file)
         env_files.append(model_file);secrets.extend(model_secrets)
@@ -306,6 +310,10 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
                    '--mount', 'type=bind,src=' + str(inp) + ',dst=/input,readonly',
                    '--mount', 'type=bind,src=' + str(out) + ',dst=/output',
                    '--mount', 'type=bind,src=' + str(Path(__file__).with_name('container_entry.py').resolve()) + ',dst=/entry.py,readonly']
+        if backend_model:
+            model_root = working / 'model'; model_root.mkdir()
+            command += ['--mount', 'type=bind,src=' + str(model_root) + ',dst=/model',
+                        '--mount', 'type=bind,src=' + str(Path(__file__).with_name('model_relay.py').resolve()) + ',dst=/model_relay.py,readonly']
         if runtime=='podman': command += ['--userns=keep-id']
         for filename in env_files:
             command += ['--env-file', str(filename)]
@@ -326,7 +334,9 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
     else:
         raise ValueError('Unsupported isolation driver')
     log_event(api, job, 'agent.started' if adapter['kind'] == 'agent' else 'command.started', job['step']['adapter'])
-    exit_code = monitor(command, config, job, api, name, working / 'runtime.log', secrets)
+    from model_relay import Relay
+    with Relay(model_root, api, job) if backend_model else contextlib.nullcontext():
+        exit_code = monitor(command, config, job, api, name, working / 'runtime.log', secrets)
     check_tree(out)
     check_tree(work)
     if adapter['kind']=='checks' and {k:v for k,v in tree_fingerprint(work).items() if k in verified_source}!=verified_source:

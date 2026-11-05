@@ -147,7 +147,7 @@ export function AgentRoleEditor({
                       string
                     >
                   )[h] ?? h}
-                  {!availableHarnesses.includes(h) ? ' · requiere adaptador local' : ''}
+                  {!availableHarnesses.includes(h) ? h === 'pi' ? ' · runtime / sesión pendientes' : ' · requiere adaptador local' : ''}
                 </option>
               ),
             )}
@@ -189,9 +189,9 @@ export function AgentRoleEditor({
       </label>
       {!supported && (
         <p className="text-xs text-muted-foreground">
-          Este harness aún no está anunciado por el runner. Puedes guardar el perfil, pero no se
-          ejecutará ni cambiará a otro harness como fallback. Su imagen y proxy deben estar
-          autorizados.
+          {harness === 'pi'
+            ? 'Pi administrado requiere que el SDK automático y la sesión OAuth del backend estén disponibles. No tienes que escribir una imagen ni copiar una sesión al runner.'
+            : 'Este harness aún no está anunciado por el runner. Puedes guardar el perfil, pero no se ejecutará ni cambiará a otro harness como fallback. Su imagen y proxy deben estar autorizados.'}
         </p>
       )}
       {value.binding && profileHasModel === false && (
@@ -205,6 +205,9 @@ export function AgentRoleEditor({
           El perfil no define un modelo explícito. Desactiva la herencia y selecciona uno
           compatible.
         </p>
+      )}
+      {harness === 'pi' && value.model_connection === 'backend' && (
+        <p className="text-xs text-muted-foreground">Runtime administrado · sandbox sin red · OAuth solo en el backend · sesión nueva por fase.</p>
       )}
       <details className="text-xs text-muted-foreground">
         <summary className="cursor-pointer">Infraestructura de esta fase · avanzado</summary>
