@@ -1631,6 +1631,9 @@ export class NexusMindClient {
       `/v1/autonomous-agent-runs${definitionId ? `?definition_id=${encodeURIComponent(definitionId)}` : ''}`,
     )
   }
+  getAutonomousAgentRun(id: string): Promise<AutonomousAgentRun> {
+    return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}`)
+  }
   getAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> {
     return this.request('/v1/autonomous-agents/runtime')
   }

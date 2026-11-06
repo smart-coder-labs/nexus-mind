@@ -28,11 +28,11 @@ Existing GitHub App webhooks remain supported at `/v1/autonomous-agents/github/w
 
 In **Factory → Agents → Target**, choose **Project** and select a real NexusMind project. The wizard loads active projects from `/v1/projects`, stores `config.project_id` on the target and reviewer revision, and restores it when editing. A project reviewer has no fixed `config.repository`: the two scope modes are mutually exclusive.
 
-The backend resolves permitted GitHub repositories from active `code_projects` explicitly linked to that exact project id and organization, using their GitHub `repo_url`. Names alone, unlinked indexes, archived projects/repositories, other organizations and child projects do not grant access. At least one linked GitHub repository is required to validate/enable a reviewer. This does not change the Code UI's existing repository-linking rules.
+The backend resolves permitted GitHub repositories from the active project and its active descendants in the same organization, using `code_projects.repo_url`. Explicit project links take precedence; legacy indexes without a project link may match the exact canonical project name. Archived branches, repositories and other organizations do not grant access. At least one linked GitHub repository is required to validate/enable a reviewer. This does not change the Code UI's existing repository-linking rules.
 
 Manual runs choose one repository/PR; the backend rejects out-of-scope repositories. Requested-review routing and reconciliation resolve the same scope, and the worker rechecks live membership before checkout/model invocation. Project reviewers use explicit PR events/manual PR runs rather than generic timed runs.
 
-A GitHub webhook still belongs to one repository. For a multi-repository project reviewer, fill **Repositorio del proyecto** when connecting each webhook. If its scope contains only one repository, the backend selects it automatically. The optional setup token never grants the agent authority over repositories outside the project. Existing repository-scoped reviewers and hooks remain supported. No new database migration is required.
+A GitHub webhook still belongs to one repository, but one reviewer covers the whole project. Leave **Repositorio del proyecto** empty to connect all authorized repositories in one operation; optionally fill it to connect only one. Registration reuses existing hooks, so retrying after a partial failure is safe. Already connected repositories remain visible if a later registration fails. Reconnect after adding repositories to register their hooks; reconciliation discovers the updated project scope automatically. The optional setup token never grants the agent authority over repositories outside the project. Existing repository-scoped reviewers and hooks remain supported. No new database migration is required.
 
 ## Routing
 
@@ -43,7 +43,7 @@ A GitHub webhook still belongs to one repository. For a multi-repository project
 
 The handler verifies HMAC-SHA256 over the raw request body, scopes the repo to its connector, rechecks revocation, reads the live PR and ignores obsolete/out-of-order heads. Delivery persistence plus enqueue is transactional using nested atomic savepoints. Same delivery/different bytes conflicts; different deliveries for the same agent/repo/PR/head deduplicate. A newer head cancels obsolete automatic review leases; the worker checks assignment/subscription again before model execution and publication and refuses a changed head.
 
-A periodic reconciliation poll includes CLI-backed agents (no GitHub App connector is required), recovers currently requested PRs if a webhook was missed, and applies the same assignment/subscription filter. It does not turn every new PR in the repo into a review.
+A reconciliation poll every 20 worker ticks (about five minutes at the default poll interval, plus execution time) includes CLI-backed agents (no GitHub App connector is required), recovers currently requested PRs if a webhook was missed, and applies the same assignment/subscription filter. It does not turn every new PR in the repo into a review.
 
 Each enabled reviewer definition matching that organization/repository is a separate configured review agent; deduplication is per definition/head. Disable redundant definitions if only one reviewer profile is desired. The selector in webhook setup chooses the repository through an existing reviewer, not a new global review permission.
 

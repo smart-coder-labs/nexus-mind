@@ -70,6 +70,20 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "pi_requires_local"
         | "invalid_sandbox_allowed_hosts"
         | "too_many_sandbox_hosts" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
+        "invalid_agent_runtime" | "invalid_nexusmind_profile" | "too_many_runtime_components"
+        | "runtime_config_too_large" | "invalid_or_duplicate_runtime_component"
+        | "runtime_component_unsupported_for_executor" | "missing_mcp_server"
+        | "invalid_mcp_transport" | "invalid_mcp_args" | "invalid_mcp_command"
+        | "invalid_mcp_headers" | "invalid_mcp_url" | "unsafe_mcp_url"
+        | "invalid_http_mcp_config" | "mcp_secrets_require_environment_references"
+        | "runtime_executable_acknowledgement_required" | "invalid_runtime_files"
+        | "unsafe_runtime_file" | "skill_requires_SKILL_md" | "extension_requires_index" | "invalid_extension_tools" | "invalid_skill_frontmatter" | "instruction_files_must_be_markdown"
+        | "invalid_harness_selection" | "harness_not_found" | "harness_hash_or_status_mismatch"
+        | "harness_executor_incompatible" | "approval_required" | "unsupported_harness_format"
+        | "unsupported_harness_format_for_runtime" | "harness_component_not_found"
+        | "duplicate_harness_component" | "harness_content_missing" | "secret_scan_failed"
+        | "component_content_too_large" | "nexus_runtime_credentials_require_provider"
+        | "runtime_mcp_credentials_require_sandbox_proxy" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
         "invalid_connector_kind"
         | "invalid_connector"
         | "invalid_connector_secret"
@@ -162,7 +176,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "delivery:write".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 2, "max_cost_usd": 10, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo"},"github_publication_connector_id":{"type":"string","description":"Optional shared Workflow GitHub publisher; never changes the gh reviewer identity"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
             workflow: vec![
                 "checkout".into(),
                 "health_check".into(),
@@ -227,7 +241,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:draft_pr".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 3600, "max_attempts": 2, "max_cost_usd": 20, "max_changed_files": 20, "max_changed_lines": 800, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"},"review_after_deploy":{"type":"boolean","default":false,"description":"Mark opened PRs so your deploy workflow can deploy the branch and trigger the Judge to review the running preview"},"judge_agent_id":{"type":"string","description":"The Judge agent that reviews the deployed PR (required when review_after_deploy is on)"}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"github_publication_connector_id":{"type":"string","description":"Optional shared Workflow GitHub publisher for PRs; repo scope is enforced, reviewer identity stays on gh"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"},"review_after_deploy":{"type":"boolean","default":false,"description":"Mark opened PRs so your deploy workflow can deploy the branch and trigger the Judge to review the running preview"},"judge_agent_id":{"type":"string","description":"The Judge agent that reviews the deployed PR (required when review_after_deploy is on)"}}),
             workflow: vec![
                 "eligible_issue".into(),
                 "pinned_checkout".into(),

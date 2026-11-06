@@ -1,0 +1,2 @@
+# Safe Compose YAML parsing on the trusted runner; never execute `compose up`.
+PyYAML==6.0.3

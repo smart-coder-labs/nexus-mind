@@ -1,4 +1,5 @@
 import importlib.util
+import errno
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,23 @@ class RunnerTests(unittest.TestCase):
 
     def command(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True).stdout.decode().strip()
+
+    def test_exception_diagnostics_are_actionable_without_leaking_values(self):
+        cases = [
+            (OSError('AF_UNIX path too long'), 'model_relay_socket_path_too_long'),
+            (OSError(errno.ENOSPC, 'private-secret', '/private-secret'), 'adapter_os_error_ENOSPC'),
+            (FileNotFoundError(errno.ENOENT, 'private-secret', '/private-secret'), 'adapter_os_error_ENOENT'),
+            (subprocess.TimeoutExpired(['private-secret'], 10, output=b'private-secret'), 'adapter_operation_timed_out'),
+            (subprocess.CalledProcessError(1, ['private-secret'], stderr=b'private-secret'), 'adapter_process_failed'),
+            (KeyError('private-secret'), 'adapter_configuration_missing'),
+        ]
+        for error, code in cases:
+            with self.subTest(code=code):
+                diagnostic = runner.exception_diagnostic(error)
+                self.assertEqual(diagnostic['error'], code)
+                self.assertTrue(diagnostic['solution'])
+                self.assertTrue(diagnostic['hold'])
+                self.assertNotIn('private-secret', json.dumps(diagnostic))
 
     def test_discovery_skips_symlinks_and_does_not_grant_write(self):
         (self.root / "alias").symlink_to(self.repo, target_is_directory=True)

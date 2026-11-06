@@ -56,6 +56,18 @@ def redact(text, secrets):
     return text
 
 
+class WorkspaceOutputError(ValueError):
+    def __init__(self, code, path, actual, limit, solution):
+        super().__init__(code)
+        self.details = {'error': code, 'path': path, 'actual': actual,
+                        'limit': limit, 'solution': solution, 'hold': True}
+
+
+def ignored_source(name):
+    return (name in IGNORE or name.endswith('.zip') or name == '.env'
+            or name.startswith('.env.') and not name.endswith(('.example', '.sample', '.template')))
+
+
 def check_tree(root):
     """No devices, sockets, hard links or escaping symlinks from a container."""
     root = root.resolve()
@@ -64,8 +76,8 @@ def check_tree(root):
     for here, dirs, files in os.walk(root, followlinks=False):
         # Generated dependency/cache paths are never read or adopted on the host.
         # They may link to preinstalled dependencies inside the runtime image.
-        dirs[:] = [d for d in dirs if d not in IGNORE or d=='.git']
-        for name in dirs + [f for f in files if f not in IGNORE or f=='.git']:
+        dirs[:] = [d for d in dirs if not ignored_source(d) or d=='.git']
+        for name in dirs + [f for f in files if not ignored_source(f) or f=='.git']:
             entries += 1
             if entries > 100000: raise ValueError('Workspace file-count quota exceeded')
             p = Path(here) / name
@@ -79,8 +91,14 @@ def check_tree(root):
             elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError('Unsupported workspace file type')
             elif stat.S_ISREG(info.st_mode):
-                if info.st_nlink != 1 or info.st_size > 10 * 1024 * 1024:
-                    raise ValueError('Oversized or hard-linked workspace output')
+                if info.st_nlink != 1:
+                    raise WorkspaceOutputError(
+                        'workspace_hard_link', p.relative_to(root).as_posix(), info.st_nlink, 1,
+                        'Sustituye el enlace duro por una copia independiente en el workspace del runner y reintenta la fase. No modifiques el otro archivo enlazado.')
+                if info.st_size > 10 * 1024 * 1024:
+                    raise WorkspaceOutputError(
+                        'workspace_file_too_large', p.relative_to(root).as_posix(), info.st_size, 10 * 1024 * 1024,
+                        'El archivo supera 10 MiB. Si es generado, retíralo de la entrada/salida del sandbox; si es código necesario, reduce o divide su contenido. Conserva el original y reintenta la fase. Una aprobación no permite omitir este control.')
                 total += info.st_size
                 if total > 256 * 1024 * 1024:
                     raise ValueError('Workspace output quota exceeded')
@@ -88,9 +106,13 @@ def check_tree(root):
 
 def copy_source(source, destination):
     def ignored(_directory, names):
-        return [n for n in names if n in IGNORE or n == '.env' or n.startswith('.env.') and not n.endswith(('.example', '.sample', '.template'))]
+        return [n for n in names if ignored_source(n)]
     shutil.copytree(source, destination, symlinks=True, ignore=ignored)
-    check_tree(destination)
+    try:
+        check_tree(destination)
+    except WorkspaceOutputError as error:
+        error.details['path'] = destination.name + '/' + error.details['path']
+        raise
 
 
 def pinned_image(image):
@@ -99,11 +121,24 @@ def pinned_image(image):
     return image
 
 
+def node_bootstrap_image(config, image):
+    return bool(image) and (image == config.get('managed_images', {}).get('node') or image in config.get('node_bootstrap_images', []))
+
+
 def runtime_command(config):
     runtime = config.get('container_runtime', 'docker')
     if runtime not in ('docker', 'podman'):
         raise ValueError('Unsupported container runtime')
     return runtime
+
+
+def runtime_environment(config, run):
+    # Docker otherwise injects personal proxy settings from ~/.docker/config.json
+    # into builds/containers, even when no --env or --secret was requested.
+    root = Path(config['state_dir']) / run / '.docker-client'
+    if root.is_symlink(): raise ValueError('Unsafe Docker client state')
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return {'PATH': os.defpath, 'HOME': str(root), 'DOCKER_CONFIG': str(root), 'BUILDX_CONFIG': str(root / 'buildx'), 'LANG': 'C', 'XDG_RUNTIME_DIR': '/run/user/' + str(os.getuid())}
 
 
 def network_name(run):
@@ -136,14 +171,20 @@ def cleanup(config, run, state_dir):
     root = Path(state_dir) / run
     manifest = root / 'services.json'
     if not manifest.exists():
+        if (root / 'application-images.json').exists():
+            from application_environment import cleanup as cleanup_application
+            cleanup_application(config, run)
         return
     services = json.loads(manifest.read_text())
     runtime = runtime_command(config)
-    for name in services.get('containers', []):
-        if not re.fullmatch(r'nm-[a-zA-Z0-9-]+', name):
+    client_env = runtime_environment(config, run)
+    for name in services.get('containers', []) + services.get('probes', []):
+        if not re.fullmatch(r'nm-[a-zA-Z0-9_-]+', name):
             raise ValueError('Unsafe service name')
-        subprocess.run([runtime, 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-    subprocess.run([runtime, 'network', 'rm', network_name(run)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        subprocess.run([runtime, 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, env=client_env)
+    subprocess.run([runtime, 'network', 'rm', network_name(run)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, env=client_env)
+    from application_environment import cleanup as cleanup_application
+    cleanup_application(config, run)
     manifest.unlink(missing_ok=True)
 
 
@@ -164,11 +205,6 @@ def stage_sources(job, state_dir, git):
         if actual != heads[repo['path']]:
             raise ValueError('Local checkout differs from the server change set; reconcile before retry')
         git(['diff', '--exit-code', 'HEAD'], source)
-        tracked=git(['ls-files','-z'],source,binary=True).split(b'\0')
-        for item in tracked:
-            path=Path(item.decode())
-            if any(p in IGNORE- {'.git','.claude','.codex'} for p in path.parts) or path.name=='.env' or path.name.startswith('.env.') and not path.name.endswith(('.example','.sample','.template')):
-                raise ValueError('Tracked environment/cache files cannot be silently excluded from verification')
         # This is a marked, runner-owned disposable clone, never a personal repo.
         # Remove untracked build output so the sandbox receives only the commit.
         git(['clean','-fdx'],source)
@@ -185,7 +221,7 @@ def monitor(command, config, job, api, name, log_path, secrets=None):
     deadline = min(job['step']['timeout_seconds'], max(1, job['lease_until'] - int(time.time()) - 5))
     with log_path.open('wb') as stream:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
-                                   env={'PATH': os.defpath, 'HOME': os.environ.get('HOME', '/tmp'), 'LANG': 'C'})
+                                   env=runtime_environment(config, job['run_id']) if command[0] in ('docker', 'podman') else {'PATH': os.defpath, 'HOME': os.environ.get('HOME', '/tmp'), 'LANG': 'C'})
         try:
             while process.poll() is None:
                 if time.monotonic() - started > deadline or log_path.stat().st_size > 16 * MAX_LOG:
@@ -267,6 +303,12 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         env_files.append(model_file);secrets.extend(model_secrets)
     secrets.append(config['runner_token'])
     context = {k: job[k] for k in ['run_id', 'step', 'task', 'dependency_results']}
+    context['step'] = dict(job['step'])
+    if isinstance(job['step'].get('options'), dict):
+        context['step']['options'] = {k: v for k, v in job['step']['options'].items() if k not in ('runtime', 'runtime_snapshot')}
+    snapshot = job['step'].get('options') or {}
+    resolved = snapshot.get('runtime_snapshot', {}).get('config', {}).get('runtime_resolved', {}) if isinstance(snapshot, dict) else {}
+    context['harness_markdown'] = [{'id': c['id'], 'files': c['files']} for c in resolved.get('components', []) if c.get('kind') == 'instructions' and c.get('enabled', True)]
     context['commits'] = job['execution']['heads']
     budget = job['snapshot']['definition'].get('max_cost_usd', 20)
     attempts = sum(s.get('max_attempts',1) for s in job['snapshot']['definition'].get('steps',[job['step']]))
@@ -284,7 +326,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             raise ValueError('Diff context exceeds review budget')
         context['diffs'][repo['path']] = diff
     if adapter.get('node_bootstrap'):
-        if adapter['kind']!='checks' or adapter['image']!=config.get('managed_images',{}).get('node'):
+        if adapter['kind']!='checks' or not node_bootstrap_image(config, adapter['image']):
             raise ValueError('Node environment must be registered by the operator')
         from node_environment import prepare
         started=time.monotonic();last_heartbeat=started
@@ -292,12 +334,14 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             nonlocal last_heartbeat
             if time.monotonic()-last_heartbeat>=5:
                 api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/lease',{'lease_token':job['lease_token']});last_heartbeat=time.monotonic()
-        log_event(api,job,'environment.preparing','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
+        log_event(api,job,'command.started','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
         prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']))
         remaining=job['step']['timeout_seconds']-(time.monotonic()-started)
         if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
         import copy
         job=copy.deepcopy(job);job['step']['timeout_seconds']=int(remaining)
+    from agent_runtime import stage_runtime
+    stage_runtime(config, job, adapter, inp)
     (inp / 'context.json').write_text(json.dumps(context))
     (inp / 'adapter.json').write_text(json.dumps(adapter))
     name = None
@@ -310,6 +354,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
                    '--mount', 'type=bind,src=' + str(inp) + ',dst=/input,readonly',
                    '--mount', 'type=bind,src=' + str(out) + ',dst=/output',
                    '--mount', 'type=bind,src=' + str(Path(__file__).with_name('container_entry.py').resolve()) + ',dst=/entry.py,readonly']
+        command += ['--mount', 'type=bind,src=' + str(Path(__file__).with_name('agent_runtime.py').resolve()) + ',dst=/agent_runtime.py,readonly']
         if backend_model:
             model_root = working / 'model'; model_root.mkdir()
             command += ['--mount', 'type=bind,src=' + str(model_root) + ',dst=/model',
@@ -362,10 +407,11 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             upload(api, job, path.name[:80] + '-' + str(offset), 'text/plain', chunk)
             # High-signal tail for live workflow history, full log in artifacts.
             log_event(api, job, 'log.chunk', chunk.decode(errors='replace')[-2000:])
-    for path in sorted(out.iterdir()):
+    for path in sorted(out.rglob('*')):
         if path.suffix in ('.png', '.jpg', '.jpeg') and path.is_file() and not path.is_symlink():
             mime = 'image/png' if path.suffix == '.png' else 'image/jpeg'
-            upload(api, job, path.name, mime, path.read_bytes())
+            name = path.name if path.parent == out else hashlib.sha256(str(path.relative_to(out)).encode()).hexdigest()[:12] + '-' + path.name
+            upload(api, job, name[:120], mime, path.read_bytes())
     if result['success'] and adapter['kind']=='agent':
         import difflib
         for repo in job['snapshot']['workspace']['repositories']:
@@ -434,9 +480,7 @@ def adopt_changes(config, job, work, git, secrets):
         if relative not in authorized or before == after:
             continue
         for p in modified.rglob('*'):
-            if p.is_file() and not p.is_symlink() and not any(part in IGNORE for part in p.relative_to(modified).parts):
-                if p.name == '.env' or p.name.startswith('.env.') and not p.name.endswith(('.example', '.sample', '.template')):
-                    raise ValueError('Environment files cannot be committed')
+            if p.is_file() and not p.is_symlink() and not any(ignored_source(part) for part in p.relative_to(modified).parts):
                 content = p.read_bytes()
                 if any(len(s) >= 4 and s.encode() in content for s in secrets):
                     raise ValueError('Credential detected in generated code')
@@ -447,11 +491,18 @@ def adopt_changes(config, job, work, git, secrets):
                 if child.is_dir() and not child.is_symlink(): shutil.rmtree(child)
                 else: child.unlink()
         for child in modified.iterdir():
-            if child.name in IGNORE: continue
+            if ignored_source(child.name): continue
             target = original / child.name
-            if child.is_dir() and not child.is_symlink(): shutil.copytree(child, target, symlinks=True, ignore=lambda _d,names:[n for n in names if n in IGNORE])
+            if child.is_dir() and not child.is_symlink(): shutil.copytree(child, target, symlinks=True, ignore=lambda _d,names:[n for n in names if ignored_source(n)])
             elif child.is_symlink(): target.symlink_to(os.readlink(child))
             else: shutil.copy2(child, target)
+        # ponytail: excluded inputs stay unchanged in Git, never copied into the sandbox.
+        excluded = [p for p in git(['ls-files', '-z'], original, binary=True).split(b'\0')
+                    if p and any(ignored_source(part) for part in Path(os.fsdecode(p)).parts)]
+        if excluded:
+            git(['--literal-pathspecs', 'restore', '--source=HEAD', '--worktree',
+                 '--pathspec-from-file=-', '--pathspec-file-nul'], original,
+                input_data=b'\0'.join(excluded) + b'\0')
         git(['add', '-A', '--', '.'], original)
         # Deterministic metadata lets the control plane reproduce the exact
         # verified Git object over GitHub's Git Database API without sharing a token.
@@ -483,8 +534,8 @@ def without_generated(source, before, after, git):
 def tree_fingerprint(root):
     result = {}
     for here, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in IGNORE]
-        for name in [f for f in files if f not in IGNORE] + [d for d in dirs if (Path(here) / d).is_symlink()]:
+        dirs[:] = [d for d in dirs if not ignored_source(d)]
+        for name in [f for f in files if not ignored_source(f)] + [d for d in dirs if (Path(here) / d).is_symlink()]:
             p = Path(here) / name
             rel = p.relative_to(root).as_posix()
             if p.is_symlink(): data = os.readlink(p).encode()

@@ -13,6 +13,23 @@ const status = (s: string) =>
       pending: 'Pendiente',
     }) as Record<string, string>
   )[s] ?? s
+function StepFailure({ result }: { result: unknown }) {
+  if (!result || typeof result !== 'object') return null
+  const data = result as Record<string, unknown>
+  const output = data.output && typeof data.output === 'object' ? data.output as Record<string, unknown> : {}
+  const error = typeof output.error === 'string' ? output.error : typeof data.reason === 'string' ? data.reason : ''
+  if (!error) return null
+  const solution = typeof output.solution === 'string' ? output.solution : error === 'Oversized or hard-linked workspace output'
+    ? 'El runner antiguo no guardó la ruta del archivo. Actualiza el runner y reintenta para identificarlo. Los archivos de más de 10 MiB deben reducirse o retirarse de la entrada/salida del sandbox; los enlaces duros deben sustituirse por copias independientes. Conserva los originales. Una aprobación no permite omitir este control.'
+    : 'Revisa los logs y artefactos de la fase, corrige la causa indicada y reintenta tras reconciliar los efectos externos. Una aprobación no corrige errores de ejecución.'
+  return <div role="alert" className="mt-3 space-y-1 rounded-md border border-border p-3 text-sm">
+    <p><strong>Error:</strong> {error}</p>
+    {typeof output.path === 'string' && <p className="break-all"><strong>Archivo:</strong> <code>{output.path}</code></p>}
+    {typeof output.actual === 'number' && typeof output.limit === 'number' && <p>Detectado: {output.actual} · permitido: {output.limit}{error === 'workspace_file_too_large' ? ' bytes' : error === 'workspace_hard_link' ? ' enlaces' : ''}</p>}
+    <p><strong>Solución:</strong> {solution}</p>
+  </div>
+}
+
 export function ExecutionDetail({
   run,
   disabled,
@@ -83,6 +100,7 @@ export function ExecutionDetail({
                   {profile.harness ?? 'claude'} · modelo {profile.model}
                 </p>
               )}
+              <StepFailure result={state?.result} />
               {state?.result != null && (
                 <RawJson label="Ver resultado y evidencia" value={state.result} />
               )}

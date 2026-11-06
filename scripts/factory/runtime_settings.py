@@ -25,12 +25,14 @@ def _model(config,name,roots,private_file):
 
 def inventory(config,workspace,roots,private_file):
     provisioning_error=None
+    if config.get('allow_application_builds'): config.setdefault('auto_provision_agent_runtime', True)
     try:
         from managed_agent import provision
         provision(config)
     except (OSError,ValueError,subprocess.SubprocessError):provisioning_error='runtime_image_provision_failed'
     report={'remote_enabled':bool(config.get('allow_remote_configuration',False)),'applied_revision':0,'images':[],'networks':[],'model_connections':[],'environments':[],'harnesses':['claude'],'managed_images':{k:v for k,v in config.get('managed_images',{}).items() if k in ('node','agent') and v in config.get('allowed_images',[])}}
     if provisioning_error:report['error']=provisioning_error
+    report['auto_environment']=False
     runtime=config.get('container_runtime','docker')
     if runtime not in ('docker','podman'):return report
     def inspect(args,output):
@@ -46,6 +48,13 @@ def inventory(config,workspace,roots,private_file):
                 r=inspect(['image','inspect',image],subprocess.DEVNULL)
             except (ValueError,OSError,subprocess.SubprocessError):report['error']='runtime_image_pull_failed'
         if r is not None and r.returncode==0:report['images'].append(image)
+    if config.get('allow_application_builds') and report['managed_images'].get('agent') in report['images']:
+        try:
+            import yaml
+            from application_environment import build_cgroup
+            build_cgroup()
+            report['auto_environment']=True
+        except (ImportError,OSError,ValueError,subprocess.SubprocessError): pass
     if config.get('allow_backend_models') and report['managed_images'].get('agent') in report['images']:
         report['harnesses'].append('pi');report['model_connections'].append('backend');report['networks'].append('none')
     for network in config.get('allowed_egress_networks',[])[:100]:
@@ -87,6 +96,8 @@ def compile_settings(profile,config=None):
 
 def apply_settings(config,workspace,profile,report,roots,private_file):
     if not report['remote_enabled']:raise RuntimeSettingsError('runtime_invalid')
+    if profile.get('auto_environment') and not profile.get('services') and not report.get('auto_environment'):
+        raise RuntimeSettingsError('runtime_auto_environment_not_allowed')
     for item in [*profile.get('agents',[]),*profile.get('checks',[]),*profile.get('services',[])]:
         if item['image'] not in report['images']:raise RuntimeSettingsError('runtime_image_not_allowed')
         if any(ref not in report['environments'] for ref in item.get('environment_refs',[])):raise RuntimeSettingsError('runtime_environment_missing')
@@ -124,7 +135,7 @@ def for_job(config,job,roots,private_file):
     return apply_settings(config,workspace,runtime['config'],report,roots,private_file)
 
 def suite(config,job,profile,roots,api,git,private_file):
-    from execution import isolated_adapter
+    from execution import isolated_adapter, node_bootstrap_image
     from delivery import validate_services
     evidence=[];start=time.monotonic();success=True
     required=set(job['step'].get('options',{}).get('required_checks',[]))
@@ -138,7 +149,7 @@ def suite(config,job,profile,roots,api,git,private_file):
         child['step'].setdefault('options',{})['required_checks']=[unique]
         child['step']['timeout_seconds']=max(1,int(job['step']['timeout_seconds']-(time.monotonic()-start)))
         adapter={'kind':'checks','image':check['image'],'environment_refs':check.get('environment_refs',[]),'checks':[{'name':unique,'cwd':check['cwd'],'command':check['command']}]}
-        if check['image']==config.get('managed_images',{}).get('node'):adapter['node_bootstrap']=True
+        if node_bootstrap_image(config, check['image']):adapter['node_bootstrap']=True
         if role in ('functional','design','security'):adapter['network']='services';validate_services(config,job)
         class NamedArtifacts:
             def call(self,path,data=None):

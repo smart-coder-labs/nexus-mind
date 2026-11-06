@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import WorkflowsPage from './WorkflowsPage'
+import { ExecutionDetail } from './ExecutionDetail'
 import { deliveryWorkflow, preparationWorkflow, type Workspace } from './types'
 const api = vi.hoisted(() => ({
   getWorkflowCatalog: vi.fn(),
@@ -40,6 +41,26 @@ const detail = {
   steps: [{ id: 'prepare', status: 'succeeded', attempt: 1, result: { success: true } }],
   events: [],
 }
+describe('execution failure diagnostics', () => {
+  it.each([
+    { error: 'workspace_file_too_large', path: 'api/assets/large.bin', actual: 10485761, limit: 10485760, solution: 'Reduce el archivo y reintenta.' },
+    { error: 'workspace_hard_link', path: 'api/linked.bin', actual: 2, limit: 1, solution: 'Sustituye el enlace por una copia independiente.' },
+    { error: 'Oversized or hard-linked workspace output' },
+    { error: 'isolated_adapter_failed' },
+  ])('shows error and solution without expanding JSON: $error', output => {
+    render(<ExecutionDetail run={{ ...detail, status: 'blocked', steps: [{ id: definition.steps[0].id, status: 'blocked', attempt: 1, result: { output, reason: output.error } }] }} control={vi.fn()} approve={vi.fn()} artifact={vi.fn()} disabled={false} />)
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent(output.error)
+    expect(alert).toHaveTextContent('Solución:')
+    if ('path' in output) {
+      expect(alert).toHaveTextContent(output.path!)
+      expect(alert).toHaveTextContent(output.solution!)
+    } else {
+      expect(alert).toHaveTextContent(output.error.startsWith('Oversized') ? 'Actualiza el runner' : 'Revisa los logs')
+    }
+  })
+})
+
 function Back() {
   const navigate = useNavigate()
   return <button onClick={() => navigate(-1)}>Atrás del navegador</button>
