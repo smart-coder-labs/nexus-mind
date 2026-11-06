@@ -5528,8 +5528,7 @@ async fn execute_claim(
     if matches!(claim.template_key.as_str(), "qa" | "judge") && !sandboxed && !pi_selected {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
-        if std::path::Path::new(&base_config).exists() {
-            if !nexus_selected {
+        if std::path::Path::new(&base_config).exists() && !nexus_selected {
             let _ = tokio::fs::create_dir_all(&qa_screenshots_dir).await;
             let per_run = workdir
                 .parent()
@@ -5542,7 +5541,6 @@ async fn execute_claim(
                 })
                 .unwrap_or(base_config);
             claude.args(["--mcp-config", effective.as_str()]);
-            }
         }
     }
     // Values to redact from the streamed transcript on top of the pattern-based

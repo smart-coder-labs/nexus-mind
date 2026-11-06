@@ -628,7 +628,7 @@ pub(crate) async fn run_claude_sandboxed(
         text.map(|text| serde_json::from_str::<serde_json::Value>(&text)).transpose()?
     };
     if let Some(runtime_config) = runtime_config.as_ref() {
-    let runtime = super::agent_runtime::runtime_from_config(&runtime_config)?;
+    let runtime = super::agent_runtime::runtime_from_config(runtime_config)?;
     anyhow::ensure!(runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).all(|s| s.env.is_empty() && s.headers.is_empty()), "runtime_mcp_credentials_require_sandbox_proxy");
     let executor = if codex { "codex" } else { "claude" };
     let root = if codex { crate::factory::sandbox::CODEX_HOME } else { "/tmp/agent-runtime" };

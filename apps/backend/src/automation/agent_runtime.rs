@@ -583,9 +583,7 @@ pub fn plan(runtime: &RuntimeConfig, executor: &str, root: &str, nexusmind: Valu
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                if executor == "pi" {
-                    plan.args.extend(["--append-system-prompt".into(), notice]);
-                } else if executor == "claude" {
+                if matches!(executor, "pi" | "claude") {
                     plan.args.extend(["--append-system-prompt".into(), notice]);
                 } else {
                     plan.args.extend([
