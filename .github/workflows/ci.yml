@@ -146,6 +146,9 @@ jobs:
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
 
+      - name: Accessibility regression checks
+        run: cd apps/backoffice && npm test
+
   factory-commands-image:
     name: Factory verification image (arm64)
     needs: changes
