@@ -4,6 +4,7 @@
 Repository code runs only in configured container/VM adapters, never on the host.
 """
 import argparse
+import base64
 import errno
 import hashlib
 import json
@@ -43,13 +44,18 @@ def inside(path, roots):
     return resolved
 
 
-def git(args, cwd, timeout=60, binary=False, input_data=None, allowed_codes=(0,)):
+def git(args, cwd, timeout=60, binary=False, input_data=None, allowed_codes=(0,), credentials=None):
     # Never inherit GIT_CONFIG, SSH commands, access tokens, hooks or user filters.
-    # Empty HOME prevents reading user git configuration; no credential is needed
-    # for copying an already-present local repository.
+    # Empty HOME prevents reading user git configuration. Network fetches may use
+    # only an explicit operator-owned, host-bound source read credential profile.
     with tempfile.TemporaryDirectory(prefix="nexusmind-git-home-") as home:
         env = {"PATH": os.defpath, "HOME": home, "LANG": "C", "GIT_CONFIG_NOSYSTEM": "1",
                "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_GLOBAL": os.devnull}
+        if credentials:
+            host, username, token = credentials
+            basic = base64.b64encode((username + ':' + token).encode()).decode()
+            env.update({'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'http.https://' + host + '/.extraHeader',
+                        'GIT_CONFIG_VALUE_0': 'Authorization: Basic ' + basic})
         result = subprocess.run(
             ["git", "-c", "core.hooksPath=" + os.devnull, "-c", "protocol.ext.allow=never",
              "-c", "protocol.file.allow=always", *args],
@@ -92,8 +98,11 @@ def discover(root, roots):
                 remote = ""
             if ("://" in remote and any(c in remote.split("://", 1)[1] for c in "@?#")) or any(ord(c) < 32 for c in remote):
                 raise ValueError("Remove embedded credentials from Git remotes before discovery")
+            branch = git(['symbolic-ref', '--quiet', '--short', 'HEAD'], here, allowed_codes=(0, 1))
+            if not branch:
+                raise ValueError('Choose a named source branch before confirming the inventory')
             repositories.append({"path": here.relative_to(root).as_posix(), "remote": remote,
-                                 "head_sha": commit, "writable": False})
+                                 "head_sha": commit, "branch": branch, "writable": False})
             dirs[:] = []
             if len(repositories) > 100:
                 raise ValueError("Repository limit exceeded")
@@ -127,8 +136,44 @@ def safe_id(value):
     return isinstance(value, str) and 0 < len(value) <= 100 and all(c.isascii() and (c.isalnum() or c in "-_") for c in value)
 
 
-def prepare(job, roots, state_dir):
-    """Copy pinned committed code, not dirty files; never modify original clones."""
+def fetch_source(repo, destination, config, workspace_id, roots):
+    """Fetch only a confirmed HTTPS remote/branch, using explicit read credentials."""
+    remote = urllib.parse.urlsplit(repo['remote'])
+    hosts = config.get('source_hosts', ['github.com'])
+    if (not isinstance(hosts, list) or remote.scheme != 'https' or not remote.hostname or remote.hostname not in hosts
+            or remote.port not in (None, 443) or remote.username or remote.password
+            or remote.query or remote.fragment):
+        raise ValueError('Source refresh requires a credential-free HTTPS remote on an operator-approved source host')
+    branch = repo.get('branch')
+    if not isinstance(branch, str) or not branch or branch.startswith('-') or branch == 'HEAD':
+        raise ValueError('Source refresh requires a confirmed named branch')
+    git(['check-ref-format', 'refs/heads/' + branch], destination)
+    credentials = None
+    filename = config.get('source_credentials', {}).get(workspace_id)
+    if filename:
+        path = Path(filename)
+        if not path.is_absolute() or any(root == path.resolve() or root in path.resolve().parents for root in roots):
+            raise ValueError('Source credentials must live outside repository roots')
+        value = json.loads(private_file(path))
+        if (not isinstance(value, dict) or set(value) != {'host', 'username', 'token'} or value['host'] != remote.hostname
+                or not all(isinstance(value[k], str) and 0 < len(value[k]) <= 4096 for k in value)
+                or any(c in value['username'] + value['token'] for c in '\r\n')):
+            raise ValueError('Invalid source read credential profile')
+        credentials = (value['host'], value['username'], value['token'])
+    try:
+        git(['-c', 'http.followRedirects=false', '-c', 'protocol.file.allow=never',
+             'fetch', '--no-tags', '--no-recurse-submodules', '--', repo['remote'], 'refs/heads/' + branch],
+            destination, timeout=60, credentials=credentials)
+        return git(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], destination)
+    except (ValueError, subprocess.TimeoutExpired):
+        raise ValueError('No se pudieron actualizar las fuentes de ' + repo['path'] +
+                         '; verifica la rama, conectividad y el perfil de lectura Git del workspace. No se usará el commit antiguo.') from None
+
+
+def prepare(job, roots, state_dir, config=None, heartbeat=lambda: None):
+    """Refresh new runs in private clones; retries reuse the already pinned base."""
+    refresh = job['snapshot'].get('sources_pending') is True
+    config = config or {}
     if not safe_id(job["run_id"]):
         raise ValueError("Invalid run id")
     workspace = job["snapshot"]["workspace"]
@@ -147,14 +192,21 @@ def prepare(job, roots, state_dir):
         if target.is_symlink() or not manifest_path.is_file():
             raise ValueError('Run checkout needs reconciliation')
         data = manifest_path.read_bytes()
+        manifest = json.loads(data)
         expected = {r['path']: r['head_sha'] for r in workspace['repositories']}
-        if json.loads(data).get('commits') != expected or any(git(['rev-parse', 'HEAD'], target / path) != sha for path, sha in expected.items()):
+        if refresh:
+            identity = {r['path']: {'remote': r['remote'], 'branch': r.get('branch')} for r in workspace['repositories']}
+            if manifest.get('sources') != identity or set(manifest.get('commits', {})) != set(expected):
+                raise ValueError('Run checkout source identity needs reconciliation')
+            expected = manifest['commits']
+        if manifest.get('commits') != expected or any(git(['rev-parse', 'HEAD'], target / path) != sha for path, sha in expected.items()):
             raise ValueError('Existing checkout differs from the pinned preparation')
         return [{'check': 'committed-checkouts-prepared', 'status': 'pass', 'commits': expected, 'artifact_digest': hashlib.sha256(data).hexdigest()}]
     stage = Path(tempfile.mkdtemp(prefix="prepare-", dir=state_dir))
     commits = {}
     try:
         for repo in workspace["repositories"]:
+            heartbeat()
             relative = Path(repo["path"])
             if relative.is_absolute() or ".." in relative.parts or not relative.parts:
                 raise ValueError("Unsafe repository path")
@@ -169,6 +221,10 @@ def prepare(job, roots, state_dir):
             destination = stage / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             git(["clone", "--no-local", "--no-checkout", "--", str(source), str(destination)], stage, 300)
+            if refresh:
+                if git(['config', '--get', 'remote.origin.url'], source) != repo['remote']:
+                    raise ValueError('Source remote differs from the confirmed inventory')
+                sha = fetch_source(repo, destination, config, workspace['id'], roots)
             git(["checkout", "--detach", sha, "--"], destination, 300)
             # Avoid publishing back into the user's source clone by accident.
             git(["remote", "remove", "origin"], destination)
@@ -177,6 +233,8 @@ def prepare(job, roots, state_dir):
                 raise ValueError("Prepared commit mismatch")
             commits[repo["path"]] = actual
         manifest = {"run_id": job["run_id"], "commits": commits, "isolation": "checkout-only-not-a-sandbox"}
+        if refresh:
+            manifest['sources'] = {r['path']: {'remote': r['remote'], 'branch': r['branch']} for r in workspace['repositories']}
         encoded = json.dumps(manifest, sort_keys=True).encode()
         (stage / "checkout-manifest.json").write_bytes(encoded)
         stage.rename(target)
@@ -293,7 +351,7 @@ def tick_locked(config, roots):
     for name in adapters:
         if not safe_id(name): raise ValueError('Invalid adapter name')
         capabilities.append('adapter:' + name)
-    capabilities += ['agent-runtime:v1', 'agent-runtime:v2']
+    capabilities += ['agent-runtime:v1', 'agent-runtime:v2', 'workspace-sources:v1']
     capabilities += ['executor:' + profile.get('executor', profile.get('harness', profile.get('format', 'claude'))) for profile in adapters.values() if profile.get('kind') == 'agent']
     capabilities += config.get('capabilities', []) + remote_capabilities
     job = api.call('/claim', {'capabilities': capabilities})['job']
@@ -306,10 +364,18 @@ def tick_locked(config, roots):
         adapter = job['step']['adapter']
         if adapter == 'prepare-workspace' and job['step']['kind'] == 'prepare':
             validate_environment_references(config, job['snapshot']['workspace']['id'], roots)
-            evidence = prepare(job, roots, config['state_dir'])
+            started = time.monotonic()
+            def source_heartbeat():
+                if time.monotonic() - started >= job['step']['timeout_seconds']:
+                    raise ValueError('Source preparation exceeded the step time budget')
+                api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/lease', {'lease_token': job['lease_token']})
+            evidence = prepare(job, roots, config['state_dir'], config, source_heartbeat)
             data = (Path(config['state_dir']) / job['run_id'] / 'checkout-manifest.json').read_bytes()
             artifact = upload(api, job, 'checkout-manifest.json', 'application/json', data)
             evidence[0]['artifact_digest'] = artifact['digest']
+            if job['snapshot'].get('sources_pending') is True:
+                outcome['heads'] = evidence[0]['commits']
+                outcome['output'] = {'sources_refreshed': True}
             success = True
         elif adapter == 'integrated-environment':
             success, evidence, outcome = services(config, job, roots, api, git, private_file)

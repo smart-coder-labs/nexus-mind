@@ -94,7 +94,7 @@ fn shared_factory_pause_fences_active_workflows_and_preserves_queued_work() {
     let job = db::claim(&c, &org, &runner, &capabilities, 100)
         .unwrap()
         .unwrap();
-    let queued = db::start_run(&c, &org, &d, "queued:2", &json!({"title":"Queued"})).unwrap()["id"]
+    let queued = db::start_pinned_run(&c, &org, &d, "queued:2", &json!({"title":"Queued"})).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -110,7 +110,7 @@ fn shared_factory_pause_fences_active_workflows_and_preserves_queued_work() {
     assert!(db::claim(&c, &org, &runner, &capabilities, 101)
         .unwrap()
         .is_none());
-    assert!(db::start_run(&c, &org, &d, "paused:3", &json!({})).is_err());
+    assert!(db::start_pinned_run(&c, &org, &d, "paused:3", &json!({})).is_err());
     assert!(nexusmind::db::workflow_execution::lease(
         &c,
         &org,
@@ -131,6 +131,7 @@ fn repo(writable: bool) -> Repository {
         path: "api".into(),
         remote: "git@github.com:acme/api.git".into(),
         head_sha: "a".repeat(40),
+        branch: None,
         writable,
     }
 }
@@ -168,7 +169,7 @@ fn define(c: &rusqlite::Connection, org: &str, user: &str, w: &str, steps: Vec<S
         .into()
 }
 fn run(c: &rusqlite::Connection, org: &str, d: &str) -> String {
-    db::start_run(c, org, d, "linear:issue-1", &json!({"title":"Fix"})).unwrap()["id"]
+    db::start_pinned_run(c, org, d, "linear:issue-1", &json!({"title":"Fix"})).unwrap()["id"]
         .as_str()
         .unwrap()
         .into()
@@ -179,12 +180,80 @@ fn claim(c: &rusqlite::Connection, org: &str, runner: &str, now: i64) -> serde_j
         .unwrap()
 }
 #[test]
+fn ordinary_new_runs_never_silently_use_a_legacy_inventory() {
+    let (c, org, user, _, workspace) = setup();
+    let mut prepare = step("prepare", &[], StepKind::Prepare);
+    prepare.adapter = "prepare-workspace".into();
+    let definition = define(&c, &org, &user, &workspace, vec![prepare]);
+    let task = json!({"title":"Refresh", "pinned_sources":true});
+    assert_eq!(db::start_run(&c, &org, &definition, "fresh:missing-branch", &task).unwrap_err().to_string(), "source_branch_not_confirmed");
+    assert!(db::list_runs(&c, &org).unwrap().is_empty());
+    let offline = db::start_pinned_run(&c, &org, &definition, "offline:explicit", &task).unwrap();
+    assert_eq!(offline["snapshot"]["source_policy"], "pinned");
+    assert!(offline["snapshot"]["sources_pending"].is_null());
+}
+
+#[test]
+fn fresh_sources_seal_only_during_initial_fenced_preparation() {
+    use nexusmind::{db::workflow_execution as execution, factory::workflows::Outcome};
+    let (c, org, user, runner, workspace) = setup();
+    let mut discovered = repo(false);
+    discovered.remote = "https://github.com/acme/api.git".into();
+    discovered.branch = Some("release/accounting".into());
+    db::report_inventory(&c, &org, &runner, &workspace, &[discovered.clone()]).unwrap();
+    discovered.writable = true;
+    db::confirm_inventory(&c, &org, &workspace, 2, &[discovered]).unwrap();
+    let mut prepare = step("prepare", &[], StepKind::Prepare);
+    prepare.adapter = "prepare-workspace".into();
+    // Even an independent root check cannot see the old inventory commits.
+    let definition = define(&c, &org, &user, &workspace, vec![step("check", &[], StepKind::Check), prepare]);
+    let run = db::start_run(&c, &org, &definition, "fresh:1", &json!({"title":"Refresh"})).unwrap()["id"].as_str().unwrap().to_string();
+    assert_eq!(db::run_detail(&c, &org, &run).unwrap()["snapshot"]["sources_pending"], true);
+    assert!(execution::approve(&c, &org, &user, &run, "publish", 0).is_err());
+    execution::approve(&c, &org, &user, &run, "fix", 0).unwrap();
+    assert!(db::claim(&c, &org, &runner, &["adapter:test".into(), "adapter:prepare-workspace".into()], 100).unwrap().is_none());
+    let caps = vec!["adapter:prepare-workspace".into(), "workspace-sources:v1".into()];
+    let job = db::claim(&c, &org, &runner, &caps, 101).unwrap().unwrap();
+    assert_eq!(job["step"]["id"], "prepare");
+    assert!(db::claim(&c, &org, &runner, &["adapter:test".into()], 102).unwrap().is_none());
+    let fence = job["lease_token"].as_str().unwrap();
+    let artifact = execution::put_artifact(&c, &org, &runner, &run, "prepare", fence, "checkout-manifest.json", "application/json", b"{}", 103).unwrap();
+    let commits: BTreeMap<String, String> = [("api".into(), "b".repeat(40))].into();
+    let evidence = vec![Evidence { check: "committed-checkouts-prepared".into(), status: EvidenceStatus::Pass,
+        commits: commits.clone(), artifact_digest: artifact["digest"].as_str().unwrap().into() }];
+    let mut outcome = Outcome { input_revision: 0, heads: commits.clone(), output: json!({"sources_refreshed":true}), ..Default::default() };
+    assert!(db::complete_with_outcome(&c, &org, &runner, &run, "prepare", "wrong-fence", true, &evidence, Some(&outcome), 104).is_err());
+    outcome.output = json!({});
+    assert!(db::complete_with_outcome(&c, &org, &runner, &run, "prepare", fence, true, &evidence, Some(&outcome), 104).is_err());
+    assert_eq!(db::run_detail(&c, &org, &run).unwrap()["snapshot"]["sources_pending"], true);
+    outcome.output = json!({"sources_refreshed":true});
+    db::complete_with_outcome(&c, &org, &runner, &run, "prepare", fence, true, &evidence, Some(&outcome), 105).unwrap();
+    let pinned = db::run_detail(&c, &org, &run).unwrap();
+    assert_eq!(pinned["snapshot"]["sources_pending"], false);
+    assert_eq!(pinned["snapshot"]["workspace"]["repositories"][0]["head_sha"], "b".repeat(40));
+    assert_eq!(pinned["execution"]["heads"]["api"], "b".repeat(40));
+    assert_eq!(pinned["execution"]["revision"], 0);
+    assert!(execution::approved(&c, &run, "fix", 0).unwrap());
+    assert_eq!(db::workspace_by_id(&c, &org, &workspace).unwrap()["repositories"][0]["head_sha"], "a".repeat(40));
+    c.execute("UPDATE factory_workflow_steps SET status='blocked' WHERE run_id=?1 AND step_id='prepare'", [&run]).unwrap();
+    c.execute("UPDATE factory_workflow_runs SET status='blocked' WHERE id=?1", [&run]).unwrap();
+    db::control_run(&c, &org, &run, "retry", Some("prepare")).unwrap();
+    let retry = db::claim(&c, &org, &runner, &caps, 106).unwrap().unwrap();
+    outcome.heads.insert("api".into(), "c".repeat(40));
+    assert!(db::complete_with_outcome(&c, &org, &runner, &run, "prepare", retry["lease_token"].as_str().unwrap(), true, &[], Some(&outcome), 107).is_err());
+    assert_eq!(db::run_detail(&c, &org, &run).unwrap()["snapshot"], pinned["snapshot"]);
+}
+
+#[test]
 fn inventory_requires_confirmation_and_runner_scope() {
     let (c, o, _, r, w) = setup();
     assert!(db::workspace_by_id(&c, "other", &w).is_err());
     assert!(db::report_inventory(&c, &o, "other-runner", &w, &[repo(false)]).is_err());
     assert!(db::report_inventory(&c, &o, &r, &w, &[repo(true)]).is_err());
     assert!(db::confirm_inventory(&c, &o, &w, 0, &[repo(true)]).is_err());
+    let mut unconfirmed_branch = repo(true);
+    unconfirmed_branch.branch = Some("another-branch".into());
+    assert!(db::confirm_inventory(&c, &o, &w, 1, &[unconfirmed_branch]).is_err());
     db::report_inventory(&c, &o, &r, &w, &[repo(false)]).unwrap();
     assert_eq!(
         db::workspace_by_id(&c, &o, &w).unwrap()["confirmed_revision"],
@@ -239,7 +308,7 @@ fn dependencies_deduplication_and_fences() {
     let run = run(&c, &o, &d);
     assert_eq!(
         run,
-        db::start_run(&c, &o, &d, "linear:issue-1", &json!({})).unwrap()["id"]
+        db::start_pinned_run(&c, &o, &d, "linear:issue-1", &json!({})).unwrap()["id"]
     );
     assert!(db::claim(&c, &o, &r, &[], 100).unwrap().is_none());
     let j = claim(&c, &o, &r, 100);
