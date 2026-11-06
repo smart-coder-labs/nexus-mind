@@ -152,7 +152,7 @@ fn refs(names: &[String]) -> bool {
     names.len() <= 16 && names.iter().all(|s| name(s))
 }
 pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
-    if config.agents.len() > 4 || config.checks.len() > 64 || config.services.len() > 16 || config.environment_entrypoints.len() > 16 {
+    if config.agents.len() > 4 || config.checks.len() > 256 || config.services.len() > 16 || config.environment_entrypoints.len() > 16 {
         bail!("runtime_limits_exceeded")
     }
     for path in &config.environment_entrypoints {
@@ -540,6 +540,26 @@ pub fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multi_repository_checks_fit_but_remain_bounded() {
+        let repos = (0..49).map(|i| format!("repo-{i}")).collect::<Vec<_>>();
+        let mut config = RuntimeConfig::default();
+        for i in 0..256 {
+            config.checks.push(Check {
+                name: if i % 2 == 0 { "tests" } else { "build" }.into(),
+                image: format!("sha256:{}", "a".repeat(64)),
+                cwd: repos[i % 49].clone(),
+                command: vec!["node".into(), format!("check-{i}.js")],
+                environment_refs: vec![],
+            });
+        }
+        validate(&config, &repos).unwrap();
+        config.checks.push(config.checks[0].clone());
+        assert_eq!(
+            validate(&config, &repos).unwrap_err().to_string(),
+            "runtime_limits_exceeded"
+        );
+    }
     #[test]
     fn automatic_environment_defaults_and_entrypoints_are_bounded() {
         let mut config: RuntimeConfig = serde_json::from_value(json!({"agents":[],"checks":[],"services":[]})).unwrap();

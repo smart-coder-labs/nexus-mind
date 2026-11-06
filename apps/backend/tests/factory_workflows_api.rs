@@ -11,6 +11,31 @@ use nexusmind::{
 use serde_json::{json, Value};
 use tower::util::ServiceExt;
 #[tokio::test]
+async fn authenticated_api_has_no_plan_request_quota_but_still_requires_auth() {
+    let app = app("super_user");
+    let cookie = login(&app).await;
+    for _ in 0..120 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/autonomous-agents/settings")
+                    .header("Cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key("x-ratelimit-limit"));
+        assert!(!response.headers().contains_key("x-ratelimit-remaining"));
+    }
+    assert_eq!(
+        request(&app, "GET", "/v1/autonomous-agents/settings", None, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+#[tokio::test]
 async fn shared_pause_requires_authority_over_both_execution_engines() {
     let app = app("fleet_only");
     let cookie = login(&app).await;

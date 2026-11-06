@@ -47,6 +47,13 @@ class RuntimeSettingsTests(unittest.TestCase):
   with self.assertRaises(settings.RuntimeSettingsError):settings._model(self.config,'model',[self.root],private_file)
   self.env.write_text('OPENAI_BASE_URL=http://model-proxy/v1\nOPENAI_API_KEY=sk-provider-master-fixture\n')
   with self.assertRaises(settings.RuntimeSettingsError):settings._model(self.config,'model',[self.root],private_file)
+ def test_browser_sdk_dependency_preparation_requires_local_operator_opt_in(self):
+  from execution import node_bootstrap_image
+  qa='sha256:'+'b'*64
+  self.config['managed_images']={'node':self.image}
+  self.assertTrue(node_bootstrap_image(self.config,self.image));self.assertFalse(node_bootstrap_image(self.config,qa))
+  self.config['node_bootstrap_images']=[qa]
+  self.assertTrue(node_bootstrap_image(self.config,qa));self.assertFalse(node_bootstrap_image(self.config,'sha256:'+'c'*64))
  def test_multiple_repositories_keep_separate_checks_and_images(self):
   self.profile['checks'] += [{'name':'build','image':'sha256:'+'b'*64,'cwd':'api','command':['cargo','build'],'environment_refs':[]}]
   adapters,_=settings.compile_settings(self.profile);self.assertEqual(adapters['isolated-verification']['kind'],'suite');self.assertEqual(len(adapters['isolated-verification']['checks']),2)

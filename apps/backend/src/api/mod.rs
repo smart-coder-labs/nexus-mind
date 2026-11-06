@@ -30,7 +30,6 @@ pub mod memory;
 pub mod middleware;
 pub mod migrations;
 pub mod policy;
-pub mod rate_limit;
 pub mod router;
 pub mod sdd;
 pub mod search;
