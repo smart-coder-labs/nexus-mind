@@ -133,6 +133,7 @@ fn workflow_overrides_are_pinned_without_mutating_agent_revision() {
         path: "api".into(),
         remote: "git@github.com:acme/api.git".into(),
         head_sha: "a".repeat(40),
+        branch: None,
         writable: false,
     };
     workflows::report_inventory(
@@ -166,7 +167,7 @@ fn workflow_overrides_are_pinned_without_mutating_agent_revision() {
         .unwrap();
     assert!(capabilities.contains(&json!("agent-runtime:v2")));
     assert!(capabilities.contains(&json!("executor:pi")));
-    let run = workflows::start_run(
+    let run = workflows::start_pinned_run(
         &conn,
         &org,
         saved["id"].as_str().unwrap(),

@@ -200,7 +200,7 @@ pub fn confirm_inventory(
     for r in repos {
         if !discovered
             .iter()
-            .any(|d| d.path == r.path && d.remote == r.remote && d.head_sha == r.head_sha)
+            .any(|d| d.path == r.path && d.remote == r.remote && d.head_sha == r.head_sha && d.branch == r.branch)
         {
             bail!("repository_not_discovered");
         }
@@ -237,12 +237,22 @@ pub fn list_definitions(conn: &Connection, org: &str) -> Result<Vec<Value>> {
     })
     .collect()
 }
-pub fn start_run(
+pub fn start_run(conn: &Connection, org: &str, definition: &str, source_key: &str, task: &Value) -> Result<Value> {
+    start_with_sources(conn, org, definition, source_key, task, true)
+}
+
+/// Explicit offline/exact-inventory mode; never a fallback after a fetch failure.
+pub fn start_pinned_run(conn: &Connection, org: &str, definition: &str, source_key: &str, task: &Value) -> Result<Value> {
+    start_with_sources(conn, org, definition, source_key, task, false)
+}
+
+fn start_with_sources(
     conn: &Connection,
     org: &str,
     definition: &str,
     source_key: &str,
     task: &Value,
+    refresh_sources: bool,
 ) -> Result<Value> {
     if source_key.is_empty() || source_key.len() > 512 || task.to_string().len() > 65536 {
         bail!("invalid_task");
@@ -256,7 +266,7 @@ pub fn start_run(
         )
         .optional()?
         .ok_or_else(|| anyhow::anyhow!("not_found"))?;
-    let d: Definition = serde_json::from_str(&text)?;
+    let mut d: Definition = serde_json::from_str(&text)?;
     let mut w = workspace_by_id(&tx, org, &d.workspace_id)?;
     if w["confirmed_revision"].is_null() || w["confirmed_revision"] != w["inventory_revision"] {
         bail!("workspace_not_confirmed");
@@ -307,8 +317,27 @@ pub fn start_run(
         )?;
         w["runtime"]["config"] = serde_json::to_value(resolved)?;
     }
+    let repositories: Vec<Repository> = serde_json::from_value(w["repositories"].clone())?;
+    if refresh_sources {
+        if repositories.iter().any(|r| r.branch.is_none()) {
+            bail!("source_branch_not_confirmed");
+        }
+        let prepares: Vec<_> = d.steps.iter_mut().filter(|s| matches!(s.kind, StepKind::Prepare)).collect();
+        if prepares.len() != 1 || !prepares[0].depends_on.is_empty() || prepares[0].adapter != "prepare-workspace" {
+            bail!("source_refresh_requires_initial_prepare");
+        }
+        for step in prepares {
+            if !step.capabilities.iter().any(|c| c == "workspace-sources:v1") {
+                step.capabilities.push("workspace-sources:v1".into());
+            }
+        }
+    }
+    d.validate(&repositories).map_err(anyhow::Error::msg)?;
     let run = id();
-    let snapshot = json!({"definition":d,"workspace":w});
+    let mut snapshot = json!({"definition":d,"workspace":w,"source_policy":if refresh_sources {"fresh"} else {"pinned"}});
+    if refresh_sources {
+        snapshot["sources_pending"] = json!(true);
+    }
     tx.execute("INSERT INTO factory_workflow_runs(id,org_id,definition_id,workspace_id,runner_id,source_key,task_json,snapshot_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![run,org,definition,d.workspace_id,w["runner_id"].as_str(),source_key,task.to_string(),snapshot.to_string()])?;
     tx.execute(
         "UPDATE factory_workflow_runs SET heads_json=?1 WHERE id=?2",
@@ -517,6 +546,9 @@ pub fn claim(
             continue;
         }
         for step in &d.steps {
+            if snapshot["sources_pending"] == true && !matches!(step.kind, StepKind::Prepare) {
+                continue;
+            }
             let state = states
                 .iter()
                 .find(|s| s.0 == step.id)
@@ -669,7 +701,7 @@ pub fn complete_with_outcome(
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let snapshot:String=tx.query_row("SELECT snapshot_json FROM factory_workflow_runs WHERE id=?1 AND org_id=?2 AND runner_id=?3 AND status IN ('running','blocked')",params![run,org,runner],|r|r.get(0)).optional()?.ok_or_else(||anyhow::anyhow!("lease_conflict"))?;
-    let snapshot = parse(snapshot)?;
+    let mut snapshot = parse(snapshot)?;
     let d: Definition = serde_json::from_value(snapshot["definition"].clone())?;
     let step = d
         .steps
@@ -678,7 +710,7 @@ pub fn complete_with_outcome(
         .ok_or_else(|| anyhow::anyhow!("not_found"))?;
     super::workflow_execution::lease(&tx, org, runner, run, step_id, fence, now)?;
     let execution = super::workflow_execution::metadata(&tx, run)?;
-    let current: std::collections::BTreeMap<String, String> =
+    let mut current: std::collections::BTreeMap<String, String> =
         serde_json::from_value(execution["heads"].clone())?;
     let revision = execution["revision"].as_u64().unwrap_or(0) as u32;
     let fallback = crate::factory::workflows::Outcome {
@@ -707,6 +739,31 @@ pub fn complete_with_outcome(
     } else {
         outcome.heads.clone()
     };
+    if success && snapshot["sources_pending"] == true && matches!(step.kind, StepKind::Prepare) {
+        if revision != 0 || outcome.output["sources_refreshed"] != true
+            || commits.len() != current.len()
+            || commits.iter().any(|(path, sha)| !current.contains_key(path) || !crate::factory::workflows::valid_sha(sha))
+            || !evidence.iter().any(|e| e.check == "committed-checkouts-prepared" && e.status == EvidenceStatus::Pass)
+        {
+            bail!("invalid_source_snapshot");
+        }
+        let started: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM factory_workflow_steps WHERE run_id=?1 AND step_id!=?2 AND attempt>0)",
+            params![run, step_id], |r| r.get(0),
+        )?;
+        if started { bail!("source_snapshot_already_in_use"); }
+        // Only this initial, fenced preparation may seal the new run's base.
+        // Existing/pinned snapshots and preparation retries never move upstream.
+        for repo in snapshot["workspace"]["repositories"].as_array_mut().ok_or_else(|| anyhow::anyhow!("invalid_snapshot"))? {
+            let path = repo["path"].as_str().ok_or_else(|| anyhow::anyhow!("invalid_snapshot"))?.to_string();
+            repo["head_sha"] = json!(commits[&path]);
+        }
+        snapshot["sources_pending"] = json!(false);
+        tx.execute("UPDATE factory_workflow_runs SET snapshot_json=?1,heads_json=?2 WHERE id=?3", params![snapshot.to_string(), serde_json::to_string(&commits)?, run])?;
+        tx.execute("DELETE FROM factory_workflow_approvals WHERE run_id=?1 AND action!='fix'", [run])?;
+        event(&tx, run, Some(step_id), "sources.pinned", json!({"heads":commits,"previous_heads":current}))?;
+        current = commits.clone();
+    }
     if commits.len() != current.len()
         || commits.iter().any(|(path, sha)| {
             !current.contains_key(path)

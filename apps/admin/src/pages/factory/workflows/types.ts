@@ -1,5 +1,5 @@
 import type { RuntimeState } from './runtime'
-export type Repository = { path: string; remote: string; head_sha: string; writable: boolean }
+export type Repository = { path: string; remote: string; head_sha: string; branch?: string; writable: boolean }
 export type Runner = {
   id: string
   name: string

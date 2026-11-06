@@ -197,6 +197,9 @@ pub fn approve(
         bail!("invalid_action")
     }
     let t = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+    let pending: bool = t.query_row("SELECT COALESCE(json_extract(snapshot_json,'$.sources_pending'),0) FROM factory_workflow_runs WHERE id=?1 AND org_id=?2", params![run,org], |r| r.get(0)).optional()?.unwrap_or(false);
+    // Initial fix consent authorizes the task, not verification/publication of a SHA.
+    if pending && action != "fix" { bail!("source_snapshot_pending"); }
     let current:Option<u32>=t.query_row("SELECT change_revision FROM factory_workflow_runs WHERE id=?1 AND org_id=?2 AND status!='cancelled'",params![run,org],|r|r.get(0)).optional()?;
     if current != Some(revision) {
         bail!("revision_conflict")

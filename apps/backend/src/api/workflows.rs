@@ -195,6 +195,9 @@ pub struct NewRun {
     definition_id: String,
     source_key: String,
     task: Value,
+    /// Explicit offline/exact-inventory execution. Ordinary runs always refresh.
+    #[serde(default)]
+    pinned_sources: bool,
 }
 pub async fn start_run(
     State(store): State<SqliteStore>,
@@ -204,7 +207,8 @@ pub async fn start_run(
     let db = store.conn();
     let conn = db.lock().map_err(|_| locked())?;
     require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
-    let run = db::start_run(
+    let start = if b.pinned_sources { db::start_pinned_run } else { db::start_run };
+    let run = start(
         &conn,
         &auth.org_id,
         &b.definition_id,

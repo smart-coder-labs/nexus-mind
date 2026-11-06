@@ -112,7 +112,7 @@ export function RepositoryInventory({
                   <span className="break-words">{repo.path}</span>
                 </label>
                 <code className="pl-5 text-xs text-muted-foreground sm:pl-0">
-                  {repo.head_sha.slice(0, 10)}
+                  {repo.branch ? `${repo.branch} · actualizar antes de cada ejecución` : repo.head_sha.slice(0, 10)}
                 </code>
                 <label className="flex items-center gap-2 pl-5 text-sm sm:pl-0">
                   <input

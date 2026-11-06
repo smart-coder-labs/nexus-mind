@@ -8,6 +8,9 @@ pub struct Repository {
     pub path: String,
     pub remote: String,
     pub head_sha: String,
+    /// Confirmed upstream branch; absent in legacy pinned-only inventories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub writable: bool,
 }
 
@@ -36,7 +39,14 @@ pub fn validate_repositories(repos: &[Repository]) -> Result<(), String> {
         {
             return Err("Repository HEAD must be a full commit SHA".into());
         }
-        // Remotes are display metadata only; never accept URL credentials,
+        if repo.branch.as_ref().is_some_and(|b| b.is_empty() || b.len() > 255
+            || b.starts_with('-') || b.starts_with('/') || b.ends_with('/')
+            || b.ends_with('.') || b.ends_with(".lock") || b.contains("..")
+            || b.contains("//") || b.contains("@{") || b == "HEAD"
+            || b.chars().any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))) {
+            return Err("Repository branch must be a safe named branch".into());
+        }
+        // Never accept URL credentials,
         // query parameters or fragments (they frequently carry access tokens).
         if repo.remote.len() > 1024
             || repo.remote.chars().any(char::is_control)
@@ -248,6 +258,7 @@ mod tests {
             path: "api".into(),
             remote: "git@github.com:acme/api.git".into(),
             head_sha: "a".repeat(40),
+            branch: None,
             writable: true,
         }
     }

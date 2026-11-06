@@ -111,6 +111,7 @@ async fn exercise_publication(backend: bool) {
         path: "api".into(),
         remote: "git@github.com:acme/api.git".into(),
         head_sha: "a".repeat(40),
+        branch: None,
         writable: false,
     };
     workflows::report_inventory(&c, &org.id, rid, wid, &[repo.clone()]).unwrap();
@@ -133,7 +134,7 @@ async fn exercise_publication(backend: bool) {
             .options = json!({"github_auth":"server_gh_cli","github_login":"test-bot","github_required_checks":["ci"]});
     }
     let d = workflows::create_definition(&c, &org.id, &user.id, &definition).unwrap();
-    let run = workflows::start_run(
+    let run = workflows::start_pinned_run(
         &c,
         &org.id,
         d["id"].as_str().unwrap(),

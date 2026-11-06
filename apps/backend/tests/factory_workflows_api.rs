@@ -271,7 +271,7 @@ async fn real_python_runner_discovers_and_prepares_without_touching_personal_cha
     assert_eq!(status, StatusCode::OK);
     let (status,definition)=request(&app,"POST","/v1/factory/workflows",Some(&cookie),None,Some(json!({"name":"Prepare","workspace_id":workspace["id"],"steps":[{"id":"prepare","name":"Prepare","kind":"prepare","depends_on":[],"adapter":"prepare-workspace","capabilities":["workspace:prepare"],"write_repositories":[],"max_attempts":2,"timeout_seconds":300}]}))).await;
     assert_eq!(status, StatusCode::OK);
-    let (status,run)=request(&app,"POST","/v1/factory/workflow-runs",Some(&cookie),None,Some(json!({"definition_id":definition["id"],"source_key":"manual:e2e","task":{"title":"Prepare committed code"}}))).await;
+    let (status,run)=request(&app,"POST","/v1/factory/workflow-runs",Some(&cookie),None,Some(json!({"definition_id":definition["id"],"source_key":"manual:e2e","pinned_sources":true,"task":{"title":"Prepare committed code"}}))).await;
     assert_eq!(status, StatusCode::OK);
     let output = tick().output().await.unwrap();
     assert!(output.status.success(), "preparation failed");
@@ -354,7 +354,7 @@ async fn real_python_runner_discovers_and_prepares_without_touching_personal_cha
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{d}");
-        let(status,r)=request(&app,"POST","/v1/factory/workflow-runs",Some(&cookie),None,Some(json!({"definition_id":d["id"],"source_key":"manual:container-delivery","task":{"title":"Fix and review"}}))).await;
+        let(status,r)=request(&app,"POST","/v1/factory/workflow-runs",Some(&cookie),None,Some(json!({"definition_id":d["id"],"source_key":"manual:container-delivery","pinned_sources":true,"task":{"title":"Fix and review"}}))).await;
         assert_eq!(status, StatusCode::OK);
         for _ in 0..12 {
             let output = tick().output().await.unwrap();

@@ -642,6 +642,7 @@ mod tests {
             path: "web".into(),
             remote: "https://github.com/acme/web.git".into(),
             head_sha: "a".repeat(40),
+            branch: None,
             writable: false,
         };
         super::super::workflows::report_inventory(&c, &org.id, rid, wid, &[repo.clone()]).unwrap();
@@ -706,7 +707,7 @@ mod tests {
         let definition:crate::factory::workflows::Definition=serde_json::from_value(json!({"name":"Prepare","workspace_id":wid,"steps":[{"id":"prepare","name":"Prepare","kind":"prepare","adapter":"prepare-workspace"}]})).unwrap();
         let d =
             super::super::workflows::create_definition(&c, &org.id, &user.id, &definition).unwrap();
-        let run = super::super::workflows::start_run(
+        let run = super::super::workflows::start_pinned_run(
             &c,
             &org.id,
             d["id"].as_str().unwrap(),
