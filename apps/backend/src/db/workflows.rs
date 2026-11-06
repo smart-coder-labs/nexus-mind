@@ -327,8 +327,10 @@ fn start_with_sources(
             bail!("source_refresh_requires_initial_prepare");
         }
         for step in prepares {
-            if !step.capabilities.iter().any(|c| c == "workspace-sources:v1") {
-                step.capabilities.push("workspace-sources:v1".into());
+            for capability in ["workspace-sources:v1", "workspace-git-read:v1"] {
+                if !step.capabilities.iter().any(|c| c == capability) {
+                    step.capabilities.push(capability.into());
+                }
             }
         }
     }

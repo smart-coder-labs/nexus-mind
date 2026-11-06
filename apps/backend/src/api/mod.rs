@@ -20,6 +20,7 @@ pub mod workflows;
 pub mod workflow_execution;
 pub mod workflow_runtime;
 pub mod workflow_model;
+pub mod workflow_sources;
 pub mod github_auth;
 pub mod github_review_hooks;
 pub mod harnesses;

@@ -1,10 +1,13 @@
 import importlib.util
 import errno
+import http.server
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
+import urllib.parse
 import unittest
 from unittest.mock import patch
 
@@ -131,6 +134,76 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse((state / 'fresh-1' / 'api' / '.env').exists())
         self.assertEqual(self.command('remote', 'get-url', 'origin'), repos[0]['remote'])
 
+    def test_real_git_fetch_uses_scoped_backend_transport_without_a_github_token(self):
+        self.command('branch', '-M', 'master')
+        self.command('remote', 'add', 'origin', 'https://github.com/acme/api.git')
+        old = self.command('rev-parse', 'HEAD')
+        (self.repo / 'file.txt').write_text('fresh backend source')
+        self.command('commit', '-qam', 'upstream fix')
+        fresh = self.command('rev-parse', 'HEAD')
+        remote = self.base / 'remote.git'
+        subprocess.run(['git', 'clone', '-q', '--bare', str(self.repo), str(remote)], check=True)
+        self.command('reset', '--hard', old)
+        seen = []
+        project_root = str(self.base)
+        prefix = '/v1/factory/runner/runs/proxy-run/steps/prepare/sources/0'
+        class Backend(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+            def serve_git(self):
+                parsed = urllib.parse.urlsplit(self.path)
+                if (self.headers.get('Authorization') != 'Bearer fixture-runner'
+                        or self.headers.get('X-NexusMind-Lease') != 'fixture-lease'
+                        or parsed.path not in (prefix+'/info/refs', prefix+'/git-upload-pack')):
+                    self.send_error(403)
+                    return
+                seen.append((self.command, parsed.path))
+                body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                env = {'PATH': os.defpath, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+                       'GIT_PROJECT_ROOT': project_root, 'GIT_HTTP_EXPORT_ALL': '1',
+                       'PATH_INFO': '/remote.git'+parsed.path[len(prefix):],
+                       'REQUEST_METHOD': self.command, 'QUERY_STRING': parsed.query,
+                       'CONTENT_TYPE': self.headers.get('Content-Type', ''), 'CONTENT_LENGTH': str(len(body)),
+                       'GIT_PROTOCOL': self.headers.get('Git-Protocol', ''), 'REMOTE_USER': 'fixture'}
+                if self.headers.get('Content-Encoding'):
+                    env['HTTP_CONTENT_ENCODING'] = self.headers['Content-Encoding']
+                result = subprocess.run(['git', 'http-backend'], input=body, capture_output=True, env=env, check=True)
+                headers, separator, content = result.stdout.partition(b'\r\n\r\n')
+                if not separator:
+                    headers, separator, content = result.stdout.partition(b'\n\n')
+                self.send_response(200)
+                for line in headers.decode().splitlines():
+                    name, value = line.split(':', 1)
+                    if name.lower() in ('content-type', 'cache-control'):
+                        self.send_header(name, value.strip())
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            do_GET = serve_git
+            do_POST = serve_git
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Backend)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        config = {'api_url': 'http://127.0.0.1:'+str(server.server_port), 'runner_token': 'fixture-runner'}
+        job = {'run_id': 'proxy-run', 'step': {'id': 'prepare'}, 'lease_token': 'fixture-lease',
+               'snapshot': {'sources_pending': True, 'workspace': {'id': 'workspace',
+               'root_path': str(self.root), 'repositories': runner.discover(self.root, [self.root])}}}
+        state = self.base / 'state'
+        # Simulate the acknowledged journal directory from a failed first attempt.
+        (state / job['run_id']).mkdir(parents=True, mode=0o700)
+        state.chmod(0o700)
+        try:
+            evidence = runner.prepare(job, [self.root], state, config)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+        self.assertEqual(evidence[0]['commits'], {'api': fresh})
+        self.assertEqual(self.command('rev-parse', 'HEAD'), old)
+        self.assertTrue(any(method == 'POST' for method, _ in seen))
+        self.assertFalse(config.get('source_credentials'))
+        for path in (state/'proxy-run'/'checkout-manifest.json', state/'proxy-run'/'api'/'.git'/'config'):
+            self.assertNotIn('fixture-runner', path.read_text())
+            self.assertNotIn('fixture-lease', path.read_text())
+
     def test_failed_refresh_never_falls_back_to_the_old_commit(self):
         self.command('remote', 'add', 'origin', 'https://github.com/acme/api.git')
         job = {'run_id': 'failed-refresh', 'snapshot': {'sources_pending': True, 'workspace': {
@@ -146,6 +219,12 @@ class RunnerTests(unittest.TestCase):
                 runner.prepare(job, [self.root], state)
             fetch.assert_not_called()
         self.assertEqual((self.repo / 'file.txt').read_text(), 'committed')
+        unknown = state / job['run_id']
+        unknown.mkdir(mode=0o700)
+        (unknown / 'preserve.log').write_text('evidence must not be removed')
+        with self.assertRaisesRegex(ValueError, 'Run checkout needs reconciliation'):
+            runner.prepare(job, [self.root], state)
+        self.assertEqual((unknown / 'preserve.log').read_text(), 'evidence must not be removed')
 
     def test_source_fetch_fails_closed_for_unapproved_hosts_credentials_and_branches(self):
         for remote in ('http://github.com/acme/api', 'https://localhost/acme/api',
