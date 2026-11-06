@@ -17,6 +17,18 @@ use crate::{
 };
 
 pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
+    // Git RPC uses its own response media types. Keep this exception on the
+    // registered read-only routes; their runner authentication/leases still apply.
+    let git_media = match (
+        req.method(),
+        req.extensions().get::<MatchedPath>().map(MatchedPath::as_str),
+    ) {
+        (&Method::POST, Some("/v1/factory/runner/runs/:run/steps/:step/sources/:index/git-upload-pack")) =>
+            Some("application/x-git-upload-pack-result"),
+        (&Method::GET, Some("/v1/factory/runner/runs/:run/steps/:step/sources/:index/info/refs")) =>
+            Some("application/x-git-upload-pack-advertisement"),
+        _ => None,
+    };
     if let Some(accept) = req.headers().get(axum::http::header::ACCEPT) {
         let accept_str = accept.to_str().unwrap_or("");
         let is_acceptable = accept_str.split(',').any(|media_range| {
@@ -26,7 +38,7 @@ pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
             matches!(
                 media_type,
                 "*/*" | "application/*" | "application/json" | "image/*" | "image/png"
-            )
+            ) || Some(media_type) == git_media
         });
         if !is_acceptable {
             return (
