@@ -77,7 +77,7 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "invalid_mcp_headers" | "invalid_mcp_url" | "unsafe_mcp_url"
         | "invalid_http_mcp_config" | "mcp_secrets_require_environment_references"
         | "runtime_executable_acknowledgement_required" | "invalid_runtime_files"
-        | "unsafe_runtime_file" | "skill_requires_SKILL_md" | "extension_requires_index" | "invalid_extension_tools" | "invalid_skill_frontmatter"
+        | "unsafe_runtime_file" | "skill_requires_SKILL_md" | "extension_requires_index" | "invalid_extension_tools" | "invalid_skill_frontmatter" | "instruction_files_must_be_markdown"
         | "invalid_harness_selection" | "harness_not_found" | "harness_hash_or_status_mismatch"
         | "harness_executor_incompatible" | "approval_required" | "unsupported_harness_format"
         | "unsupported_harness_format_for_runtime" | "harness_component_not_found"

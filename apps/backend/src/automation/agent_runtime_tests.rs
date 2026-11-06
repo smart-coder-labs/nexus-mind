@@ -39,7 +39,7 @@ fn catalog_resources_require_scope_approval_hash_target_and_visibility() {
     queries::create_harness_approval(&conn, &org, &user, Some(&user), &harness.id, "1.0.0", &serde_json::from_value(json!({"target_tool":"pi","target_scope":"agent-runtime","manifest_hash":version.manifest_hash})).unwrap()).unwrap();
     let resolved = prepare_config(&conn, &org, &user, &config).unwrap();
     assert_eq!(
-        resolved["runtime_resolved"]["components"][0]["files"]["SKILL.md"],
+        resolved["runtime_resolved"]["components"][0]["files"]["rust/SKILL.md"],
         content
     );
     assert!(!resolved["runtime_resolved"].to_string().contains("forged"));
@@ -62,8 +62,56 @@ fn catalog_resources_require_scope_approval_hash_target_and_visibility() {
         prepare_config(&conn, &org, &user, &config)
             .unwrap_err()
             .to_string(),
+        "approval_required"
+    );
+    for executor in ["claude", "codex", "nexus"] {
+        config["executor"] = json!(executor);
+        queries::create_harness_approval(&conn, &org, &user, Some(&user), &harness.id, "1.0.0", &serde_json::from_value(json!({"target_tool":executor,"target_scope":"agent-runtime","manifest_hash":version.manifest_hash})).unwrap()).unwrap();
+        let portable = prepare_config(&conn, &org, &user, &config).unwrap();
+        assert_eq!(
+            portable["runtime_resolved"]["components"][0]["kind"],
+            "instructions"
+        );
+        assert_eq!(
+            crate::automation::agent_runtime::markdown_guidance(&portable)[0]["files"]
+                ["rust/SKILL.md"],
+            content
+        );
+        let runtime: RuntimeConfig =
+            serde_json::from_value(portable["runtime_resolved"].clone()).unwrap();
+        assert!(plan(
+            &runtime,
+            executor,
+            "/runtime",
+            json!({"command":"nexusmind-mcp","env":{}})
+        )
+        .is_ok());
+    }
+    let script = "#!/bin/sh\nexit 0";
+    let hook = queries::publish_harness_version(&conn, &org, &user, &harness.id, &serde_json::from_value(json!({"version":"2.0.0","manifest":{"schema_version":"1.1","format":"hook","targets":["pi"],"components":[{"kind":"file","path":"run.sh","media_type":"text/x-shellscript","size_bytes":script.len(),"sha256":format!("sha256:{}",hex::encode(Sha256::digest(script.as_bytes()))),"content":script}],"provenance":{"source":"test"},"security":{"requires_approval":true,"executable":true}}})).unwrap()).unwrap();
+    config["executor"] = json!("claude");
+    config["runtime"]["harnesses"][0] = json!({"id":harness.id,"version":"2.0.0","manifest_hash":hook.manifest_hash,"components":["run.sh"]});
+    assert_eq!(
+        prepare_config(&conn, &org, &user, &config)
+            .unwrap_err()
+            .to_string(),
         "harness_executor_incompatible"
     );
+}
+
+#[test]
+fn markdown_portability_does_not_include_scripts_plugins_or_executable_declarations() {
+    use crate::automation::agent_runtime::portable_markdown;
+    let mut manifest = json!({"format":"skill","components":[{"kind":"folder","path":"review","entries":[{"kind":"file","path":"review/SKILL.md"},{"kind":"file","path":"review/docs/NOTES.md"}]}],"security":{"requires_approval":true}});
+    assert!(portable_markdown(&manifest));
+    manifest["components"][0]["entries"][1]["path"] = json!("review/run.sh");
+    assert!(!portable_markdown(&manifest));
+    manifest["components"][0]["entries"][1]["path"] = json!("review/docs/NOTES.md");
+    manifest["security"]["executable"] = json!(true);
+    assert!(!portable_markdown(&manifest));
+    manifest["security"]["executable"] = json!(false);
+    manifest["format"] = json!("claude_code_plugin");
+    assert!(!portable_markdown(&manifest));
 }
 
 #[test]
@@ -116,7 +164,7 @@ fn workflow_overrides_are_pinned_without_mutating_agent_revision() {
     let capabilities = saved["definition"]["steps"][0]["capabilities"]
         .as_array()
         .unwrap();
-    assert!(capabilities.contains(&json!("agent-runtime:v1")));
+    assert!(capabilities.contains(&json!("agent-runtime:v2")));
     assert!(capabilities.contains(&json!("executor:pi")));
     let run = workflows::start_run(
         &conn,

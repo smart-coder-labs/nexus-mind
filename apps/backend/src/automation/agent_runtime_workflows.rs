@@ -27,7 +27,7 @@ pub fn prepare(conn: &Connection, org: &str, user: &str, definition: &Definition
         let resolved = serde_json::from_value(config["runtime_resolved"].clone())?;
         let plan = plan(&resolved, &executor, "/tmp/nexusmind-agent-runtime", json!({"command":"nexusmind-mcp","env":{}}))?;
         options.insert("runtime_snapshot".into(), json!({"executor":executor,"config":config,"plan":plan,"approved_by":user,"agent_revision_id":agent.as_ref().map(|a| &a.revision.id)}));
-        for capability in ["agent-runtime:v1".to_string(), format!("executor:{executor}")] {
+        for capability in ["agent-runtime:v2".to_string(), format!("executor:{executor}")] {
             if !step.capabilities.contains(&capability) { step.capabilities.push(capability); }
         }
     }

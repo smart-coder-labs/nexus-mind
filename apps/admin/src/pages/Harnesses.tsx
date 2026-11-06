@@ -152,7 +152,10 @@ async function buildInlineManifestComponent(kind: 'file' | 'plugin_marketplace' 
   }
 }
 
-async function buildManifest(format: HarnessFormat, entries: HarnessManifestEntry[] = [], jsonContent?: string): Promise<HarnessManifest> {
+const HARNESS_TARGETS: HarnessManifest['targets'] = ['claude', 'codex', 'cursor', 'pi']
+
+async function buildManifest(format: HarnessFormat, entries: HarnessManifestEntry[], jsonContent: string | undefined, targets: HarnessManifest['targets']): Promise<HarnessManifest> {
+  if (targets.length === 0) throw new Error('Select at least one target.')
   const option = FORMAT_OPTIONS.find(item => item.value === format) ?? FORMAT_OPTIONS[0]
   const uploaded = entries.length > 0
   const hasFolderStructure = entries.some(entry => entry.path.includes('/'))
@@ -163,7 +166,7 @@ async function buildManifest(format: HarnessFormat, entries: HarnessManifestEntr
     : [await buildInlineManifestComponent(option.kind === 'folder' ? 'file' : option.kind, option.path, option.mediaType, jsonContent ?? option.content)]
   return {
     schema_version: '1.1',
-    targets: ['claude'],
+    targets: [...targets],
     format,
     components,
     provenance: { source: uploaded ? 'admin-ui-upload' : 'admin-ui-template' },
@@ -172,6 +175,13 @@ async function buildManifest(format: HarnessFormat, entries: HarnessManifestEntr
 }
 
 type Flash = { kind: 'success' | 'error'; message: string } | null
+
+function harnessError(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : fallback
+  return message.includes('secret_scan_failed')
+    ? 'El escáner detectó un posible secreto o ruta personal en el contenido. No se guardó la versión ni el archivo; sigue seleccionado en este formulario. Revisa o anonimiza el contenido antes de reintentar.'
+    : message
+}
 
 // Triggers a browser download of `data` as a pretty-printed JSON file. Guarded so
 // a browser that blocks object URLs never breaks the surrounding approval flow.
@@ -247,6 +257,7 @@ async function redactConfig(parsed: Record<string, unknown>): Promise<RedactionR
 // ── Shared manifest builder (used by create and publish flows) ─────────────────
 function useManifestBuilder() {
   const [format, setFormatState] = useState<HarnessFormat>('agent')
+  const [targets, setTargets] = useState<HarnessManifest['targets']>(['claude'])
   const [jsonContent, setJsonContent] = useState(FORMAT_OPTIONS[0].content)
   const [fileEntries, setFileEntries] = useState<HarnessManifestEntry[]>([])
   const [isReadingFiles, setIsReadingFiles] = useState(false)
@@ -259,7 +270,7 @@ function useManifestBuilder() {
     let cancelled = false
     setIsPreparingManifest(true)
     setManifestError(null)
-    void buildManifest(format, fileEntries, jsonContent)
+    void buildManifest(format, fileEntries, jsonContent, targets)
       .then(next => { if (!cancelled) setManifest(next) })
       .catch(err => {
         if (!cancelled) {
@@ -269,7 +280,7 @@ function useManifestBuilder() {
       })
       .finally(() => { if (!cancelled) setIsPreparingManifest(false) })
     return () => { cancelled = true }
-  }, [format, fileEntries, jsonContent])
+  }, [format, fileEntries, jsonContent, targets])
 
   const setFormat = (next: HarnessFormat) => {
     setFormatState(next)
@@ -301,9 +312,9 @@ function useManifestBuilder() {
 
   // Build the manifest from the CURRENT inputs. Used at submit time so the
   // published payload never depends on the async preview effect settling first.
-  const buildCurrentManifest = () => buildManifest(format, fileEntries, jsonContent)
+  const buildCurrentManifest = () => buildManifest(format, fileEntries, jsonContent, targets)
 
-  return { format, setFormat, jsonContent, setJsonContent, fileEntries, isReadingFiles, isPreparingManifest, manifest, manifestError, uploadError, handleFiles, buildCurrentManifest }
+  return { targets, setTargets, format, setFormat, jsonContent, setJsonContent, fileEntries, isReadingFiles, isPreparingManifest, manifest, manifestError, uploadError, handleFiles, buildCurrentManifest }
 }
 
 type ManifestBuilder = ReturnType<typeof useManifestBuilder>
@@ -321,7 +332,7 @@ function validateJsonContent(builder: ManifestBuilder): string | null {
 }
 
 function ManifestBuilderFields({ builder }: { builder: ManifestBuilder }) {
-  const { format, setFormat, jsonContent, setJsonContent, fileEntries, manifest, isPreparingManifest, handleFiles } = builder
+  const { targets, setTargets, format, setFormat, jsonContent, setJsonContent, fileEntries, manifest, isPreparingManifest, handleFiles } = builder
   const manifestJson = useMemo(() => (manifest ? JSON.stringify(manifest, null, 2) : ''), [manifest])
   return (
     <>
@@ -331,6 +342,11 @@ function ManifestBuilderFields({ builder }: { builder: ManifestBuilder }) {
           {FORMAT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
         </StyledSelect>
       </label>
+      <fieldset className="space-y-2 text-xs text-text-secondary">
+        <legend className="text-text-quaternary">Targets</legend>
+        <div className="flex flex-wrap gap-4">{HARNESS_TARGETS.map(target => <label key={target} className="flex items-center gap-2"><input type="checkbox" checked={targets.includes(target)} onChange={e => setTargets(e.target.checked ? [...targets, target] : targets.filter(t => t !== target))} />{target === 'pi' ? 'Pi' : target[0].toUpperCase() + target.slice(1)}</label>)}</div>
+        <p>Markdown-only harnesses can be used by any agent executor. Targets still constrain executable resources and plugins.</p>
+      </fieldset>
       {(format === 'hook' || format === 'claude_code_plugin') && (
         <div role="alert" className="rounded-md border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">
           Executable hook/plugin formats require explicit review and approval before download.
@@ -373,31 +389,22 @@ function CreateHarnessModal({ onClose, onFlash }: { onClose: () => void; onFlash
 
   const createMut = useMutation({
     mutationFn: async () => {
+      const initial = version.trim() ? { version: version.trim(), manifest: await builder.buildCurrentManifest() } : undefined
       const created = await client.createHarness({
+        initial_version: initial,
         name: name.trim(),
         slug: slug.trim(),
         description: description.trim() || undefined,
         visibility: 'org',
       })
-      if (version.trim()) {
-        const manifest = await builder.buildCurrentManifest()
-        try {
-          await client.publishHarnessVersion(created.id, { version: version.trim(), manifest })
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : 'unknown error'
-          // The harness already exists on the backend; surface that so the user
-          // retries the publish instead of re-creating (and hitting slug conflicts).
-          throw new Error(`Harness "${created.name}" was created, but publishing ${version.trim()} failed: ${detail}. Use "Publish version" on it to retry.`)
-        }
-      }
       return created
     },
     onSuccess: (created) => {
       onFlash({ kind: 'success', message: version.trim() ? `Created ${created.name} and published ${version.trim()}.` : `Created ${created.name}.` })
       onClose()
     },
-    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to create harness'),
-    // Refresh the list whether publish succeeded or not so a created-but-unpublished harness is visible.
+    onError: (err) => setError(harnessError(err, 'Failed to create harness')),
+    // Creation and its optional first version are committed together.
     onSettled: () => qc.invalidateQueries({ queryKey: ['harnesses'] }),
   })
 
@@ -408,6 +415,7 @@ function CreateHarnessModal({ onClose, onFlash }: { onClose: () => void; onFlash
       return
     }
     if (version.trim()) {
+      if (builder.targets.length === 0) { setError('Select at least one target.'); return }
       if (builder.isReadingFiles) { setError('Wait for uploaded files to finish processing.'); return }
       if (builder.uploadError || builder.manifestError) { return }
       const jsonError = validateJsonContent(builder)
@@ -477,12 +485,13 @@ function PublishModal({ harness, onClose, onFlash }: { harness: Harness; onClose
       onFlash({ kind: 'success', message: `Published ${harness.name} ${published.version} (${published.manifest_hash}).` })
       onClose()
     },
-    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to publish version'),
+    onError: (err) => setError(harnessError(err, 'Failed to publish version')),
   })
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault()
     if (!version.trim()) { setError('Version is required.'); return }
+    if (builder.targets.length === 0) { setError('Select at least one target.'); return }
     if (builder.isReadingFiles) { setError('Wait for uploaded files to finish processing.'); return }
     if (builder.uploadError || builder.manifestError) { return }
     const jsonError = validateJsonContent(builder)

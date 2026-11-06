@@ -1,5 +1,8 @@
 # Per-agent runtimes
 
+Pending, not-yet-deployed corrections to targets, Markdown portability, atomic
+uploads and instruction validation: [HARNESS_VALIDATION_FIXES.md](HARNESS_VALIDATION_FIXES.md).
+
 Agent creation/editing now stores `config.runtime`. A server-derived
 `config.runtime_resolved` is included in the immutable agent revision and its
 configuration hash. Clients cannot supply that derived snapshot as authority.

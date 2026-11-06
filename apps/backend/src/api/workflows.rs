@@ -49,7 +49,8 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
         Json(ApiError {
             code: public.into(),
             error: match public {
-                "workflow_agent_instructions_unsafe"=>"Las instrucciones del agente son demasiado extensas o contienen posibles credenciales. Revísalas en el catálogo; los secretos deben permanecer en referencias privadas, no se copiarán al runner.",
+                "workflow_agent_instructions_unsafe"=>"Se detectó un posible secreto literal o una ruta personal en las instrucciones. Usa referencias o placeholders; las menciones a Bearer, tokens o cabeceras sin credenciales están permitidas.",
+                "workflow_agent_instructions_too_large"=>"Las instrucciones superan 64 KiB. Reduce o divide el contenido; este error es de tamaño, no de credenciales.",
                 "workflow_agent_unavailable"=>"El perfil de agente no existe en esta organización o ya no está habilitado y validado. Selecciónalo de nuevo.",
                 "workflow_agent_template_incompatible"=>"La plantilla del agente no es compatible con una fase de código. Usa un resolver/reviewer o ejecuta su plantilla completa como agente individual.",
                 "workflow_agent_model_missing"=>"El agente no tiene un modelo explícito. Desactiva la herencia y elige un modelo compatible con el harness.",

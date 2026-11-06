@@ -306,6 +306,9 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
     context['step'] = dict(job['step'])
     if isinstance(job['step'].get('options'), dict):
         context['step']['options'] = {k: v for k, v in job['step']['options'].items() if k not in ('runtime', 'runtime_snapshot')}
+    snapshot = job['step'].get('options') or {}
+    resolved = snapshot.get('runtime_snapshot', {}).get('config', {}).get('runtime_resolved', {}) if isinstance(snapshot, dict) else {}
+    context['harness_markdown'] = [{'id': c['id'], 'files': c['files']} for c in resolved.get('components', []) if c.get('kind') == 'instructions' and c.get('enabled', True)]
     context['commits'] = job['execution']['heads']
     budget = job['snapshot']['definition'].get('max_cost_usd', 20)
     attempts = sum(s.get('max_attempts',1) for s in job['snapshot']['definition'].get('steps',[job['step']]))

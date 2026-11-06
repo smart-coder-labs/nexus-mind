@@ -6,10 +6,10 @@ import { Input } from '../../components/ui/Input'
 import type { AgentRuntimeComponent, AgentRuntimeConfig, HarnessVersion } from '../../types'
 
 export const runtimeKinds: Record<string, AgentRuntimeComponent['kind'][]> = {
-  claude: ['skill', 'script', 'plugin', 'prompt_template', 'mcp'],
-  pi: ['skill', 'script', 'extension', 'prompt_template', 'mcp'],
-  codex: ['skill', 'script', 'mcp'],
-  nexus: ['mcp'],
+  claude: ['instructions', 'skill', 'script', 'plugin', 'prompt_template', 'mcp'],
+  pi: ['instructions', 'skill', 'script', 'extension', 'prompt_template', 'mcp'],
+  codex: ['instructions', 'skill', 'script', 'mcp'],
+  nexus: ['instructions', 'mcp'],
 }
 const control = 'mt-1 w-full rounded-md border border-input bg-background p-2 text-sm'
 
@@ -34,10 +34,24 @@ function ComponentJson({ value, onChange, onValidityChange }: { value: AgentRunt
   </label>
 }
 
+function portableMarkdown(manifest?: Record<string, unknown>): boolean {
+  if (!manifest || !['', 'agent', 'skill', 'command', 'output_style'].includes(String(manifest.format ?? ''))) return false
+  const security = manifest.security as { executable?: unknown } | undefined
+  if (security?.executable !== undefined && security.executable !== false) return false
+  const file = (value: unknown) => {
+    const entry = value as Record<string, unknown> | null
+    return entry?.kind === 'file' && typeof entry.path === 'string' && entry.path.toLowerCase().endsWith('.md')
+  }
+  return Array.isArray(manifest.components) && manifest.components.length > 0 && manifest.components.every(value => {
+    const component = value as Record<string, unknown> | null
+    return component?.kind === 'folder' ? Array.isArray(component.entries) && component.entries.length > 0 && component.entries.every(file) : file(value)
+  })
+}
+
 /** Shared by agent revisions and workflow step overrides. No global installs. */
 export function AgentRuntimeEditor({ value, executor, onChange, onValidityChange }: { value: AgentRuntimeConfig; executor: string; onChange: (value: AgentRuntimeConfig) => void; onValidityChange?: (valid: boolean) => void }) {
   const client = createClient()
-  const harnesses = useQuery({ queryKey: ['runtime-harnesses', executor], queryFn: () => client.listHarnesses({ target: executor }) })
+  const harnesses = useQuery({ queryKey: ['runtime-harnesses'], queryFn: () => client.listHarnesses() })
   const [candidate, setCandidate] = useState<HarnessVersion | null>(null)
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
   const [error, setError] = useState('')
@@ -48,7 +62,7 @@ export function AgentRuntimeEditor({ value, executor, onChange, onValidityChange
   const incompatible = (value.components ?? []).filter(c => c.enabled !== false && !supported.includes(c.kind))
   const candidateComponents = Array.isArray(candidate?.manifest.components) ? candidate.manifest.components as { path: string }[] : []
   const catalogKind = ({ skill: 'skill', command: 'prompt_template', hook: 'script' } as Record<string, AgentRuntimeComponent['kind']>)[String(candidate?.manifest.format)]
-  const candidateCompatible = Boolean(catalogKind && supported.includes(catalogKind))
+  const candidateCompatible = portableMarkdown(candidate?.manifest) || Boolean(catalogKind && supported.includes(catalogKind) && candidate?.targets?.includes(executor))
   const update = (change: Partial<AgentRuntimeConfig>) => onChange({ ...value, ...change })
   useEffect(() => { setCandidate(null); setSelectedPaths([]) }, [executor])
   return <fieldset className="space-y-3 rounded-md border border-border-primary p-3">
@@ -68,8 +82,9 @@ export function AgentRuntimeEditor({ value, executor, onChange, onValidityChange
         try { const version = await client.getHarnessVersion(harness.id, harness.latest_version.version); setCandidate(version); setSelectedPaths([]) }
         catch (e) { setError(e instanceof Error ? e.message : 'Could not load harness') }
         finally { setBusy(false) }
-      }}><option value="">Choose a compatible harness</option>{harnesses.data?.filter(h => h.status === 'published' && h.latest_version && !value.harnesses?.some(v => v.id === h.id)).map(h => <option key={h.id} value={h.id}>{h.name} · {h.latest_version?.version}</option>)}</select>
+      }}><option value="">Choose a harness</option>{harnesses.data?.filter(h => h.status === 'published' && h.latest_version && !value.harnesses?.some(v => v.id === h.id)).map(h => <option key={h.id} value={h.id}>{h.name} · {h.latest_version?.version}</option>)}</select>
     </label>
+    <p className="text-xs text-text-tertiary">Markdown-only harnesses are available to every executor, regardless of their declared targets. Scripts, plugins and mixed bundles retain compatibility checks.</p>
     {candidate && <div className="space-y-2 rounded-md border border-border-primary p-2">
       {!candidateCompatible && <p role="alert" className="text-xs">This catalog format cannot be loaded by {executor}. Remote marketplace declarations are not executable bundles; import reviewed, self-contained plugin files as additional components.</p>}
       <p className="break-all text-xs">Pinned version {candidate.version} · hash {candidate.manifest_hash}</p>

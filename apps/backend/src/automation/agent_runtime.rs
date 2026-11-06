@@ -80,11 +80,25 @@ impl Default for RuntimeConfig {
 }
 pub fn kinds(executor: &str) -> &'static [&'static str] {
     match executor {
-        "claude" => &["skill", "script", "plugin", "prompt_template", "mcp"],
-        "pi" => &["skill", "script", "extension", "prompt_template", "mcp"],
-        "codex" => &["skill", "script", "mcp"],
-        // OpenShell only uploads MCP configuration, not arbitrary resource folders.
-        "nexus" => &["mcp"],
+        "claude" => &[
+            "instructions",
+            "skill",
+            "script",
+            "plugin",
+            "prompt_template",
+            "mcp",
+        ],
+        "pi" => &[
+            "instructions",
+            "skill",
+            "script",
+            "extension",
+            "prompt_template",
+            "mcp",
+        ],
+        "codex" => &["instructions", "skill", "script", "mcp"],
+        // OpenShell receives Markdown inline and MCP configuration, not arbitrary resource folders.
+        "nexus" => &["instructions", "mcp"],
         _ => &[],
     }
 }
@@ -249,6 +263,15 @@ impl RuntimeConfig {
                         "runtime_executable_acknowledgement_required"
                     );
                 }
+                if component.kind == "instructions" {
+                    ensure!(
+                        component
+                            .files
+                            .keys()
+                            .all(|p| p.to_ascii_lowercase().ends_with(".md")),
+                        "instruction_files_must_be_markdown"
+                    );
+                }
                 if component.kind == "skill" {
                     let content = component
                         .files
@@ -295,6 +318,48 @@ impl RuntimeConfig {
     }
 }
 
+/// Markdown is portable data, not a native tool/plugin installation. Mixed bundles
+/// and executable declarations retain the executor target constraint.
+pub fn portable_markdown(manifest: &Value) -> bool {
+    if !matches!(
+        manifest.get("format").and_then(Value::as_str),
+        None | Some("agent" | "skill" | "command" | "output_style")
+    ) || manifest["security"]
+        .get("executable")
+        .is_some_and(|value| value != &json!(false))
+    {
+        return false;
+    }
+    let markdown = |file: &Value| {
+        file["kind"] == "file"
+            && file["path"]
+                .as_str()
+                .is_some_and(|p| p.to_ascii_lowercase().ends_with(".md"))
+    };
+    manifest["components"].as_array().is_some_and(|components| {
+        !components.is_empty()
+            && components.iter().all(|component| {
+                if component["kind"] == "folder" {
+                    component["entries"]
+                        .as_array()
+                        .is_some_and(|entries| !entries.is_empty() && entries.iter().all(&markdown))
+                } else {
+                    markdown(component)
+                }
+            })
+    })
+}
+
+pub fn markdown_guidance(config: &Value) -> Value {
+    json!(config["runtime_resolved"]["components"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["kind"] == "instructions" && c["enabled"] != false)
+        .map(|c| json!({"id":c["id"],"files":c["files"]}))
+        .collect::<Vec<_>>())
+}
+
 /// Resolve visible, approved, hash-pinned catalog versions at save time. The
 /// derived field is never accepted from a client as authority.
 pub fn prepare_config(conn: &Connection, org: &str, user: &str, config: &Value) -> Result<Value> {
@@ -329,8 +394,9 @@ pub fn prepare_config(conn: &Connection, org: &str, user: &str, config: &Value) 
             version.status == "published" && version.manifest_hash == harness.manifest_hash,
             "harness_hash_or_status_mismatch"
         );
+        let portable = portable_markdown(&version.manifest);
         ensure!(
-            version.targets.iter().any(|t| t == executor),
+            portable || version.targets.iter().any(|t| t == executor),
             "harness_executor_incompatible"
         );
         let approved: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM harness_install_approvals WHERE org_id=?1 AND user_id=?2 AND harness_version_id=?3 AND manifest_hash=?4 AND target_tool=?5 AND target_scope='agent-runtime' AND status='approved')", rusqlite::params![org, user, version.id, harness.manifest_hash, executor], |row| row.get(0))?;
@@ -344,14 +410,16 @@ pub fn prepare_config(conn: &Connection, org: &str, user: &str, config: &Value) 
             &harness.version,
         )?
         .context("harness_not_found")?;
-        let format = version.manifest["format"]
-            .as_str()
-            .context("unsupported_harness_format")?;
-        let kind = match format {
-            "skill" => "skill",
-            "command" => "prompt_template",
-            "hook" => "script",
-            _ => bail!("unsupported_harness_format_for_runtime"),
+        let format = version.manifest["format"].as_str().unwrap_or("");
+        let kind = if portable {
+            "instructions"
+        } else {
+            match format {
+                "skill" => "skill",
+                "command" => "prompt_template",
+                "hook" => "script",
+                _ => bail!("unsupported_harness_format_for_runtime"),
+            }
         };
         let components = version.manifest["components"]
             .as_array()
@@ -379,7 +447,9 @@ pub fn prepare_config(conn: &Connection, org: &str, user: &str, config: &Value) 
                     );
                 }
             } else {
-                let filename = if kind == "skill" {
+                let filename = if kind == "instructions" {
+                    entry["path"].as_str().context("invalid_harness_file")?
+                } else if kind == "skill" {
                     "SKILL.md"
                 } else if kind == "script" {
                     "run.sh"
@@ -464,6 +534,7 @@ pub fn plan(runtime: &RuntimeConfig, executor: &str, root: &str, nexusmind: Valu
             }
         }
         match (executor, component.kind.as_str()) {
+            (_, "instructions") => {} // Included as bounded, non-authoritative task guidance.
             ("pi", "skill") => plan.args.extend(["--skill".into(), directory]),
             ("pi", "extension") => {
                 let index = if component.files.contains_key("index.ts") {

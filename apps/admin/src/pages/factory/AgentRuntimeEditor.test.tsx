@@ -64,12 +64,13 @@ it('retains incompatible resources visibly and lets a workflow disable them', as
   expect((screen.getByLabelText('Component configuration JSON') as HTMLTextAreaElement).value).toContain('"enabled": false')
 })
 
-it('previews catalog content and pins explicit approval to hash and version', async () => {
+it('lists and approves Markdown from another target while still pinning the hash and version', async () => {
   api.listHarnesses.mockResolvedValue([{ id: 'h1', name: 'Rust review', status: 'published', latest_version: { version: '1.0.0' } }])
-  api.getHarnessVersion.mockResolvedValue({ harness_id: 'h1', version: '1.0.0', manifest_hash: 'sha256:pinned', manifest: { format: 'skill', components: [{ path: 'rust/SKILL.md', content: 'Review Rust' }] } })
+  api.getHarnessVersion.mockResolvedValue({ harness_id: 'h1', version: '1.0.0', manifest_hash: 'sha256:pinned', targets: ['claude'], manifest: { format: 'agent', components: [{ kind: 'file', path: 'rust/SKILL.md', content: 'Review Rust' }] } })
   render(<Editor />)
   const user = userEvent.setup()
   await screen.findByRole('option', { name: 'Rust review · 1.0.0' })
+  expect(api.listHarnesses).toHaveBeenCalledWith()
   await user.selectOptions(screen.getByLabelText('Add a registered harness'), 'h1')
   await screen.findByText(/Pinned version 1.0.0/)
   expect(api.approveHarnessInstall).not.toHaveBeenCalled()
@@ -77,4 +78,16 @@ it('previews catalog content and pins explicit approval to hash and version', as
   await user.click(screen.getByRole('button', { name: 'Approve selected files for this runtime' }))
   await waitFor(() => expect(api.approveHarnessInstall).toHaveBeenCalledWith('h1', '1.0.0', expect.objectContaining({ target_tool: 'pi', target_scope: 'agent-runtime', manifest_hash: 'sha256:pinned' })))
   expect(await screen.findByRole('button', { name: 'Remove harness' })).toBeInTheDocument()
+})
+
+it('does not turn a foreign-target executable into a portable Markdown harness', async () => {
+  api.listHarnesses.mockResolvedValue([{ id: 'h1', name: 'Shell hook', status: 'published', latest_version: { version: '1.0.0', targets: ['claude'] } }])
+  api.getHarnessVersion.mockResolvedValue({ harness_id: 'h1', version: '1.0.0', manifest_hash: 'sha256:pinned', targets: ['claude'], manifest: { format: 'hook', components: [{ kind: 'file', path: 'run.sh', content: 'exit 0' }], security: { executable: true } } })
+  render(<Editor />)
+  const user = userEvent.setup()
+  await screen.findByRole('option', { name: 'Shell hook · 1.0.0' })
+  await user.selectOptions(screen.getByLabelText('Add a registered harness'), 'h1')
+  await user.click(await screen.findByLabelText('run.sh'))
+  expect(screen.getByRole('button', { name: 'Approve selected files for this runtime' })).toBeDisabled()
+  expect(api.approveHarnessInstall).not.toHaveBeenCalled()
 })

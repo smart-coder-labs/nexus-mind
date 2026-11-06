@@ -293,7 +293,7 @@ def tick_locked(config, roots):
     for name in adapters:
         if not safe_id(name): raise ValueError('Invalid adapter name')
         capabilities.append('adapter:' + name)
-    capabilities += ['agent-runtime:v1']
+    capabilities += ['agent-runtime:v1', 'agent-runtime:v2']
     capabilities += ['executor:' + profile.get('executor', profile.get('harness', profile.get('format', 'claude'))) for profile in adapters.values() if profile.get('kind') == 'agent']
     capabilities += config.get('capabilities', []) + remote_capabilities
     job = api.call('/claim', {'capabilities': capabilities})['job']

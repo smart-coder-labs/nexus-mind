@@ -812,7 +812,7 @@ export interface HarnessVersionSummary {
 export type HarnessFormat = 'agent' | 'skill' | 'command' | 'hook' | 'output_style' | 'claude_code_plugin' | 'theme'
 export interface AgentRuntimeComponent {
   id: string
-  kind: 'skill' | 'script' | 'plugin' | 'extension' | 'prompt_template' | 'mcp'
+  kind: 'instructions' | 'skill' | 'script' | 'plugin' | 'extension' | 'prompt_template' | 'mcp'
   enabled?: boolean
   tools?: string[]
   files?: Record<string, string>
@@ -879,6 +879,7 @@ export interface Harness {
 }
 
 export interface CreateHarnessRequest {
+  initial_version?: PublishHarnessVersionRequest
   slug: string
   name: string
   description?: string

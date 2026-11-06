@@ -159,11 +159,20 @@ pub async fn list_harnesses(
     Ok(Json(rows))
 }
 
+#[derive(Deserialize)]
+pub struct CreateHarnessInput {
+    #[serde(flatten)]
+    harness: CreateHarnessRequest,
+    #[serde(default)]
+    initial_version: Option<PublishHarnessVersionRequest>,
+}
+
 pub async fn create_harness(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    AppJson(mut input): AppJson<CreateHarnessRequest>,
+    AppJson(body): AppJson<CreateHarnessInput>,
 ) -> Result<(StatusCode, Json<Harness>), (StatusCode, Json<ApiError>)> {
+    let mut input = body.harness;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:write")?;
@@ -182,8 +191,14 @@ pub async fn create_harness(
         }
         input.owner_user_id = Some(auth.user_id.clone());
     }
-    let harness =
-        queries::create_harness(&conn, &auth.org_id, &auth.user_id, &input).map_err(db_err)?;
+    let tx = conn.unchecked_transaction().map_err(|e| db_err(e.into()))?;
+    let mut harness = queries::create_harness(&tx, &auth.org_id, &auth.user_id, &input).map_err(db_err)?;
+    if let Some(version) = body.initial_version {
+        load_visible_harness(&tx, &auth, &harness.id, "POST")?;
+        queries::publish_harness_version(&tx, &auth.org_id, &auth.user_id, &harness.id, &version).map_err(db_err)?;
+        harness = queries::get_harness(&tx, &auth.org_id, &harness.id, None).map_err(db_err)?.ok_or_else(|| db_err(anyhow::anyhow!("harness_not_found")))?;
+    }
+    tx.commit().map_err(|e| db_err(e.into()))?;
     Ok((StatusCode::CREATED, Json(harness)))
 }
 
@@ -559,6 +574,33 @@ mod tests {
             (key, org.id, admin.id)
         };
         (store, admin_key, org_id, admin_id)
+    }
+
+    #[tokio::test]
+    async fn initial_harness_version_is_atomic_and_upload_rejection_leaves_no_draft() {
+        let (store, key, org, _) = setup_org();
+        let router = app(store.clone());
+        let request = |content: &str| Request::builder().method("POST").uri("/v1/harnesses")
+            .header("Authorization", format!("Bearer {key}")).header("Content-Type", "application/json")
+            .body(Body::from(serde_json::json!({"slug":"atomic-review","name":"Review","initial_version":{"version":"1.0.0","manifest":{"schema_version":"1.1","format":"agent","targets":["codex","pi"],"components":[{"kind":"file","path":"review.md","media_type":"text/markdown","size_bytes":content.len(),"sha256":format!("sha256:{}",hex::encode(sha2::Sha256::digest(content.as_bytes()))),"content":content}],"provenance":{"source":"test"},"security":{"requires_approval":true}}}}).to_string())).unwrap();
+        let response = router.clone().oneshot(request("Authorization: Bearer actual-secret")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        {
+            let db = store.conn(); let conn = db.lock().unwrap();
+            let count: i64 = conn.query_row("SELECT count(*) FROM harnesses WHERE org_id=?1 AND slug='atomic-review'", [&org], |r| r.get(0)).unwrap();
+            assert_eq!(count, 0);
+            let count: i64 = conn.query_row("SELECT count(*) FROM harness_versions", [], |r| r.get(0)).unwrap();
+            assert_eq!(count, 0);
+        }
+        let safe = "# Review contracts\nCheck Bearer tokens, authorization headers and /users/{id}.";
+        let response = router.oneshot(request(safe)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["status"], "published");
+        assert_eq!(body["latest_version"]["targets"], serde_json::json!(["codex", "pi"]));
+        let db = store.conn(); let conn = db.lock().unwrap();
+        let version = q::get_harness_version(&conn, &org, body["id"].as_str().unwrap(), "1.0.0").unwrap().unwrap();
+        assert_eq!(version.manifest["components"][0]["content"], safe);
     }
 
     fn create_member_key(store: &SqliteStore, org_id: &str, role: &str) -> String {
