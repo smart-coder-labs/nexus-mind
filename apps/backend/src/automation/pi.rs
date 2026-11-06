@@ -203,9 +203,13 @@ mod tests {
         let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
         assert!(args.windows(2).any(|pair| pair == ["--tools", "read,grep,find,ls"]));
         assert!(args.windows(2).any(|pair| pair == ["--model", "openai-codex/gpt-6.1-sol"]));
-        for flag in ["--no-approve", "--no-extensions", "--no-mcp", "--no-context-files", "--no-session"] {
+        for flag in ["--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session"] {
             assert!(args.iter().any(|arg| arg == flag));
         }
+        // Discovery stays disabled. Only apply_local's isolated, validated plan
+        // may explicitly enable builtin:mcp and its assigned servers.
+        assert!(!args.iter().any(|arg| arg == "--extension" || arg == "-e"));
+        assert!(!args.iter().any(|arg| arg == "--no-mcp"));
     }
 
     #[test]
