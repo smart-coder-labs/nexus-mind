@@ -1,7 +1,7 @@
 # Per-agent runtimes
 
-Pending, not-yet-deployed corrections to targets, Markdown portability, atomic
-uploads and instruction validation: [HARNESS_VALIDATION_FIXES.md](HARNESS_VALIDATION_FIXES.md).
+Targets, Markdown portability, atomic uploads and instruction validation fixes
+are deployed at `5b05955`: [HARNESS_VALIDATION_FIXES.md](HARNESS_VALIDATION_FIXES.md).
 
 Agent creation/editing now stores `config.runtime`. A server-derived
 `config.runtime_resolved` is included in the immutable agent revision and its

@@ -1,5 +1,9 @@
 # Agent runtime release — 2026-11-06 UTC
 
+**Historical first runtime release. Superseded by application `5b05955`.**
+Current verified deployment, runner v2, backup and remaining provisioning boundary:
+[HARNESS_VALIDATION_FIXES.md](HARNESS_VALIDATION_FIXES.md).
+
 ## Running version
 
 - Deployed application commit: `781ee89652ff795f0954bf6833deaa07f174d820`.

@@ -55,10 +55,40 @@ credentials or oversized text.
 
 ## Next Steps
 
-These fixes are **not deployed** yet. Release backend/worker before admin, then
-activate the v2-capable runner. No migration is required; do not mutate production
-agents, credentials or existing empty drafts automatically. Existing isolated
-runner MCP/proxy provisioning requirements still apply.
+Deployed on 2026-11-06 UTC: application commit
+`5b0595599c99f1995772eecf121708d7529a032e`, successful release
+https://github.com/smart-coder-labs/nexus-mind/actions/runs/42184341900.
+Backend/worker and egress image:
+`ghcr.io/smart-coder-labs/nexusmind-backend@sha256:65bff536852c5ea1f722c6b736ea52cc49dcc2263faa5da05d39f517dcf47d59`.
+
+- All seven jobs passed: 1,870 backend unit tests (4 ignored), 27 integration
+  tests, 96 Python tests without skips, 146 focused admin tests and production build.
+- Backend/worker 2/2 ready, zero restarts; egress proxy 1 ready.
+  Public health is HTTP 200, status/db OK.
+- Admin entrypoint `/assets/index-CMZOMO5X.js`; feature bundles match the release
+  artifact byte-for-byte:
+  - `Harnesses-D66rlm4L.js`: SHA-256 `522392600d68cca179fc8f7b5ffd2093ef94758f3fb1b4f5b2d9949fe90cc655`.
+  - `AgentRuntimeEditor-DbB3n0Qo.js`: SHA-256 `2b3c51b972eca9a8594b8d3899f4dd6dae8d535eb48b58099f722a734a567f31`.
+- Immutable Pages deployment: https://c1bb8be5.nexusmind-admin.pages.dev.
+- Runner activated after backend/admin, under its `runner.lock` (no active phase
+  killed): `/home/ubuntu/.local/lib/nexusmind/runner-5b05955/runner.py`, existing
+  `90-agent-runtime.conf` drop-in. Service active, zero restarts. Core Python
+  module hashes match Git source. Read-only backend verification confirms this
+  runner advertises both `agent-runtime:v1` and `agent-runtime:v2`.
+- Verified online SQLite backup before rollout:
+  `/data/pre-workflows-20261106T080952Z.db`. No new schema migration or production
+  migration job was required. Existing agents, credentials and drafts were not modified.
+
+Refresh the admin to load the new client. Previously orphaned empty harnesses
+can use Publish version to attach the original/corrected upload; do not recreate
+or delete them automatically. The isolated runner still has no `nexusmind_mcp`
+transport configured; steps requiring it remain explicitly blocked until scoped
+operator provisioning. No live paid model execution was used as a smoke test.
+
+Rollback source: application `781ee89`, image
+`sha256:218644a02086c36a301544f88b421bf53a38edc31608cd50d326403b81cc487d`,
+runner `/home/ubuntu/.local/lib/nexusmind/runner-781ee89/runner.py`. Do not restore
+an old database over newer writes without an explicit recovery plan.
 
 ## Relevant Files / Where
 
