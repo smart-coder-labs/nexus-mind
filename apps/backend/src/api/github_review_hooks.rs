@@ -34,12 +34,28 @@ fn callback(base: &str, id: &str) -> anyhow::Result<String> {
         base.trim_end_matches('/')
     ))
 }
+fn registration_repositories(
+    allowed: Vec<String>,
+    selected: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    if let Some(repo) = selected.map(str::trim).filter(|r| !r.is_empty()) {
+        let repo = repo.to_ascii_lowercase();
+        if !allowed.contains(&repo) {
+            anyhow::bail!("review_repository_out_of_scope");
+        }
+        return Ok(vec![repo]);
+    }
+    if allowed.is_empty() {
+        anyhow::bail!("reviewer_repository_missing");
+    }
+    Ok(allowed)
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Register {
     pub definition_id: String,
     pub public_base_url: String,
-    /// Required only when a project reviewer has multiple linked repositories.
+    /// Optional subset; omitted means every repository in the reviewer's scope.
     #[serde(default)]
     pub repository: Option<String>,
     /// Optional setup-only credential. Never persisted or used by reviewers.
@@ -102,7 +118,7 @@ pub async fn register(
     AppJson(b): AppJson<Register>,
 ) -> Response {
     callback(&b.public_base_url, "validate").map_err(fail)?;
-    let repository = {
+    let repositories = {
         let h = store.conn();
         let c = h.lock().map_err(|_| locked())?;
         require_explicit_permission(&c, &auth, None, "factory_policy:write")?;
@@ -116,14 +132,14 @@ pub async fn register(
         {
             return Err(fail(anyhow::anyhow!("enabled_valid_reviewer_required")));
         }
-        let allowed = crate::db::autonomous_scope::reviewer_repositories(&c, &auth.org_id, &d.revision.config).map_err(fail)?;
-        let repository = b.repository.as_deref().map(str::trim).filter(|repo| !repo.is_empty())
-            .or_else(|| (allowed.len() == 1).then(|| allowed[0].as_str()))
-            .ok_or_else(|| fail(anyhow::anyhow!("Select a linked repository for this project reviewer")))?;
-        crate::db::autonomous_scope::authorize_review(&c, &auth.org_id, &d.revision.config, repository).map_err(fail)?;
-        repository.to_ascii_lowercase()
+        let allowed = crate::db::autonomous_scope::reviewer_repositories(
+            &c,
+            &auth.org_id,
+            &d.revision.config,
+        )
+        .map_err(fail)?;
+        registration_repositories(allowed, b.repository.as_deref()).map_err(fail)?
     };
-    connectors::validate_repository(&repository).map_err(fail)?;
     if !crate::crypto::is_configured() {
         return Err(fail(anyhow::anyhow!("credential_encryption_required")));
     }
@@ -141,99 +157,108 @@ pub async fn register(
     if administration_token.is_some_and(|s| s.len() > 4096) {
         return Err(fail(anyhow::anyhow!("invalid_github_administration_token")));
     }
-    // An administrator may have configured the hook without granting the bot
-    // repository-administration rights. Reuse only that exact stored callback.
-    if administration_token.is_none() {
-        let h = store.conn();
-        let c = h.lock().map_err(|_| locked())?;
-        if let Some(existing) = queries::list_autonomous_agent_connectors(&c, &auth.org_id)
-            .map_err(fail)?
-            .into_iter()
-            .find(|c| {
-                c.kind == "target_secret"
-                    && c.health == "ready"
-                    && c.metadata["purpose"] == "github_cli_webhook"
-                    && c.metadata["repository"] == repository
-                    && callback(&b.public_base_url, &c.id)
-                        .is_ok_and(|url| externally_registered(&c.metadata, &url))
-            })
-        {
-            return Ok(Json(
-                json!({"id":existing.id,"metadata":existing.metadata,"login":login,"status":"configured"}),
-            ));
+    let mut registered = Vec::new();
+    for repository in repositories {
+        // An administrator may have configured the hook without granting the bot
+        // repository-administration rights. Reuse only that exact stored callback.
+        if administration_token.is_none() {
+            let h = store.conn();
+            let c = h.lock().map_err(|_| locked())?;
+            if let Some(existing) = queries::list_autonomous_agent_connectors(&c, &auth.org_id)
+                .map_err(fail)?
+                .into_iter()
+                .find(|c| {
+                    c.kind == "target_secret"
+                        && c.health == "ready"
+                        && c.metadata["purpose"] == "github_cli_webhook"
+                        && c.metadata["repository"] == repository
+                        && callback(&b.public_base_url, &c.id)
+                            .is_ok_and(|url| externally_registered(&c.metadata, &url))
+                })
+            {
+                registered.push(
+                    json!({"id":existing.id,"metadata":existing.metadata,"status":"configured"}),
+                );
+                continue;
+            }
         }
-    }
-    let setup_token = administration_token.unwrap_or(&token);
-    let prefix = format!("/repos/{repository}/hooks");
-    // Preflight before persisting any new connector: failed authorization must
-    // not leave a misleading ready/orphan registration behind.
-    let hooks = connectors::github_get(setup_token, &format!("{prefix}?per_page=100"))
-        .await
-        .map_err(github_setup_failure)?;
-    let (id, secret) = {
-        let h = store.conn();
-        let c = h.lock().map_err(|_| locked())?;
-        let existing = queries::list_autonomous_agent_connectors(&c, &auth.org_id)
-            .map_err(fail)?
+        let setup_token = administration_token.unwrap_or(&token);
+        let prefix = format!("/repos/{repository}/hooks");
+        // Preflight before persisting any new connector: failed authorization must
+        // not leave a misleading ready/orphan registration behind.
+        let hooks = connectors::github_get(setup_token, &format!("{prefix}?per_page=100"))
+            .await
+            .map_err(github_setup_failure)?;
+        let (id, secret) = {
+            let h = store.conn();
+            let c = h.lock().map_err(|_| locked())?;
+            let existing = queries::list_autonomous_agent_connectors(&c, &auth.org_id)
+                .map_err(fail)?
+                .into_iter()
+                .find(|c| {
+                    c.kind == "target_secret"
+                        && c.health != "revoked"
+                        && c.metadata["purpose"] == "github_cli_webhook"
+                        && c.metadata["repository"] == repository
+                });
+            if let Some(existing) = existing {
+                let (_, secret) =
+                    queries::get_autonomous_agent_connector_secret(&c, &auth.org_id, &existing.id)
+                        .map_err(fail)?
+                        .ok_or_else(|| fail(anyhow::anyhow!("webhook_secret_unavailable")))?;
+                (existing.id, secret)
+            } else {
+                let secret = format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                );
+                let connector=queries::put_autonomous_agent_connector(&c,&auth.org_id,&auth.user_id,&PutAutonomousAgentConnectorRequest{kind:"target_secret".into(),name:format!("GitHub reviews: {repository}"),secret:Some(secret.clone()),metadata:json!({"purpose":"github_cli_webhook","repository":repository,"definition_id":b.definition_id,"reviewer_login":login}),scopes:vec!["target:use".into(),"github:webhook".into()]}).map_err(fail)?;
+                (connector.id, secret)
+            }
+        };
+        let url = callback(&b.public_base_url, &id).map_err(fail)?;
+        let existing = hooks
+            .as_array()
             .into_iter()
-            .find(|c| {
-                c.kind == "target_secret"
-                    && c.health != "revoked"
-                    && c.metadata["purpose"] == "github_cli_webhook"
-                    && c.metadata["repository"] == repository
-            });
-        if let Some(existing) = existing {
-            let (_, secret) =
-                queries::get_autonomous_agent_connector_secret(&c, &auth.org_id, &existing.id)
-                    .map_err(fail)?
-                    .ok_or_else(|| fail(anyhow::anyhow!("webhook_secret_unavailable")))?;
-            (existing.id, secret)
+            .flatten()
+            .find(|h| h["config"]["url"] == url)
+            .and_then(|h| h["id"].as_i64());
+        let payload = json!({"name":"web","active":true,"events":["pull_request"],"config":{"url":url,"content_type":"json","secret":secret,"insecure_ssl":"0"}});
+        let hook = if let Some(hook) = existing {
+            connectors::github_patch(setup_token, &format!("{prefix}/{hook}"), payload).await
         } else {
-            let secret = format!(
-                "{}{}",
-                uuid::Uuid::new_v4().simple(),
-                uuid::Uuid::new_v4().simple()
-            );
-            let connector=queries::put_autonomous_agent_connector(&c,&auth.org_id,&auth.user_id,&PutAutonomousAgentConnectorRequest{kind:"target_secret".into(),name:format!("GitHub reviews: {repository}"),secret:Some(secret.clone()),metadata:json!({"purpose":"github_cli_webhook","repository":repository,"definition_id":b.definition_id,"reviewer_login":login}),scopes:vec!["target:use".into(),"github:webhook".into()]}).map_err(fail)?;
-            (connector.id, secret)
+            connectors::github_post(setup_token, &prefix, payload).await
         }
-    };
-    let url = callback(&b.public_base_url, &id).map_err(fail)?;
-    let existing = hooks
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|h| h["config"]["url"] == url)
-        .and_then(|h| h["id"].as_i64());
-    let payload = json!({"name":"web","active":true,"events":["pull_request"],"config":{"url":url,"content_type":"json","secret":secret,"insecure_ssl":"0"}});
-    let hook = if let Some(hook) = existing {
-        connectors::github_patch(setup_token, &format!("{prefix}/{hook}"), payload).await
-    } else {
-        connectors::github_post(setup_token, &prefix, payload).await
+        .map_err(github_setup_failure)?;
+        let registration_method = if administration_token.is_some() {
+            "repository_admin"
+        } else {
+            "backend_gh_cli"
+        };
+        let metadata = json!({"purpose":"github_cli_webhook","repository":repository,"definition_id":b.definition_id,"reviewer_login":login,"callback_url":url,"hook_id":hook["id"],"registration_method":registration_method});
+        {
+            let h = store.conn();
+            let c = h.lock().map_err(|_| locked())?;
+            c.execute("UPDATE autonomous_agent_connectors SET metadata_json=?1,health='ready',updated_at=datetime('now') WHERE id=?2 AND org_id=?3 AND health!='revoked'",rusqlite::params![metadata.to_string(),id,auth.org_id]).map_err(|e|fail(e.into()))?;
+            queries::log_audit(
+                &c,
+                &auth.org_id,
+                &auth.user_id,
+                "github.webhook_registered",
+                "autonomous_agent_connector",
+                Some(&id),
+                json!({"repository":repository,"reviewer_login":login,"hook_id":hook["id"]}),
+            )
+            .map_err(fail)?;
+        }
+        registered.push(json!({"id":id,"metadata":metadata}));
     }
-    .map_err(github_setup_failure)?;
-    let registration_method = if administration_token.is_some() {
-        "repository_admin"
-    } else {
-        "backend_gh_cli"
-    };
-    let metadata = json!({"purpose":"github_cli_webhook","repository":repository,"definition_id":b.definition_id,"reviewer_login":login,"callback_url":url,"hook_id":hook["id"],"registration_method":registration_method});
-    {
-        let h = store.conn();
-        let c = h.lock().map_err(|_| locked())?;
-        c.execute("UPDATE autonomous_agent_connectors SET metadata_json=?1,health='ready',updated_at=datetime('now') WHERE id=?2 AND org_id=?3 AND health!='revoked'",rusqlite::params![metadata.to_string(),id,auth.org_id]).map_err(|e|fail(e.into()))?;
-        queries::log_audit(
-            &c,
-            &auth.org_id,
-            &auth.user_id,
-            "github.webhook_registered",
-            "autonomous_agent_connector",
-            Some(&id),
-            json!({"repository":repository,"reviewer_login":login,"hook_id":hook["id"]}),
-        )
-        .map_err(fail)?;
-    }
-    Ok(Json(json!({"id":id,"metadata":metadata,"login":login})))
+    // Retain the single-hook fields for clients using an explicit repository.
+    let mut result = registered[0].clone();
+    result["login"] = json!(login);
+    result["hooks"] = json!(registered);
+    Ok(Json(result))
 }
 pub async fn disconnect(
     State(store): State<SqliteStore>,
@@ -269,6 +294,24 @@ pub async fn disconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_registration_defaults_to_all_authorized_repositories() {
+        let repos = vec!["acme/first".into(), "acme/second".into()];
+        assert_eq!(
+            registration_repositories(repos.clone(), None).unwrap(),
+            repos
+        );
+        assert_eq!(
+            registration_repositories(repos.clone(), Some(" ")).unwrap(),
+            repos
+        );
+        assert_eq!(
+            registration_repositories(repos.clone(), Some("ACME/SECOND")).unwrap(),
+            vec!["acme/second"]
+        );
+        assert!(registration_repositories(repos, Some("other/private")).is_err());
+        assert!(registration_repositories(vec![], None).is_err());
+    }
     #[test]
     fn external_registration_is_bound_to_callback_and_real_hook_id() {
         let mut m = json!({"registration_method":"repository_admin","callback_url":"https://api.example.com/hook","hook_id":42});

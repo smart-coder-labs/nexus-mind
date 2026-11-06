@@ -41,6 +41,7 @@ export function GithubReviewHooks() {
       await hooks.refetch()
     } catch (e) {
       setError(errorMessage(e, 'No se pudo configurar el webhook de GitHub.'))
+      await hooks.refetch()
     } finally {
       setAdministrationToken('')
       setBusy(false)
@@ -172,7 +173,7 @@ export function GithubReviewHooks() {
             Repositorio del proyecto (opcional)
             <Input value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="owner/repo" />
           </label>
-          <p className="text-xs text-muted-foreground">Si el proyecto tiene varios repositorios vinculados, elige cuál conectar. Cada webhook es por repositorio; el backend comprueba que pertenezca al proyecto.</p>
+          <p className="text-xs text-muted-foreground">Vacío conecta todos los repositorios vinculados al proyecto con el mismo reviewer. Indica owner/repo solo para conectar uno; el backend comprueba el alcance.</p>
           <label className="block space-y-1.5 text-sm">
             URL pública HTTPS del backend
             <Input
