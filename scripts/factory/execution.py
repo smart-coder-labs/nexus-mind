@@ -56,6 +56,18 @@ def redact(text, secrets):
     return text
 
 
+class WorkspaceOutputError(ValueError):
+    def __init__(self, code, path, actual, limit, solution):
+        super().__init__(code)
+        self.details = {'error': code, 'path': path, 'actual': actual,
+                        'limit': limit, 'solution': solution, 'hold': True}
+
+
+def ignored_source(name):
+    return (name in IGNORE or name.endswith('.zip') or name == '.env'
+            or name.startswith('.env.') and not name.endswith(('.example', '.sample', '.template')))
+
+
 def check_tree(root):
     """No devices, sockets, hard links or escaping symlinks from a container."""
     root = root.resolve()
@@ -64,8 +76,8 @@ def check_tree(root):
     for here, dirs, files in os.walk(root, followlinks=False):
         # Generated dependency/cache paths are never read or adopted on the host.
         # They may link to preinstalled dependencies inside the runtime image.
-        dirs[:] = [d for d in dirs if d not in IGNORE or d=='.git']
-        for name in dirs + [f for f in files if f not in IGNORE or f=='.git']:
+        dirs[:] = [d for d in dirs if not ignored_source(d) or d=='.git']
+        for name in dirs + [f for f in files if not ignored_source(f) or f=='.git']:
             entries += 1
             if entries > 100000: raise ValueError('Workspace file-count quota exceeded')
             p = Path(here) / name
@@ -79,8 +91,14 @@ def check_tree(root):
             elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError('Unsupported workspace file type')
             elif stat.S_ISREG(info.st_mode):
-                if info.st_nlink != 1 or info.st_size > 10 * 1024 * 1024:
-                    raise ValueError('Oversized or hard-linked workspace output')
+                if info.st_nlink != 1:
+                    raise WorkspaceOutputError(
+                        'workspace_hard_link', p.relative_to(root).as_posix(), info.st_nlink, 1,
+                        'Sustituye el enlace duro por una copia independiente en el workspace del runner y reintenta la fase. No modifiques el otro archivo enlazado.')
+                if info.st_size > 10 * 1024 * 1024:
+                    raise WorkspaceOutputError(
+                        'workspace_file_too_large', p.relative_to(root).as_posix(), info.st_size, 10 * 1024 * 1024,
+                        'El archivo supera 10 MiB. Si es generado, retíralo de la entrada/salida del sandbox; si es código necesario, reduce o divide su contenido. Conserva el original y reintenta la fase. Una aprobación no permite omitir este control.')
                 total += info.st_size
                 if total > 256 * 1024 * 1024:
                     raise ValueError('Workspace output quota exceeded')
@@ -88,9 +106,13 @@ def check_tree(root):
 
 def copy_source(source, destination):
     def ignored(_directory, names):
-        return [n for n in names if n in IGNORE or n == '.env' or n.startswith('.env.') and not n.endswith(('.example', '.sample', '.template'))]
+        return [n for n in names if ignored_source(n)]
     shutil.copytree(source, destination, symlinks=True, ignore=ignored)
-    check_tree(destination)
+    try:
+        check_tree(destination)
+    except WorkspaceOutputError as error:
+        error.details['path'] = destination.name + '/' + error.details['path']
+        raise
 
 
 def pinned_image(image):
@@ -183,11 +205,6 @@ def stage_sources(job, state_dir, git):
         if actual != heads[repo['path']]:
             raise ValueError('Local checkout differs from the server change set; reconcile before retry')
         git(['diff', '--exit-code', 'HEAD'], source)
-        tracked=git(['ls-files','-z'],source,binary=True).split(b'\0')
-        for item in tracked:
-            path=Path(item.decode())
-            if any(p in IGNORE- {'.git','.claude','.codex'} for p in path.parts) or path.name=='.env' or path.name.startswith('.env.') and not path.name.endswith(('.example','.sample','.template')):
-                raise ValueError('Tracked environment/cache files cannot be silently excluded from verification')
         # This is a marked, runner-owned disposable clone, never a personal repo.
         # Remove untracked build output so the sandbox receives only the commit.
         git(['clean','-fdx'],source)
@@ -311,7 +328,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             nonlocal last_heartbeat
             if time.monotonic()-last_heartbeat>=5:
                 api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/lease',{'lease_token':job['lease_token']});last_heartbeat=time.monotonic()
-        log_event(api,job,'environment.preparing','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
+        log_event(api,job,'command.started','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
         prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']))
         remaining=job['step']['timeout_seconds']-(time.monotonic()-started)
         if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
@@ -454,9 +471,7 @@ def adopt_changes(config, job, work, git, secrets):
         if relative not in authorized or before == after:
             continue
         for p in modified.rglob('*'):
-            if p.is_file() and not p.is_symlink() and not any(part in IGNORE for part in p.relative_to(modified).parts):
-                if p.name == '.env' or p.name.startswith('.env.') and not p.name.endswith(('.example', '.sample', '.template')):
-                    raise ValueError('Environment files cannot be committed')
+            if p.is_file() and not p.is_symlink() and not any(ignored_source(part) for part in p.relative_to(modified).parts):
                 content = p.read_bytes()
                 if any(len(s) >= 4 and s.encode() in content for s in secrets):
                     raise ValueError('Credential detected in generated code')
@@ -467,11 +482,18 @@ def adopt_changes(config, job, work, git, secrets):
                 if child.is_dir() and not child.is_symlink(): shutil.rmtree(child)
                 else: child.unlink()
         for child in modified.iterdir():
-            if child.name in IGNORE: continue
+            if ignored_source(child.name): continue
             target = original / child.name
-            if child.is_dir() and not child.is_symlink(): shutil.copytree(child, target, symlinks=True, ignore=lambda _d,names:[n for n in names if n in IGNORE])
+            if child.is_dir() and not child.is_symlink(): shutil.copytree(child, target, symlinks=True, ignore=lambda _d,names:[n for n in names if ignored_source(n)])
             elif child.is_symlink(): target.symlink_to(os.readlink(child))
             else: shutil.copy2(child, target)
+        # ponytail: excluded inputs stay unchanged in Git, never copied into the sandbox.
+        excluded = [p for p in git(['ls-files', '-z'], original, binary=True).split(b'\0')
+                    if p and any(ignored_source(part) for part in Path(os.fsdecode(p)).parts)]
+        if excluded:
+            git(['--literal-pathspecs', 'restore', '--source=HEAD', '--worktree',
+                 '--pathspec-from-file=-', '--pathspec-file-nul'], original,
+                input_data=b'\0'.join(excluded) + b'\0')
         git(['add', '-A', '--', '.'], original)
         # Deterministic metadata lets the control plane reproduce the exact
         # verified Git object over GitHub's Git Database API without sharing a token.
@@ -503,8 +525,8 @@ def without_generated(source, before, after, git):
 def tree_fingerprint(root):
     result = {}
     for here, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in IGNORE]
-        for name in [f for f in files if f not in IGNORE] + [d for d in dirs if (Path(here) / d).is_symlink()]:
+        dirs[:] = [d for d in dirs if not ignored_source(d)]
+        for name in [f for f in files if not ignored_source(f)] + [d for d in dirs if (Path(here) / d).is_symlink()]:
             p = Path(here) / name
             rel = p.relative_to(root).as_posix()
             if p.is_symlink(): data = os.readlink(p).encode()

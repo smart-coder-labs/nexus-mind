@@ -154,7 +154,7 @@ RUN npm install -g @smart-coder-labs/nexusmind-mcp@0.15.0 \
 # (INSTALL_BROWSERS=false) none of it is installed. Default true keeps
 # oracle/main's browser-driven QA agents working.
 RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
-      npm install -g playwright@latest @playwright/mcp@latest \
+      npm install -g playwright@1.64.1 @playwright/mcp@0.0.84 \
       && PKG="$(npm root -g)/@playwright/mcp" \
       && BIN="$(node -e "const b=require('${PKG}/package.json').bin; process.stdout.write(typeof b==='string'?b:(Object.values(b)[0]||''))")" \
       && test -n "${BIN}" && test -f "${PKG}/${BIN}" \

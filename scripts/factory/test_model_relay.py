@@ -33,16 +33,21 @@ class ModelRelayTests(unittest.TestCase):
         threading.Thread(target=backend.serve_forever, daemon=True).start()
         try:
             with tempfile.TemporaryDirectory() as temporary:
-                local = model_relay.serve_local(temporary)
+                root = Path(temporary)
+                if Path('/proc/self/fd').is_dir():
+                    root = root / ('workspace-' + 'x' * 120)
+                    root.mkdir()
+                    self.assertGreater(len(os.fsencode(root / 'model.sock')), 108)
+                local = model_relay.serve_local(root)
                 api = API('http://127.0.0.1:' + str(backend.server_port), 'host-only-runner-credential')
                 job = {'run_id': 'run', 'step': {'id': 'review'}, 'lease_token': 'host-only-fence'}
                 try:
-                    with model_relay.Relay(temporary, api, job):
+                    with model_relay.Relay(root, api, job):
                         call = urllib.request.Request('http://127.0.0.1:' + str(local.server_port) + '/codex/responses', data=json.dumps({'model': 'gpt-fixture', 'stream': True, 'input': []}).encode())
                         with urllib.request.urlopen(call, timeout=10) as response:
                             self.assertEqual(response.read(), payload)
-                    self.assertEqual([p.name for p in Path(temporary).iterdir()], ['model.sock'])
-                    self.assertTrue((Path(temporary) / 'model.sock').is_socket())
+                    self.assertEqual([p.name for p in root.iterdir()], ['model.sock'])
+                    self.assertTrue((root / 'model.sock').is_socket())
                     self.assertEqual(received[0][0], '/v1/factory/runner/runs/run/steps/review/model')
                     self.assertEqual(received[0][1], 'Bearer host-only-runner-credential')
                     self.assertEqual(received[0][2]['lease_token'], 'host-only-fence')
@@ -86,6 +91,10 @@ class ModelRelayTests(unittest.TestCase):
                         fixture = test_execution.ExecutionTests();fixture.setUp()
                         try:
                             image = os.environ['FACTORY_MANAGED_IMAGE']
+                            if Path('/proc/self/fd').is_dir():
+                                long_state = fixture.base / ('state-' + 'x' * 100)
+                                Path(fixture.config['state_dir']).rename(long_state)
+                                fixture.config['state_dir'] = str(long_state)
                             fixture.config.update(allow_backend_models=True, managed_images={'agent': image})
                             fixture.api.base, fixture.api.token, fixture.api.opener = api.base, api.token, api.opener
                             fixture.job['step'].update(kind='review', id='review', adapter='isolated-reviewer', write_repositories=[])

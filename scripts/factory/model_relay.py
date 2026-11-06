@@ -1,5 +1,6 @@
 """Model-only Unix socket bridge: network=none, no credentials in the sandbox."""
-from contextlib import closing
+from contextlib import closing, contextmanager
+import os
 import http.client
 import http.server
 import json
@@ -44,6 +45,21 @@ def forward(source, handler, stop=None):
         handler.wfile.flush()
 
 
+@contextmanager
+def unix_address(path):
+    path = Path(path)
+    if len(os.fsencode(path)) < 104 or not Path('/proc/self/fd').is_dir():
+        yield str(path)
+        return
+    # Linux limits sockaddr_un, not the socket's actual filesystem location.
+    # A directory fd keeps the address short without chdir or moving the workspace.
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        yield '/proc/self/fd/' + str(fd) + '/' + path.name
+    finally:
+        os.close(fd)
+
+
 class Relay:
     def __init__(self, root, api, job):
         self.stop = threading.Event()
@@ -78,7 +94,8 @@ class Relay:
                         headers(self)
                     self.wfile.write(ERROR)
 
-        self.server = socketserver.UnixStreamServer(str(Path(root) / 'model.sock'), Handler)
+        with unix_address(Path(root) / 'model.sock') as address:
+            self.server = socketserver.UnixStreamServer(address, Handler)
         self.server.timeout = .1
         self.thread = threading.Thread(target=self.run, daemon=True)
 
@@ -105,7 +122,8 @@ class UnixHTTP(http.client.HTTPConnection):
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
-        self.sock.connect(self.path)
+        with unix_address(self.path) as address:
+            self.sock.connect(address)
 
 
 def serve_local(root):

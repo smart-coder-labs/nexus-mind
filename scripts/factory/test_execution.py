@@ -6,10 +6,14 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import io
+import urllib.error
+from unittest.mock import Mock, patch
 import uuid
 import runner
 import execution
 import delivery
+from container_entry import agent_prompt
 
 
 class API:
@@ -19,7 +23,10 @@ class API:
             content = base64.b64decode(data['content_base64'])
             self.artifacts.append((data['name'], content))
             return {'digest': hashlib.sha256(content).hexdigest(), 'id': str(len(self.artifacts))}
-        if path.endswith('/events'): self.events.append(data)
+        if path.endswith('/events'):
+            assert data['kind'] in {'agent.started', 'agent.tool', 'command.started', 'command.finished', 'service.ready', 'log.chunk'}
+            assert len(data['message'].encode()) <= 4096
+            self.events.append(data)
         return {'active': True}
 
 
@@ -98,6 +105,179 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(passed)
         names=[name for name,_ in self.api.artifacts if name.endswith('.png')]
         self.assertEqual(len(names),2);self.assertEqual(len(set(names)),2)
+
+    def test_workspace_file_diagnostics_preserve_guards_and_reach_completion(self):
+        tree = self.base/'tree'; tree.mkdir()
+        file = tree/'large.bin'
+        with file.open('wb') as stream:
+            stream.truncate(10 * 1024 * 1024)
+        execution.check_tree(tree)
+        with file.open('ab') as stream:
+            stream.write(b'x')
+        with self.assertRaises(execution.WorkspaceOutputError) as caught:
+            execution.check_tree(tree)
+        details = caught.exception.details
+        self.assertEqual(details['error'], 'workspace_file_too_large')
+        self.assertEqual(details['path'], 'large.bin')
+        self.assertEqual(details['actual'], details['limit'] + 1)
+        self.assertTrue(details['solution'])
+        api = Mock()
+        api.call.side_effect = lambda path, data=None: ({'workspaces': []} if path == '/workspaces' else {'job': self.job} if path == '/claim' else {})
+        config = {**self.config, 'api_url': 'http://localhost', 'adapters': {'agent': {}}}
+        with patch.object(runner, 'API', return_value=api), patch.object(runner, 'reconcile'), patch.object(execution, 'isolated_adapter', side_effect=caught.exception):
+            runner.tick_locked(config, [self.root])
+        completion = next(call.args[1] for call in api.call.call_args_list if call.args[0].endswith('/complete'))
+        self.assertFalse(completion['success'])
+        self.assertEqual(completion['outcome']['output'], details)
+        file.unlink()
+        file.write_text('small')
+        os.link(file, tree/'linked.bin')
+        with self.assertRaises(execution.WorkspaceOutputError) as caught:
+            execution.check_tree(tree)
+        self.assertEqual(caught.exception.details['error'], 'workspace_hard_link')
+        self.assertEqual(caught.exception.details['actual'], 2)
+        self.assertEqual(caught.exception.details['limit'], 1)
+        (tree/'linked.bin').unlink()
+        execution.check_tree(tree)
+        destination = self.base/'api-copy'
+        with file.open('wb') as stream:
+            stream.truncate(10 * 1024 * 1024 + 1)
+        with self.assertRaises(execution.WorkspaceOutputError) as caught:
+            execution.copy_source(tree, destination)
+        self.assertEqual(caught.exception.details['path'], 'api-copy/large.bin')
+
+    def test_zip_exclusion_preserves_tracked_archives_when_adopting_source(self):
+        repo = Path(self.config['state_dir'])/self.job['run_id']/'api'
+        (repo/'layer').mkdir()
+        archive = repo/'layer'/'chromium.zip'
+        with archive.open('wb') as stream:
+            stream.write(b'PK-original')
+            stream.truncate(10 * 1024 * 1024 + 1)
+        (repo/'root.zip').write_bytes(b'PK-root')
+        runner.git(['add', '.'], repo)
+        runner.git(['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','add layers'], repo)
+        self.job['execution']['heads']['api'] = runner.git(['rev-parse', 'HEAD'], repo)
+        original_blob = runner.git(['hash-object', str(archive)], repo)
+        _, work = execution.stage_sources(self.job, self.config['state_dir'], runner.git)
+        self.assertFalse((work/'api'/'layer'/'chromium.zip').exists())
+        self.assertFalse((work/'api'/'root.zip').exists())
+        generated = work/'api'/'generated.zip'
+        with generated.open('wb') as stream:
+            stream.truncate(11 * 1024 * 1024)
+        os.link(generated, work/'api'/'linked.zip')
+        execution.check_tree(work)
+        generated.unlink()
+        generated.symlink_to('/etc/passwd')
+        execution.check_tree(work)
+        self.assertNotIn('api/generated.zip', execution.tree_fingerprint(work))
+        self.job['step']['write_repositories'] = []
+        self.assertEqual(execution.adopt_changes(self.config,self.job,work,runner.git,[]), self.job['execution']['heads'])
+        self.job['step']['write_repositories'] = ['api']
+        _, work = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        (work/'api'/'generated.zip').symlink_to('/etc/passwd')
+        (work/'api'/'code.txt').write_text('fixed\n')
+        heads = execution.adopt_changes(self.config,self.job,work,runner.git,[])
+        self.assertNotEqual(heads['api'], self.job['execution']['heads']['api'])
+        self.assertEqual(runner.git(['hash-object', str(archive)], repo), original_blob)
+        self.assertEqual((repo/'root.zip').read_bytes(), b'PK-root')
+        self.assertFalse((repo/'generated.zip').exists())
+        self.assertEqual(runner.git(['diff', '--name-only', self.job['execution']['heads']['api'], heads['api']], repo), 'code.txt')
+        self.job['execution']['heads'] = heads
+        _, fresh = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        self.assertFalse((fresh/'api'/'layer'/'chromium.zip').exists())
+        self.assertEqual((fresh/'api'/'code.txt').read_text(), 'fixed\n')
+
+    def test_tracked_env_and_caches_are_excluded_without_blocking_or_deletion(self):
+        repo = Path(self.config['state_dir'])/self.job['run_id']/'api'
+        excluded = ['.env', '.env.bak-1787936750', 'node_modules/cache.js', 'target/build.bin', '.next/cache', '__pycache__/module.pyc', '.claude/settings.json']
+        templates = ['.env.example', '.env.local.sample', '.env.local.template']
+        for name in excluded + templates:
+            file = repo/name
+            file.parent.mkdir(parents=True,exist_ok=True)
+            file.write_text('original '+name)
+        runner.git(['add', '-f', '.'],repo)
+        runner.git(['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','existing environment and caches'],repo)
+        self.job['execution']['heads']['api'] = runner.git(['rev-parse','HEAD'],repo)
+        _, work = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        for name in excluded:
+            self.assertFalse((work/'api'/name).exists(),name)
+        for name in templates:
+            self.assertTrue((work/'api'/name).exists(),name)
+        (work/'api'/'.env').write_text('agent-generated secret')
+        (work/'api'/'.env.new').write_text('must not be published')
+        (work/'api'/'code.txt').write_text('fixed\n')
+        heads = execution.adopt_changes(self.config,self.job,work,runner.git,[])
+        for name in excluded:
+            self.assertEqual((repo/name).read_text(),'original '+name)
+        self.assertFalse((repo/'.env.new').exists())
+        self.assertEqual(runner.git(['diff','--name-only',self.job['execution']['heads']['api'],heads['api']],repo),'code.txt')
+        self.job['execution']['heads'] = heads
+        _, fresh = execution.stage_sources(self.job,self.config['state_dir'],runner.git)
+        self.assertFalse((fresh/'api'/'.env').exists())
+        self.assertEqual((fresh/'api'/'code.txt').read_text(),'fixed\n')
+
+    def test_agent_prompts_separate_phase_responsibilities(self):
+        for role in ['investigation', 'test_author', 'implementation', 'reviewer']:
+            with self.subTest(role=role):
+                prompt = agent_prompt(self.job, {'role': role})
+                self.assertEqual('Do not edit files.' in prompt, role in ('investigation', 'reviewer'))
+                self.assertIn('step.write_repositories', prompt)
+                self.assertIn('Do not claim tests or QA passed unless you actually executed them.', prompt)
+                self.assertIn('Never publish, push, merge, access credentials', prompt)
+        prompt = agent_prompt(self.job, {'role': 'test_author'})
+        self.assertIn('documentation-only', prompt)
+        self.assertIn('not_applicable_reason', prompt)
+        self.assertIn('return success=true', prompt)
+        self.assertNotIn('Implement the complete integrated change', prompt)
+        self.assertIn('Implement the complete integrated change', agent_prompt(self.job, {'role': 'implementation'}))
+        self.job['step']['kind'] = 'review'
+        self.assertIn('Do not edit files.', agent_prompt(self.job, {'role': 'implementation'}))
+
+    @unittest.skipUnless(os.environ.get('FACTORY_TEST_IMAGE'), 'Requires immutable Docker fixture')
+    def test_documentation_test_authoring_can_finish_before_implementation(self):
+        self.job['task'] = {'title': 'Create docs/requested.md; documentation only'}
+        self.job['step'].update(id='tests', adapter='isolated-test-author', write_repositories=['api'])
+        script = "import json,sys; p=sys.stdin.read(); assert 'Do not edit files.' not in p; assert 'documentation-only' in p; print(json.dumps({'success':True,'verdict':'accept','findings':[],'not_applicable_reason':'Documentation-only task: no behavioral regression to reproduce.'}))"
+        adapter = {'kind':'agent','role':'test_author','image':os.environ['FACTORY_TEST_IMAGE'],'command':['python3','-c',script]}
+        success,evidence,outcome = execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertTrue(success)
+        self.assertEqual(evidence[0]['status'], 'not_applicable')
+        self.assertEqual(outcome['heads'], self.job['execution']['heads'])
+        self.job['dependency_results'] = {'tests':outcome}
+        self.job['step'].update(id='implement', adapter='isolated-implementer')
+        script = "import json,sys; from pathlib import Path; p=sys.stdin.read(); assert 'Do not edit files.' not in p; assert 'including requested documentation' in p; d=Path('/work/api/docs'); d.mkdir(); (d/'requested.md').write_text('# Requested document\\n'); print(json.dumps({'success':True}))"
+        adapter.update(role='implementation', command=['python3','-c',script])
+        success,_,outcome = execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertTrue(success)
+        self.assertNotEqual(outcome['heads']['api'], self.job['execution']['heads']['api'])
+        self.assertEqual((Path(self.config['state_dir'])/self.job['run_id']/'api'/'docs'/'requested.md').read_text(), '# Requested document\n')
+
+    def test_dependency_preparation_emits_a_backend_accepted_event(self):
+        self.job['step'].update(id='verify',kind='check',write_repositories=[])
+        adapter = {'kind':'checks','node_bootstrap':True,'image':'sha256' + ':' + 'a'*64,
+                   'checks':[{'name':'tests','cwd':'api','command':['npm','test']}]}
+        with patch.object(execution,'node_bootstrap_image',return_value=True), patch('node_environment.prepare',side_effect=ValueError('stop after preparation event')) as prepare:
+            with self.assertRaisesRegex(ValueError,'stop after preparation event'):
+                execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        prepare.assert_called_once()
+        self.assertEqual(self.api.events[-1]['kind'],'command.started')
+        self.assertIn('dependencias npm',self.api.events[-1]['message'])
+
+    def test_api_contract_rejections_hold_instead_of_exhausting_attempts(self):
+        for status,code,hold in [(400,'invalid_event',True),(403,'policy_never',True),(429,'temporarily_limited',False),(503,'temporary_upstream_failure',False)]:
+            with self.subTest(status=status):
+                error = urllib.error.HTTPError('http://localhost',status,'fixture',{},io.BytesIO(json.dumps({'code':code}).encode()))
+                api = Mock()
+                api.call.side_effect = lambda path,data=None: ({'workspaces':[]} if path=='/workspaces' else {'job':self.job} if path=='/claim' else {})
+                config = {**self.config,'api_url':'http://localhost','adapters':{'agent':{}}}
+                with patch.object(runner,'API',return_value=api), patch.object(runner,'reconcile'), patch.object(execution,'isolated_adapter',side_effect=error):
+                    runner.tick_locked(config,[self.root])
+                completion = next(call.args[1] for call in api.call.call_args_list if call.args[0].endswith('/complete'))
+                self.assertFalse(completion['success'])
+                self.assertEqual(completion['outcome']['output']['error'],code)
+                self.assertEqual(completion['outcome']['output']['hold'],hold)
+                if code=='invalid_event':
+                    self.assertTrue(completion['outcome']['output']['solution'])
 
     def test_symlink_escape_is_rejected(self):
         tree = self.base/'tree'; tree.mkdir(); (tree/'escape').symlink_to('/etc/passwd')
