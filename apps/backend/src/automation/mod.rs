@@ -12,6 +12,10 @@ pub mod merge_gate;
 pub mod policy;
 pub mod r2;
 pub mod profiles;
+pub mod agent_runtime;
+pub(crate) mod agent_runtime_workflows;
+#[cfg(test)]
+mod agent_runtime_tests;
 pub mod provenance;
 pub mod runtime;
 pub mod sandboxed;

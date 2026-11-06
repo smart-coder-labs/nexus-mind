@@ -120,6 +120,14 @@ fn secret_like(s: &str) -> bool {
     .iter()
     .any(|p| value.contains(p))
 }
+fn validate_agent_instructions(instructions: &str) -> Result<()> {
+    match crate::models::types::validate_safe_manifest_content(instructions) {
+        Ok(()) => Ok(()),
+        Err("component_content_too_large") => bail!("workflow_agent_instructions_too_large"),
+        Err(_) => bail!("workflow_agent_instructions_unsafe"),
+    }
+}
+
 fn name(s: &str) -> bool {
     !s.is_empty()
         && !secret_like(s)
@@ -162,11 +170,10 @@ pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
     }
     let mut roles = std::collections::BTreeSet::new();
     for a in &config.agents {
+        validate_agent_instructions(&a.instructions)?;
         if !ROLES.contains(&a.role.as_str())
             || !roles.insert(&a.role)
             || !name(&a.harness)
-            || a.instructions.len() > 16000
-            || secret_like(&a.instructions)
             || (!a.image.is_empty() && !image(&a.image))
             || (!a.model.is_empty()
                 && (!a
@@ -398,9 +405,7 @@ pub fn resolve_bindings(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
-            if agent.instructions.len() > 16000 || secret_like(&agent.instructions) {
-                bail!("workflow_agent_instructions_unsafe")
-            }
+            validate_agent_instructions(&agent.instructions)?;
             agent.binding = Some(AgentBinding {
                 id: detail.definition.id,
                 revision: detail.revision.revision,
@@ -737,11 +742,13 @@ mod tests {
         super::super::migrations::run(&c).unwrap();
         let (org, user, _) =
             super::super::queries::bootstrap(&c, "Acme", "acme", "b@test.com", "Owner").unwrap();
+        let instructions = format!("Review Bearer tokens and authorization headers. Example: Authorization: Bearer <token>. Review /users/{{id}}. {}", "Respect acceptance criteria.\n".repeat(700));
+        assert!(instructions.len() > 16000);
         let request = crate::models::types::CreateAutonomousAgentRequest {
             name: "Code profile".into(),
             description: None,
             template_key: "github_issue_resolver".into(),
-            config: json!({"executor":"claude","model":"sonnet","custom_instructions":"Respect acceptance criteria","target_password":"fixture-never-copy"}),
+            config: json!({"executor":"claude","model":"sonnet","custom_instructions":instructions,"target_password":"fixture-never-copy"}),
             budgets: json!({}),
         };
         let d = super::super::queries::create_autonomous_agent_definition(
@@ -765,7 +772,7 @@ mod tests {
         let frozen = resolve_bindings(&c, &org.id, &config).unwrap();
         assert_eq!(frozen.agents[0].model, "sonnet");
         assert_eq!(frozen.agents[0].binding.as_ref().unwrap().revision, 1);
-        assert_eq!(frozen.agents[0].instructions, "Respect acceptance criteria");
+        assert_eq!(frozen.agents[0].instructions, instructions);
         assert!(!serde_json::to_string(&frozen)
             .unwrap()
             .contains("fixture-never-copy"));
@@ -798,6 +805,14 @@ mod tests {
         .unwrap();
         assert!(resolve_bindings(&c, &org.id, &config).is_err());
     }
+    #[test]
+    fn instruction_size_and_credentials_are_reported_separately() {
+        assert!(validate_agent_instructions(&"Review Bearer tokens.\n".repeat(1000)).is_ok());
+        assert_eq!(validate_agent_instructions(&"x".repeat(64 * 1024 + 1)).unwrap_err().to_string(), "workflow_agent_instructions_too_large");
+        assert_eq!(validate_agent_instructions("Authorization: Bearer actual-private-value").unwrap_err().to_string(), "workflow_agent_instructions_unsafe");
+        assert_eq!(validate_agent_instructions("PASSWORD=actual-private-value").unwrap_err().to_string(), "workflow_agent_instructions_unsafe");
+    }
+
     #[test]
     fn settings_cannot_carry_credentials_host_paths_or_mutable_images() {
         assert!(serde_json::from_value::<RuntimeConfig>(json!({"api_key":"secret"})).is_err());

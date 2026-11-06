@@ -303,6 +303,12 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         env_files.append(model_file);secrets.extend(model_secrets)
     secrets.append(config['runner_token'])
     context = {k: job[k] for k in ['run_id', 'step', 'task', 'dependency_results']}
+    context['step'] = dict(job['step'])
+    if isinstance(job['step'].get('options'), dict):
+        context['step']['options'] = {k: v for k, v in job['step']['options'].items() if k not in ('runtime', 'runtime_snapshot')}
+    snapshot = job['step'].get('options') or {}
+    resolved = snapshot.get('runtime_snapshot', {}).get('config', {}).get('runtime_resolved', {}) if isinstance(snapshot, dict) else {}
+    context['harness_markdown'] = [{'id': c['id'], 'files': c['files']} for c in resolved.get('components', []) if c.get('kind') == 'instructions' and c.get('enabled', True)]
     context['commits'] = job['execution']['heads']
     budget = job['snapshot']['definition'].get('max_cost_usd', 20)
     attempts = sum(s.get('max_attempts',1) for s in job['snapshot']['definition'].get('steps',[job['step']]))
@@ -334,6 +340,8 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
         import copy
         job=copy.deepcopy(job);job['step']['timeout_seconds']=int(remaining)
+    from agent_runtime import stage_runtime
+    stage_runtime(config, job, adapter, inp)
     (inp / 'context.json').write_text(json.dumps(context))
     (inp / 'adapter.json').write_text(json.dumps(adapter))
     name = None
@@ -346,6 +354,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
                    '--mount', 'type=bind,src=' + str(inp) + ',dst=/input,readonly',
                    '--mount', 'type=bind,src=' + str(out) + ',dst=/output',
                    '--mount', 'type=bind,src=' + str(Path(__file__).with_name('container_entry.py').resolve()) + ',dst=/entry.py,readonly']
+        command += ['--mount', 'type=bind,src=' + str(Path(__file__).with_name('agent_runtime.py').resolve()) + ',dst=/agent_runtime.py,readonly']
         if backend_model:
             model_root = working / 'model'; model_root.mkdir()
             command += ['--mount', 'type=bind,src=' + str(model_root) + ',dst=/model',

@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import sys
 import threading
+from agent_runtime import configure_runtime, codex_prices, agent_result
 
 
 def bootstrap_node(root, output):
@@ -99,17 +100,25 @@ def main():
         path.parent.mkdir(parents=True,exist_ok=True)
         path.symlink_to(target,target_is_directory=True)
     if mode == 'agent':
+        if adapter.get('format') == 'codex': codex_prices(adapter.get('usd_per_million'))
         # No prior model conversation or other role's instructions are persisted.
         prompt = agent_prompt(context, adapter)
         command = list(adapter['command'])
-        if adapter.get('format') == 'claude':
+        if adapter.get('format') == 'claude' and adapter.get('executor') != 'nexus':
             command += ['-p', '--output-format', 'stream-json', '--verbose', '--setting-sources', 'user', '--strict-mcp-config',
                         '--max-budget-usd', str(context['remaining_cost_usd'])]
         env = dict(os.environ)
+        runtime_plan = Path('/input/runtime-plan.json')
+        if runtime_plan.exists():
+            if adapter.get('format') == 'pi':
+                command = [arg for arg in command if arg != '--no-mcp']
+                tools = 'read,grep,find,ls' if context['step']['kind'] == 'review' or not context['step'].get('write_repositories') else 'read,bash,edit,write,grep,find,ls'
+                command += ['--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--no-approve', '--tools', tools]
+            command = configure_runtime(command, json.loads(runtime_plan.read_text()), env)
         if adapter.get('model_connection') == 'backend':
             from model_relay import PI_SETTINGS, pi_configuration, serve_local
             server = serve_local('/model')
-            directory = Path(tempfile.mkdtemp(prefix='nm-pi-', dir='/tmp'))
+            directory = Path(env['PI_CODING_AGENT_DIR']) if runtime_plan.exists() else Path(tempfile.mkdtemp(prefix='nm-pi-', dir='/tmp'))
             (directory / 'models.json').write_text(json.dumps(pi_configuration(adapter['model'], server.server_port)))
             (directory / 'settings.json').write_text(json.dumps(PI_SETTINGS))
             env['PI_CODING_AGENT_DIR'] = str(directory)
@@ -133,6 +142,7 @@ def main():
                     result = json.loads(envelope['result'])
                     result['cost_usd'] = envelope.get('total_cost_usd', 0)
                 elif adapter.get('format') == 'pi': result=parse_pi(raw)
+                elif adapter.get('format') == 'codex': result=agent_result(raw, 'codex', adapter.get('usd_per_million'))
                 else: result=json.loads(raw)
                 if not isinstance(result, dict) or not isinstance(result.get('success'), bool):
                     raise ValueError('invalid result')
