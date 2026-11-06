@@ -4,15 +4,25 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
+    #[serde(default = "automatic_environment")]
+    pub auto_environment: bool,
+    #[serde(default)]
+    pub environment_entrypoints: Vec<String>,
     #[serde(default)]
     pub agents: Vec<Agent>,
     #[serde(default)]
     pub checks: Vec<Check>,
     #[serde(default)]
     pub services: Vec<Service>,
+}
+fn automatic_environment() -> bool { true }
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self { auto_environment: true, environment_entrypoints: Vec::new(), agents: Vec::new(), checks: Vec::new(), services: Vec::new() }
+    }
 }
 fn default_harness() -> String {
     "claude".into()
@@ -69,6 +79,8 @@ pub struct Service {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Report {
+    #[serde(default)]
+    pub auto_environment: bool,
     #[serde(default)]
     pub remote_enabled: bool,
     #[serde(default)]
@@ -140,8 +152,13 @@ fn refs(names: &[String]) -> bool {
     names.len() <= 16 && names.iter().all(|s| name(s))
 }
 pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
-    if config.agents.len() > 4 || config.checks.len() > 64 || config.services.len() > 16 {
+    if config.agents.len() > 4 || config.checks.len() > 64 || config.services.len() > 16 || config.environment_entrypoints.len() > 16 {
         bail!("runtime_limits_exceeded")
+    }
+    for path in &config.environment_entrypoints {
+        if !crate::factory::workflows::relative_path(path) || !repos.iter().any(|repo| path.starts_with(&format!("{repo}/"))) {
+            bail!("invalid_environment_entrypoint");
+        }
     }
     let mut roles = std::collections::BTreeSet::new();
     for a in &config.agents {
@@ -264,7 +281,8 @@ pub fn metadata(c: &Connection, workspace: &str) -> Result<Value> {
         }
     }
     if config.services.is_empty() {
-        missing.push("services".into())
+        if !config.auto_environment { missing.push("services".into()); }
+        else if !report.auto_environment { missing.push("auto_environment".into()); }
     }
     if config.agents.iter().any(|a| a.binding.is_some()) {
         let org: String = c.query_row(
@@ -505,6 +523,7 @@ pub fn report(
                 "runtime_environment_missing",
                 "runtime_invalid",
                 "runtime_harness_missing",
+                "runtime_auto_environment_not_allowed",
             ]
             .contains(&s.as_str())
         })
@@ -521,6 +540,17 @@ pub fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_environment_defaults_and_entrypoints_are_bounded() {
+        let mut config: RuntimeConfig = serde_json::from_value(json!({"agents":[],"checks":[],"services":[]})).unwrap();
+        assert!(config.auto_environment);
+        config.environment_entrypoints = vec!["web/compose.yaml".into()];
+        assert!(validate(&config, &["web".into()]).is_ok());
+        for path in ["/etc/compose.yaml", "web/../other/compose.yaml", "other/compose.yaml"] {
+            config.environment_entrypoints = vec![path.into()];
+            assert!(validate(&config, &["web".into()]).is_err());
+        }
+    }
     #[test]
     fn managed_pi_resolves_infrastructure_without_overriding_custom_connections() {
         let mut config: RuntimeConfig=serde_json::from_value(json!({"agents":[{"role":"reviewer","harness":"pi","model":"gpt-example","image":"","network":"","model_connection":""}]})).unwrap();
@@ -625,6 +655,7 @@ mod tests {
                 healthcheck: vec!["true".into()],
                 environment_refs: vec![],
             }],
+            ..Default::default()
         };
         assert_eq!(
             save(&c, &org.id, &user.id, wid, 0, &config).unwrap()["revision"],
@@ -634,6 +665,7 @@ mod tests {
         assert!(save(&c, "another-org", &user.id, wid, 1, &config).is_err());
         assert_eq!(metadata(&c, wid).unwrap()["ready"], false);
         let r = Report {
+            auto_environment: false,
             remote_enabled: true,
             applied_revision: 1,
             images: vec![img],
@@ -669,6 +701,15 @@ mod tests {
                 .len(),
             4
         );
+        let mut automatic = config.clone();
+        automatic.services.clear();
+        save(&c, &org.id, &user.id, wid, 2, &automatic).unwrap();
+        let mut auto_report = r.clone();
+        auto_report.applied_revision = 3;
+        let missing = report(&c, &org.id, rid, wid, &auto_report).unwrap();
+        assert!(missing["missing"].as_array().unwrap().contains(&json!("auto_environment")));
+        auto_report.auto_environment = true;
+        assert_eq!(report(&c, &org.id, rid, wid, &auto_report).unwrap()["ready"], true);
     }
     #[test]
     fn catalog_bindings_are_tenant_scoped_versioned_and_project_no_credentials() {

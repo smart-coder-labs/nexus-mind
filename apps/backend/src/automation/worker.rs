@@ -1814,10 +1814,25 @@ async fn publish_judge_comments(
 }
 
 async fn github_access(
-    _store: &SqliteStore,
-    _claim: &queries::ClaimedAutonomousRun,
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
 ) -> anyhow::Result<Option<String>> {
-    server_gh_token().await.map(Some)
+    github_for_configuration(store, &claim.org_id, &claim.template_key, &claim.config).await.map(Some)
+}
+
+async fn github_for_configuration(store: &SqliteStore, org_id: &str, template: &str, config: &serde_json::Value) -> anyhow::Result<String> {
+    if config.get("github_publication_connector_id").is_some() {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let connector = super::github_publication::connection(&conn, org_id, template, config)?
+            .ok_or_else(|| anyhow::anyhow!("github_publication_connection_invalid"))?;
+        let (_, token) = queries::get_autonomous_agent_connector_secret(&conn, org_id, &connector.id)?
+            .ok_or_else(|| anyhow::anyhow!("github_publication_connection_invalid"))?;
+        return Ok(token);
+    }
+    // Reviewers, webhook identity and existing agents keep the logged-in gh account.
+    // A selected invalid/revoked publisher never silently falls back to it.
+    server_gh_token().await
 }
 
 async fn github_access_for_connector(
@@ -6957,7 +6972,15 @@ pub async fn create_issue_for_finding(
             .unwrap_or_default()
     };
     let (body, labels) = qa_issue_markup(&finding, &finding.run_id, &evidence_md);
-    let token = server_gh_token().await?;
+    let (template, mut publication_config) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let detail = queries::get_autonomous_agent_detail(&conn, org_id, &finding.definition_id)?
+            .ok_or_else(|| anyhow::anyhow!("agent_not_found"))?;
+        (detail.definition.template_key, detail.revision.config)
+    };
+    publication_config["trigger"] = json!({"repository":repository});
+    let token = github_for_configuration(store, org_id, &template, &publication_config).await?;
     // Reuse an existing issue with the same fingerprint/title before creating one.
     let marker = format!("<!-- nexusmind-fingerprint:{} -->", finding.fingerprint);
     let issue = match super::connectors::find_github_issue_by_marker(
@@ -7382,7 +7405,7 @@ async fn deliver_findings(
                         .ok()
                     };
                     let Some(delivery) = delivery else { continue };
-                    let response = match server_gh_token().await {
+                    let response = match github_for_configuration(store, &claim.org_id, &claim.template_key, &claim.config).await {
                         Ok(token) => match require_publish_authority(store, claim) {
                             Err(error) => Err(error),
                             Ok(()) => {
@@ -7515,7 +7538,7 @@ async fn deliver_findings(
                             == Some(true)
                     {
                         if let Some(number) = created_number {
-                            if let Ok(token) = server_gh_token().await {
+                            if let Ok(token) = github_for_configuration(store, &claim.org_id, &claim.template_key, &claim.config).await {
                                 if let Ok(login) =
                                     super::connectors::github_authenticated_login(&token).await
                                 {
@@ -7605,9 +7628,15 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
             match item.config.get("repository").and_then(|v| v.as_str()) {
                 Some(repository) => {
                     async {
-                        // Connector-less: GitHub writes use the server's gh CLI,
-                        // matching the first-attempt delivery path.
-                        let token = server_gh_token().await?;
+                        // Reuse the configured publisher, matching the first attempt;
+                        // revocation or invalid scope never switches to the gh reviewer.
+                        let template = {
+                            let db = store.conn();
+                            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+                            queries::get_autonomous_agent_definition(&conn, &item.org_id, &item.finding.definition_id)?
+                                .ok_or_else(|| anyhow::anyhow!("agent_not_found"))?.template_key
+                        };
+                        let token = github_for_configuration(store, &item.org_id, &template, &item.config).await?;
                         let title = format!("[NexusMind QA] {}", item.finding.title);
                         // Host the evidence on the repo branch (permanent) with a
                         // fallback to the stored R2 URL.

@@ -189,6 +189,8 @@ describe('FactoryDigest', () => {
     const section = await screen.findByRole('region', { name: /agent outcomes awaiting review/i })
     expect(within(section).getByText('Issue resolver')).toBeInTheDocument()
     expect(within(section).getByText('unknown')).toBeInTheDocument()
+    expect(within(section).getByRole('link', { name: 'Ver detalle y evidencia' })).toHaveAttribute('href', '/factory/runs?kind=agent&agent_run=run-feedback-1')
+    expect(api.recordFactoryTrajectoryFeedback).not.toHaveBeenCalled()
     await userEvent.click(within(section).getByRole('button', { name: 'Mark accepted' }))
     await waitFor(() =>
       expect(api.recordFactoryTrajectoryFeedback).toHaveBeenCalledWith(

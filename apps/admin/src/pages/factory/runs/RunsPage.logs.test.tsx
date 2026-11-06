@@ -8,7 +8,7 @@ import RunsPage from './RunsPage'
 
 const api = vi.hoisted(() => ({
   listAutonomousAgents: vi.fn(), listAutonomousAgentRuns: vi.fn(), listAutonomousAgentRunEvents: vi.fn(),
-  listAutonomousAgentRunTranscript: vi.fn(), listRunVerificationReports: vi.fn(),
+  listAutonomousAgentRunTranscript: vi.fn(), listRunVerificationReports: vi.fn(), getAutonomousAgentRun: vi.fn(),
 }))
 vi.mock('../../../api/client', () => ({ createClient: () => api }))
 vi.mock('./RunDetail', () => ({ RunDetail: ({ events }: { events: AutonomousAgentEvent[] }) => <p>Loaded lifecycle events: {events.length}</p> }))
@@ -20,12 +20,12 @@ const run: AutonomousAgentRun = {
 }
 const event = (sequence: number): AutonomousAgentEvent => ({ sequence, kind: 'model.selected', payload: { model: 'gpt-6.1-sol' }, created_at: '2026-10-31T04:00:00Z' })
 
-function renderPage() {
+function renderPage(link = false) {
   const session: AuthSession = {
     org: { id: 'o1', name: 'Acme', slug: 'acme', created_at: '2026-01-01' },
     user: { id: 'u1', org_id: 'o1', email: 'test@acme.test', name: 'Test', role: 'member', status: 'active', created_at: '2026-01-01', permissions: ['autonomous_agent:read'] },
   }
-  render(<MemoryRouter initialEntries={[{ pathname: '/factory/runs', state: { runId: 'r1' } }]}>
+  render(<MemoryRouter initialEntries={[link ? { pathname: '/factory/runs', search: '?kind=agent&agent_run=r1' } : { pathname: '/factory/runs', state: { runId: 'r1' } }]}>
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <AuthContext.Provider value={{ session, loading: false, setSession: () => undefined, logout: () => undefined }}><RunsPage /></AuthContext.Provider>
     </QueryClientProvider>
@@ -42,6 +42,14 @@ beforeEach(() => {
 })
 
 describe('run log fetching', () => {
+  it('opens an archived or historical run from its bookmark even outside the current list', async () => {
+    api.listAutonomousAgentRuns.mockResolvedValue([])
+    api.getAutonomousAgentRun.mockResolvedValue({ ...run, status: 'succeeded', archived_at: '2026-11-01' })
+    renderPage(true)
+    expect(await screen.findByText('Loaded lifecycle events: 1')).toBeInTheDocument()
+    expect(api.getAutonomousAgentRun).toHaveBeenCalledWith('r1')
+    expect(api.listAutonomousAgentRunEvents).toHaveBeenCalledWith('r1')
+  })
   it('refreshes lifecycle logs while the run is still running', async () => {
     api.listAutonomousAgentRunEvents.mockResolvedValueOnce([event(1)]).mockResolvedValue([event(1), event(2)])
     renderPage()
