@@ -220,8 +220,10 @@ pub fn create_definition(
     }
     let repos: Vec<Repository> = serde_json::from_value(w["repositories"].clone())?;
     d.validate(&repos).map_err(anyhow::Error::msg)?;
+    let d = crate::automation::agent_runtime_workflows::prepare(conn, org, user, d)?;
+    d.validate(&repos).map_err(anyhow::Error::msg)?;
     let definition = id();
-    conn.execute("INSERT INTO factory_workflow_definitions(id,org_id,workspace_id,definition_json,created_by) VALUES (?1,?2,?3,?4,?5)",params![definition,org,d.workspace_id,serde_json::to_string(d)?,user])?;
+    conn.execute("INSERT INTO factory_workflow_definitions(id,org_id,workspace_id,definition_json,created_by) VALUES (?1,?2,?3,?4,?5)",params![definition,org,d.workspace_id,serde_json::to_string(&d)?,user])?;
     Ok(json!({"id":definition,"definition":d}))
 }
 pub fn list_definitions(conn: &Connection, org: &str) -> Result<Vec<Value>> {
@@ -246,11 +248,11 @@ pub fn start_run(
         bail!("invalid_task");
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-    let text: String = tx
+    let (text, creator): (String, String) = tx
         .query_row(
-            "SELECT definition_json FROM factory_workflow_definitions WHERE id=?1 AND org_id=?2",
+            "SELECT definition_json,created_by FROM factory_workflow_definitions WHERE id=?1 AND org_id=?2",
             params![definition, org],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?
         .ok_or_else(|| anyhow::anyhow!("not_found"))?;
@@ -263,6 +265,7 @@ pub fn start_run(
         w["repositories"].clone(),
     )?)
     .map_err(anyhow::Error::msg)?;
+    crate::automation::agent_runtime_workflows::verify(&tx, org, &creator, &d)?;
     let active_runner: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM factory_runners WHERE id=?1 AND org_id=?2 AND revoked=0)",
         params![w["runner_id"].as_str(), org],

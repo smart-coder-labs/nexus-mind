@@ -620,15 +620,42 @@ pub(crate) async fn run_claude_sandboxed(
         )];
         agent_job.collect_dir = Some(crate::factory::sandbox::QA_OUTPUT_DIR.to_string());
     }
+    let runtime_config = {
+        let db = run.store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
+        use rusqlite::OptionalExtension;
+        let text: Option<String> = conn.query_row("SELECT r.config_json FROM autonomous_agent_runs a JOIN autonomous_agent_revisions r ON r.id=a.revision_id WHERE a.id=?1 AND a.org_id=?2", rusqlite::params![run.run_id, run.org_id], |row| row.get(0)).optional()?;
+        text.map(|text| serde_json::from_str::<serde_json::Value>(&text)).transpose()?
+    };
+    if let Some(runtime_config) = runtime_config.as_ref() {
+    let runtime = super::agent_runtime::runtime_from_config(&runtime_config)?;
+    anyhow::ensure!(runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).all(|s| s.env.is_empty() && s.headers.is_empty()), "runtime_mcp_credentials_require_sandbox_proxy");
+    let executor = if codex { "codex" } else { "claude" };
+    let root = if codex { crate::factory::sandbox::CODEX_HOME } else { "/tmp/agent-runtime" };
+    let nexus: serde_json::Value = serde_json::from_str(&crate::factory::sandbox::nexusmind_mcp())?;
+    let mut nexus = nexus["mcpServers"]["plugin_nexusmind_nexusmind"].clone();
+    nexus["env"]["NEXUSMIND_BASE_URL"] = serde_json::json!(format!("http://{}/r/{run_token}/nexusmind", crate::factory::sandbox::PROXY_AUTHORITY));
+    let plan = super::agent_runtime::plan(&runtime, executor, root, nexus)?;
+    for (path, content) in plan.files {
+        if codex && path.ends_with("/runtime.toml") {
+            let (_, bytes) = agent_job.files.iter_mut().find(|(path, _)| path == crate::factory::sandbox::CODEX_CONFIG_PATH).ok_or_else(|| anyhow::anyhow!("codex_config_missing"))?;
+            let base = String::from_utf8(bytes.clone())?;
+            *bytes = format!("{}{}", base.split("\n[mcp_servers.").next().unwrap_or(&base), content).into_bytes();
+        } else { agent_job.files.push((path, content.into_bytes())); }
+    }
+    if !codex {
+        let base = argv.windows(2).find(|a| a[0] == "--allowedTools").map(|a| a[1].clone()).unwrap_or_default();
+        let tools = plan.mcp_names.iter().map(|n| format!("mcp__{n}__*")).collect::<Vec<_>>().join(",");
+        argv.extend(["--setting-sources".into(), "".into(), "--allowedTools".into(), format!("{base},{tools}")]);
+    }
+    argv.extend(plan.args);
+    } else if !codex && run.writes.is_some() {
+        // Frozen replay jobs have no autonomous revision: preserve their existing toolbox.
+        argv.extend(["--mcp-config".into(), crate::factory::sandbox::nexusmind_mcp()]);
+    }
     // Checkpoint diffs from the executor are forwarded in order; the forwarder
     // ends (its channel closes with the job) before the final diff is sent.
     let forwarder = run.writes.as_ref().map(|sink| {
-        if !codex {
-            argv.extend([
-                "--mcp-config".to_string(),
-                crate::factory::sandbox::nexusmind_mcp(),
-            ]);
-        }
         agent_job.collect_diff = true;
         let (inner, mut received) = tokio::sync::mpsc::unbounded_channel();
         agent_job.checkpoints = Some(crate::factory::sandbox_exec::Checkpoints {

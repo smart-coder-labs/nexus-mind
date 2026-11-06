@@ -42,6 +42,8 @@ import {
   sandboxSupported,
   type IsolationChoice,
 } from './factory/isolation'
+import { AgentRuntimeEditor, runtimeKinds } from './factory/AgentRuntimeEditor'
+import type { AgentRuntimeConfig } from '../types'
 import { TaskExecutorSelect, type TaskExecutor } from './factory/agents/TaskExecutorSelect'
 
 /**
@@ -84,6 +86,8 @@ interface FormState {
   description: string
   template: AutonomousAgentTemplateKey
   executor: TaskExecutor
+  runtime: AgentRuntimeConfig
+  runtimeValid: boolean
   useAgentModelConfig: boolean
   executionModel: string
   historicalModelSource: string | null
@@ -171,6 +175,8 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     description: '',
     template,
     executor: 'claude',
+    runtime: { nexusmind_profile: 'essential', harnesses: [], components: [] },
+    runtimeValid: true,
     useAgentModelConfig: true,
     executionModel: '',
     historicalModelSource: null,
@@ -256,6 +262,8 @@ function csv(value: string): string[] {
 export function preservedConfig(config: Record<string, unknown>, template: string) {
   const common = [
     'executor',
+    'runtime',
+    'runtime_resolved',
     'github_publication_connector_id',
     'isolation',
     'model',
@@ -453,6 +461,7 @@ export function buildConfig(state: FormState): Record<string, unknown> {
     ...(extra ?? {}),
     ...isolationConfig(state, state.template),
     executor: state.executor,
+    runtime: state.runtime,
   }
   if (state.template === 'github_pr_reviewer') {
     if (state.targetKind === 'project') {
@@ -512,6 +521,7 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     executionModel: typeof config.model === 'string' ? config.model : '',
     extraConfig: JSON.stringify(preservedConfig(config, agent.template_key), null, 2),
     historicalModelSource: typeof config.model_source === 'string' ? config.model_source : null,
+    runtime: (config.runtime ?? base.runtime) as AgentRuntimeConfig,
     ...isolationFromConfig(config),
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
@@ -881,6 +891,7 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'target':
       return state.targetKind !== 'project' || Boolean(state.targetProjectId)
     case 'config':
+      if (!state.runtimeValid || state.runtime.components?.some(c => c.enabled !== false && !runtimeKinds[state.executor]?.includes(c.kind))) return false
       if ('error' in parseAllowedHosts(state.allowedHosts)) return false
       if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor))
         return false
@@ -1283,6 +1294,7 @@ function StepConfig({
           Pi runs only QA, issue resolvers and PR reviewers. Choose another executor.
         </p>
       )}
+      <AgentRuntimeEditor value={state.runtime} executor={state.executor} onChange={value => set('runtime', value)} onValidityChange={valid => set('runtimeValid', valid)} />
       <IsolationFields state={state} set={set} template={template} />
       {template === 'qa' && (
         <>

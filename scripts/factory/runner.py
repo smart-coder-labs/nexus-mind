@@ -281,6 +281,7 @@ def tick_locked(config, roots):
             if report['applied_revision'] and report['applied_revision']==workspace['runtime']['revision']:
                 declared,services_config=compile_settings(workspace['runtime']['config'],config)
                 remote_capabilities.extend('adapter:'+name for name in declared)
+                remote_capabilities.extend('executor:' + profile.get('executor', profile.get('harness', profile.get('format', 'claude'))) for profile in declared.values() if profile.get('kind') == 'agent')
                 if services_config or (workspace['runtime']['config'].get('auto_environment',True) and report.get('auto_environment')):remote_capabilities.append('adapter:integrated-environment')
         repos = discover(workspace['root_path'], roots)
         if repos:
@@ -292,6 +293,8 @@ def tick_locked(config, roots):
     for name in adapters:
         if not safe_id(name): raise ValueError('Invalid adapter name')
         capabilities.append('adapter:' + name)
+    capabilities += ['agent-runtime:v1']
+    capabilities += ['executor:' + profile.get('executor', profile.get('harness', profile.get('format', 'claude'))) for profile in adapters.values() if profile.get('kind') == 'agent']
     capabilities += config.get('capabilities', []) + remote_capabilities
     job = api.call('/claim', {'capabilities': capabilities})['job']
     if not job:

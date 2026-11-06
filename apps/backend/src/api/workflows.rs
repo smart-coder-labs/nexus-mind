@@ -181,6 +181,9 @@ pub async fn create_definition(
     let db = store.conn();
     let conn = db.lock().map_err(|_| locked())?;
     require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    if d.steps.iter().any(|s| s.options.get("agent_id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())) {
+        require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    }
     Ok(Json(
         db::create_definition(&conn, &auth.org_id, &auth.user_id, &d).map_err(fail)?,
     ))

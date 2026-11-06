@@ -82,9 +82,7 @@ fn agent_command(tools: &str, model: &str, thinking: Option<&str>) -> Command {
 
 pub fn command(reviewer: bool) -> Command {
     let tools = if reviewer { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" };
-    let mut command = agent_command(tools, MODEL, None);
-    command.arg("--no-mcp");
-    command
+    agent_command(tools, MODEL, None)
 }
 
 /// F4's frozen eval invokes Pi on the worker, where the OpenAI OAuth login is

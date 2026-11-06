@@ -989,6 +989,7 @@ export default function Harnesses() {
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
           <option value="cursor">Cursor</option>
+          <option value="pi">Pi</option>
         </StyledSelect>
         </div>
         <div className="space-y-1.5">

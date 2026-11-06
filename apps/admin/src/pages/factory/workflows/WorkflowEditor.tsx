@@ -1,4 +1,5 @@
 import type { WorkflowDefinition } from './types'
+import { WorkflowAgentRuntime } from './WorkflowAgentRuntime'
 import { Input } from '../../../components/ui/Input'
 export function WorkflowEditor({
   value,
@@ -111,6 +112,7 @@ export function WorkflowEditor({
                     <p className="text-xs text-muted-foreground">
                       Después de: {step.depends_on.join(', ') || 'inicio del workflow'}
                     </p>
+                    {(step.kind === 'agent' || step.kind === 'review') && <WorkflowAgentRuntime options={step.options ?? {}} onChange={options => update(d => { d.steps[index].options = options })} />}
                     <label className="block space-y-1.5 text-sm">
                       Instrucciones de esta fase
                       <textarea

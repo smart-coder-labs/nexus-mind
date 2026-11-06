@@ -2213,7 +2213,7 @@ pub fn validate_typed_harness_manifest(manifest: &serde_json::Value) -> Result<(
     if targets.is_empty()
         || targets
             .iter()
-            .any(|v| !matches!(v.as_str(), Some("claude" | "codex" | "cursor")))
+            .any(|v| !matches!(v.as_str(), Some("claude" | "codex" | "cursor" | "pi")))
     {
         return Err("missing_targets");
     }
@@ -2395,7 +2395,7 @@ fn looks_like_windows_absolute_path(path: &str) -> bool {
         && matches!(bytes[2], b'\\' | b'/')
 }
 
-fn validate_safe_manifest_content(content: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_safe_manifest_content(content: &str) -> Result<(), &'static str> {
     if content.len() > 64 * 1024 {
         return Err("component_content_too_large");
     }
