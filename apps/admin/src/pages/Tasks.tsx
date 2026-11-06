@@ -1,6 +1,7 @@
+import { Button } from '../components/ui/Button'
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2, ListTodo, List, LayoutGrid, ChartGantt, ListChecks } from 'lucide-react'
+import { Plus, Pencil, Trash2, ListTodo, List, LayoutGrid, ChartGantt, ListChecks, Circle, CircleDashed, Eye, CheckCircle2, Ban, ArrowDown, Equal, ArrowUp, Siren, Users, UserRound, UserRoundCheck, FolderKanban } from 'lucide-react'
 import { Navigate } from 'react-router-dom'
 import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
@@ -38,24 +39,47 @@ export const PRIORITY_BADGE_VARIANT: Record<TaskPriority, 'default' | 'primary' 
   urgent: 'error',
 }
 
-// Exact hex accents used by the target mockup's status/priority chips and the
-// distribution bar (delta 3/5). Kept separate from STATUS_BADGE_VARIANT /
-// PRIORITY_BADGE_VARIANT above — those still back the Badge component used by
-// TaskDetail.tsx and sdd/ChangeDetail.tsx, which this change does not touch.
+// Theme-aware semantic tones shared by task chips and the distribution strip.
 export const STATUS_COLORS: Record<TaskStatus, string> = {
-  backlog: '#94a3b8',
-  todo: '#64748b',
-  in_progress: '#a78bfa',
-  in_review: '#facc15',
-  done: '#34d399',
-  cancelled: '#f87171',
+  backlog: 'var(--muted-foreground)',
+  todo: 'var(--color-status-info)',
+  in_progress: 'var(--brand-link)',
+  in_review: 'var(--color-status-warning)',
+  done: 'var(--color-status-success)',
+  cancelled: 'var(--color-status-error)',
 }
 
 export const PRIORITY_COLORS: Record<TaskPriority, string> = {
-  low: '#94a3b8',
-  medium: '#60a5fa',
-  high: '#facc15',
-  urgent: '#f87171',
+  low: 'var(--muted-foreground)',
+  medium: 'var(--color-status-info)',
+  high: 'var(--color-status-warning)',
+  urgent: 'var(--color-status-error)',
+}
+
+const TASK_STATUS_PRESENTATION: Record<TaskStatus, { description: string; icon: React.ReactNode }> = {
+  backlog: { description: 'Captured for later; work has not started.', icon: <ListTodo /> },
+  todo: { description: 'Ready to be picked up.', icon: <Circle /> },
+  in_progress: { description: 'Someone is actively working on it.', icon: <CircleDashed /> },
+  in_review: { description: 'Waiting for review or approval.', icon: <Eye /> },
+  done: { description: 'Completed and verified.', icon: <CheckCircle2 /> },
+  cancelled: { description: 'Stopped and will not be completed.', icon: <Ban /> },
+}
+
+const TASK_PRIORITY_PRESENTATION: Record<TaskPriority, { description: string; icon: React.ReactNode }> = {
+  low: { description: 'Can wait until higher-priority work is done.', icon: <ArrowDown /> },
+  medium: { description: 'Normal priority for planned work.', icon: <Equal /> },
+  high: { description: 'Should be addressed soon.', icon: <ArrowUp /> },
+  urgent: { description: 'Needs immediate attention.', icon: <Siren /> },
+}
+
+export function TaskStatusOption({ status }: { status: TaskStatus }) {
+  const color = STATUS_COLORS[status]
+  return <SelectItem value={status} icon={TASK_STATUS_PRESENTATION[status].icon} indicatorColor={color} description={TASK_STATUS_PRESENTATION[status].description}>{status.replace('_', ' ')}</SelectItem>
+}
+
+export function TaskPriorityOption({ priority }: { priority: TaskPriority }) {
+  const color = PRIORITY_COLORS[priority]
+  return <SelectItem value={priority} icon={TASK_PRIORITY_PRESENTATION[priority].icon} indicatorColor={color} description={TASK_PRIORITY_PRESENTATION[priority].description}>{priority}</SelectItem>
 }
 
 /** Subtle status chip: tinted background at ~14% of the status color. */
@@ -63,7 +87,7 @@ export function StatusPill({ status }: { status: TaskStatus }) {
   const color = STATUS_COLORS[status]
   return (
     <span
-      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold whitespace-nowrap"
+      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap"
       style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}
     >
       {status.replace(/_/g, ' ')}
@@ -76,7 +100,7 @@ export function PriorityPill({ priority }: { priority: TaskPriority }) {
   const color = PRIORITY_COLORS[priority]
   return (
     <span
-      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold whitespace-nowrap"
+      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold whitespace-nowrap"
       style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}
     >
       {priority}
@@ -280,23 +304,23 @@ export default function Tasks() {
         <div className="flex items-center gap-3">
           <div
             aria-hidden="true"
-            className="w-11 h-11 rounded-[13px] bg-status-success/10 flex items-center justify-center shrink-0"
+            className="w-11 h-11 rounded-xl bg-status-success/10 flex items-center justify-center shrink-0"
           >
             <ListChecks className="w-5 h-5 text-status-success" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">Tasks</h1>
+            <h1 className="text-[22px] leading-tight font-semibold text-text-primary">Tasks</h1>
             <p className="text-xs text-text-quaternary mt-0.5">{tasks.length} tasks</p>
           </div>
         </div>
         {canWrite && (
-          <button
+          <Button
             onClick={() => { setCreateForm({ ...EMPTY_FORM, project: projectFilter || projects[0]?.name || '' }); setCreating(true) }}
-            className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold flex items-center gap-1.5"
+
           >
             <Plus className="w-3.5 h-3.5" />
             New Task
-          </button>
+          </Button>
         )}
       </div>
 
@@ -306,41 +330,39 @@ export default function Tasks() {
       <TasksStats tasks={tasks} />
 
       {/* Filters */}
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div className="flex min-w-0 flex-[1_1_100%] flex-wrap items-center gap-2 md:flex-1">
           <Select value={projectFilter} onValueChange={setProjectFilter}>
-            <SelectTrigger className="w-48" aria-label="Project">
+            <SelectTrigger className="w-full min-w-0 sm:w-48" aria-label="Project">
               <SelectValue placeholder="All projects" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All projects</SelectItem>
+              <SelectItem value="" icon={<FolderKanban />} description="Tasks across every project">All projects</SelectItem>
               {projects.map(p => (
-                <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
+                <SelectItem key={p.id} value={p.name} icon={<FolderKanban />} description={p.description || `Tasks in ${p.name}`}>{p.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
 
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-40" aria-label="Status">
+            <SelectTrigger className="w-full min-w-0 sm:w-40" aria-label="Status">
               <SelectValue placeholder="All statuses" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All statuses</SelectItem>
-              {STATUS_OPTIONS.map(s => (
-                <SelectItem key={s} value={s}>{s}</SelectItem>
-              ))}
+              <SelectItem value="" icon={<ListChecks />} description="Tasks at every stage">All statuses</SelectItem>
+              {STATUS_OPTIONS.map(status => <TaskStatusOption key={status} status={status} />)}
             </SelectContent>
           </Select>
 
           <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
-            <SelectTrigger className="w-48" aria-label="Assignee">
+            <SelectTrigger className="w-full min-w-0 sm:w-48" aria-label="Assignee">
               <SelectValue placeholder="All assignees" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All assignees</SelectItem>
-              <SelectItem value="me">Assigned to me</SelectItem>
+              <SelectItem value="" icon={<Users />} description="Tasks assigned to anyone">All assignees</SelectItem>
+              <SelectItem value="me" icon={<UserRoundCheck />} description="Only tasks assigned to you">Assigned to me</SelectItem>
               {users.map(u => (
-                <SelectItem key={u.id} value={u.id}>{u.name || u.email}</SelectItem>
+                <SelectItem key={u.id} value={u.id} icon={<UserRound />} description={u.name ? u.email : 'Workspace member'}>{u.name || u.email}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -373,21 +395,21 @@ export default function Tasks() {
 
       {/* Bulk action bar — one confirmation for the whole batch. */}
       {canDelete && selectedTasks.length > 0 && (
-        <div className="flex items-center justify-between gap-3 mb-3 rounded-[14px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] px-4 py-2">
+        <div className="flex items-center justify-between gap-3 mb-3 rounded-xl border border-border-primary bg-surface-primary px-4 py-2">
           <span className="text-xs text-text-secondary">
             {selectedTasks.length} selected
           </span>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setSelectedIds(new Set())}
-              className="px-3 py-1.5 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+              className="px-3 py-1.5 rounded-md border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
             >
               Clear
             </button>
             <button
               onClick={handleBulkDelete}
               disabled={bulkDeleteMut.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-status-error text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-status-error text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
             >
               <Trash2 className="w-3.5 h-3.5" />
               {bulkDeleteMut.isPending
@@ -404,7 +426,7 @@ export default function Tasks() {
         // and PatchTaskRequest has no `archived_at` field. So this toggle is a
         // read-only window onto archived rows. Say that plainly instead of shipping a
         // Restore button that cannot work.
-        <p className="text-[10px] text-text-quaternary mb-3">
+        <p className="text-xs text-text-quaternary mb-3">
           Archived tasks are shown for reference. The API exposes no task-restore
           endpoint, so they cannot be restored from the admin.
         </p>
@@ -414,7 +436,7 @@ export default function Tasks() {
       {isLoading ? (
         <div className="space-y-2">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] h-14 animate-pulse" />
+            <div key={i} className="rounded-xl border border-border-primary bg-surface-primary h-14 animate-pulse" />
           ))}
         </div>
       ) : tasks.length === 0 ? (
@@ -428,13 +450,13 @@ export default function Tasks() {
       ) : view === 'timeline' ? (
         <TasksTimeline tasks={tasks} onTaskClick={setDetailTask} />
       ) : (
-        <div className="overflow-hidden rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]">
-          <table className="w-full table-fixed border-collapse text-left">
+        <div className="overflow-x-auto rounded-xl border border-border-primary bg-surface-primary ">
+          <table className="admin-data-table w-full min-w-[760px] table-fixed border-collapse text-left">
             {/* table-fixed: without it a long title stretches the Title column until the
                 later columns — Actions among them — are pushed out of the viewport, and the
                 delete button becomes unreachable. The bug reads as "you cannot delete tasks",
                 which is how it was reported. */}
-            <thead className="bg-white/[0.03] border-b border-white/[0.06]">
+            <thead className="bg-foreground/[0.03] border-b border-border-primary">
               <tr>
                 {canDelete && (
                   <th className="px-4 py-3 w-[5%]">
@@ -461,7 +483,7 @@ export default function Tasks() {
                 <tr
                   key={task.id}
                   onClick={() => setDetailTask(task)}
-                  className="border-b border-white/[0.05] last:border-b-0 cursor-pointer hover:bg-accent-blue/[0.05] transition-colors"
+                  className="border-b border-border-primary last:border-b-0 cursor-pointer hover:bg-action-primary/[0.05] transition-colors"
                 >
                   {canDelete && (
                     <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
@@ -534,82 +556,78 @@ export default function Tasks() {
       {/* Create Task Modal */}
       <Modal open={creating} onOpenChange={setCreating}>
         <ModalCloseButton />
-        <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
-          <h2 className="text-xs font-semibold text-text-primary mb-4">New Task</h2>
-          <form onSubmit={handleCreateSubmit} className="space-y-4 text-xs">
+        <div className="w-full">
+          <h2 className="text-lg font-semibold text-text-primary mb-5">New Task</h2>
+          <form onSubmit={handleCreateSubmit} className="space-y-4 text-base md:text-sm">
             <div className="space-y-1">
-              <label htmlFor="task-title" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Title</label>
+              <label htmlFor="task-title" className="text-xs font-medium text-text-secondary">Title</label>
               <input
                 id="task-title"
                 type="text"
                 value={createForm.title}
                 onChange={e => setCreateForm(f => ({ ...f, title: e.target.value }))}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 required
               />
             </div>
 
             <div className="space-y-1">
-              <label htmlFor="task-description" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Description</label>
+              <label htmlFor="task-description" className="text-xs font-medium text-text-secondary">Description</label>
               <textarea
                 id="task-description"
                 value={createForm.description}
                 onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Project</label>
+              <label className="text-xs font-medium text-text-secondary">Project</label>
               <Select value={createForm.project} onValueChange={v => setCreateForm(f => ({ ...f, project: v }))}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger className="h-9 w-full">
                   <SelectValue placeholder="Choose project…" />
                 </SelectTrigger>
                 <SelectContent>
                   {projects.map(p => (
-                    <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
+                    <SelectItem key={p.id} value={p.name} icon={<FolderKanban />} description={p.description || `Tasks in ${p.name}`}>{p.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
 
             <div className="flex items-center gap-3">
-              <div className="flex-1 space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Status</label>
+              <div className="min-w-0 flex-1 space-y-1">
+                <label className="text-xs font-medium text-text-secondary">Status</label>
                 <Select value={createForm.status} onValueChange={v => setCreateForm(f => ({ ...f, status: v as TaskStatus }))}>
-                  <SelectTrigger className="h-8 text-xs">
+                  <SelectTrigger className="h-9 w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {STATUS_OPTIONS.map(s => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
+                    {STATUS_OPTIONS.map(status => <TaskStatusOption key={status} status={status} />)}
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex-1 space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Priority</label>
+              <div className="min-w-0 flex-1 space-y-1">
+                <label className="text-xs font-medium text-text-secondary">Priority</label>
                 <Select value={createForm.priority} onValueChange={v => setCreateForm(f => ({ ...f, priority: v as TaskPriority }))}>
-                  <SelectTrigger className="h-8 text-xs">
+                  <SelectTrigger className="h-9 w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {PRIORITY_OPTIONS.map(p => (
-                      <SelectItem key={p} value={p}>{p}</SelectItem>
-                    ))}
+                    {PRIORITY_OPTIONS.map(priority => <TaskPriorityOption key={priority} priority={priority} />)}
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
             <div className="space-y-1">
-              <label htmlFor="task-due-date" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Due date</label>
+              <label htmlFor="task-due-date" className="text-xs font-medium text-text-secondary">Due date</label>
               <input
                 id="task-due-date"
                 type="date"
                 value={createForm.due_date}
                 onChange={e => setCreateForm(f => ({ ...f, due_date: e.target.value }))}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
 
@@ -617,24 +635,24 @@ export default function Tasks() {
               <button
                 type="button"
                 onClick={() => setCreating(false)}
-                className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+                className="px-4 py-2 rounded-md border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
               >
                 Cancel
               </button>
-              <button
+              <Button
                 type="submit"
                 disabled={createMut.isPending || !createForm.title.trim()}
-                className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+
               >
                 {createMut.isPending ? 'Creating…' : 'Create'}
-              </button>
+              </Button>
             </div>
           </form>
         </div>
       </Modal>
 
       {/* Task Detail Modal */}
-      <Modal open={!!detailTask} onOpenChange={(open) => { if (!open) setDetailTask(null) }} size="lg">
+      <Modal open={!!detailTask} ariaLabel="Task details" onOpenChange={(open) => { if (!open) setDetailTask(null) }} size="2xl">
         {detailTask && (
           <TaskDetail
             task={tasks.find(t => t.id === detailTask.id) ?? detailTask}

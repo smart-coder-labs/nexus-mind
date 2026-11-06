@@ -1,0 +1,13 @@
+✔ empty query and default category preserve all products (7.601167ms)
+✔ descending price ordering is independent of source order (0.380542ms)
+✔ descending name ordering follows the requested sort (0.094625ms)
+✔ HTML-sensitive product names and categories are escaped (4.993416ms)
+✔ page exposes labelled controls and responsive CSS (0.315584ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 59.139541

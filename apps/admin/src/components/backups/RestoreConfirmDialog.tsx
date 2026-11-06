@@ -66,7 +66,7 @@ export function RestoreConfirmDialog({
     >
       <div
         ref={dialogRef}
-        className="relative border border-status-error/30 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md"
+        className="relative border border-status-error/30 bg-surface-elevated rounded-xl p-6 w-full max-w-md"
         onClick={e => e.stopPropagation()}
       >
         <button
@@ -82,15 +82,15 @@ export function RestoreConfirmDialog({
             icon tile next to an 800-weight title, matching ConfirmModal. */}
         <div className="space-y-4 pr-6">
           <div className="flex items-start gap-3">
-            <div className="w-9 h-9 rounded-[11px] bg-status-error/10 flex items-center justify-center shrink-0">
+            <div className="w-9 h-9 rounded-md bg-status-error/10 flex items-center justify-center shrink-0">
               <AlertTriangle className="w-[17px] h-[17px] text-status-error" />
             </div>
-            <h2 id="restore-dialog-title" className="text-[14px] font-extrabold text-text-primary pt-1.5">
+            <h2 id="restore-dialog-title" className="text-sm font-extrabold text-text-primary pt-1.5">
               Restore database
             </h2>
           </div>
 
-          <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-3 py-2.5 text-[12px] text-status-error leading-relaxed">
+          <div className="rounded-md border border-status-error/20 bg-status-error/5 px-3 py-2.5 text-[12px] text-status-error leading-relaxed">
             This will <strong>REPLACE</strong> the current database with the contents of backup{' '}
             <code className="font-mono text-[11px]">{backup.id}</code> from{' '}
             {new Date(backup.created_at).toLocaleString()}. All current data will be lost.
@@ -109,7 +109,7 @@ export function RestoreConfirmDialog({
               disabled={loading}
               autoComplete="off"
               spellCheck={false}
-              className={`w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-[13px] text-text-primary px-3 py-2 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 disabled:opacity-50 ${FOCUS}`}
+              className={`w-full rounded-md border border-border-primary bg-foreground/[0.04] text-sm text-text-primary px-3 py-2 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 disabled:opacity-50 ${FOCUS}`}
               placeholder={orgSlug}
             />
           </div>
@@ -119,7 +119,7 @@ export function RestoreConfirmDialog({
             <button
               onClick={onClose}
               disabled={loading}
-              className={`flex items-center h-[34px] px-[14px] rounded-[9px] text-[12.5px] font-semibold text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40 ${FOCUS}`}
+              className={`flex items-center h-[34px] px-[14px] rounded-md text-[12.5px] font-semibold text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40 ${FOCUS}`}
             >
               Cancel
             </button>
@@ -127,7 +127,7 @@ export function RestoreConfirmDialog({
               onClick={onConfirm}
               disabled={loading || !matches}
               aria-disabled={loading || !matches}
-              className={`flex items-center h-[34px] px-4 rounded-[9px] text-[12.5px] font-bold transition-colors bg-status-error text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS}`}
+              className={`flex items-center h-[34px] px-4 rounded-md text-[12.5px] font-bold transition-colors bg-status-error text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS}`}
             >
               {loading ? 'Restoring…' : 'Restore database'}
             </button>

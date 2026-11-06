@@ -1,0 +1,14 @@
+✔ submission creates a pending immutable snapshot (0.472542ms)
+✔ manager can approve and audit records who/when (0.467041ms)
+✔ requester cannot approve their own request (0.300583ms)
+✔ non-manager cannot decide (0.603709ms)
+✔ idempotent retry does not duplicate audit events (0.927333ms)
+✔ invalid amount, duplicate id and second decision are rejected (0.147625ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 53.346083

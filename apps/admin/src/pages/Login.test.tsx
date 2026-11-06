@@ -60,6 +60,9 @@ describe('Login', () => {
   it('renders login form and fills email + password, submit calls loginWithEmail with entered credentials', async () => {
     renderLogin()
 
+    expect(document.querySelector('.login-mesh-canvas')).toBeInTheDocument()
+    expect(document.querySelector('.login-mesh-layer')).toHaveAttribute('aria-hidden', 'true')
+
     const emailInput = screen.getByPlaceholderText('admin@company.com')
     const passwordInput = screen.getByPlaceholderText('••••••••')
     const submitButton = screen.getByRole('button', { name: /sign in/i })

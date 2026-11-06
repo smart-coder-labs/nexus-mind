@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../test/render'
 import Search from './Search'
 import type { GlobalSearchResult, Memory, SddChangeSummary } from '../types'
@@ -87,5 +88,20 @@ describe('Search — SDD result group', () => {
     }, { timeout: 3000 })
 
     expect(screen.queryByTestId('sdd-results')).not.toBeInTheDocument()
+  })
+})
+
+describe('Search — full profile keeps every facet', () => {
+  it('policies_tab_is_offered_even_while_the_policies_page_is_temporarily_off', async () => {
+    // The /policies route is in the TEMPORARY disabled set. That hides a page,
+    // not the feature: a policy hit is still a hit, and it links nowhere.
+    renderWithProviders(<Search />)
+    typeQuery()
+    // The type filter only renders once a search has results.
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /filter by result type/i })).toBeInTheDocument())
+    await userEvent.setup().click(screen.getByRole('combobox', { name: /filter by result type/i }))
+    for (const label of ['Memories', 'Users', 'Projects', 'Policies', 'Conventions', 'SDD']) {
+      expect(screen.getByRole('option', { name: new RegExp(`^${label}`) }), label).toBeInTheDocument()
+    }
   })
 })

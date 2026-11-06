@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../test/render'
 import Graph from './Graph'
 
@@ -70,27 +71,25 @@ describe('Graph page', () => {
     // First test in the file pays the lazy-chunk cold-load cost (OrgMemoryGraph
     // is React.lazy) — under full-suite load that can exceed findBy's 1s
     // default, so give only this initial lookup a longer timeout.
-    const select = (await screen.findByLabelText('Select project', {}, { timeout: 5000 })) as HTMLSelectElement
-    await waitFor(() => expect(select.value).toBe('p1'))
+    const select = await screen.findByLabelText('Select project', {}, { timeout: 5000 })
+    await waitFor(() => expect(select).toHaveTextContent('alpha'))
     expect(await screen.findByTestId('force-graph')).toBeInTheDocument()
   })
 
   it('auto-selects the first non-archived project on first load', async () => {
     renderWithProviders(<Graph />)
-    const select = (await screen.findByLabelText('Select project')) as HTMLSelectElement
-    await waitFor(() => {
-      expect(select.value).toBe('p1')
-    })
+    const select = await screen.findByLabelText('Select project')
+    await waitFor(() => expect(select).toHaveTextContent('alpha'))
   })
 
   it('excludes archived projects from the dropdown', async () => {
     renderWithProviders(<Graph />)
-    const select = (await screen.findByLabelText('Select project')) as HTMLSelectElement
-    await waitFor(() => expect(select.value).toBe('p1'))
-    const optionTexts = Array.from(select.options).map(o => o.text)
-    expect(optionTexts.some(t => t.includes('old'))).toBe(false)
-    expect(optionTexts.some(t => t.includes('alpha'))).toBe(true)
-    expect(optionTexts.some(t => t.includes('beta'))).toBe(true)
+    const select = await screen.findByLabelText('Select project')
+    await waitFor(() => expect(select).toHaveTextContent('alpha'))
+    await userEvent.setup().click(select)
+    expect(screen.queryByRole('option', { name: /old/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'alpha' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /beta/i })).toBeInTheDocument()
   })
 
   it('renders the family legend chips for the resolved family after a project is selected', async () => {
@@ -106,10 +105,11 @@ describe('Graph page', () => {
 
   it('persists the selected project to localStorage so reloads restore it', async () => {
     renderWithProviders(<Graph />)
-    const select = (await screen.findByLabelText('Select project')) as HTMLSelectElement
-    await waitFor(() => expect(select.value).toBe('p1'))
-
-    fireEvent.change(select, { target: { value: 'p3' } })
+    const select = await screen.findByLabelText('Select project')
+    await waitFor(() => expect(select).toHaveTextContent('alpha'))
+    const user = userEvent.setup()
+    await user.click(select)
+    await user.click(await screen.findByRole('option', { name: 'gamma' }))
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem('nexusmind-graph-page-project') ?? 'null')
       // Hook writes either raw or { __v, value } depending on version config.
@@ -153,8 +153,8 @@ describe('Graph page', () => {
     localStorage.setItem('nexusmind-graph-page-tab', JSON.stringify({ __v: 1, value: 'code' }))
     renderWithProviders(<Graph />, { permissions: ['code:read'] })
 
-    const select = (await screen.findByLabelText('Select repository', {}, { timeout: 5000 })) as HTMLSelectElement
-    await waitFor(() => expect(select.value).toBe('beta'))
+    const select = await screen.findByLabelText('Select repository', {}, { timeout: 5000 })
+    await waitFor(() => expect(select).toHaveTextContent('beta'))
   })
 
   it('renders the empty state when the selected project has no data', async () => {

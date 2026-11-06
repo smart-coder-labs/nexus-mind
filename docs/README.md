@@ -14,6 +14,15 @@ Technical documentation covering product, architecture, API, and engineering pro
 | 6 | [CLAUDE_CODE_PLUGIN.md](./CLAUDE_CODE_PLUGIN.md) | Claude Code plugin integration |
 | 7 | [CURSOR_PLUGIN.md](./CURSOR_PLUGIN.md) | Cursor integration |
 | 8 | [CODEX_PLUGIN.md](./CODEX_PLUGIN.md) | Codex integration |
+| 9 | [REPOSITORY_CONFIG.md](./REPOSITORY_CONFIG.md) | `.nexusmind.yaml` reference: project routing, agent profiles, resolution rules, examples |
+| 10 | [SENTRY.md](./SENTRY.md) | Sentry integration and deployment variables |
+
+## Factory
+
+- [Workspaces and durable workflows](./factory/WORKSPACES_WORKFLOWS.md) — runner setup, local folders, manual environment references, Linear intake, implemented preparation flow and explicit delivery gaps.
+- [Mandatory issue-resolver verification](./factory/ISSUE_RESOLVER_VERIFICATION.md) — final-SHA tests/build gates, CI requirements and safe checkpoints.
+- [GitHub requested-review webhooks](./factory/GITHUB_REVIEW_WEBHOOKS.md) — backend `gh` identity, signed subscriptions and setup.
+- [Factory plan](./factory/PLAN.md) — existing execution, verification and autonomy policies.
 
 ## Architecture Decision Records
 

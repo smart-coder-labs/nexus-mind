@@ -417,8 +417,8 @@ export default function OrgMemoryGraph({
               role="listitem"
               type="button"
               onClick={() => toggleProjectIsolation(p.id)}
-              className={`flex items-center gap-2 h-[32px] px-[13px] rounded-[16px] border backdrop-blur-[12px] transition-colors cursor-pointer hover:border-white/30 ${
-                isolated ? 'bg-white/[0.08]' : 'bg-[#0d0f14]/[0.66]'
+              className={`flex items-center gap-2 h-[32px] px-[13px] rounded-xl border transition-colors cursor-pointer hover:border-border-primary ${
+                isolated ? 'bg-foreground/[0.08]' : 'bg-surface-primary'
               }`}
               style={{ borderColor: isolated ? swatchColor : 'rgba(255,255,255,0.09)' }}
               title={`${p.name} · ${swatchColor}${isolated ? '' : ' — click to isolate'}`}
@@ -429,7 +429,7 @@ export default function OrgMemoryGraph({
                 style={{ backgroundColor: swatchColor }}
                 aria-hidden="true"
               />
-              <span className={`text-[12.5px] ${isolated ? 'text-[#f2f4f8]' : 'text-[#cfd4de]'}`}>{p.name}</span>
+              <span className={`text-[12.5px] ${isolated ? 'text-text-primary' : 'text-text-secondary'}`}>{p.name}</span>
             </button>
           )
         })}
@@ -460,7 +460,7 @@ export default function OrgMemoryGraph({
       {isFamilyExpanded && (
         <>
           <StatSeparator />
-          <Link to="/projects" className="text-[#7aa2ff] hover:text-[#a5c0ff] pointer-events-auto">
+          <Link to="/projects" className="text-accent-blue hover:text-accent-blue pointer-events-auto">
             {family.length} projects in family
           </Link>
         </>
@@ -479,7 +479,7 @@ export default function OrgMemoryGraph({
   } else if (isError) {
     body = (
       <div className="absolute inset-0 flex items-center justify-center p-6">
-        <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
+        <div className="border border-status-error/20 rounded-md px-4 py-3 text-xs text-status-error/80">
           {(error as Error)?.message ?? 'Failed to load memory graph.'}
         </div>
       </div>
@@ -557,16 +557,16 @@ export default function OrgMemoryGraph({
       {/* Node detail sheet — floating rounded glass panel (design spec) */}
       {selectedNode && (
         <GraphDetailPanel>
-          <div className="flex items-start gap-3 px-5 pt-[18px] pb-3.5 border-b border-white/[0.06] shrink-0">
+          <div className="flex items-start gap-3 px-5 pt-[18px] pb-3.5 border-b border-border-primary shrink-0">
             <div className="flex flex-col gap-2 flex-1 min-w-0">
-              <h2 className="m-0 text-[16px] font-bold text-[#f4f6fa] leading-[1.35] truncate">
+              <h2 className="m-0 text-[16px] font-bold text-text-primary leading-[1.35] truncate">
                 {selectedNode.type === 'Memory' && memoryDetail?.title
                   ? memoryDetail.title
                   : selectedNode.label}
               </h2>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span
-                  className="text-[11.5px] font-semibold px-[11px] py-[3px] rounded-[11px]"
+                  className="text-[11.5px] font-semibold px-[11px] py-[3px] rounded-md"
                   style={{
                     backgroundColor: MEM_NODE_COLORS[selectedNode.type] ?? '#94a3b8',
                     color: DARK_INK_TYPES.has(selectedNode.type) ? '#1a1405' : '#ffffff',
@@ -582,7 +582,7 @@ export default function OrgMemoryGraph({
                   const project = family.find(p => p.id === pid)
                   return (
                     <span
-                      className="text-[11.5px] font-semibold px-[11px] py-[3px] rounded-[11px] text-[#0b0c10]"
+                      className="text-[11.5px] font-semibold px-[11px] py-[3px] rounded-md text-[#0b0c10]"
                       style={{ backgroundColor: swatchColor }}
                       title={`Project: ${project?.name ?? pid}`}
                     >
@@ -591,11 +591,11 @@ export default function OrgMemoryGraph({
                   )
                 })()}
               </div>
-              <span className="text-[11.5px] text-[#5b6373] font-mono truncate">{selectedNode.id}</span>
+              <span className="text-[11.5px] text-text-tertiary font-mono truncate">{selectedNode.id}</span>
             </div>
             <button
               onClick={clearSelection}
-              className="shrink-0 w-7 h-7 rounded-[8px] flex items-center justify-center text-[#7c8496] hover:bg-white/[0.06] hover:text-[#e7eaf0] transition-colors"
+              className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:bg-foreground/[0.06] hover:text-text-primary transition-colors"
               aria-label="Close detail panel"
             >
               <X className="w-[15px] h-[15px]" />
@@ -622,10 +622,10 @@ export default function OrgMemoryGraph({
                 )}
                 {selectedNode.type === 'Memory' && memoryDetail && memoryDetail.tags.length > 0 && (
                   <div className="flex flex-col gap-[7px]">
-                    <span className="text-[10.5px] font-bold tracking-[0.1em] text-[#5b6373]">TAGS</span>
+                    <span className="text-[10.5px] font-bold tracking-[0.1em] text-text-tertiary">TAGS</span>
                     <div className="flex gap-1.5 flex-wrap">
                       {memoryDetail.tags.map(t => (
-                        <span key={t} className="text-[11.5px] px-2.5 py-[3px] rounded-[10px] bg-white/[0.06] text-[#b9c1d0]">
+                        <span key={t} className="text-[11.5px] px-2.5 py-[3px] rounded-lg bg-foreground/[0.06] text-text-secondary">
                           {t}
                         </span>
                       ))}
@@ -634,8 +634,8 @@ export default function OrgMemoryGraph({
                 )}
                 {selectedNode.type === 'Memory' && memoryDetail && (
                   <div className="flex flex-col gap-[7px]">
-                    <span className="text-[10.5px] font-bold tracking-[0.1em] text-[#5b6373]">CONTENT</span>
-                    <div className="px-4 py-3.5 rounded-[12px] border border-white/[0.06] bg-white/[0.02] text-[13px] text-[#b9c1d0] leading-[1.65]">
+                    <span className="text-[10.5px] font-bold tracking-[0.1em] text-text-tertiary">CONTENT</span>
+                    <div className="px-4 py-3.5 rounded-xl border border-border-primary bg-foreground/[0.02] text-sm text-text-secondary leading-[1.65]">
                       <Markdown content={memoryDetail.content} />
                     </div>
                   </div>

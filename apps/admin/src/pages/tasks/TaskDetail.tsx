@@ -1,3 +1,4 @@
+import { Button } from '../../components/ui/Button'
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, UserMinus, Tag, Trash2 } from 'lucide-react'
@@ -8,7 +9,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../../components/ui/Select/Select'
 import { Badge } from '../../components/ui/Badge/Badge'
-import { STATUS_BADGE_VARIANT, STATUS_OPTIONS, PRIORITY_OPTIONS } from '../Tasks'
+import { STATUS_BADGE_VARIANT, STATUS_OPTIONS, PRIORITY_OPTIONS, TaskPriorityOption, TaskStatusOption } from '../Tasks'
 import type { Task, TaskStatus, TaskPriority } from '../../types'
 
 const client = createClient()
@@ -304,77 +305,73 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   }
 
   return (
-    <div className="relative rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+    <div className="relative w-full">
       <button
         onClick={onClose}
         aria-label="Close"
-        className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] text-text-secondary hover:bg-white/[0.10] hover:text-text-primary transition-colors"
+        className="absolute -top-2 -right-2 w-8 h-8 flex items-center justify-center rounded-md bg-foreground/[0.06] text-text-secondary hover:bg-foreground/[0.10] hover:text-text-primary transition-colors"
       >
         <X className="w-3.5 h-3.5" />
       </button>
 
-      <div className="mb-5">
+      <div className="mb-5 pr-8">
         {canWrite ? (
-          <form id="task-edit-form" onSubmit={handleEditSubmit} className="space-y-4 text-xs">
+          <form id="task-edit-form" onSubmit={handleEditSubmit} className="space-y-4 text-base md:text-sm">
             <div className="space-y-1">
-              <label htmlFor="task-detail-title" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Title</label>
+              <label htmlFor="task-detail-title" className="text-xs font-medium text-text-secondary">Title</label>
               <input
                 id="task-detail-title"
                 type="text"
                 value={editForm.title}
                 onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 required
               />
             </div>
 
             <div className="space-y-1">
-              <label htmlFor="task-detail-description" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Description</label>
+              <label htmlFor="task-detail-description" className="text-xs font-medium text-text-secondary">Description</label>
               <textarea
                 id="task-detail-description"
                 value={editForm.description}
                 onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
 
             <div className="flex items-center gap-3">
               <div className="flex-1 space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Status</label>
+                <label className="text-xs font-medium text-text-secondary">Status</label>
                 <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v as TaskStatus }))}>
-                  <SelectTrigger className="h-8 text-xs" aria-label="Status">
+                  <SelectTrigger className="h-9 w-full" aria-label="Status">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {STATUS_OPTIONS.map(s => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
+                    {STATUS_OPTIONS.map(status => <TaskStatusOption key={status} status={status} />)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="flex-1 space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Priority</label>
+                <label className="text-xs font-medium text-text-secondary">Priority</label>
                 <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v as TaskPriority }))}>
-                  <SelectTrigger className="h-8 text-xs" aria-label="Priority">
+                  <SelectTrigger className="h-9 w-full" aria-label="Priority">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {PRIORITY_OPTIONS.map(p => (
-                      <SelectItem key={p} value={p}>{p}</SelectItem>
-                    ))}
+                    {PRIORITY_OPTIONS.map(priority => <TaskPriorityOption key={priority} priority={priority} />)}
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
             <div className="space-y-1">
-              <label htmlFor="task-detail-due-date" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Due date</label>
+              <label htmlFor="task-detail-due-date" className="text-xs font-medium text-text-secondary">Due date</label>
               <input
                 id="task-detail-due-date"
                 type="date"
                 value={editForm.due_date}
                 onChange={e => setEditForm(f => ({ ...f, due_date: e.target.value }))}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
           </form>
@@ -398,13 +395,13 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           picker here would be a control that silently does nothing. Show the value,
           say why it is fixed, and do not fake the mutation. */}
       <section className="mb-6" data-testid="task-detail-project">
-        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Project</h3>
+        <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Project</h3>
         <div className="flex items-center gap-2">
-          <span className="rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary">
+          <span className="rounded-full border border-border-primary bg-foreground/[0.06] px-2.5 py-1 text-xs text-text-secondary">
             {t.project}
           </span>
         </div>
-        <p className="text-[10px] text-text-quaternary mt-1.5">
+        <p className="text-xs text-text-quaternary mt-1.5">
           A task cannot be moved between projects from the admin — the API's task
           patch does not accept a project.
         </p>
@@ -412,7 +409,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
       {/* Assignees */}
       <section className="mb-6">
-        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Assignees</h3>
+        <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Assignees</h3>
         <div className="flex flex-wrap items-center gap-2 mb-2">
           {(t.assignees ?? []).length === 0 && (
             <span className="text-xs text-text-quaternary">Unassigned</span>
@@ -420,7 +417,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           {(t.assignees ?? []).map(a => (
             <span
               key={a.id}
-              className="flex items-center gap-1.5 rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary"
+              className="flex items-center gap-1.5 rounded-full border border-border-primary bg-foreground/[0.06] px-2.5 py-1 text-xs text-text-secondary"
             >
               {a.name}
               {canAssign && (
@@ -439,7 +436,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         {canAssign && canListPeople && (
           <div className="flex items-center gap-2">
             <Select value={selectedAssignee} onValueChange={setSelectedAssignee}>
-              <SelectTrigger className="w-56 h-8 text-xs" aria-label="Assignee">
+              <SelectTrigger className="w-full min-w-0 sm:w-56 h-9" aria-label="Assignee">
                 <SelectValue placeholder="Add assignee…" />
               </SelectTrigger>
               <SelectContent>
@@ -448,21 +445,21 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 ))}
               </SelectContent>
             </Select>
-            <button
+            <Button
               type="button"
               onClick={handleAddAssignee}
               aria-label="Add assignee"
               disabled={!selectedAssignee || assignMut.isPending}
-              className="px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+
             >
               Add
-            </button>
+            </Button>
           </div>
         )}
         {canAssign && !canListPeople && (
           // They may assign, but neither people-listing endpoint will serve them —
           // both are privileged-only. Say so instead of rendering an empty picker.
-          <p className="text-[10px] text-text-quaternary">
+          <p className="text-xs text-text-quaternary">
             Listing people to assign requires an admin role.
           </p>
         )}
@@ -470,7 +467,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
       {/* Labels */}
       <section className="mb-6">
-        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Labels</h3>
+        <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Labels</h3>
         <div className="flex flex-wrap items-center gap-2 mb-2">
           {(t.labels ?? []).length === 0 && (
             <span className="text-xs text-text-quaternary">No labels</span>
@@ -478,7 +475,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           {(t.labels ?? []).map(label => (
             <span
               key={label}
-              className="flex items-center gap-1.5 rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary"
+              className="flex items-center gap-1.5 rounded-full border border-border-primary bg-foreground/[0.06] px-2.5 py-1 text-xs text-text-secondary"
             >
               <Tag className="w-3 h-3" />
               {label}
@@ -504,22 +501,22 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               value={labelInput}
               onChange={e => setLabelInput(e.target.value)}
               placeholder="New label…"
-              className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60"
+              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
-            <button
+            <Button
               type="submit"
               disabled={!labelInput.trim() || addLabelMut.isPending}
-              className="px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+
             >
               Add
-            </button>
+            </Button>
           </form>
         )}
       </section>
 
       {/* Subtasks */}
       <section className="mb-6">
-        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Subtasks</h3>
+        <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Subtasks</h3>
         {subtasks.length === 0 ? (
           <p className="text-xs text-text-quaternary mb-2">No subtasks</p>
         ) : (
@@ -527,7 +524,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             {subtasks.map(st => (
               <li
                 key={st.id}
-                className="flex items-center justify-between rounded-[11px] border border-border-secondary px-3 py-2"
+                className="flex items-center justify-between rounded-md border border-border-secondary px-3 py-2"
               >
                 <span className="text-xs text-text-primary">{st.title}</span>
                 <Badge variant={STATUS_BADGE_VARIANT[st.status]} size="sm">{st.status}</Badge>
@@ -544,22 +541,22 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               value={subtaskTitle}
               onChange={e => setSubtaskTitle(e.target.value)}
               placeholder="New subtask title…"
-              className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60"
+              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
-            <button
+            <Button
               type="submit"
               disabled={!subtaskTitle.trim() || createSubtaskMut.isPending}
-              className="px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+
             >
               Add
-            </button>
+            </Button>
           </form>
         )}
       </section>
 
       {/* Spec links */}
       <section className="mb-6">
-        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Linked Specs</h3>
+        <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Linked Specs</h3>
         <div className="flex flex-wrap items-center gap-2 mb-2">
           {specLinks.length === 0 && (
             <span className="text-xs text-text-quaternary">No linked specs</span>
@@ -569,7 +566,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             return (
             <span
               key={name}
-              className="flex items-center gap-1.5 rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary"
+              className="flex items-center gap-1.5 rounded-full border border-border-primary bg-foreground/[0.06] px-2.5 py-1 text-xs text-text-secondary"
             >
               {change ? (
                 <Link
@@ -607,7 +604,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         {canWrite && canReadSdd && (
           <form onSubmit={handleSpecSubmit} className="flex items-center gap-2">
             <Select value={selectedSpec} onValueChange={setSelectedSpec}>
-              <SelectTrigger className="flex-1 h-8 text-xs" aria-label="Link spec change">
+              <SelectTrigger className="min-w-0 flex-1 h-9" aria-label="Link spec change">
                 <SelectValue placeholder="Choose a change…" />
               </SelectTrigger>
               <SelectContent>
@@ -622,17 +619,17 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 ))}
               </SelectContent>
             </Select>
-            <button
+            <Button
               type="submit"
               disabled={!selectedSpec || linkSpecMut.isPending}
-              className="px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+
             >
               Link
-            </button>
+            </Button>
           </form>
         )}
         {canWrite && !canReadSdd && (
-          <p className="text-[10px] text-text-quaternary">
+          <p className="text-xs text-text-quaternary">
             Linking a spec change requires the sdd:read permission.
           </p>
         )}
@@ -640,16 +637,16 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
       {/* Comments */}
       <section>
-        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Comments</h3>
+        <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Comments</h3>
         {comments.length === 0 ? (
           <p className="text-xs text-text-quaternary mb-2">No comments yet</p>
         ) : (
           <ul className="space-y-3 mb-3">
             {comments.map(c => (
-              <li key={c.id} className="rounded-[11px] border border-border-secondary px-3 py-2">
+              <li key={c.id} className="rounded-md border border-border-secondary px-3 py-2">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs font-semibold text-text-primary">{c.author_name}</span>
-                  <span className="text-[10px] text-text-quaternary">
+                  <span className="text-xs text-text-quaternary">
                     {new Date(c.created_at).toLocaleString()}
                   </span>
                 </div>
@@ -667,15 +664,15 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               value={commentBody}
               onChange={e => setCommentBody(e.target.value)}
               placeholder="Add a comment…"
-              className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60"
+              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
-            <button
+            <Button
               type="submit"
               disabled={!commentBody.trim() || addCommentMut.isPending}
-              className="px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+
             >
               Post
-            </button>
+            </Button>
           </form>
         )}
       </section>
@@ -688,7 +685,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               onClick={handleDelete}
               aria-label="Delete task"
               disabled={deleteMut.isPending}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-full border border-border-primary text-xs font-semibold text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-md border border-border-primary text-xs font-semibold text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-50"
             >
               <Trash2 className="w-3.5 h-3.5" />
               {deleteMut.isPending ? 'Deleting…' : 'Delete'}
@@ -697,14 +694,14 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             <span />
           )}
           {canWrite && (
-            <button
+            <Button
               type="submit"
               form="task-edit-form"
               disabled={updateMut.isPending || !editForm.title.trim()}
-              className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+
             >
               {updateMut.isPending ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
           )}
         </div>
       )}

@@ -15,6 +15,7 @@ Manifests: `nexusmind.yaml` in this dir. Copy it to the box (or `git pull` there
 
 ## 0. Prerequisites (already true)
 - Backend image built: `ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64`.
+- Verification image built by the production workflow: `ghcr.io/smart-coder-labs/nexusmind-factory-commands:main-arm64` (backend runtime tools plus Cargo; used only by commands pods).
 - Box already did `docker login ghcr.io` (creds in `~/.docker/config.json`).
 - Box still has the env at `~/oracle-deploy/.env` (from the docker deploy).
 - Verified backup on your Mac:
@@ -39,7 +40,7 @@ ssh oracle 'set -a; . ~/oracle-deploy/.env; set +a; \
            GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET GITHUB_REDIRECT_URI \
            SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM \
            APP_BASE_URL CORS_ORIGINS NEXUSMIND_EMBED_ENABLED \
-           BACKUP_DATABASE_URL BACKUP_INTERVAL_HOURS; do \
+           BACKUP_DATABASE_URL BACKUP_INTERVAL_HOURS SENTRY_DSN; do \
     printf "%s=%s\n" "$k" "$(printenv "$k")" >> /tmp/nm.env; done; \
   kubectl -n nexusmind create secret generic nexusmind-env \
     --from-env-file=/tmp/nm.env --dry-run=client -o yaml | kubectl apply -f -; \

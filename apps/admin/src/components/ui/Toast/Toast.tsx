@@ -66,14 +66,14 @@ ToastViewport.displayName = "ToastViewport";
 // color as background, and text in that color — success green + check,
 // error red + icon, warning yellow + triangle.
 const toastVariants = cva(
-    "group pointer-events-auto relative flex w-full items-center justify-between space-x-4 overflow-hidden rounded-[11px] border p-4 pr-8 shadow-lg transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
+    "group pointer-events-auto relative flex w-full items-center justify-between space-x-4 overflow-hidden rounded-md border p-4 pr-8 shadow-lg transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
     {
         variants: {
             variant: {
-                default: "border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] text-text-primary",
-                destructive: "destructive group border-status-error/30 bg-status-error/[0.07] backdrop-blur-[14px] text-status-error",
-                success: "border-status-success/30 bg-status-success/[0.07] backdrop-blur-[14px] text-status-success",
-                warning: "border-status-warning/30 bg-status-warning/[0.06] backdrop-blur-[14px] text-status-warning",
+                default: "border-border-primary bg-surface-elevated shadow-md text-text-primary",
+                destructive: "destructive group border-status-error/30 bg-status-error/[0.07] text-status-error",
+                success: "border-status-success/30 bg-status-success/[0.07] text-status-success",
+                warning: "border-status-warning/30 bg-status-warning/[0.06] text-status-warning",
             },
         },
         defaultVariants: {
@@ -150,7 +150,7 @@ const ToastAction = React.forwardRef<HTMLButtonElement, ToastActionProps>(functi
             ref={ref}
             type="button"
             className={cn(
-                "inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent px-3 text-xs font-normal transition-colors hover:bg-white/[0.06] focus:outline-none disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-status-error/30 group-[.destructive]:hover:bg-status-error/20",
+                "inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent px-3 text-xs font-normal transition-colors hover:bg-foreground/[0.06] focus:outline-none disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-status-error/30 group-[.destructive]:hover:bg-status-error/20",
                 className
             )}
             aria-label={ariaLabel ?? altText}

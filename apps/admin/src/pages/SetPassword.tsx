@@ -34,12 +34,12 @@ function ApiKeyModal({ apiKey, onClose }: { apiKey: string; onClose: () => void 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
       <div
-        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4"
+        className="border border-border-primary bg-surface-elevated rounded-xl p-6 max-w-sm w-full mx-4 space-y-4"
         onClick={e => e.stopPropagation()}
       >
         <p className="text-base font-semibold text-text-primary">Setup complete!</p>
         <p className="text-xs text-text-quaternary">Copy your API key — it won't be shown again.</p>
-        <div className="font-mono text-xs bg-white/[0.03] border border-white/[0.09] rounded-[11px] p-3 break-all select-all text-text-primary flex items-center gap-2">
+        <div className="font-mono text-xs bg-foreground/[0.03] border border-border-primary rounded-md p-3 break-all select-all text-text-primary flex items-center gap-2">
           <span className="flex-1">{apiKey}</span>
           <button
             onClick={handleCopy}
@@ -208,7 +208,7 @@ export default function SetPassword() {
             </p>
           </div>
 
-          <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-8">
+          <div className="border border-border-primary bg-surface-primary rounded-xl p-8">
             {done ? (
               <div className="text-center space-y-2 py-4">
                 <p className="text-base font-semibold text-text-primary">Password set!</p>
@@ -218,7 +218,7 @@ export default function SetPassword() {
               <form onSubmit={handleSubmit} className="space-y-4">
                 {/* Invite welcome banner */}
                 {inviteToken && invite?.valid && invite.org_name && (
-                  <div className="bg-accent-blue/5 border border-accent-blue/20 rounded-[11px] p-3 text-xs text-text-secondary mb-4">
+                  <div className="bg-action-primary/5 border border-accent-blue/20 rounded-md p-3 text-xs text-text-secondary mb-4">
                     You've been invited to join <span className="text-text-primary font-semibold">{invite.org_name}</span>
                   </div>
                 )}

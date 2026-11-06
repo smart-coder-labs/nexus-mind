@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthContext } from '../auth/AuthContext'
@@ -77,10 +77,11 @@ describe('Layout — SDD nav entry', () => {
       expect(screen.getAllByRole('link', { name: /^sdd$/i }).length).toBeGreaterThan(0)
     })
 
-    // The group heading and the item share a container (the group <div>).
-    const heading = screen.getAllByText('Knowledge')[0]
-    const group = heading.parentElement as HTMLElement
-    expect(within(group).getByRole('link', { name: /^sdd$/i })).toBeInTheDocument()
+    const toggle = screen.getByRole('button', { name: 'Knowledge' })
+    const contentId = toggle.getAttribute('aria-controls')
+    const sddLink = screen.getByRole('link', { name: /^sdd$/i })
+    expect(contentId).toBeTruthy()
+    expect(document.getElementById(contentId!)?.contains(sddLink)).toBe(true)
   })
 
   it('nav_item_sdd_hidden_without_sdd_read', async () => {
@@ -91,5 +92,37 @@ describe('Layout — SDD nav entry', () => {
     })
 
     expect(screen.queryByRole('link', { name: /^sdd$/i })).not.toBeInTheDocument()
+  })
+
+  it('toggles navigation groups and their links accessibly', async () => {
+    renderLayout('admin', ['sdd:read'])
+
+    const knowledge = screen.getByRole('button', { name: 'Knowledge' })
+    expect(knowledge).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('link', { name: /^sdd$/i })).toBeInTheDocument()
+
+    fireEvent.click(knowledge)
+    expect(knowledge).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('link', { name: /^sdd$/i })).not.toBeInTheDocument()
+
+    fireEvent.click(knowledge)
+    expect(knowledge).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('link', { name: /^sdd$/i })).toBeInTheDocument()
+  })
+
+  it('places the announcement in page flow and the theme control in the sidebar footer', async () => {
+    getOrgSettingsMock.mockResolvedValue({ announcement: 'A new feature is available', announcement_type: 'info' })
+    renderLayout('admin', ['user:read', 'sdd:read'])
+
+    const announcement = await screen.findByRole('status', { name: 'Organization announcement' })
+    expect(announcement.closest('[data-testid="announcement-placement"]')).toBeInTheDocument()
+    expect(announcement).toHaveClass('border-l-[3px]', 'bg-action-primary/5')
+    expect(screen.getByRole('region', { name: 'Page content' })).toContainElement(announcement)
+    expect(screen.queryByRole('banner')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /search…/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open account menu' })).not.toBeInTheDocument()
+    const themeButton = screen.getByRole('button', { name: /^Switch to (light|dark) mode$/ })
+    expect(document.querySelector('.audit-sidebar')).toContainElement(themeButton)
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
   })
 })

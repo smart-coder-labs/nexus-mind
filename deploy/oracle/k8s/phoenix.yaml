@@ -1,0 +1,104 @@
+# Phoenix (Arize): where the factory's OTel GenAI spans go (F3, #306).
+#
+# One container, SQLite on a persistent volume, 30-day retention. Only the
+# nexusmind namespace (the worker) may reach it, and it has no internet egress.
+# No ingress: open the UI with
+#   kubectl -n nexusmind-observability port-forward svc/phoenix 6006:6006
+#
+# One-time secret, out of band (never commit values; generate them on the box):
+#   kubectl -n nexusmind-observability create secret generic phoenix \
+#     --from-literal=PHOENIX_SECRET="$(openssl rand -hex 32)" \
+#     --from-literal=PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD="$(openssl rand -base64 24)"
+# Then create a system API key in Phoenix (admin) and give the worker
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix.nexusmind-observability.svc.cluster.local:6006
+#   OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <system key>
+# through nexusmind-env.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusmind-observability
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: phoenix-data, namespace: nexusmind-observability}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: {requests: {storage: 10Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: phoenix, namespace: nexusmind-observability}
+spec:
+  replicas: 1
+  # SQLite on a ReadWriteOnce volume: never two pods at once.
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: phoenix}}
+  template:
+    metadata: {labels: {app: phoenix}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: phoenix
+          image: arizephoenix/phoenix:version-20.19.0-nonroot
+          ports:
+            - {name: http, containerPort: 6006}
+          env:
+            - {name: PHOENIX_WORKING_DIR, value: /data}
+            - {name: PHOENIX_PORT, value: "6006"}
+            - {name: PHOENIX_ENABLE_AUTH, value: "True"}
+            - {name: PHOENIX_DEFAULT_RETENTION_POLICY_DAYS, value: "30"}
+          envFrom: [{secretRef: {name: phoenix}}]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1536Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: phoenix-data}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: phoenix, namespace: nexusmind-observability}
+spec:
+  selector: {app: phoenix}
+  ports:
+    - {name: http, port: 6006, targetPort: http}
+---
+# Only the worker's namespace reaches Phoenix; Phoenix reaches only DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: phoenix, namespace: nexusmind-observability}
+spec:
+  podSelector: {matchLabels: {app: phoenix}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: nexusmind}}
+      ports: [{port: 6006, protocol: TCP}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]

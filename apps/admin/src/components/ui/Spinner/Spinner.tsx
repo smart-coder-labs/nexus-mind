@@ -14,7 +14,7 @@ const Spinner = React.forwardRef<HTMLDivElement, SpinnerProps>(
         const colorClasses = {
             default: "bg-text-secondary",
             white: "bg-white",
-            blue: "bg-accent-blue",
+            blue: "bg-action-primary",
         };
 
         return (

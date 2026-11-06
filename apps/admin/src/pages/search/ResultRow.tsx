@@ -6,12 +6,12 @@ import { highlightMatches } from './highlight'
 export type ResultKind = 'memory' | 'user' | 'project' | 'policy' | 'convention' | 'sdd'
 
 const KIND_STYLE: Record<ResultKind, { label: string; className: string }> = {
-  memory:     { label: 'Memory',     className: 'bg-accent-blue/14 text-accent-blue' },
+  memory:     { label: 'Memory',     className: 'bg-action-primary/14 text-accent-blue' },
   convention: { label: 'Convention', className: 'bg-status-warning/14 text-status-warning' },
   sdd:        { label: 'SDD',        className: 'bg-accent-purple/14 text-accent-purple' },
   user:       { label: 'User',       className: 'bg-status-success/14 text-status-success' },
-  project:    { label: 'Project',    className: 'bg-white/[0.06] text-text-tertiary' },
-  policy:     { label: 'Policy',     className: 'bg-white/[0.06] text-text-tertiary' },
+  project:    { label: 'Project',    className: 'bg-foreground/[0.06] text-text-tertiary' },
+  policy:     { label: 'Policy',     className: 'bg-foreground/[0.06] text-text-tertiary' },
 }
 
 interface ResultRowProps {
@@ -38,12 +38,12 @@ export function ResultRow({ kind, title, excerpt, query, meta = [], tags = [], h
   const style = KIND_STYLE[kind]
 
   const body = (
-    <div className="flex flex-col gap-2 p-4 rounded-[14px] border border-border-primary bg-white/[0.04] backdrop-blur-md transition-colors hover:border-accent-blue/40">
+    <div className="flex flex-col gap-2 p-4 rounded-xl border border-border-primary bg-foreground/[0.04] backdrop-blur-md transition-colors hover:border-accent-blue/40">
       <div className="flex items-center gap-2.5">
-        <span className={cn('shrink-0 text-[11px] font-bold px-2.5 py-0.5 rounded-[10px]', style.className)}>
+        <span className={cn('shrink-0 text-[11px] font-bold px-2.5 py-0.5 rounded-lg', style.className)}>
           {style.label}
         </span>
-        <span className="text-[14px] font-bold text-text-primary truncate flex-1 min-w-0">{title}</span>
+        <span className="text-sm font-bold text-text-primary truncate flex-1 min-w-0">{title}</span>
         {extra}
       </div>
 
@@ -69,7 +69,7 @@ export function ResultRow({ kind, title, excerpt, query, meta = [], tags = [], h
               {tags.slice(0, 6).map(tag => (
                 <span
                   key={tag}
-                  className="text-[10.5px] px-2 py-0.5 rounded-full bg-white/[0.05] text-text-tertiary"
+                  className="text-[10.5px] px-2 py-0.5 rounded-full bg-foreground/[0.05] text-text-tertiary"
                 >
                   #{tag}
                 </span>

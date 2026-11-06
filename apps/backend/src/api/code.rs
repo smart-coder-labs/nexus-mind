@@ -347,7 +347,7 @@ fn keyword_boost(
 ///
 /// `query_tokens` must already be lowercased and stopword-filtered (see
 /// [`tokenize_query`]).
-fn rerank_score(
+pub(crate) fn rerank_score(
     cosine: f32,
     file_path: &str,
     symbol: Option<&str>,
@@ -363,7 +363,7 @@ fn rerank_score(
 /// Split a natural-language query into distinct lowercase tokens, dropping
 /// stopwords and very short fragments. Deterministic order is irrelevant —
 /// callers only test membership.
-fn tokenize_query(query: &str) -> Vec<String> {
+pub(crate) fn tokenize_query(query: &str) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for raw in query.split(|c: char| !c.is_alphanumeric()) {
         if raw.len() < 2 {
@@ -587,7 +587,10 @@ pub async fn post_index(
     let spawn_project = project_name.clone();
     let spawn_path = effective_root_path.clone();
     let graph_only = input.graph_only.unwrap_or(false);
-    tokio::spawn(async move {
+    // Clone and index are blocking, CPU-heavy work (git, rayon, ONNX): on an
+    // async worker they starved the runtime, and /v1/health timed out until the
+    // liveness probe restarted the backend mid-index (2026-10-03).
+    tokio::task::spawn_blocking(move || {
         if let Some(ref bare_url) = bare_repo_url {
             // Surface clone/pull failures (e.g. auth failure on a private repo)
             // as a project error instead of silently indexing an empty directory.
@@ -785,11 +788,64 @@ pub async fn post_search(
 const MAX_HIT_CHARS: usize = 1_600;
 const MAX_RESPONSE_CHARS: usize = 8_000;
 
+/// Per-body ceiling for `GET /v1/code/context`, deliberately higher than
+/// `MAX_HIT_CHARS`.
+///
+/// A search hit is one of five speculative candidates; a context body is the one
+/// symbol the caller named on purpose. Trimming a requested symbol as hard as a
+/// speculative hit would defeat the call — the agent would have to read the file
+/// anyway, which is the cost the budget exists to remove.
+const MAX_CONTEXT_SYMBOL_CHARS: usize = 6_000;
+
+/// Largest index `i <= at` that is a UTF-8 boundary in `s`.
+///
+/// A byte ceiling can land mid-codepoint, and both `&s[..i]` and
+/// `String::truncate` panic there. Source files carry accented comments and
+/// emoji, so this is reachable in normal use, not a theoretical case.
+fn floor_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Trims one body to `allowance` on a line boundary and appends a pointer to
+/// where the rest lives.
+///
+/// The pointer is what keeps a trimmed body actionable: the reader always knows
+/// the file and the line range, so the omitted code is one `Read` away.
+fn truncate_with_pointer(result: &mut SearchCodeResult, allowance: usize) {
+    if result.content.len() <= allowance {
+        return;
+    }
+    let end = floor_char_boundary(&result.content, allowance);
+    let cut = result.content[..end].rfind('\n').unwrap_or(end);
+    result.content.truncate(cut);
+    result.content.push_str(&format!(
+        "\n… truncado — {} líneas {}-{}, léelo si necesitas el resto",
+        result.file_path, result.start_line, result.end_line
+    ));
+}
+
 /// Trims hit bodies to the budget, truncating on line boundaries.
 ///
 /// Ranked order is preserved and no hit is dropped: a caller asking for five
 /// results gets five, because losing the fifth path silently is worse than
 /// shortening its body visibly.
+///
+/// A budget-aware variant was tried and rejected — serving top hits whole and
+/// degrading the tail to a pointer. It cannot help at the default `top_k` of 5,
+/// where five per-hit ceilings of 1,600 sum to exactly `MAX_RESPONSE_CHARS` and
+/// the response ceiling therefore never binds. Simulated over the real chunk-size
+/// distribution (16,649 chunks) it was strictly worse where it did apply: at
+/// `top_k` 20 it returned 17.4 complete bodies per response against this
+/// version's 18.6, to save 389 characters. The per-hit floor is what makes the
+/// difference — a small tail hit fits inside it and arrives whole, where
+/// budget-aware selection turned it into a pointer.
 fn trim_to_budget(results: &mut [SearchCodeHit]) {
     let mut spent = 0usize;
     for hit in results.iter_mut() {
@@ -797,17 +853,40 @@ fn trim_to_budget(results: &mut [SearchCodeHit]) {
         // what makes a trimmed hit still legible. It stays whole.
         let remaining = MAX_RESPONSE_CHARS.saturating_sub(spent);
         let allowance = MAX_HIT_CHARS.min(remaining.max(240));
-        if hit.result.content.len() > allowance {
-            let cut = hit.result.content[..allowance]
-                .rfind('\n')
-                .unwrap_or(allowance);
-            hit.result.content.truncate(cut);
-            hit.result.content.push_str(&format!(
-                "\n… truncado — {} líneas {}-{}, léelo si necesitas el resto",
-                hit.result.file_path, hit.result.start_line, hit.result.end_line
-            ));
-        }
+        truncate_with_pointer(&mut hit.result, allowance);
         spent += hit.result.content.len();
+    }
+}
+
+/// Trims a `GET /v1/code/context` response to the budget.
+///
+/// This endpoint had no ceiling at all: it returns whole chunks — a chunk is a
+/// function or a class — plus every neighbouring chunk within ±60 lines, so a
+/// large symbol in a dense file could return far more than the caller asked for.
+/// It is reached by the `get_symbol_context` MCP tool, meaning an agent paid for
+/// all of it.
+///
+/// The named symbol is served first and from the larger allowance, because it is
+/// the reason the call was made. Neighbours are context nobody asked for and are
+/// trimmed like a search hit.
+fn trim_context_to_budget(results: &mut [SearchCodeResult], symbol: &str) {
+    let target = results
+        .iter()
+        .position(|r| r.symbol.as_deref() == Some(symbol));
+
+    let mut spent = 0usize;
+    if let Some(i) = target {
+        truncate_with_pointer(&mut results[i], MAX_CONTEXT_SYMBOL_CHARS);
+        spent += results[i].content.len();
+    }
+    for (i, r) in results.iter_mut().enumerate() {
+        if Some(i) == target {
+            continue;
+        }
+        let remaining = MAX_RESPONSE_CHARS.saturating_sub(spent);
+        let allowance = MAX_HIT_CHARS.min(remaining.max(240));
+        truncate_with_pointer(r, allowance);
+        spent += r.content.len();
     }
 }
 
@@ -866,14 +945,134 @@ mod budget_tests {
         trim_to_budget(&mut hits);
         assert_eq!(hits[0].result.content, "fn f() {}\n");
     }
+
+    /// A byte ceiling can land in the middle of a multi-byte character, where
+    /// both `&s[..i]` and `String::truncate` panic. Source files carry accented
+    /// comments, arrows in doc comments and emoji, so this is a crash a real
+    /// repository can trigger — not a theoretical case.
+    ///
+    /// "→" is three bytes and `MAX_HIT_CHARS % 3 == 1`, so the ceiling lands one
+    /// byte inside a character. Without `floor_char_boundary` this test panics.
+    #[test]
+    fn a_multibyte_search_body_is_trimmed_without_panicking() {
+        assert_eq!(MAX_HIT_CHARS % 3, 1, "the fixture only bites if the ceiling is mid-character");
+        let body = "→".repeat(5_000);
+        let mut hits = vec![hit("src/a.rs", &body)];
+        trim_to_budget(&mut hits);
+        let out = &hits[0].result.content;
+        assert!(out.len() < MAX_HIT_CHARS + 200);
+        assert!(out.contains("src/a.rs"));
+    }
+
+    /// Same crash on the context path, where the ceiling is different. A leading
+    /// ASCII byte shifts the arrows so `MAX_CONTEXT_SYMBOL_CHARS` also lands
+    /// mid-character.
+    #[test]
+    fn a_multibyte_context_body_is_trimmed_without_panicking() {
+        assert_ne!(
+            (MAX_CONTEXT_SYMBOL_CHARS - 1) % 3,
+            0,
+            "the fixture only bites if the ceiling is mid-character"
+        );
+        let body = format!("a{}", "→".repeat(5_000));
+        let mut out = vec![res("src/a.rs", "Big", &body)];
+        trim_context_to_budget(&mut out, "Big");
+        assert!(out[0].content.len() < MAX_CONTEXT_SYMBOL_CHARS + 200);
+        assert!(out[0].content.contains("src/a.rs"));
+    }
+
+    fn res(path: &str, symbol: &str, body: &str) -> SearchCodeResult {
+        SearchCodeResult {
+            file_path: path.to_string(),
+            symbol: Some(symbol.to_string()),
+            start_line: 1,
+            end_line: 400,
+            content: body.to_string(),
+            score: 1.0,
+        }
+    }
+
+    /// The measured gap: `GET /v1/code/context` — the handler behind the
+    /// `get_symbol_context` MCP tool — had no ceiling at all and returned whole
+    /// chunks.
+    #[test]
+    fn a_context_body_is_now_bounded() {
+        let body = (0..4_000).map(|i| format!("linea {i}")).collect::<Vec<_>>().join("\n");
+        let before = body.len();
+        let mut out = vec![res("src/a.rs", "BigClass", &body)];
+        trim_context_to_budget(&mut out, "BigClass");
+        assert!(before > 20_000, "the fixture must be a genuinely large symbol");
+        assert!(out[0].content.len() < MAX_CONTEXT_SYMBOL_CHARS + 200);
+        assert!(out[0].content.contains("src/a.rs"), "the reader knows where the rest is");
+        assert!(out[0].content.contains("1-400"));
+    }
+
+    /// The named symbol is why the call was made, so it gets a larger allowance
+    /// than one of five speculative search hits.
+    #[test]
+    fn the_named_symbol_keeps_more_than_a_search_hit_would() {
+        let body = "x".repeat(30_000);
+        let mut out = vec![res("src/a.rs", "BigClass", &body)];
+        trim_context_to_budget(&mut out, "BigClass");
+        assert!(
+            out[0].content.len() > MAX_HIT_CHARS * 2,
+            "a requested symbol must not be trimmed like a speculative hit"
+        );
+    }
+
+    /// Neighbours are context nobody asked for. The ±60-line window can return
+    /// many of them in a dense file, so the response as a whole stays bounded.
+    #[test]
+    fn neighbours_are_trimmed_and_the_response_stays_bounded() {
+        let body = "y".repeat(9_000);
+        let mut out: Vec<SearchCodeResult> = (0..8)
+            .map(|i| res("src/a.rs", &format!("neighbour{i}"), &body))
+            .collect();
+        out.insert(4, res("src/a.rs", "Target", &body));
+
+        trim_context_to_budget(&mut out, "Target");
+
+        let total: usize = out.iter().map(|r| r.content.len()).sum();
+        assert!(total < MAX_CONTEXT_SYMBOL_CHARS + MAX_RESPONSE_CHARS, "got {total}");
+        assert_eq!(out.len(), 9, "no chunk is dropped, only shortened");
+        for r in &out {
+            assert!(!r.content.is_empty(), "every chunk keeps something readable");
+        }
+    }
+
+    /// The ordinary case — a small symbol and its neighbours — is untouched.
+    #[test]
+    fn a_short_context_response_is_untouched() {
+        let mut out = vec![
+            res("src/a.rs", "before", "fn before() {}\n"),
+            res("src/a.rs", "target", "fn target() {}\n"),
+        ];
+        trim_context_to_budget(&mut out, "target");
+        assert_eq!(out[0].content, "fn before() {}\n");
+        assert_eq!(out[1].content, "fn target() {}\n");
+    }
+
+    /// A symbol the query named but the store did not return must not make the
+    /// whole response bypass the budget.
+    #[test]
+    fn a_missing_target_still_leaves_every_body_bounded() {
+        let body = "z".repeat(9_000);
+        let mut out = vec![res("src/a.rs", "somethingElse", &body)];
+        trim_context_to_budget(&mut out, "notPresent");
+        assert!(out[0].content.len() < MAX_HIT_CHARS + 200);
+    }
 }
 
 /// `POST /v1/code/locate`
 ///
-/// Same query embedding + cosine ranking as `post_search`, but returns RANKED
-/// DISTINCT FILE PATHS ONLY (deduped by file, a file's score = its best chunk's
-/// score) instead of chunk bodies. This is the lean, token-cheap output an agent
-/// uses to jump straight to the right file. Default limit 5.
+/// Returns RANKED DISTINCT FILE PATHS ONLY (deduped by file, a file's score = its
+/// best chunk's score) instead of chunk bodies: the lean, token-cheap output an
+/// agent uses to jump straight to the right file. Default limit 5.
+///
+/// Ranked by BM25 over identifier terms (factory F2): on the golden retrieval
+/// questions it beat the embedding ranking on both repositories (MRR 0.63 vs
+/// 0.60 and 0.51 vs 0.28). The embedding ranking remains the fallback when no
+/// query term matches.
 /// Returns HTTP 404 if the project has not been indexed.
 pub async fn post_locate(
     State(store): State<SqliteStore>,
@@ -907,68 +1106,127 @@ pub async fn post_locate(
         .parse()
         .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
 
-    // Embed the query (reuse the same plumbing as search — no corpus re-embed).
-    let embed_svc = store.embed_service();
-    let q_vec = match embed_svc {
-        Some(ref svc) => svc.embed_query(&input.query).map_err(db_err)?,
-        None => return Ok(Json(LocateCodeResponse { results: vec![] })),
-    };
-
-    // Fetch embeddings + lightweight (id → file_path, symbol) locations (no content).
-    let (pairs, locations) = {
+    let lexical = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
-        let pairs = db_queries::get_code_embeddings(&conn, code_project_id).map_err(db_err)?;
-        let locations =
-            db_queries::get_code_chunk_locations(&conn, code_project_id).map_err(db_err)?;
-        (pairs, locations)
+        crate::retrieval::lexical::bm25_file_ranking(&conn, code_project_id, &input.query)
+            .map_err(db_err)?
     };
-
-    if pairs.is_empty() {
-        return Ok(Json(LocateCodeResponse { results: vec![] }));
-    }
-
-    let loc_map: std::collections::HashMap<i64, (String, Option<String>)> = locations
+    let ranked = if !lexical.is_empty() {
+        lexical
+    } else {
+        // No query term matched: fall back to the embedding ranking.
+        let embed_svc = store.embed_service();
+        let q_vec = match embed_svc {
+            Some(ref svc) => svc.embed_query(&input.query).map_err(db_err)?,
+            None => return Ok(Json(LocateCodeResponse { results: vec![] })),
+        };
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        crate::retrieval::dense_file_ranking(&conn, code_project_id, &input.query, &q_vec)
+            .map_err(db_err)?
+    };
+    let mut results: Vec<LocateCodeHit> = ranked
         .into_iter()
-        .map(|(id, fp, sym)| (id, (fp, sym)))
-        .collect();
-
-    // Tokenize the query once for the keyword-hybrid boost.
-    let query_tokens = tokenize_query(&input.query);
-
-    // Cosine-rank every chunk, apply the deterministic re-rank (kind weighting
-    // + keyword boost), then collapse to the best-scoring chunk per file.
-    let mut best: std::collections::HashMap<String, (f32, Option<String>)> =
-        std::collections::HashMap::new();
-    for (id, blob) in pairs {
-        let v = embed::deserialize(&blob);
-        let cosine = embed::cosine(&q_vec, &v);
-        if let Some((file_path, symbol)) = loc_map.get(&id) {
-            let score = rerank_score(cosine, file_path, symbol.as_deref(), &query_tokens);
-            let entry = best.entry(file_path.clone()).or_insert((f32::MIN, None));
-            if score > entry.0 {
-                *entry = (score, symbol.clone());
-            }
-        }
-    }
-
-    let mut results: Vec<LocateCodeHit> = best
-        .into_iter()
-        .map(|(file_path, (score, top_symbol))| LocateCodeHit {
-            file_path,
-            top_symbol,
-            score,
+        .map(|hit| LocateCodeHit {
+            file_path: hit.file_path,
+            top_symbol: hit.top_symbol,
+            score: hit.score,
         })
         .collect();
-
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
     results.truncate(limit as usize);
 
     Ok(Json(LocateCodeResponse { results }))
+}
+
+/// Request body for `POST /v1/code/context-pack`.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ContextPackRequest {
+    pub project: String,
+    /// The task description the pack is assembled for.
+    pub query: String,
+    /// The factory task this pack belongs to (canonical UUID).
+    pub task_id: Option<String>,
+    /// The commit the task targets (40 hex); the index's commit when absent.
+    pub commit: Option<String>,
+    pub max_files: Option<usize>,
+    pub max_bytes: Option<usize>,
+}
+
+/// `POST /v1/code/context-pack`
+///
+/// The ContextPack for a task (factory F2, "Bibliotecario"): the files BM25
+/// ranks for the query with their best chunks, plus files one relative import
+/// away from the top ones. `pack` is the auditable contract (path, symbol, kind,
+/// reason, content hash); `evidence` carries the code under a byte budget;
+/// `index.stale` flags an index built from another commit than the task's.
+/// 404 when the project is not indexed, 409 `index_commit_unknown` when neither
+/// the request nor the index names a commit.
+pub async fn post_context_pack(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<ContextPackRequest>,
+) -> Result<Json<crate::retrieval::context_pack::PackResponse>, (StatusCode, Json<ApiError>)> {
+    let invalid = |error: &str| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: error.to_string(),
+                code: "validation_error".to_string(),
+            }),
+        )
+    };
+    if input.query.trim().is_empty() || input.query.len() > 4096 {
+        return Err(invalid("query must be 1-4096 bytes"));
+    }
+    if let Some(task_id) = &input.task_id {
+        let canonical = uuid::Uuid::parse_str(task_id)
+            .is_ok_and(|id| id.hyphenated().to_string() == *task_id);
+        if !canonical {
+            return Err(invalid("task_id must be a canonical lowercase UUID"));
+        }
+    }
+    if let Some(commit) = &input.commit {
+        if commit.len() != 40 || !commit.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(invalid("commit must be a full lowercase SHA"));
+        }
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "memory:search")?;
+    ensure_code_project_name_access(&conn, &auth, &input.project)?;
+    let code_project = db_queries::get_code_project(&auth.org_id, &input.project, &conn)
+        .map_err(db_err)?
+        .ok_or_else(|| project_not_indexed(&input.project))?;
+    let code_project_id: i64 = code_project
+        .id
+        .parse()
+        .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
+    let request = crate::retrieval::context_pack::PackRequest {
+        query: &input.query,
+        task_id: input.task_id.as_deref(),
+        commit: input.commit.as_deref(),
+        max_files: input
+            .max_files
+            .unwrap_or(crate::retrieval::context_pack::DEFAULT_MAX_FILES),
+        max_bytes: input
+            .max_bytes
+            .unwrap_or(crate::retrieval::context_pack::DEFAULT_MAX_BYTES),
+    };
+    match crate::retrieval::context_pack::build(&conn, code_project_id, &request) {
+        Ok(response) => Ok(Json(response)),
+        Err(error) if error.to_string() == "index_commit_unknown" => Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "The index has no commit; pass `commit` or re-index from a git checkout"
+                    .to_string(),
+                code: "index_commit_unknown".to_string(),
+            }),
+        )),
+        Err(error) => Err(db_err(error)),
+    }
 }
 
 /// `GET /v1/code/status/:project`
@@ -1075,7 +1333,7 @@ pub async fn get_context(
         ));
     }
 
-    let results: Vec<SearchCodeResult> = chunks
+    let mut results: Vec<SearchCodeResult> = chunks
         .into_iter()
         .map(|c| SearchCodeResult {
             file_path: c.file_path,
@@ -1087,6 +1345,7 @@ pub async fn get_context(
         })
         .collect();
 
+    trim_context_to_budget(&mut results, &params.symbol);
     Ok(Json(results))
 }
 
@@ -1475,7 +1734,10 @@ pub async fn post_reindex(
     // Bare clone URL — credentials are never embedded here.
     let bare_repo_url: Option<String> = repo_url.as_deref().map(|u| u.trim().to_string());
 
-    tokio::spawn(async move {
+    // Clone and index are blocking, CPU-heavy work (git, rayon, ONNX): on an
+    // async worker they starved the runtime, and /v1/health timed out until the
+    // liveness probe restarted the backend mid-index (2026-10-03).
+    tokio::task::spawn_blocking(move || {
         // If a repo URL is set, git pull/clone first. Resolve the path to index.
         let effective_path = if let Some(ref bare_url) = bare_repo_url {
             let clone_dir = format!("/tmp/nexusmind/{}/{}", org_id, project_name);

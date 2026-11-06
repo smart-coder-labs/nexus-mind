@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BookMarked, FileStack } from 'lucide-react'
+import { Activity, Archive, BookMarked, ClipboardCheck, FileStack, FlaskConical, Lightbulb, ListChecks, Palette, Rocket, Search } from 'lucide-react'
 import { Navigate, useSearchParams } from 'react-router-dom'
 import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
@@ -25,11 +25,11 @@ const TAB_FOCUS =
 /** True glassmorphic panel — a translucent near-black tint with a blurred
  *  backdrop, matching the target mockup (and the same recipe Layout.tsx's
  *  sidebar and OrgMemoryGraph's panels already use: `#0d0f14` alpha-blended
- *  + backdrop-blur). Deliberately NOT the flat opaque `bg-[#272729]` surface
+ *  + backdrop-blur). Deliberately NOT the flat opaque `bg-surface-secondary` surface
  *  token used elsewhere in the admin — that reads as a plain gray card, not
  *  glass. */
 export const GLASS_PANEL =
-  'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+  'border border-border-primary bg-surface-primary '
 
 export const SDD_PHASE_OPTIONS: SddPhase[] = [
   'explore', 'propose', 'spec', 'design', 'tasks', 'apply', 'verify', 'archive',
@@ -41,6 +41,33 @@ export const SDD_STATUS_BADGE_VARIANT: Record<SddStatus, 'default' | 'success' |
   active: 'success',
   archived: 'default',
   abandoned: 'warning',
+}
+
+const PHASE_PRESENTATION: Record<SddPhase, { description: string; color: string; icon: ReactNode }> = {
+  explore: { description: 'Gather context, constraints, and the problem to solve.', color: 'var(--data-blue)', icon: <Search /> },
+  propose: { description: 'Compare approaches and agree on a direction.', color: 'var(--data-amber)', icon: <Lightbulb /> },
+  spec: { description: 'Define requirements and observable acceptance criteria.', color: 'var(--data-blue)', icon: <FileStack /> },
+  design: { description: 'Plan the architecture, interfaces, and experience.', color: 'var(--chart-5)', icon: <Palette /> },
+  tasks: { description: 'Break the approved change into actionable work.', color: 'var(--data-teal)', icon: <ListChecks /> },
+  apply: { description: 'Implement the planned change in the codebase.', color: 'var(--color-status-info)', icon: <Rocket /> },
+  verify: { description: 'Run checks and confirm the change meets its goals.', color: 'var(--color-status-success)', icon: <ClipboardCheck /> },
+  archive: { description: 'Record the outcome and preserve completed work.', color: 'var(--muted-foreground)', icon: <Archive /> },
+}
+
+const STATUS_PRESENTATION: Record<SddStatus, { description: string; color: string; icon: ReactNode }> = {
+  active: { description: 'In progress and still receiving updates.', color: 'var(--color-status-success)', icon: <Activity /> },
+  archived: { description: 'Completed and kept for reference.', color: 'var(--muted-foreground)', icon: <Archive /> },
+  abandoned: { description: 'Stopped before completion.', color: 'var(--color-status-warning)', icon: <FlaskConical /> },
+}
+
+export function SddPhaseOption({ phase }: { phase: SddPhase }) {
+  const option = PHASE_PRESENTATION[phase]
+  return <SelectItem value={phase} icon={option.icon} indicatorColor={option.color} description={option.description}>{phase}</SelectItem>
+}
+
+export function SddStatusOption({ status }: { status: SddStatus }) {
+  const option = STATUS_PRESENTATION[status]
+  return <SelectItem value={status} icon={option.icon} indicatorColor={option.color} description={option.description}>{status}</SelectItem>
 }
 
 /**
@@ -78,9 +105,9 @@ export function PhasePipeline({ artifacts }: { artifacts: SddArtifact[] }) {
           >
             {i > 0 && <span aria-hidden="true" className="text-text-quaternary text-[9px] mx-0.5">→</span>}
             <span
-              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${
                 present
-                  ? 'border-accent-blue/30 bg-accent-blue/10 text-accent-blue'
+                  ? 'border-accent-blue/30 bg-action-primary/10 text-accent-blue'
                   : 'border-border-primary text-text-quaternary/60'
               }`}
             >
@@ -203,12 +230,12 @@ export default function Sdd() {
         <div className="flex items-center gap-3">
           <div
             aria-hidden="true"
-            className="w-11 h-11 rounded-[13px] bg-accent-purple/10 flex items-center justify-center shrink-0"
+            className="w-11 h-11 rounded-xl bg-accent-purple/10 flex items-center justify-center shrink-0"
           >
             <FileStack className="w-5 h-5 text-accent-purple" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-text-primary">SDD</h1>
+            <h1 className="text-[22px] leading-tight font-semibold text-text-primary">SDD</h1>
             <p className="text-xs text-text-quaternary mt-0.5">
               {tab === 'changes'
                 ? `${changes.length} changes`
@@ -249,15 +276,15 @@ export default function Sdd() {
 
       {/* Filters. Phase and status describe a CHANGE's lifecycle — a living
           specification has neither, so they are not offered on the specs view. */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         <Select value={projectFilter} onValueChange={setProjectFilter}>
-          <SelectTrigger className="w-48" aria-label="Project">
+          <SelectTrigger className="w-full min-w-0 sm:w-48" aria-label="Project">
             <SelectValue placeholder="All projects" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All projects</SelectItem>
+            <SelectItem value="" icon={<FileStack />} description="Show changes from every project">All projects</SelectItem>
             {projects.map(p => (
-              <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
+              <SelectItem key={p.id} value={p.name} icon={<FileStack />} description={p.description || `Changes and specifications for ${p.name}`}>{p.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -265,26 +292,22 @@ export default function Sdd() {
         {tab === 'changes' && (
           <>
             <Select value={phaseFilter} onValueChange={setPhaseFilter}>
-              <SelectTrigger className="w-40" aria-label="Phase">
+              <SelectTrigger className="w-full min-w-0 sm:w-40" aria-label="Phase">
                 <SelectValue placeholder="All phases" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All phases</SelectItem>
-                {SDD_PHASE_OPTIONS.map(p => (
-                  <SelectItem key={p} value={p}>{p}</SelectItem>
-                ))}
+                <SelectItem value="" icon={<ListChecks />} description="Show changes at every stage">All phases</SelectItem>
+                {SDD_PHASE_OPTIONS.map(phase => <SddPhaseOption key={phase} phase={phase} />)}
               </SelectContent>
             </Select>
 
             <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-40" aria-label="Status">
+              <SelectTrigger className="w-full min-w-0 sm:w-40" aria-label="Status">
                 <SelectValue placeholder="All statuses" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All statuses</SelectItem>
-                {SDD_STATUS_OPTIONS.map(s => (
-                  <SelectItem key={s} value={s}>{s}</SelectItem>
-                ))}
+                <SelectItem value="" icon={<Activity />} description="Show active and completed changes">All statuses</SelectItem>
+                {SDD_STATUS_OPTIONS.map(status => <SddStatusOption key={status} status={status} />)}
               </SelectContent>
             </Select>
           </>
@@ -296,7 +319,7 @@ export default function Sdd() {
         isLoading ? (
           <div data-testid="sdd-skeleton" className="space-y-2">
             {[...Array(4)].map((_, i) => (
-              <div key={i} className={`rounded-[16px] h-14 animate-pulse ${GLASS_PANEL}`} />
+              <div key={i} className={`rounded-xl h-14 animate-pulse ${GLASS_PANEL}`} />
             ))}
           </div>
         ) : changes.length === 0 ? (
@@ -306,9 +329,9 @@ export default function Sdd() {
             description="No SDD changes match the current filters. Changes are written by the harness and by git — the admin reads them."
           />
         ) : (
-          <div className={`overflow-hidden rounded-[16px] ${GLASS_PANEL}`}>
-            <table className="w-full border-collapse text-left">
-              <thead className="border-b border-white/[0.06]">
+          <div className={`overflow-x-auto rounded-xl ${GLASS_PANEL}`}>
+            <table className="admin-data-table w-full min-w-[760px] border-collapse text-left">
+              <thead className="border-b border-border-primary">
                 <tr>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Change</th>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Project</th>
@@ -324,13 +347,13 @@ export default function Sdd() {
                     aria-selected={change.id === selectedId}
                     onClick={() => { setDismissedDeepLink(true); setOpenChangeId(change.id) }}
                     className={`border-b border-border-secondary last:border-b-0 cursor-pointer transition-colors ${
-                      change.id === selectedId ? 'bg-accent-blue/10' : 'hover:bg-accent-blue/[0.05]'
+                      change.id === selectedId ? 'bg-action-primary/10' : 'hover:bg-action-primary/[0.05]'
                     }`}
                   >
                     <td className="px-4 py-3">
                       <p className="text-xs text-text-primary font-semibold">{change.name}</p>
                       {change.title && (
-                        <p className="text-[10px] text-text-quaternary mt-0.5">{change.title}</p>
+                        <p className="text-xs text-text-quaternary mt-0.5">{change.title}</p>
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">{change.project}</td>
@@ -358,7 +381,7 @@ export default function Sdd() {
         specsLoading ? (
           <div data-testid="sdd-specs-skeleton" className="space-y-2">
             {[...Array(3)].map((_, i) => (
-              <div key={i} className={`rounded-[16px] h-14 animate-pulse ${GLASS_PANEL}`} />
+              <div key={i} className={`rounded-xl h-14 animate-pulse ${GLASS_PANEL}`} />
             ))}
           </div>
         ) : specs.length === 0 ? (
@@ -368,9 +391,9 @@ export default function Sdd() {
             description="No living specifications for this project yet. They live at openspec/specs/{capability}/spec.md and are written by the harness and by git — the admin reads them."
           />
         ) : (
-          <div className={`overflow-hidden rounded-[16px] ${GLASS_PANEL}`}>
-            <table className="w-full border-collapse text-left">
-              <thead className="border-b border-white/[0.06]">
+          <div className={`overflow-x-auto rounded-xl ${GLASS_PANEL}`}>
+            <table className="admin-data-table w-full min-w-[760px] border-collapse text-left">
+              <thead className="border-b border-border-primary">
                 <tr>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Capability</th>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Project</th>
@@ -386,13 +409,13 @@ export default function Sdd() {
                     aria-selected={spec.id === selectedSpecId}
                     onClick={() => { setDismissedDeepLink(true); setOpenSpecId(spec.id) }}
                     className={`border-b border-border-secondary last:border-b-0 cursor-pointer transition-colors ${
-                      spec.id === selectedSpecId ? 'bg-accent-blue/10' : 'hover:bg-accent-blue/[0.05]'
+                      spec.id === selectedSpecId ? 'bg-action-primary/10' : 'hover:bg-action-primary/[0.05]'
                     }`}
                   >
                     <td className="px-4 py-3">
                       <p className="text-xs text-text-primary font-semibold">{spec.capability}</p>
                       {spec.title && (
-                        <p className="text-[10px] text-text-quaternary mt-0.5">{spec.title}</p>
+                        <p className="text-xs text-text-quaternary mt-0.5">{spec.title}</p>
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">{spec.project}</td>

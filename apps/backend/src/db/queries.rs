@@ -1357,7 +1357,37 @@ pub fn insert_audit_log_chained(
     timestamp_override: Option<&str>,
 ) -> Result<AuditEntry> {
     let tx = conn.unchecked_transaction()?;
+    let entry = append_audit_chained(
+        &tx,
+        org_id,
+        user_id,
+        action,
+        resource_type,
+        resource_id,
+        metadata,
+        timestamp_override,
+    )?;
+    tx.commit()?;
+    Ok(entry)
+}
 
+/// Appends one entry to the org's audit hash chain WITHOUT opening a transaction.
+///
+/// For callers that must make a state change and its audit record atomic: they
+/// open the transaction, change state, call this, and commit — so either both
+/// land or neither does. The caller's transaction also serializes the chain read
+/// with the insert, which `insert_audit_log_chained` otherwise provides.
+#[allow(clippy::too_many_arguments)]
+pub fn append_audit_chained(
+    tx: &Connection,
+    org_id: &str,
+    user_id: &str,
+    action: &str,
+    resource_type: &str,
+    resource_id: Option<&str>,
+    metadata: serde_json::Value,
+    timestamp_override: Option<&str>,
+) -> Result<AuditEntry> {
     // 1. Read the latest current_hash for this org (per-tenant chain).
     // Use rowid DESC as the tiebreaker: rowid is SQLite's implicit autoincrement
     // and reflects true insertion order regardless of timestamp precision.
@@ -1413,7 +1443,6 @@ pub fn insert_audit_log_chained(
             current_hash
         ],
     )?;
-    tx.commit()?;
 
     Ok(AuditEntry {
         id,
@@ -1540,7 +1569,7 @@ pub fn revoke_automation_attempt(
     attempt_id: &str,
     reason: &str,
 ) -> Result<bool> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::connection::AtomicSavepoint::new(conn)?;
     let affected = tx.execute(
         "UPDATE automation_attempts
          SET status = 'revoked', revoked_at = datetime('now')
@@ -3839,6 +3868,36 @@ pub fn update_user_role(
     Ok(count > 0)
 }
 
+/// Permission domains checked by `require_explicit_permission` against the
+/// persisted role TEMPLATE (no privileged-role bypass). For these, the template is
+/// the source of truth, not the hard-coded lists below.
+const TEMPLATE_GOVERNED_DOMAINS: [&str; 2] = ["autonomous_agent:", "factory_policy:"];
+
+/// Replaces the template-governed grants in a hard-coded privileged list with
+/// exactly what the persisted template grants, so `/v1/admin/auth/me` reports
+/// what the backend enforces: a grant removed from the template disappears from
+/// the UI, and one added to it appears.
+fn with_template_explicit_grants(
+    conn: &Connection,
+    template_id: &str,
+    mut permissions: Vec<String>,
+) -> Result<Vec<String>> {
+    let governed = |p: &str| TEMPLATE_GOVERNED_DOMAINS.iter().any(|d| p.starts_with(d));
+    permissions.retain(|p| !governed(p));
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT permissions FROM roles WHERE id = ?1 AND enabled = 1",
+            [template_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let granted: Vec<String> = raw
+        .map(|raw| serde_json::from_str(&raw).unwrap_or_default())
+        .unwrap_or_default();
+    permissions.extend(granted.into_iter().filter(|p| governed(p)));
+    Ok(permissions)
+}
+
 /// Resolves the permissions associated with a standard or custom role.
 pub fn get_role_permissions(
     conn: &Connection,
@@ -3846,7 +3905,7 @@ pub fn get_role_permissions(
     role_name: &str,
 ) -> Result<Vec<String>> {
     if role_name == "admin" {
-        return Ok(vec![
+        return with_template_explicit_grants(conn, "admin_template", vec![
             "memory:read".to_string(),
             "memory:write".to_string(),
             "memory:delete".to_string(),
@@ -3897,7 +3956,7 @@ pub fn get_role_permissions(
             "autonomous_agent:manage_connectors".to_string(),
         ]);
     } else if role_name == "super_user" {
-        return Ok(vec![
+        return with_template_explicit_grants(conn, "super_user_template", vec![
             "memory:read".to_string(),
             "memory:write".to_string(),
             "memory:delete".to_string(),
@@ -3963,6 +4022,10 @@ pub fn get_role_permissions(
             "autonomous_agent:run".to_string(),
             "autonomous_agent:cancel".to_string(),
             "autonomous_agent:manage_connectors".to_string(),
+            // Factory policies (v78): granted to super_user only. Deliberately absent
+            // from the `admin` list — editing agent autonomy is a separate grant.
+            "factory_policy:read".to_string(),
+            "factory_policy:write".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
@@ -5653,6 +5716,189 @@ pub fn list_files_with_source(
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
 }
 
+/// Per-file record of how far indexing got, keyed by file path.
+///
+/// `graphed` is the content hash at which Pass 1 (parse + graph + stored source)
+/// last completed for that file; `chunked` the hash at which Pass 2 (chunks +
+/// embeddings) did. `None` means that pass has never run for the file.
+#[derive(Debug, Clone, Default)]
+pub struct IndexedState {
+    pub graphed: Option<String>,
+    pub chunked: Option<String>,
+}
+
+/// Returns, per file, the hashes at which each indexing pass last completed.
+///
+/// This replaces inferring completeness from the absence of rows in other tables.
+/// "This file has no symbols" and "this file was never parsed" are the same
+/// observation under the old scheme, and a `.scss`, a barrel `index.tsx` that only
+/// re-exports, or a markdown page produce no symbols by nature — so they never
+/// counted as complete and were re-read, re-parsed and re-stored on every
+/// incremental run. Measured on the production index: 3,012 of 5,845 files.
+pub fn list_indexed_state(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<std::collections::HashMap<String, IndexedState>> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path, graphed_hash, chunked_hash FROM code_files \
+         WHERE code_project_id = ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            IndexedState {
+                graphed: r.get::<_, Option<String>>(1)?,
+                chunked: r.get::<_, Option<String>>(2)?,
+            },
+        ))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (path, state) = row?;
+        map.insert(path, state);
+    }
+    Ok(map)
+}
+
+/// Records that Pass 1 completed for this file at `file_hash`.
+pub fn set_file_graphed(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    file_hash: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_files SET graphed_hash = ?3 \
+         WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path, file_hash],
+    )?;
+    Ok(())
+}
+
+/// Records that Pass 2 settled this file at `file_hash` — chunks written, or
+/// established to produce none.
+///
+/// Stamped for both outcomes on purpose: "produces no chunks" is a settled result,
+/// and only recording it separates that file from one the pass never reached.
+pub fn set_file_chunked(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    file_hash: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_files SET chunked_hash = ?3 \
+         WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path, file_hash],
+    )?;
+    Ok(())
+}
+
+/// Marks this file's Pass 2 as unfinished.
+///
+/// Called in the same critical section as `delete_chunks_for_file`, because
+/// between the delete and the re-insert the file has no chunks: a stamp left
+/// standing there would survive a crash and declare an empty file complete.
+pub fn clear_file_chunked(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_files SET chunked_hash = NULL \
+         WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+    )?;
+    Ok(())
+}
+
+/// Returns the set of file paths holding at least one chunk whose embedding is
+/// missing.
+///
+/// The incremental skip in `index_project` used to ask only two questions — does
+/// this file have graph symbols, and is its source stored — and both are true for
+/// a file that was chunked while the embedder was off. Such a file is unchanged
+/// by hash, so it was skipped on every later run and its chunks kept their NULL
+/// vectors forever: search silently fell back to keyword, and a `reindex` did not
+/// repair it because reindex takes the same incremental path.
+///
+/// A file with no chunks at all is not reported here. Plenty of files legitimately
+/// produce none (unsupported language, no parseable symbol), and treating them as
+/// incomplete would re-parse and re-store them on every run for no gain.
+pub fn list_files_with_unembedded_chunks(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT file_path FROM code_chunks \
+         WHERE code_project_id = ?1 AND embedding IS NULL AND lexical_only = 0",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
+        r.get::<_, String>(0)
+    })?;
+    Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+}
+
+/// Deletes the chunks and stored source of every file of a project that is not
+/// in `current` (relative paths). Returns how many files were pruned.
+pub fn prune_missing_code_files(
+    conn: &Connection,
+    code_project_id: i64,
+    current: &std::collections::HashSet<String>,
+) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path FROM code_chunks WHERE code_project_id = ?1
+         UNION SELECT file_path FROM code_files WHERE code_project_id = ?1",
+    )?;
+    let stored: Vec<String> = stmt
+        .query_map([code_project_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let missing: Vec<&String> = stored.iter().filter(|p| !current.contains(*p)).collect();
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.unchecked_transaction()?;
+    for path in &missing {
+        tx.execute(
+            "DELETE FROM code_chunks WHERE code_project_id = ?1 AND file_path = ?2",
+            rusqlite::params![code_project_id, path],
+        )?;
+        tx.execute(
+            "DELETE FROM code_files WHERE code_project_id = ?1 AND file_path = ?2",
+            rusqlite::params![code_project_id, path],
+        )?;
+    }
+    tx.commit()?;
+    Ok(missing.len())
+}
+
+/// Records the commit a project's index was built from (NULL when unknown).
+pub fn set_code_project_indexed_commit(
+    conn: &Connection,
+    code_project_id: i64,
+    commit: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects SET indexed_commit = ?2 WHERE id = ?1",
+        rusqlite::params![code_project_id, commit],
+    )?;
+    Ok(())
+}
+
+/// Marks a file's chunks as lexical-only: searched by BM25, never embedded, and
+/// so never reported as waiting for a vector.
+pub fn mark_file_chunks_lexical_only(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_chunks SET lexical_only = 1 WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+    )?;
+    Ok(())
+}
+
 /// Returns the set of file paths that already have file-owned code symbols.
 pub fn list_files_with_symbols(
     conn: &Connection,
@@ -5708,7 +5954,9 @@ pub fn insert_code_chunk(
             start_line, end_line, content, embedding
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    crate::retrieval::lexical::index_chunk(conn, id, file_path, symbol, content)?;
+    Ok(id)
 }
 
 /// Return all (chunk_id, embedding_blob) pairs for a project. Used for cosine ranking.
@@ -11684,6 +11932,51 @@ mod tests {
         assert_eq!(stats.tokens_today, 0);
     }
 
+    fn set_template_grants(conn: &Connection, template: &str, edit: impl Fn(&mut Vec<String>)) {
+        let raw: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = ?1", [template], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let mut permissions: Vec<String> = serde_json::from_str(&raw).unwrap();
+        edit(&mut permissions);
+        conn.execute(
+            "UPDATE roles SET permissions = ?1 WHERE id = ?2",
+            [serde_json::to_string(&permissions).unwrap(), template.to_string()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn reported_explicit_grants_follow_the_persisted_templates() {
+        // /v1/admin/auth/me reports get_role_permissions; require_explicit_permission
+        // checks the templates. They must agree, or the UI shows controls the
+        // backend rejects (or hides ones it allows).
+        let conn = setup();
+        let has = |role: &str, permission: &str| {
+            get_role_permissions(&conn, "irrelevant", role)
+                .unwrap()
+                .iter()
+                .any(|p| p == permission)
+        };
+        assert!(has("super_user", "factory_policy:write"));
+        assert!(!has("admin", "factory_policy:read"));
+        assert!(has("admin", "autonomous_agent:read"));
+
+        set_template_grants(&conn, "super_user_template", |p| {
+            p.retain(|x| x != "factory_policy:write")
+        });
+        set_template_grants(&conn, "admin_template", |p| {
+            p.push("factory_policy:read".into());
+            p.retain(|x| x != "autonomous_agent:read");
+        });
+        assert!(!has("super_user", "factory_policy:write"));
+        assert!(has("super_user", "factory_policy:read"));
+        assert!(has("admin", "factory_policy:read"));
+        assert!(!has("admin", "autonomous_agent:read"));
+        assert!(has("admin", "policy:write"), "non-explicit domains stay hard-coded");
+    }
+
     #[test]
     fn get_role_permissions_admin_includes_policy_write() {
         let conn = setup();
@@ -12829,6 +13122,81 @@ mod tests {
             result.is_none(),
             "org isolation must hold for code projects"
         );
+    }
+
+    /// The crash window O-2c would otherwise open: between deleting a file's
+    /// chunks and re-inserting them, a surviving `chunked_hash` would declare an
+    /// empty file complete, and the next run would skip it out of semantic search
+    /// for good — with `reindex` unable to repair it, since it takes the same
+    /// incremental path.
+    #[test]
+    fn clearing_the_chunk_stamp_makes_a_file_incomplete_again() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        upsert_code_file(&conn, project_id, "src/a.rs", "fn a() {}", "h1").unwrap();
+        set_file_chunked(&conn, project_id, "src/a.rs", "h1").unwrap();
+        let before = list_indexed_state(&conn, project_id).unwrap();
+        assert_eq!(before["src/a.rs"].chunked.as_deref(), Some("h1"));
+
+        clear_file_chunked(&conn, project_id, "src/a.rs").unwrap();
+        let after = list_indexed_state(&conn, project_id).unwrap();
+        assert!(after["src/a.rs"].chunked.is_none(), "Pass 2 must read as unfinished");
+        assert_eq!(
+            after["src/a.rs"].graphed.as_deref(),
+            before["src/a.rs"].graphed.as_deref(),
+            "Pass 1 is untouched — only the chunking half is in doubt"
+        );
+    }
+
+    #[test]
+    fn list_files_with_unembedded_chunks_finds_only_the_gaps() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        // Embedded: has a vector, nothing to repair.
+        insert_code_chunk(
+            &conn, project_id, "src/ok.rs", "h1", None, Some("f"), 1, 5, "fn f() {}",
+            Some(&[0u8, 1, 2, 3]),
+        )
+        .unwrap();
+        // The defect: chunked while the embedder was off.
+        insert_code_chunk(
+            &conn, project_id, "src/gap.rs", "h2", None, Some("g"), 1, 5, "fn g() {}", None,
+        )
+        .unwrap();
+        // A file where only one of two chunks is missing its vector still counts.
+        insert_code_chunk(
+            &conn, project_id, "src/half.rs", "h3", None, Some("a"), 1, 5, "fn a() {}",
+            Some(&[9u8, 9]),
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn, project_id, "src/half.rs", "h3", None, Some("b"), 6, 9, "fn b() {}", None,
+        )
+        .unwrap();
+
+        let gaps = list_files_with_unembedded_chunks(&conn, project_id).unwrap();
+        assert!(gaps.contains("src/gap.rs"));
+        assert!(gaps.contains("src/half.rs"), "one missing vector is enough");
+        assert!(!gaps.contains("src/ok.rs"), "a fully embedded file is not re-parsed");
+        assert_eq!(gaps.len(), 2);
+    }
+
+    /// A file with no chunks at all is not a gap. Plenty legitimately produce
+    /// none, and reporting them would re-parse and re-store them on every run —
+    /// 383 of 5,845 files in the August backup — to repair nothing.
+    #[test]
+    fn a_file_with_no_chunks_is_not_reported_as_unembedded() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+        upsert_code_file(&conn, project_id, "README.md", "# hi", "h1").unwrap();
+
+        let gaps = list_files_with_unembedded_chunks(&conn, project_id).unwrap();
+        assert!(gaps.is_empty());
     }
 
     #[test]
@@ -15443,6 +15811,7 @@ mod memory_project_scope_tests {
     }
 }
 
+#[cfg(test)]
 mod convention_scope_tests {
     use super::*;
     use crate::db::{connection, migrations};
@@ -16438,6 +16807,114 @@ pub fn get_autonomous_agent_detail(
     }))
 }
 
+pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
+    if config.get("model_source").is_some_and(|v|!matches!(v.as_str(),Some("agent"|"factory_roles"))) {anyhow::bail!("invalid_model_source")}
+    match config.get("executor") {
+        None => Ok("claude"), // revisions created before the selector remain unchanged
+        Some(serde_json::Value::String(value))
+            if value == "claude" || value == "nexus" || value == "codex" || value == "pi" =>
+        {
+            Ok(value)
+        }
+        _ => anyhow::bail!("invalid_executor"),
+    }
+}
+
+fn validate_autonomous_executor(config: &serde_json::Value, template_key: &str) -> Result<()> {
+    let executor = autonomous_executor(config)?;
+    if config.get("model_source").and_then(serde_json::Value::as_str)==Some("agent") {
+        if let Some(model)=config.get("model") {
+            let value=model.as_str().ok_or_else(||anyhow::anyhow!("invalid_agent_model"))?;
+            if executor=="claude" && !crate::factory::gateway::pinned_model(value) {anyhow::bail!("invalid_agent_model")}
+            if executor=="codex" && crate::automation::codex::start_check(value).is_err() {anyhow::bail!("invalid_agent_model")}
+        }
+    }
+    crate::factory::sandbox::parse_allowed_hosts(config.get("sandbox_allowed_hosts"))?;
+    let isolation = crate::factory::sandbox::autonomous_isolation(config, template_key, executor)?;
+    if isolation == crate::factory::sandbox::Isolation::Sandbox {
+        if let Some(raw) = config.get("runtime") {
+            let runtime: crate::automation::agent_runtime::RuntimeConfig = serde_json::from_value(raw.clone()).map_err(|_| anyhow::anyhow!("invalid_agent_runtime"))?;
+            if runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).any(|s| !s.env.is_empty() || !s.headers.is_empty()) {
+                anyhow::bail!("runtime_mcp_credentials_require_sandbox_proxy");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod autonomous_executor_tests {
+    #[test]
+    fn model_source_and_explicit_models_fail_closed() {
+        for source in [serde_json::json!("unknown"),serde_json::json!(true)] {
+            assert!(super::autonomous_executor(&serde_json::json!({"model_source":source})).is_err());
+        }
+        assert!(super::validate_autonomous_executor(&serde_json::json!({"executor":"claude","model_source":"agent","model":"sonnet"}),"github_issue_resolver").is_ok());
+        assert!(super::validate_autonomous_executor(&serde_json::json!({"executor":"claude","model_source":"agent","model":"gpt-other-provider"}),"github_issue_resolver").is_err());
+    }
+    #[test]
+    fn saved_configs_reject_invalid_sandbox_hosts() {
+        let bad = serde_json::json!({"sandbox_allowed_hosts": ["*.acme.test"]});
+        assert_eq!(
+            super::validate_autonomous_executor(&bad, "qa").unwrap_err().to_string(),
+            "invalid_sandbox_allowed_hosts"
+        );
+    }
+
+    #[test]
+    fn saved_configs_reject_too_many_sandbox_hosts() {
+        let hosts: Vec<String> = (0..17).map(|i| format!("h{i}.acme.test")).collect();
+        let config = serde_json::json!({"sandbox_allowed_hosts": hosts});
+        assert_eq!(
+            super::validate_autonomous_executor(&config, "qa").unwrap_err().to_string(),
+            "too_many_sandbox_hosts"
+        );
+    }
+
+    #[test]
+    fn run_input_cannot_override_agent_config() {
+        assert!(super::RUN_INPUT_KEYS.contains(&"app_base_url"));
+        for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor", "model_source"] {
+            assert!(!super::RUN_INPUT_KEYS.contains(&protected), "{protected}");
+        }
+    }
+
+    #[test]
+    fn saved_configs_reject_a_sandbox_that_cannot_be_honored() {
+        let sandbox = serde_json::json!({"isolation": "sandbox"});
+        super::validate_autonomous_executor(&sandbox, "github_pr_reviewer").unwrap();
+        assert_eq!(
+            super::validate_autonomous_executor(&sandbox, "lead_generation")
+                .unwrap_err()
+                .to_string(),
+            "sandbox_unsupported_template"
+        );
+    }
+
+    use super::autonomous_executor;
+    use serde_json::json;
+
+    #[test]
+    fn pi_requires_supported_templates_and_local_execution() {
+        super::validate_autonomous_executor(&json!({"executor":"pi"}), "github_issue_resolver").unwrap();
+        super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"local"}), "github_pr_reviewer").unwrap();
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "github_pr_reviewer").unwrap_err().to_string(), "pi_requires_local");
+        super::validate_autonomous_executor(&json!({"executor":"pi"}), "qa").unwrap();
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi"}), "judge").unwrap_err().to_string(), "pi_unsupported_template");
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "qa").unwrap_err().to_string(), "pi_requires_local");
+    }
+
+    #[test]
+    fn defaults_old_agents_to_claude_and_rejects_unknown_values() {
+        assert_eq!(autonomous_executor(&json!({})).unwrap(), "claude");
+        assert_eq!(autonomous_executor(&json!({"executor":"claude"})).unwrap(), "claude");
+        assert_eq!(autonomous_executor(&json!({"executor":"nexus"})).unwrap(), "nexus");
+        assert_eq!(autonomous_executor(&json!({"executor":"pi"})).unwrap(), "pi");
+        assert!(autonomous_executor(&json!({"executor":"other"})).is_err());
+        assert!(autonomous_executor(&json!({"executor":null})).is_err());
+    }
+}
+
 pub fn create_autonomous_agent_definition(
     conn: &Connection,
     org_id: &str,
@@ -16450,6 +16927,8 @@ pub fn create_autonomous_agent_definition(
     if !req.config.is_object() || !req.budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
+    validate_autonomous_executor(&req.config, &req.template_key)?;
+    let runtime_config = crate::automation::agent_runtime::prepare_config(conn, org_id, user_id, &req.config)?;
     let capabilities = autonomous_agent_capabilities(&req.template_key)?;
     let definition_id = Uuid::new_v4().to_string();
     let revision_id = Uuid::new_v4().to_string();
@@ -16457,7 +16936,7 @@ pub fn create_autonomous_agent_definition(
     let config_hash = autonomous_agent_config_hash(
         &req.template_key,
         template_version,
-        &req.config,
+        &runtime_config,
         &req.budgets,
     )?;
     let tx = conn.unchecked_transaction()?;
@@ -16471,7 +16950,7 @@ pub fn create_autonomous_agent_definition(
         "INSERT INTO autonomous_agent_revisions
          (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,created_by)
          VALUES (?1,?2,1,?3,?4,?5,?6,?7)",
-        rusqlite::params![revision_id, definition_id, serde_json::to_string(&req.config)?, config_hash,
+        rusqlite::params![revision_id, definition_id, serde_json::to_string(&runtime_config)?, config_hash,
             serde_json::to_string(&capabilities)?, serde_json::to_string(&req.budgets)?, user_id],
     )?;
     tx.commit()?;
@@ -16505,6 +16984,9 @@ pub fn update_autonomous_agent_definition(
     if !config.is_object() || !budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
+    validate_autonomous_executor(config, &current.definition.template_key)?;
+    let prepared_config = crate::automation::agent_runtime::prepare_config(conn, org_id, user_id, config)?;
+    let config = &prepared_config;
     let description = req
         .description
         .as_ref()
@@ -16551,6 +17033,9 @@ pub fn validate_autonomous_agent_definition(
         anyhow::bail!("agent_archived");
     }
     let mut errors = Vec::new();
+    if crate::automation::github_publication::connection(conn, org_id, &current.definition.template_key, &current.revision.config).is_err() {
+        errors.push("github_publication_connection_invalid");
+    }
     if let Some(seconds) = current
         .revision
         .budgets
@@ -16604,7 +17089,16 @@ pub fn validate_autonomous_agent_definition(
                 errors.push("github_configuration_required")
             }
         }
-        "github_issue_resolver" | "github_pr_reviewer" => {
+        "github_pr_reviewer" => {
+            if super::autonomous_scope::reviewer_repositories(conn, org_id, &current.revision.config).is_err() {
+                errors.push("valid_repository_or_project_required");
+            }
+            if current.revision.config.get("project_id").is_some() && get_autonomous_agent_schedule(conn, org_id, id)?
+                .is_some_and(|schedule| schedule.enabled && schedule.kind != "manual") {
+                errors.push("project_reviewer_requires_pr");
+            }
+        }
+        "github_issue_resolver" => {
             match current
                 .revision
                 .config
@@ -17045,6 +17539,13 @@ pub fn put_autonomous_agent_schedule(
     if definition.status == "archived" {
         anyhow::bail!("agent_archived");
     }
+    if req.enabled && req.kind != "manual" && definition.template_key == "github_pr_reviewer" {
+        let revision = get_autonomous_agent_revision(conn, definition_id, definition.current_revision)?
+            .ok_or_else(|| anyhow::anyhow!("revision_missing"))?;
+        if revision.config.get("project_id").is_some() {
+            anyhow::bail!("project_reviewer_requires_pr");
+        }
+    }
     if !matches!(req.misfire_policy.as_str(), "run_once" | "skip") {
         anyhow::bail!("invalid_misfire_policy");
     }
@@ -17081,7 +17582,10 @@ pub fn get_autonomous_agent_schedule(
 
 fn autonomous_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentRun> {
     let budget: String = row.get(8)?;
+    let input:Option<String>=row.get(13)?;
+    let origin=input.and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v|v.get("origin").cloned());
     Ok(AutonomousAgentRun {
+        trigger_origin: origin,
         id: row.get(0)?,
         definition_id: row.get(1)?,
         revision_id: row.get(2)?,
@@ -17119,7 +17623,7 @@ pub fn enqueue_autonomous_agent_run(
     let automation_run_id = Uuid::new_v4().to_string();
     let run_id = Uuid::new_v4().to_string();
     let input_json = input.map(serde_json::to_string).transpose()?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::connection::AtomicSavepoint::new(conn)?;
     tx.execute(
         "INSERT INTO automation_runs (id,org_id,project_id,created_by,profile_version_ref,policy_generation)
          VALUES (?1,?2,NULL,?3,?4,?5)",
@@ -17140,7 +17644,7 @@ pub fn get_autonomous_agent_run(
     id: &str,
 ) -> Result<Option<AutonomousAgentRun>> {
     conn.query_row(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at,input_json
          FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
         rusqlite::params![org_id,id], autonomous_run_from_row,
     ).optional().map_err(Into::into)
@@ -17213,7 +17717,7 @@ pub fn list_autonomous_agent_runs(
     definition_id: Option<&str>,
 ) -> Result<Vec<AutonomousAgentRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at,input_json
          FROM autonomous_agent_runs WHERE org_id=?1 AND (?2 IS NULL OR definition_id=?2) ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(
@@ -17398,18 +17902,19 @@ pub struct ClaimedAutonomousRun {
     pub config: serde_json::Value,
 }
 
+/// Keys a run's input may set over the agent config for that run.
+const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url"];
+
 pub fn claim_next_autonomous_agent_run(
     conn: &Connection,
     worker_id: &str,
     lease_seconds: i64,
 ) -> Result<Option<ClaimedAutonomousRun>> {
     let health = get_autonomous_runtime_health(conn)?;
-    if !matches!(
+    let claude_ready = matches!(
         health.as_ref().map(|value| value.status.as_str()),
         Some("ready")
-    ) {
-        return Ok(None);
-    }
+    );
     let expired=conn.prepare("SELECT run_id FROM autonomous_agent_leases WHERE released_at IS NULL AND expires_at<=datetime('now')")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     for run_id in expired {
         let attempt_ids=conn.prepare("SELECT attempt_id FROM autonomous_agent_leases WHERE run_id=?1 AND released_at IS NULL")?.query_map([&run_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -17432,6 +17937,7 @@ pub fn claim_next_autonomous_agent_run(
          LEFT JOIN autonomous_agent_work_items candidate_work ON candidate_work.run_id=r.id
          LEFT JOIN autonomous_agent_revisions candidate_revision ON candidate_revision.id=r.revision_id
          WHERE r.status='queued' AND o.autonomous_agents_enabled=1
+           AND (?1=1 OR COALESCE(json_extract(candidate_revision.config_json,'$.executor'),'claude') IN ('nexus','pi'))
            AND (SELECT COUNT(*) FROM autonomous_agent_runs active
                 WHERE active.definition_id=r.definition_id AND active.status IN ('leased','running'))
                < COALESCE(json_extract(r.budget_json,'$.max_definition_concurrency'),1)
@@ -17450,7 +17956,7 @@ pub fn claim_next_autonomous_agent_run(
                 < COALESCE(json_extract(r.budget_json,'$.max_repository_concurrency'),1)
            )
          ORDER BY r.created_at LIMIT 1",
-        [], |row| Ok((row.get(0)?,row.get(1)?)),
+        rusqlite::params![if claude_ready { 1 } else { 0 }], |row| Ok((row.get(0)?,row.get(1)?)),
     ).optional()?;
     let Some((run_id, org_id)) = candidate else {
         return Ok(None);
@@ -17494,7 +18000,7 @@ pub fn claim_next_autonomous_agent_run(
         // The wizard stores a repository-based agent's repo in a `repository` target,
         // not in config.repository. Materialize it so prepare_repository and the rest
         // of the run (which read config.repository) find it when it isn't set directly.
-        if object.get("repository").and_then(|v| v.as_str()).is_none() {
+        if object.get("project_id").is_none() && object.get("repository").and_then(|v| v.as_str()).is_none() {
             if let Some(repo) = targets.iter().find_map(|t| {
                 if t.kind == "repository" && t.enabled {
                     t.config
@@ -17534,8 +18040,12 @@ pub fn claim_next_autonomous_agent_run(
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         {
             if let Some(input_obj) = input.as_object() {
+                // Only per-run inputs: an input can never override agent config
+                // such as isolation, allowed hosts, auto-merge or commands.
                 for (key, value) in input_obj {
-                    object.insert(key.clone(), value.clone());
+                    if RUN_INPUT_KEYS.contains(&key.as_str()) {
+                        object.insert(key.clone(), value.clone());
+                    }
                 }
             }
         }
@@ -17606,6 +18116,8 @@ pub fn patch_autonomous_agent_org_settings(
     if retention_days.is_some_and(|v| !(7..=3650).contains(&v)) {
         anyhow::bail!("invalid_retention_days")
     }
+    let transaction=crate::db::connection::AtomicSavepoint::new(conn)?;
+    let conn=&*transaction;
     conn.execute("UPDATE organizations SET autonomous_agents_enabled=COALESCE(?2,autonomous_agents_enabled),autonomous_agent_retention_days=COALESCE(?3,autonomous_agent_retention_days) WHERE id=?1",rusqlite::params![org_id,enabled.map(i64::from),retention_days])?;
     if enabled == Some(false) {
         let attempts=conn.prepare("SELECT lease.attempt_id FROM autonomous_agent_leases lease JOIN autonomous_agent_runs run ON run.id=lease.run_id WHERE run.org_id=?1 AND lease.released_at IS NULL")?.query_map([org_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -17615,7 +18127,10 @@ pub fn patch_autonomous_agent_org_settings(
         conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE released_at IS NULL AND run_id IN(SELECT id FROM autonomous_agent_runs WHERE org_id=?1)",[org_id])?;
         conn.execute("UPDATE autonomous_agent_runs SET status='cancelled',finished_at=datetime('now') WHERE org_id=?1 AND status IN ('leased','running')",[org_id])?;
     }
-    get_autonomous_agent_org_settings(conn, org_id)
+    if enabled==Some(false) {crate::db::workflows::pause_active_runs(conn,org_id)?;}
+    let result=get_autonomous_agent_org_settings(conn, org_id)?;
+    transaction.commit()?;
+    Ok(result)
 }
 
 pub fn cleanup_autonomous_agent_retention(conn: &Connection) -> Result<usize> {
@@ -17794,7 +18309,14 @@ pub fn finish_autonomous_agent_run(
     )?;
     tx.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND attempt_id=?2 AND released_at IS NULL", rusqlite::params![run_id,attempt_id])?;
     tx.commit()?;
-    append_autonomous_agent_event(conn, org_id, run_id, "run.finished", result)
+    // The run IS finished once the transaction commits. A failure to append the
+    // event afterwards must not be reported as a failed finish: callers would treat
+    // a finished run as unfinished (and skip work that depends on the finish).
+    if let Err(error) = append_autonomous_agent_event(conn, org_id, run_id, "run.finished", result)
+    {
+        tracing::warn!(run = run_id, "Could not append run.finished event: {error:#}");
+    }
+    Ok(())
 }
 
 fn autonomous_connector_from_row(
@@ -17827,6 +18349,12 @@ pub fn list_autonomous_agent_connectors(
     let rows = stmt.query_map([org_id], autonomous_connector_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+/// The metadata fields that decide where a connector's secret may be sent.
+fn connector_binding(metadata: &serde_json::Value) -> [Option<String>; 3] {
+    ["purpose", "source_kind", "sentry_host"]
+        .map(|name| metadata.get(name).and_then(|v| v.as_str()).map(str::to_string))
 }
 
 pub fn put_autonomous_agent_connector(
@@ -17900,6 +18428,23 @@ pub fn put_autonomous_agent_connector(
             }
         }
         _ => {}
+    }
+    // What a secret may be used for (factory intake binds it to a source kind and
+    // host) changes only together with the secret itself: otherwise relabelling
+    // an existing secret would let it be sent somewhere it was never meant to go.
+    if req.secret.is_none() {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT metadata_json FROM autonomous_agent_connectors WHERE org_id=?1 AND kind=?2 AND name=?3",
+                rusqlite::params![org_id, req.kind, req.name.trim()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let existing: serde_json::Value =
+            existing.and_then(|m| serde_json::from_str(&m).ok()).unwrap_or_default();
+        if connector_binding(&existing) != connector_binding(&req.metadata) {
+            anyhow::bail!("connector_binding_requires_new_secret");
+        }
     }
     let ciphertext = match req.secret.as_deref() {
         Some(secret) if !secret.is_empty() => Some(
@@ -18115,41 +18660,55 @@ pub fn record_github_webhook_delivery(
     Ok(true)
 }
 
+pub enum GithubRunOrigin<'a> { Webhook(&'a str), Reconciliation(&'a str) }
 #[allow(clippy::too_many_arguments)]
 pub fn enqueue_github_webhook_agents(
     conn: &Connection,
     org_id: &str,
-    _delivery_id: &str,
+    origin: GithubRunOrigin<'_>,
     repository: &str,
     kind: &str,
     external_number: i64,
     head_sha: Option<&str>,
     payload_hash: &str,
 ) -> Result<usize> {
+    let repository=repository.to_ascii_lowercase();
+    let (trigger_kind,provenance)=match origin {
+        GithubRunOrigin::Webhook(delivery)=>{
+            let received:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_github_deliveries WHERE org_id=?1 AND delivery_id=?2 AND lower(repository)=?3 AND payload_hash=?4)",rusqlite::params![org_id,delivery,repository,payload_hash],|r|r.get(0))?;
+            if !received {anyhow::bail!("github_delivery_evidence_required")}
+            ("github_webhook",serde_json::json!({"kind":"github_webhook","delivery_id":delivery}))
+        },
+        GithubRunOrigin::Reconciliation(scan)=>("reconcile",serde_json::json!({"kind":"github_reconciliation","scan_id":scan})),
+    };
     let template = match kind {
         "github_issue" => "github_issue_resolver",
         "github_pr" => "github_pr_reviewer",
         _ => anyhow::bail!("invalid_work_item_kind"),
     };
     let mut stmt = conn.prepare(
-        "SELECT d.id FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
+        "SELECT d.id,r.config_json FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
          ON r.definition_id=d.id AND r.revision=d.current_revision
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key=?2
-           AND json_extract(r.config_json,'$.repository')=?3 AND r.validation_status='valid'",
+           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'",
     )?;
     let ids = stmt
-        .query_map(rusqlite::params![org_id, template, repository], |row| {
-            row.get::<_, String>(0)
+        .query_map(rusqlite::params![org_id, template], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
     let mut created = 0;
-    for definition_id in ids {
+    for (definition_id, raw_config) in ids {
+        let config: serde_json::Value = serde_json::from_str(&raw_config)?;
+        let scope = if template == "github_pr_reviewer" { config } else { serde_json::json!({"repository":config["repository"]}) };
+        let allowed = super::autonomous_scope::reviewer_repositories(conn, org_id, &scope).unwrap_or_default();
+        if !allowed.iter().any(|repo| repo.eq_ignore_ascii_case(&repository)) { continue; }
         if kind == "github_issue" {
             let already_owned: bool = conn.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM autonomous_agent_work_items work
-                    WHERE work.definition_id=?1 AND work.repository=?2
+                    WHERE work.definition_id=?1 AND lower(work.repository)=?2
                       AND work.kind='github_issue' AND work.external_number=?3
                       AND work.eligibility IN('pending','eligible','completed')
                 )",
@@ -18160,7 +18719,13 @@ pub fn enqueue_github_webhook_agents(
                 continue;
             }
         }
-        let identity = head_sha.unwrap_or(payload_hash);
+        let mut generation=0_i64;
+        if kind=="github_pr" {
+            let head=head_sha.filter(|sha|crate::factory::workflows::valid_sha(sha)).ok_or_else(||anyhow::anyhow!("invalid_pull_request_head"))?;
+            let (count,live):(i64,i64)=conn.query_row("SELECT count(*),COALESCE(sum(CASE WHEN r.status!='cancelled' THEN 1 ELSE 0 END),0) FROM autonomous_agent_work_items w JOIN autonomous_agent_runs r ON r.id=w.run_id WHERE w.definition_id=?1 AND lower(w.repository)=?2 AND w.kind='github_pr' AND w.external_number=?3 AND w.head_sha=?4",rusqlite::params![definition_id,repository,external_number,head],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            if live>0 {continue;}generation=count;
+        }
+        let identity = if generation>0 {format!("{}:retry:{generation}",head_sha.unwrap_or(payload_hash))}else{head_sha.unwrap_or(payload_hash).to_string()};
         let occurrence = format!(
             "github:{}",
             hex::encode(Sha256::digest(
@@ -18172,10 +18737,10 @@ pub fn enqueue_github_webhook_agents(
             conn,
             org_id,
             &definition_id,
-            "github_webhook",
+            trigger_kind,
             &occurrence,
             None,
-            None,
+            Some(&serde_json::json!({"origin":provenance})),
         ) {
             Ok(Some(run)) => run,
             Err(error) if error.to_string().contains("UNIQUE constraint failed") => continue,
@@ -18205,32 +18770,38 @@ pub fn list_github_reconciliation_sources(
 ) -> Result<Vec<GithubReconciliationSource>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT d.org_id,d.template_key,
-                json_extract(r.config_json,'$.repository'),
-                json_extract(r.config_json,'$.github_connector_id')
+                r.config_json,
+                COALESCE(json_extract(r.config_json,'$.github_connector_id'),'server_gh_cli')
          FROM autonomous_agent_definitions d
          JOIN autonomous_agent_revisions r
            ON r.definition_id=d.id AND r.revision=d.current_revision
          JOIN organizations o ON o.id=d.org_id
-         JOIN autonomous_agent_connectors c
+         LEFT JOIN autonomous_agent_connectors c
            ON c.id=json_extract(r.config_json,'$.github_connector_id')
           AND c.org_id=d.org_id
          WHERE d.status='enabled' AND o.autonomous_agents_enabled=1
-           AND r.validation_status='valid' AND c.health='ready'
+           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'
+           AND (c.health='ready' OR json_extract(r.config_json,'$.github_connector_id') IS NULL)
            AND d.template_key IN('github_issue_resolver','github_pr_reviewer')
-           AND json_extract(r.config_json,'$.repository') IS NOT NULL
-         ORDER BY d.org_id,d.template_key,json_extract(r.config_json,'$.repository')
+           AND (json_extract(r.config_json,'$.repository') IS NOT NULL OR (d.template_key='github_pr_reviewer' AND json_extract(r.config_json,'$.project_id') IS NOT NULL))
+         ORDER BY d.org_id,d.template_key,r.config_json
          LIMIT 100",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(GithubReconciliationSource {
-            org_id: row.get(0)?,
-            template_key: row.get(1)?,
-            repository: row.get(2)?,
-            connector_id: row.get(3)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut sources = Vec::new();
+    for (org_id, template_key, raw, connector_id) in rows {
+        let config: serde_json::Value = serde_json::from_str(&raw)?;
+        let scope = if template_key == "github_pr_reviewer" { config } else { serde_json::json!({"repository":config["repository"]}) };
+        for repository in super::autonomous_scope::reviewer_repositories(conn, &org_id, &scope).unwrap_or_default() {
+            if !sources.iter().any(|source: &GithubReconciliationSource| source.org_id == org_id && source.template_key == template_key && source.repository == repository && source.connector_id == connector_id) {
+                sources.push(GithubReconciliationSource {org_id:org_id.clone(),template_key:template_key.clone(),repository,connector_id:connector_id.clone()});
+            }
+            if sources.len() == 100 { return Ok(sources); }
+        }
+    }
+    Ok(sources)
 }
 
 pub fn create_autonomous_output_link(
@@ -18264,21 +18835,111 @@ pub fn upsert_autonomous_agent_finding(
     if !matches!(severity, "info" | "low" | "medium" | "high" | "critical") {
         anyhow::bail!("invalid_severity");
     }
+    // Serialize the identity lookup and write across worker connections. Otherwise
+    // two runs with different model-generated fingerprints can both insert.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let exact: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_findings WHERE org_id=?1 AND definition_id=?2 AND fingerprint=?3)",
+        rusqlite::params![org_id, definition_id, fingerprint], |row| row.get(0),
+    )?;
+    let is_qa: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions WHERE org_id=?1 AND id=?2 AND template_key='qa')",
+        rusqlite::params![org_id, definition_id], |row| row.get(0),
+    )?;
+    let mut canonical = fingerprint.to_string();
+    if is_qa && !exact {
+        let mut stmt = tx.prepare(
+            "SELECT fingerprint,title,evidence_json FROM autonomous_agent_findings
+             WHERE org_id=?1 AND definition_id=?2 AND status='open' ORDER BY created_at,id",
+        )?;
+        let candidates = stmt.query_map(rusqlite::params![org_id, definition_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        for candidate in candidates {
+            let (old_fingerprint, old_title, old_evidence) = candidate?;
+            let old_evidence = serde_json::from_str(&old_evidence).unwrap_or_default();
+            if qa_finding_identity_matches(&old_fingerprint, &old_title, &old_evidence, fingerprint, title, evidence) {
+                canonical = old_fingerprint;
+                break;
+            }
+        }
+    }
+    let mut stored_evidence = evidence.clone();
+    if canonical != fingerprint {
+        if let Some(object) = stored_evidence.as_object_mut() {
+            if object.contains_key("fingerprint") {
+                object.insert("fingerprint".into(), serde_json::json!(canonical));
+            }
+        }
+    }
     let id = Uuid::new_v4().to_string();
-    conn.execute(
+    tx.execute(
         "INSERT INTO autonomous_agent_findings (id,org_id,definition_id,run_id,fingerprint,title,severity,summary,evidence_json)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(org_id,definition_id,fingerprint) DO UPDATE SET run_id=excluded.run_id,title=excluded.title,
          severity=excluded.severity,summary=excluded.summary,evidence_json=excluded.evidence_json,
          occurrence_count=autonomous_agent_findings.occurrence_count+1,updated_at=datetime('now')",
-        rusqlite::params![id,org_id,definition_id,run_id,fingerprint,title,severity,summary,serde_json::to_string(evidence)?],
+        rusqlite::params![id,org_id,definition_id,run_id,canonical,title,severity,summary,serde_json::to_string(&stored_evidence)?],
     )?;
-    conn.query_row(
+    let finding = tx.query_row(
         "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at
          FROM autonomous_agent_findings WHERE org_id=?1 AND definition_id=?2 AND fingerprint=?3",
-        rusqlite::params![org_id,definition_id,fingerprint], finding_from_row,
-    ).map_err(Into::into)
+        rusqlite::params![org_id,definition_id,canonical], finding_from_row,
+    )?;
+    tx.commit()?;
+    Ok(finding)
 }
+
+/// Conservative QA fallback: keep location/module boundaries, normalize only
+/// fingerprint separators or an otherwise identical title. No fuzzy symptom merge.
+fn qa_finding_identity_matches(
+    old_fingerprint: &str, old_title: &str, old_evidence: &serde_json::Value,
+    fingerprint: &str, title: &str, evidence: &serde_json::Value,
+) -> bool {
+    let scope = |value: &serde_json::Value, key: &str| {
+        value.get(key).and_then(serde_json::Value::as_str).unwrap_or_default()
+            .split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    };
+    if ["module", "location"].iter().any(|key| scope(old_evidence, key) != scope(evidence, key)) {
+        return false;
+    }
+    let normalize_fingerprint = |text: &str| text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let fp = normalize_fingerprint(fingerprint);
+    if !fp.is_empty() && fp == normalize_fingerprint(old_fingerprint) {
+        return true;
+    }
+    let normalize_title = |text: &str| text.to_lowercase().split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+    let title = normalize_title(title);
+    title.split_whitespace().count() >= 3 && title == normalize_title(old_title)
+}
+
+/// Bounded reference context encourages the model to reuse canonical identities
+/// even when it would describe an existing defect with different wording.
+pub fn open_qa_finding_references(conn: &Connection, org_id: &str, definition_id: &str) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT fingerprint,title,evidence_json FROM autonomous_agent_findings
+         WHERE org_id=?1 AND definition_id=?2 AND status='open' ORDER BY created_at,id LIMIT 100",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, definition_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
+    rows.map(|row| {
+        let (fingerprint, title, evidence) = row?;
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap_or_default();
+        let mut reference = serde_json::json!({"fingerprint":fingerprint,"title":title});
+        for key in ["module", "location", "expected", "actual"] {
+            if let Some(text) = evidence.get(key).and_then(serde_json::Value::as_str) {
+                reference[key] = serde_json::json!(text.chars().take(800).collect::<String>());
+            }
+        }
+        Ok(reference)
+    }).collect()
+}
+
+#[cfg(test)]
+#[path = "qa_finding_dedup_tests.rs"]
+mod qa_finding_dedup_tests;
 
 fn finding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentFinding> {
     let evidence: String = row.get(8)?;
@@ -18475,6 +19136,14 @@ pub fn put_autonomous_agent_target(
     if req.name.trim().is_empty() || !req.config.is_object() {
         anyhow::bail!("invalid_target")
     }
+    let project_id = if req.kind == "project" {
+        let id = req.config.get("project_id").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("invalid_target"))?;
+        if get_project_by_id(conn, org_id, id)?.filter(|project| project.archived_at.is_none()).is_none() {
+            anyhow::bail!("invalid_target");
+        }
+        Some(id)
+    } else { None };
     if let Some(connector) = req.credential_connector_id.as_deref() {
         let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_connectors WHERE id=?1 AND org_id=?2 AND health!='revoked')",rusqlite::params![connector,org_id],|r|r.get(0))?;
         if !exists {
@@ -18490,7 +19159,7 @@ pub fn put_autonomous_agent_target(
         rusqlite::params![org_id, definition_id, req.name.trim()],
     )?;
     let id = Uuid::new_v4().to_string();
-    conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64])?;
+    conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled,project_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64,project_id])?;
     conn.query_row("SELECT id,definition_id,kind,name,config_json,credential_connector_id,enabled,created_at,updated_at FROM autonomous_agent_targets WHERE id=?1 AND org_id=?2",rusqlite::params![id,org_id],autonomous_target_from_row).optional().map_err(Into::into)
 }
 

@@ -24,7 +24,7 @@ export default function TasksBoard({ tasks, onTaskClick }: TasksBoardProps) {
           <div
             key={col.status}
             data-testid={`board-column-${col.status}`}
-            className="rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] p-3 min-h-[240px]"
+            className="rounded-xl border border-border-primary bg-surface-primary p-3 min-h-[240px]"
           >
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide">{col.label}</h3>
@@ -38,7 +38,7 @@ export default function TasksBoard({ tasks, onTaskClick }: TasksBoardProps) {
                   <button
                     key={task.id}
                     onClick={() => onTaskClick(task)}
-                    className="w-full text-left rounded-[11px] border border-white/[0.07] bg-white/[0.04] p-2.5 hover:border-accent-blue/40 transition-colors"
+                    className="w-full text-left rounded-md border border-border-primary bg-foreground/[0.04] p-2.5 hover:border-accent-blue/40 transition-colors"
                   >
                     <p className="text-xs text-text-primary font-medium mb-1.5">{task.title}</p>
                     <div className="flex items-center justify-between">

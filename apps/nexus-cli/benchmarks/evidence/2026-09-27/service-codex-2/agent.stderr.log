@@ -1,0 +1,4 @@
+Reading additional input from stdin...
+2026-09-27T20:06:50.395911Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-09-27T20:06:50.402005Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-09-27T20:07:51.063012Z ERROR codex_core::tools::router: error=apply_patch verification failed: invalid patch: multiple operations target /private/tmp/nexus-bench-realworld-20260927/service-codex-2/src/server.js

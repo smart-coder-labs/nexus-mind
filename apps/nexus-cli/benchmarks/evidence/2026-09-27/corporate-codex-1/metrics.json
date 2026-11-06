@@ -1,0 +1,53 @@
+{
+  "case": "corporate",
+  "arm": "codex",
+  "trial": 1,
+  "startedAt": "2026-09-27T19:55:13.535Z",
+  "elapsedSeconds": 98.6,
+  "tool": "codex-cli 0.154.0",
+  "model": "gpt-5.6-terra",
+  "prompt": "Implementa el módulo ApprovalService para solicitudes de compra: validación de importe finito positivo e ID único, aprobación/rechazo solo por manager o admin ajeno al solicitante, transición solo desde pending, auditoría con actor/acción/fecha, reintentos idempotentes sin eventos duplicados y lecturas que no permitan mutar el estado interno. Mantén la API y pasa node --test; no modifiques las pruebas.",
+  "exitCode": 0,
+  "signal": null,
+  "usage": {
+    "input_tokens": 223452,
+    "cached_input_tokens": 200192,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 4493,
+    "reasoning_output_tokens": 1412
+  },
+  "nexusStatus": null,
+  "decision": null,
+  "visible": {
+    "exitCode": 0,
+    "pass": 6,
+    "fail": 0
+  },
+  "heldout": {
+    "exitCode": 0,
+    "pass": 4,
+    "fail": 0
+  },
+  "changedPaths": [
+    "src/approvals.js"
+  ],
+  "testsUnmodified": true,
+  "diffCheck": true,
+  "contextSourceCount": null,
+  "hashes": {
+    "fixtureTestSha256": "fd23940e09d4b46832f53b1c68a9224bf5f024185d86f583afe02ced2789c5b9",
+    "implementationDiffSha256": "68b0495992f5257ec532a86da82c06dd09cbc4961bd1863bf39099a63ca4a7bb",
+    "stdoutSha256": "bfbd0844cbae846fdaf56b57985e5f6f42c595bd8bd2e57a5b31c176fccf5b49"
+  },
+  "heldoutInitial": {
+    "exitCode": 0,
+    "pass": 4,
+    "fail": 0
+  },
+  "codexDetailedUsage": null,
+  "evidence": {
+    "initialRunnerMetrics": "/private/tmp/nexus-bench-realworld-20260927/corporate-codex-1/metrics.json",
+    "initialHeldoutLog": "/private/tmp/nexus-bench-realworld-20260927/corporate-codex-1/heldout-tests.log",
+    "finalHeldoutRubric": "/Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/corporate.test.mjs"
+  }
+}

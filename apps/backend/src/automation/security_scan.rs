@@ -65,7 +65,11 @@ pub fn validate_semgrep_ruleset(ruleset: &str) -> Result<()> {
 
 /// Semgrep argv. `--json` with no `--output` writes the report to stdout, which the
 /// runner captures. `<SCAN_ROOT>` is always last and host-controlled.
-pub fn build_semgrep_argv(ruleset: &str, scan_root: &str, timeout_secs: u32) -> Result<Vec<String>> {
+pub fn build_semgrep_argv(
+    ruleset: &str,
+    scan_root: &str,
+    timeout_secs: u32,
+) -> Result<Vec<String>> {
     validate_semgrep_ruleset(ruleset)?;
     Ok(vec![
         SEMGREP.into(),
@@ -150,6 +154,24 @@ fn str_at<'a>(v: &'a Value, ptr: &str) -> &'a str {
 
 /// Map Semgrep `--json` output (`{"results":[...]}`) to canonical findings.
 /// Malformed or empty input degrades to zero findings; it never panics.
+/// A Semgrep report that is not a real scan: fatal errors (rules could not load,
+/// network, invalid config) and no results. Parse warnings on individual files are
+/// normal on healthy repositories and do not count.
+pub fn semgrep_report_failed(raw: &Value) -> bool {
+    let Some(results) = raw.get("results").and_then(Value::as_array) else {
+        return true;
+    };
+    let fatal = raw
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(|errors| {
+            errors
+                .iter()
+                .any(|error| error.get("level").and_then(Value::as_str) == Some("error"))
+        });
+    results.is_empty() && fatal
+}
+
 pub fn map_semgrep_json(raw: &Value) -> Vec<Value> {
     let Some(results) = raw.get("results").and_then(Value::as_array) else {
         return Vec::new();
@@ -163,7 +185,10 @@ pub fn map_semgrep_json(raw: &Value) -> Vec<Value> {
                 .pointer("/start/line")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            let end_line = r.pointer("/end/line").and_then(Value::as_i64).unwrap_or(start_line);
+            let end_line = r
+                .pointer("/end/line")
+                .and_then(Value::as_i64)
+                .unwrap_or(start_line);
             let message = str_at(r, "/extra/message");
             let native_sev = str_at(r, "/extra/severity");
             let impact_high = r
@@ -309,20 +334,48 @@ pub fn map_osv_json(raw: &Value) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_semgrep_report_with_only_fatal_errors_is_a_failed_scan() {
+        use serde_json::json;
+        let fatal = json!({"results": [], "errors": [{"level": "error", "type": "SemgrepError", "message": "Failed to download configuration"}]});
+        assert!(super::semgrep_report_failed(&fatal));
+        let parse_warning =
+            json!({"results": [], "errors": [{"level": "warn", "type": "Syntax error"}]});
+        assert!(!super::semgrep_report_failed(&parse_warning));
+        let clean = json!({"results": [], "errors": []});
+        assert!(!super::semgrep_report_failed(&clean));
+        let findings_with_errors =
+            json!({"results": [{"check_id": "x"}], "errors": [{"level": "error"}]});
+        assert!(!super::semgrep_report_failed(&findings_with_errors));
+        // Not a report at all.
+        assert!(super::semgrep_report_failed(&json!({"unexpected": true})));
+    }
+
     use super::*;
 
     #[test]
     fn program_allowlist_is_closed() {
         assert!(is_allowlisted_program("semgrep"));
         assert!(is_allowlisted_program("osv-scanner"));
-        for bad in ["nuclei", "sqlmap", "bash", "sh", "curl", "rm", "npx", "npm", "cargo"] {
-            assert!(!is_allowlisted_program(bad), "{bad} must not be allowlisted");
+        for bad in [
+            "nuclei", "sqlmap", "bash", "sh", "curl", "rm", "npx", "npm", "cargo",
+        ] {
+            assert!(
+                !is_allowlisted_program(bad),
+                "{bad} must not be allowlisted"
+            );
         }
     }
 
     #[test]
     fn semgrep_ruleset_validation_blocks_traversal_and_junk() {
-        for ok in ["auto", "p/ci", "p/owasp-top-ten", "rules/custom.yml", "a/b-c_d.yaml"] {
+        for ok in [
+            "auto",
+            "p/ci",
+            "p/owasp-top-ten",
+            "rules/custom.yml",
+            "a/b-c_d.yaml",
+        ] {
             assert!(validate_semgrep_ruleset(ok).is_ok(), "{ok} should pass");
         }
         for bad in [
@@ -345,7 +398,7 @@ mod tests {
         assert!(argv.contains(&"--json".to_string()));
         assert!(!argv.iter().any(|a| a == "--output")); // report goes to stdout
         assert_eq!(argv.last().unwrap(), "."); // scan root is always last
-        // A bad ruleset never reaches argv.
+                                               // A bad ruleset never reaches argv.
         assert!(build_semgrep_argv("../evil.yml", ".", 30).is_err());
     }
 

@@ -69,12 +69,17 @@ export interface AutonomousAgentDefinition { id:string; org_id:string; name:stri
 export interface AutonomousAgentRevision { id:string; definition_id:string; revision:number; config:Record<string,unknown>; config_hash:string; capabilities:string[]; budgets:Record<string,unknown>; policy_generation:number; validation_status:'pending'|'valid'|'invalid'; validation:Record<string,unknown>|null; validated_at:string|null; created_by:string; created_at:string }
 export interface AutonomousAgentDetail extends AutonomousAgentDefinition { revision: AutonomousAgentRevision }
 export interface AutonomousAgentSchedule { id:string; definition_id:string; kind:'manual'|'daily'|'interval'; expression:string|null; timezone:string; misfire_policy:'run_once'|'skip'; next_run_at:string|null; enabled:boolean; created_at:string; updated_at:string }
-export interface AutonomousAgentRun { id:string; definition_id:string; revision_id:string; trigger_kind:string; occurrence_key:string; scheduled_for:string|null; snapshot_sha:string|null; status:string; budget:Record<string,unknown>; started_at:string|null; finished_at:string|null; created_at:string; archived_at:string|null }
+export interface AutonomousAgentRun { trigger_origin?:{kind:string;delivery_id?:string;scan_id?:string;source_run_id?:string}|null; id:string; definition_id:string; revision_id:string; trigger_kind:string; occurrence_key:string; scheduled_for:string|null; snapshot_sha:string|null; status:string; budget:Record<string,unknown>; started_at:string|null; finished_at:string|null; created_at:string; archived_at:string|null }
 export interface AutonomousRuntimeHealth { status:'ready'|'degraded'|'reauth_required'|'unavailable'; reason_code:string|null; claude_version:string|null; checked_at:string|null; last_success_at:string|null; last_failure_at:string|null }
+export interface PiRuntimeHealth { status:'ready'|'blocked'|'unavailable'; reason_code:string|null }
 export interface AutonomousAgentConnector { id:string; kind:'github_app'|'slack'|'target_secret'; name:string; metadata:Record<string,unknown>; scopes:string[]; health:string; revocation_generation:number; secret_configured:boolean; created_at:string; updated_at:string }
 export interface AutonomousAgentFinding { id:string;definition_id:string;run_id:string;fingerprint:string;title:string;severity:string;status:string;summary:string;evidence:Record<string,unknown>;occurrence_count:number;created_at:string;updated_at:string }
 export interface AutonomousAgentDelivery { id:string;run_id:string;finding_id:string|null;channel:string;status:string;external_id:string|null;external_url:string|null;attempts:number;last_error_code:string|null;created_at:string;updated_at:string }
 export interface AutonomousAgentEvent { sequence:number;kind:string;payload:Record<string,unknown>;created_at:string }
+/** F1 verification gate: one check of a report (command in the sandbox or CI check). */
+export interface VerificationCheck { name:string;status:'PASS'|'FAIL'|'SKIP'|'ERROR';duration_ms?:number;artifact?:string|null }
+export interface VerificationReport { schema_version:number;task_id:string;head_sha:string;passed:boolean;checks:VerificationCheck[];blocking_failures:string[];eligible_for_merge:boolean;human_approval_required:boolean }
+export interface StoredVerificationReport { head_sha:string;created_at:string;report:VerificationReport }
 export interface AutonomousAgentTarget { id:string;definition_id:string;kind:string;name:string;config:Record<string,unknown>;credential_connector_id:string|null;enabled:boolean;created_at:string;updated_at:string }
 export interface AutonomousAgentOrgSettings { enabled:boolean;retention_days:number }
 export interface AutonomousAgentMetrics { queued:number;running:number;blocked:number;open_findings:number;failed_deliveries:number;dead_letters:number;estimated_cost_usd:number }
@@ -805,6 +810,21 @@ export interface HarnessVersionSummary {
 }
 
 export type HarnessFormat = 'agent' | 'skill' | 'command' | 'hook' | 'output_style' | 'claude_code_plugin' | 'theme'
+export interface AgentRuntimeComponent {
+  id: string
+  kind: 'instructions' | 'skill' | 'script' | 'plugin' | 'extension' | 'prompt_template' | 'mcp'
+  enabled?: boolean
+  tools?: string[]
+  files?: Record<string, string>
+  server?: { command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string> }
+}
+export interface AgentRuntimeConfig {
+  nexusmind_profile?: string
+  acknowledge_executable?: boolean
+  harnesses?: { id: string; version: string; manifest_hash: string; components: string[] }[]
+  components?: AgentRuntimeComponent[]
+}
+
 export type HarnessComponentKind = 'file' | 'folder' | 'plugin_marketplace' | 'theme_json'
 
 export interface HarnessOwner {
@@ -834,7 +854,7 @@ export interface HarnessManifestComponent {
 
 export interface HarnessManifest {
   schema_version: '1.1'
-  targets: Array<'claude' | 'codex' | 'cursor'>
+  targets: Array<'claude' | 'codex' | 'cursor' | 'pi'>
   format: HarnessFormat
   components: HarnessManifestComponent[]
   provenance: { source: string }
@@ -859,6 +879,7 @@ export interface Harness {
 }
 
 export interface CreateHarnessRequest {
+  initial_version?: PublishHarnessVersionRequest
   slug: string
   name: string
   description?: string
@@ -1466,4 +1487,293 @@ export interface MigrationRunReport {
   failed: number
   pending_index: number
   outcomes: MigrationRunReportEntry[]
+}
+
+// ── Software factory ─────────────────────────────────────────────────────────
+// Mirrors `schemas/factory/action-policy-v1.schema.json` plus the row identity.
+
+export type FactoryAction =
+  | 'fix' | 'publish' | 'open_pr' | 'reply' | 'close'
+  | 'approve' | 'merge' | 'deploy' | 'notify' | 'recover'
+
+export type FactoryPolicyMode = 'never' | 'manual' | 'criteria' | 'after_fix' | 'after_merge'
+
+export type FactoryTaskClass =
+  | 'docs' | 'tests' | 'ui' | 'backend' | 'bugfix'
+  | 'refactor' | 'migration' | 'infra' | 'security' | 'unknown'
+
+export interface FactoryActionPolicy {
+  schema_version: 1
+  action: FactoryAction
+  mode: FactoryPolicyMode
+  scope: { project?: string; task_class?: FactoryTaskClass }
+  allow: string[]
+  stop: string[]
+  version: number
+}
+
+export interface FactoryPolicy extends FactoryActionPolicy {
+  id: string
+  updated_by: string
+  updated_at: string
+}
+
+/** One task class in the decision-model shadow report (factory F3, OD-5). */
+export interface ShadowClassReport {
+  task_class: string
+  decisions: number
+  allowed: number
+  settled_allowed: number
+  false_low: number
+  false_low_rate: number | null
+  meets_od5: boolean
+}
+
+export interface ShadowReport {
+  classes: ShadowClassReport[]
+  min_settled_allows: number
+  max_false_low_rate: number
+}
+
+export type ShadowOutcome = 'pending' | 'clean' | 'high_risk' | 'not_merged' | 'superseded' | 'unresolvable'
+
+export interface ShadowDecision {
+  id: string
+  repository: string
+  pull_number: number
+  head_sha: string
+  task_class: string
+  risk: number
+  risk_confidence: number
+  verdict: 'allow' | 'hold'
+  floor: string | null
+  outcome: ShadowOutcome
+  outcome_signals: string[]
+  merged_at: string | null
+  human_label: 'low' | 'high' | null
+  created_at: string
+}
+
+/** Factory operator digest: everything waiting on a person (F3). */
+export interface FactoryHeldMerge { subject: string; reason: string; source: string; created_at: string }
+export interface FactoryBlockedRun {
+  run_id: string
+  agent: string
+  template_key: string
+  status: string
+  reason: string | null
+  finished_at: string | null
+}
+export interface FactoryWaitingTask { id: string; project: string; title: string; status: string; created_at: string }
+export interface FactoryApprovedMerge { subject: string; approved_at: string; merges_after: string | null }
+export interface FactoryDigest {
+  held_merges: FactoryHeldMerge[]
+  approved_merges: FactoryApprovedMerge[]
+  /** null when the viewer may not read agent runs. */
+  blocked_runs: FactoryBlockedRun[] | null
+  factory_tasks: FactoryWaitingTask[]
+  unlabeled_shadow: number
+  unlabeled_shadow_allows: number
+}
+
+export interface FactoryTrajectoryReviewItem {
+  run_id: string
+  agent_name: string
+  run_status: string
+  outcome: string | null
+  created_at: string
+}
+
+export interface FactoryLookbackEvidenceTask {
+  id: string
+  title: string
+  updated_at: string
+}
+
+export interface FactoryLookbackRecommendation {
+  memory_id: string
+  memory_title: string
+  memory_project: string
+  recurring_terms: string[]
+  recurrence_count: number
+  task_evidence: FactoryLookbackEvidenceTask[]
+  explanation: string
+}
+
+export interface FactoryLookbackResponse {
+  recommendations: FactoryLookbackRecommendation[]
+  completed_tasks_scanned: number
+  bugfix_memories_scanned: number
+  history_limit: number
+  history_truncated: boolean
+}
+
+export interface FactoryModelSpend { model: string | null; runs: number; cost_usd: number; input_tokens: number; output_tokens: number }
+export interface FactoryEconomics {
+  days: number
+  runs: number
+  cost_usd: number
+  by_model: FactoryModelSpend[]
+  tier_choices: [string, number][]
+  frontier_avoidance: number | null
+  proposed_changes: number
+  cost_per_proposed_change: number | null
+  accepted_changes_tracked: boolean
+}
+
+/**
+ * Frozen specialist evaluation contract for the Factory admin page.
+ * The backend discovers source JSONL files in its persistent eval directory;
+ * these shapes deliberately do not expose that filesystem path to the browser.
+ */
+export type FactoryEvaluationStatus = 'queued' | 'running' | 'complete' | 'failed'
+export type FactoryEvaluationSetStatus = 'ready' | 'missing'
+
+export interface FactoryEvaluationArmSummary {
+  arm: 'baseline' | 'specialist'
+  tasks: number
+  accepted: number
+  acceptance_rate: number
+  cost_usd: number | null
+  cost_per_accepted_change: number | null
+  judge_cost_usd: number
+}
+
+export interface FactoryEvaluationSummary {
+  arms: FactoryEvaluationArmSummary[]
+  specialist_beats_baseline: boolean | null
+}
+
+export interface FactoryEvaluationSet {
+  /** Stable dataset key, e.g. `docs`, `tests`, or `ui`. */
+  id: string
+  name: string
+  status: FactoryEvaluationSetStatus
+  task_count: number | null
+  completed_tasks: number
+  base_commit: string | null
+  summary: FactoryEvaluationSummary | null
+}
+
+export interface FactoryEvaluationRun {
+  id: string
+  status: FactoryEvaluationStatus
+  set_ids: string[]
+  started_at: string | null
+  updated_at: string
+  finished_at: string | null
+  error: string | null
+  /** Latest per-set results as read from the runner's JSONL outputs. */
+  sets: FactoryEvaluationSet[]
+}
+
+/** GET /v1/factory/evaluations returns discovered frozen sets and run history. */
+export interface FactoryEvaluationsResponse {
+  sets: FactoryEvaluationSet[]
+  runs: FactoryEvaluationRun[]
+}
+
+/** POST /v1/factory/evaluations starts or resumes the selected frozen sets. */
+export interface StartFactoryEvaluationRequest {
+  set_ids: string[]
+}
+
+export interface StartFactoryEvaluationResponse {
+  run: FactoryEvaluationRun
+}
+
+/** Provider/modmin config. Tokens are never returned by this API. */
+export type FactoryModelProvider = 'anthropic' | 'openai_api' | 'chatgpt_plan'
+export type FactoryModelRoleName = 'planner' | 'reviewer' | 'implementer'
+
+export interface FactoryModelRole {
+  provider: FactoryModelProvider
+  model: string
+}
+
+export type FactoryModelRoles = Record<FactoryModelRoleName, FactoryModelRole>
+
+export interface FactoryModelCredentials {
+  anthropic: 'unknown'
+  openai_api: 'unknown'
+  chatgpt_plan: 'not_connected'
+}
+
+/** GET /v1/factory/model-config; credential values are status only, never secrets. */
+export interface FactoryModelConfig {
+  roles: FactoryModelRoles
+  credentials: FactoryModelCredentials
+  /** False while selected providers are not wired into the runtime; do not fall back implicitly. */
+  execution_ready: boolean
+  updated_by: string | null
+  updated_at: string | null
+}
+
+/** PUT /v1/factory/model-config accepts role assignments only. */
+export interface UpdateFactoryModelConfigRequest {
+  roles: FactoryModelRoles
+}
+
+/** The per-organization identity sandboxed agents use to call NexusMind. */
+export interface FactoryBot {
+  user_id: string
+  role: string
+  role_permissions: string[]
+  status: string
+  key_created_at: string | null
+}
+
+/** Factory intake source that feeds one issue-resolver agent. */
+export type FactoryIntakeKind = 'slack' | 'sentry' | 'gmail' | 'notion' | 'drive'
+export type FactoryPrivacyClass = 'public' | 'internal' | 'confidential' | 'restricted'
+export interface FactoryIntakeSource {
+  id: string
+  kind: FactoryIntakeKind
+  name: string
+  project: string
+  resolver_definition_id: string
+  repository: string | null
+  base_ref: string
+  privacy_class: FactoryPrivacyClass
+  connector_id: string
+  config: Record<string, unknown>
+  enabled: boolean
+  last_polled_at: string | null
+  last_error: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+export interface FactoryIntakeSourceInput {
+  kind?: FactoryIntakeKind
+  name: string
+  project: string
+  resolver_definition_id: string
+  base_ref?: string
+  privacy_class?: FactoryPrivacyClass
+  connector_id: string
+  config: Record<string, unknown>
+  enabled?: boolean
+}
+export interface FactoryIntakeItem {
+  task_id: string
+  source_id: string | null
+  source_ref: string
+  nexus_task_id: string | null
+  task_class: string
+  origin_trust: 'trusted' | 'untrusted'
+  repository: string
+  start_decision: 'started' | 'backlog'
+  start_reason: string
+  jev: Record<string, unknown> | null
+  issue_number: number | null
+  run_id: string | null
+  created_at: string
+}
+export interface FactoryWatchdog {
+  slack_connector_id: string | null
+  enabled: boolean
+  daily_hour_utc: number
+  last_sent_at: string | null
+  last_daily_on: string | null
 }

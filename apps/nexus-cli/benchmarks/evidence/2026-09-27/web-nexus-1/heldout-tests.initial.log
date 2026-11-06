@@ -1,0 +1,48 @@
+✔ empty query and default category preserve all products (14.014833ms)
+✔ descending price ordering is independent of source order (0.456875ms)
+✔ HTML-sensitive product names and categories are escaped (5.423125ms)
+✖ page exposes labelled controls and responsive CSS (0.985083ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 3
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 72.247709
+
+✖ failing tests:
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/web.test.mjs:24:1
+✖ page exposes labelled controls and responsive CSS (0.985083ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /<label\b|aria-label=/i. Input:
+  
+  '<!doctype html>\n' +
+    '<html lang="es">\n' +
+    '  <head>\n' +
+    '    <meta charset="utf-8">\n' +
+    '    <meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+    '    <meta name="description" content="Catálogo de productos tecnológicos">\n' +
+    '    <title>Nexo · Catálogo</title>\n' +
+    '    <link rel="stylesheet" href="./styles.css">\n' +
+    '  </head>\n' +
+    '  <body>\n' +
+    '    <main id="app" aria-labelledby="catalog-title"></main>\n' +
+    '    <script type="module" src="./src/app.js"></script>\n' +
+    '  </body>\n' +
+    '</html>\n'
+  
+      at TestContext.<anonymous> (file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/web.test.mjs:28:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<!doctype html>\n<html lang="es">\n  <head>\n    <meta charset="utf-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1">\n    <meta name="description" content="Catálogo de productos tecnológicos">\n    <title>Nexo · Catálogo</title>\n    <link rel="stylesheet" href="./styles.css">\n  </head>\n  <body>\n    <main id="app" aria-labelledby="catalog-title"></main>\n    <script type="module" src="./src/app.js"></script>\n  </body>\n</html>\n',
+    expected: /<label\b|aria-label=/i,
+    operator: 'match',
+    diff: 'simple'
+  }

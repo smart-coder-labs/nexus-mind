@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Shield, Plus, Trash2, ToggleLeft, ToggleRight, Pencil, X } from 'lucide-react'
@@ -30,7 +31,7 @@ const RULE_TYPES: Policy['rule_type'][] = ['model_whitelist', 'budget_limit', 'p
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to keep pages independent.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 export default function Policies() {
   const { session } = useAuth()
@@ -148,7 +149,7 @@ export default function Policies() {
         </div>
         <button
           onClick={handleOpenModal}
-          className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold px-4 py-1.5 rounded-full transition-colors"
+          className="flex items-center gap-2 bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium px-4 py-1.5 rounded-md transition-colors h-9 shadow-xs"
         >
           <Plus className="w-4 h-4" />
           Add policy
@@ -161,19 +162,19 @@ export default function Policies() {
           {Array.from({ length: 4 }).map((_, i) => (
             <div
               key={i}
-              className={`rounded-[18px] p-5 space-y-3 animate-pulse ${GLASS_PANEL}`}
+              className={`rounded-xl p-5 space-y-3 animate-pulse ${GLASS_PANEL}`}
             >
               <div className="flex items-center justify-between">
-                <div className="h-4 w-1/3 bg-white/[0.06] rounded-[5px]" />
-                <div className="h-4 w-16 bg-white/[0.06] rounded-full" />
+                <div className="h-4 w-1/3 bg-foreground/[0.06] rounded-sm" />
+                <div className="h-4 w-16 bg-foreground/[0.06] rounded-full" />
               </div>
-              <div className="h-3 w-1/4 bg-white/[0.06] rounded-[5px]" />
-              <div className="h-3 w-1/2 bg-white/[0.06] rounded-[5px]" />
+              <div className="h-3 w-1/4 bg-foreground/[0.06] rounded-sm" />
+              <div className="h-3 w-1/2 bg-foreground/[0.06] rounded-sm" />
             </div>
           ))}
         </div>
       ) : policies.length === 0 ? (
-        <div className={`rounded-[18px] p-12 flex flex-col items-center gap-3 text-center ${GLASS_PANEL}`}>
+        <div className={`rounded-xl p-12 flex flex-col items-center gap-3 text-center ${GLASS_PANEL}`}>
           <Shield className="w-8 h-8 text-text-quaternary/50" />
           <p className="text-xs font-semibold text-text-secondary">No policies yet</p>
           <p className="text-xs text-text-quaternary max-w-xs">
@@ -185,24 +186,24 @@ export default function Policies() {
           {policies.map(policy => (
             <div
               key={policy.id}
-              className={`group rounded-[18px] p-5 flex flex-col gap-3 ${GLASS_PANEL}`}
+              className={`group rounded-xl p-5 flex flex-col gap-3 ${GLASS_PANEL}`}
             >
               {/* Top row: name + badge */}
               <div className="flex items-center justify-between gap-2">
                 <span className="font-semibold text-text-primary text-xs truncate">{policy.name}</span>
                 {policy.enabled ? (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-[5px] bg-status-success/10 text-status-success shrink-0">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-status-success/10 text-status-success shrink-0">
                     Active
                   </span>
                 ) : (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-[5px] bg-white/[0.06] text-text-quaternary shrink-0">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-foreground/[0.06] text-text-quaternary shrink-0">
                     Disabled
                   </span>
                 )}
               </div>
 
               {/* Rule type */}
-              <span className="bg-white/[0.06] rounded-[5px] text-[10px] text-text-secondary px-1.5 py-0.5 self-start">
+              <span className="bg-foreground/[0.06] rounded-sm text-[10px] text-text-secondary px-1.5 py-0.5 self-start">
                 {RULE_TYPE_LABELS[policy.rule_type]}
               </span>
 
@@ -211,7 +212,7 @@ export default function Policies() {
                 <button
                   onClick={() => toggleMut.mutate({ id: policy.id, enabled: !policy.enabled })}
                   disabled={toggleMut.isPending}
-                  className="flex items-center gap-1.5 bg-white/[0.06] hover:bg-white/[0.10] text-text-primary text-xs px-3 py-1.5 rounded-full transition-colors disabled:opacity-40"
+                  className="flex items-center gap-1.5 bg-foreground/[0.06] hover:bg-foreground/[0.10] text-text-primary text-xs px-3 py-1.5 rounded-md transition-colors disabled:opacity-40"
                   aria-label={policy.enabled ? 'Disable policy' : 'Enable policy'}
                 >
                   {policy.enabled ? (
@@ -230,7 +231,7 @@ export default function Policies() {
                       setEditConfig(policy.config ? JSON.stringify(policy.config, null, 2) : '')
                       setEditError('')
                     }}
-                    className="p-1.5 rounded-[8px] opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-text-primary transition-opacity"
+                    className="p-1.5 rounded-md opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-text-primary transition-opacity"
                     aria-label={`Edit policy ${policy.name}`}
                   >
                     <Pencil className="w-3.5 h-3.5" />
@@ -242,7 +243,7 @@ export default function Policies() {
                       }
                     }}
                     disabled={deleteMut.isPending}
-                    className="p-1.5 rounded-[8px] opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-status-error transition-opacity disabled:opacity-40"
+                    className="p-1.5 rounded-md opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-status-error transition-opacity disabled:opacity-40"
                     aria-label={`Delete policy ${policy.name}`}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -257,7 +258,7 @@ export default function Policies() {
       {/* Edit Policy Modal */}
       {editingPolicy && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-md border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 space-y-4">
+          <div className="w-full max-w-md border border-border-primary bg-surface-elevated rounded-xl p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold text-text-primary">Edit policy</h2>
               <button
@@ -269,7 +270,7 @@ export default function Policies() {
             </div>
 
             {editError && (
-              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
                 {editError}
               </div>
             )}
@@ -280,7 +281,7 @@ export default function Policies() {
                 type="text"
                 value={editName}
                 onChange={e => setEditName(e.target.value)}
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
 
@@ -288,7 +289,7 @@ export default function Policies() {
               <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                 Rule Type
               </label>
-              <div className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-secondary px-2 py-1.5">
+              <div className="w-full rounded-md border border-border-primary bg-foreground/[0.04] text-xs text-text-secondary px-2 py-1.5">
                 {RULE_TYPE_LABELS[editingPolicy.rule_type]}
               </div>
             </div>
@@ -299,7 +300,7 @@ export default function Policies() {
                 value={editConfig}
                 onChange={e => setEditConfig(e.target.value)}
                 placeholder={CONFIG_HINTS[editingPolicy.rule_type]}
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
 
@@ -307,7 +308,7 @@ export default function Policies() {
               <button
                 type="button"
                 onClick={() => { setEditingPolicy(null); setEditError('') }}
-                className="bg-white/[0.06] hover:bg-white/[0.10] text-text-primary text-xs px-4 py-2 rounded-full transition-colors"
+                className="bg-foreground/[0.06] hover:bg-foreground/[0.10] text-text-primary text-xs px-4 py-2 rounded-md transition-colors"
               >
                 Cancel
               </button>
@@ -330,7 +331,7 @@ export default function Policies() {
                   editMut.mutate({ id: editingPolicy.id, data: { name: editName.trim(), config: parsedConfig } })
                 }}
                 disabled={editMut.isPending}
-                className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold px-4 py-2 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center gap-2 bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium px-4 py-2 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed h-9 shadow-xs"
               >
                 {editMut.isPending ? 'Saving…' : 'Save changes'}
               </button>
@@ -352,7 +353,7 @@ export default function Policies() {
         <ModalContent>
           <form id="policy-form" onSubmit={handleSubmit} className="space-y-4 text-xs">
             {formError && (
-              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-md">
                 {formError}
               </div>
             )}
@@ -366,7 +367,7 @@ export default function Policies() {
                 placeholder="e.g. Production Model Whitelist"
                 value={formName}
                 onChange={e => setFormName(e.target.value)}
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -375,18 +376,18 @@ export default function Policies() {
               <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                 Rule Type
               </label>
-              <select
+              <StyledSelect
                 value={formRuleType}
                 onChange={e => {
                   setFormRuleType(e.target.value as Policy['rule_type'])
                   setFormConfig('')
                 }}
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               >
                 {RULE_TYPES.map(rt => (
                   <option key={rt} value={rt}>{RULE_TYPE_LABELS[rt]}</option>
                 ))}
-              </select>
+              </StyledSelect>
             </div>
 
             <div className="space-y-1">
@@ -397,7 +398,7 @@ export default function Policies() {
                 value={formConfig}
                 onChange={e => setFormConfig(e.target.value)}
                 placeholder={CONFIG_HINTS[formRuleType]}
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
               <p className="text-[10px] text-text-quaternary">
                 Example: <code className="text-text-tertiary">{CONFIG_HINTS[formRuleType]}</code>
@@ -412,7 +413,7 @@ export default function Policies() {
                   onChange={e => setFormEnabled(e.target.checked)}
                   className="sr-only peer"
                 />
-                <div className="w-8 h-4 bg-white/[0.10] peer-checked:bg-accent-blue rounded-full transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-transform peer-checked:after:translate-x-4" />
+                <div className="w-8 h-4 bg-foreground/[0.10] peer-checked:bg-action-primary rounded-full transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-transform peer-checked:after:translate-x-4" />
               </label>
               <span className="text-xs text-text-secondary">Enable immediately</span>
             </div>
@@ -423,7 +424,7 @@ export default function Policies() {
           <button
             type="button"
             onClick={() => setModalOpen(false)}
-            className="bg-white/[0.06] hover:bg-white/[0.10] text-text-primary text-xs px-4 py-2 rounded-full transition-colors"
+            className="bg-foreground/[0.06] hover:bg-foreground/[0.10] text-text-primary text-xs px-4 py-2 rounded-md transition-colors"
           >
             Cancel
           </button>
@@ -431,7 +432,7 @@ export default function Policies() {
             type="submit"
             form="policy-form"
             disabled={createMut.isPending}
-            className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold px-4 py-2 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium px-4 py-2 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed h-9 shadow-xs"
           >
             <Plus className="w-3.5 h-3.5" />
             {createMut.isPending ? 'Creating…' : 'Create Policy'}

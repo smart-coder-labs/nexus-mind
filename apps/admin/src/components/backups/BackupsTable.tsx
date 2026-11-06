@@ -43,7 +43,7 @@ function TableList({ tables }: { tables: BackupTableInfo[] }) {
     )
   }
   return (
-    <table className="w-full text-[12px]">
+    <table className="admin-data-table w-full text-[12px]">
       <thead>
         <tr className="text-text-quaternary">
           <th className="px-4 py-1.5 text-left font-medium uppercase tracking-wide text-[10px]">Table</th>
@@ -100,10 +100,10 @@ export function BackupsTable({
 }: BackupsTableProps) {
   if (!loading && backups.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] px-6">
+      <div className="flex flex-col items-center justify-center py-16 text-center border border-border-primary bg-surface-primary rounded-xl px-6">
         <Database className="w-8 h-8 text-text-quaternary mb-3" />
         <p className="text-[15px] font-semibold text-text-secondary">No backups yet</p>
-        <p className="text-[13px] text-text-quaternary mt-1 max-w-xs">
+        <p className="text-sm text-text-quaternary mt-1 max-w-xs">
           Create a manual backup or wait for the next scheduled one.
         </p>
       </div>
@@ -111,11 +111,11 @@ export function BackupsTable({
   }
 
   return (
-    <div className="rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] overflow-hidden">
+    <div className="rounded-xl border border-border-primary bg-surface-primary overflow-hidden">
       <div className="overflow-x-auto">
-        <table className="w-full text-[13px]">
+        <table className="admin-data-table w-full text-sm">
           <thead>
-            <tr className="border-b border-white/[0.07] bg-white/[0.03]">
+            <tr className="border-b border-border-primary bg-foreground/[0.03]">
               <th className="w-8 px-3 py-3" aria-label="Expand" />
               <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Created</th>
               <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Kind</th>
@@ -128,11 +128,11 @@ export function BackupsTable({
             {loading && Array.from({ length: 4 }).map((_, i) => (
               <tr key={`skel-${i}`} className="border-b border-border-primary last:border-0">
                 <td className="px-3 py-3" />
-                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-28" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-16" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-5 bg-white/[0.04] rounded-full w-20" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-16 ml-auto" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-6 bg-white/[0.04] rounded-[8px] w-32 ml-auto" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-28" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-16" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-5 bg-foreground/[0.04] rounded-full w-20" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-foreground/[0.04] rounded-md w-16 ml-auto" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-6 bg-foreground/[0.04] rounded-md w-32 ml-auto" /></td>
               </tr>
             ))}
 
@@ -188,19 +188,19 @@ function Row({
 }) {
   return (
     <>
-      <tr className="border-b border-border-primary last:border-0 hover:bg-accent-blue/[0.05] transition-colors">
+      <tr className="border-b border-border-primary last:border-0 hover:bg-action-primary/[0.05] transition-colors">
         <td className="px-3 py-3 align-top">
           <button
             onClick={onToggleExpand}
             aria-label={isExpanded ? 'Collapse tables' : 'Expand tables'}
             aria-expanded={isExpanded}
-            className={`p-1 rounded-[6px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.06] transition-colors ${FOCUS}`}
+            className={`p-1 rounded-sm text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors ${FOCUS}`}
           >
             {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
           </button>
         </td>
         <td className="px-4 py-3 align-top">
-          <div className="text-[13px] text-text-primary font-mono">
+          <div className="text-sm text-text-primary font-mono">
             {new Date(backup.created_at).toLocaleString()}
           </div>
           <div className="text-[11px] text-text-quaternary mt-0.5">
@@ -222,7 +222,7 @@ function Row({
               onClick={onToggleExpand}
               aria-label="View tables"
               title="View tables"
-              className={`inline-flex items-center gap-1 rounded-[8px] border border-border-primary px-2.5 py-1 text-[12px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors ${FOCUS}`}
+              className={`inline-flex items-center gap-1 rounded-md border border-border-primary px-2.5 py-1 text-[12px] text-text-secondary hover:text-text-primary hover:bg-foreground/[0.04] transition-colors ${FOCUS}`}
             >
               <Table2 className="w-3 h-3" />
               Tables
@@ -232,7 +232,7 @@ function Row({
               disabled={isDownloading || isDisabled}
               aria-label="Download backup"
               title="Download backup JSON"
-              className={`inline-flex items-center gap-1 rounded-[8px] border border-border-primary px-2.5 py-1 text-[12px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors disabled:opacity-40 ${FOCUS}`}
+              className={`inline-flex items-center gap-1 rounded-md border border-border-primary px-2.5 py-1 text-[12px] text-text-secondary hover:text-text-primary hover:bg-foreground/[0.04] transition-colors disabled:opacity-40 ${FOCUS}`}
             >
               <Download className="w-3 h-3" />
               {isDownloading ? '…' : 'Download'}
@@ -242,7 +242,7 @@ function Row({
               disabled={isDisabled}
               aria-label="Restore from backup"
               title="Restore database"
-              className={`inline-flex items-center gap-1 rounded-[8px] border border-status-error/30 px-2.5 py-1 text-[12px] text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 ${FOCUS}`}
+              className={`inline-flex items-center gap-1 rounded-md border border-status-error/30 px-2.5 py-1 text-[12px] text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 ${FOCUS}`}
             >
               <RefreshCw className="w-3 h-3" />
               Restore
@@ -251,7 +251,7 @@ function Row({
         </td>
       </tr>
       {isExpanded && (
-        <tr className="border-b border-border-primary last:border-0 bg-white/[0.02]">
+        <tr className="border-b border-border-primary last:border-0 bg-foreground/[0.02]">
           <td colSpan={6} className="px-2 py-2">
             <ExpandedPanel detail={detail} loading={detailLoading} error={detailError} />
           </td>

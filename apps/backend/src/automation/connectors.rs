@@ -84,9 +84,10 @@ pub async fn github_installation_token(
     Ok(response.json::<InstallationTokenResponse>().await?.token)
 }
 
-async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
+pub(crate) async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
     let response = reqwest::Client::new()
         .post(format!("https://api.github.com{path}"))
+        .timeout(GITHUB_TIMEOUT)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -107,7 +108,7 @@ async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
     Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
-async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
+pub(crate) async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
     Ok(reqwest::Client::new()
         .patch(format!("https://api.github.com{path}"))
         .bearer_auth(token)
@@ -122,9 +123,21 @@ async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
         .await?)
 }
 
-async fn github_get(token: &str, path: &str) -> Result<Value> {
+/// The HTTP status behind a failed GitHub call, if it got that far.
+fn http_status(error: &anyhow::Error) -> Option<u16> {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .and_then(|e| e.status())
+        .map(|s| s.as_u16())
+}
+
+/// No GitHub read may hang the worker: callers run on the tick loop.
+const GITHUB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub(crate) async fn github_get(token: &str, path: &str) -> Result<Value> {
     Ok(reqwest::Client::new()
         .get(format!("https://api.github.com{path}"))
+        .timeout(GITHUB_TIMEOUT)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -263,6 +276,12 @@ pub async fn get_github_issue(token: &str, repository: &str, number: i64) -> Res
     github_get(token, &format!("/repos/{owner}/{repo}/issues/{number}")).await
 }
 
+/// The repository itself (`private`, `visibility`, `default_branch`, …).
+pub async fn get_github_repository(token: &str, repository: &str) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_get(token, &format!("/repos/{owner}/{repo}")).await
+}
+
 pub async fn get_github_pull(token: &str, repository: &str, number: i64) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(token, &format!("/repos/{owner}/{repo}/pulls/{number}")).await
@@ -276,14 +295,49 @@ pub async fn merge_github_pull(
     repository: &str,
     number: i64,
     method: &str,
+    sha: Option<&str>,
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
+    // With `sha`, GitHub refuses (409) if the head moved since it was verified.
+    let mut body = json!({ "merge_method": method });
+    if let Some(sha) = sha {
+        body["sha"] = json!(sha);
+    }
     github_put(
         token,
         &format!("/repos/{owner}/{repo}/pulls/{number}/merge"),
-        json!({ "merge_method": method }),
+        body,
     )
     .await
+}
+
+/// Every file changed by a pull request, following pagination. Fails with
+/// `too_many_files` past `MAX_PULL_FILES` rather than returning a partial list.
+pub async fn list_github_pull_files(
+    token: &str,
+    repository: &str,
+    number: i64,
+) -> Result<Vec<super::merge_gate::ChangedFile>> {
+    use super::merge_gate::{parse_changed_files, MAX_PULL_FILES};
+    let (owner, repo) = repository_parts(repository)?;
+    let mut files = Vec::new();
+    for page in 1.. {
+        let value = github_get(
+            token,
+            &format!("/repos/{owner}/{repo}/pulls/{number}/files?per_page=100&page={page}"),
+        )
+        .await?;
+        let batch = parse_changed_files(&value).map_err(|reason| anyhow::anyhow!(reason))?;
+        let last = batch.len() < 100;
+        files.extend(batch);
+        if files.len() > MAX_PULL_FILES {
+            anyhow::bail!("too_many_files")
+        }
+        if last {
+            break;
+        }
+    }
+    Ok(files)
 }
 
 /// Three-dot diff (`merge-base(base, head)…head`) for a pull request, pinned to a
@@ -324,6 +378,45 @@ pub async fn get_github_branch(token: &str, repository: &str, branch: &str) -> R
     github_get(token, &format!("/repos/{owner}/{repo}/branches/{branch}")).await
 }
 
+/// Open issues carrying `label`, newest first (at most 100). Pull requests are
+/// included by the API; callers skip entries with a `pull_request` key.
+pub async fn list_labeled_github_issues(
+    token: &str,
+    repository: &str,
+    label: &str,
+) -> Result<Vec<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        anyhow::bail!("invalid_label")
+    }
+    let value = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/issues?state=open&labels={label}&sort=updated&direction=desc&per_page=100"),
+    )
+    .await?;
+    value
+        .as_array()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("issues_unreadable"))
+}
+
+/// Workflow intake must not silently starve older issues behind the first page.
+pub async fn list_labeled_github_issues_bounded(token:&str,repository:&str,label:&str)->Result<Vec<Value>> {
+    let mut issues=list_labeled_github_issues(token,repository,label).await?;
+    if issues.len()<100 {return Ok(issues)}
+    let(owner,repo)=repository_parts(repository)?;
+    for page in 2..=10 {
+        let value=github_get(token,&format!("/repos/{owner}/{repo}/issues?state=open&labels={label}&sort=updated&direction=desc&per_page=100&page={page}")).await?;
+        let batch=value.as_array().ok_or_else(||anyhow::anyhow!("issues_unreadable"))?;
+        issues.extend(batch.iter().cloned());
+        if batch.len()<100 {return Ok(issues)}
+    }
+    anyhow::bail!("github_issue_limit_exceeded")
+}
 pub async fn list_recent_github_issues(token: &str, repository: &str) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(
@@ -366,6 +459,173 @@ pub async fn list_recent_github_pulls(token: &str, repository: &str) -> Result<V
         &format!("/repos/{owner}/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=50"),
     )
     .await
+}
+
+/// Merged pull requests of `repository` merged at or after `since` (RFC 3339),
+/// newest first, at most `max`. Pages by recent update, which bounds the walk.
+pub async fn list_merged_pulls(
+    token: &str,
+    repository: &str,
+    since: &str,
+    max: usize,
+) -> Result<Vec<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    let mut merged = Vec::new();
+    for page in 1..=20 {
+        let batch = github_get(
+            token,
+            &format!(
+                "/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"
+            ),
+        )
+        .await?;
+        let items = batch.as_array().cloned().unwrap_or_default();
+        if items.is_empty() {
+            break;
+        }
+        let mut older_page = true;
+        for pull in items {
+            let updated = pull.get("updated_at").and_then(|v| v.as_str()).unwrap_or_default();
+            if updated >= since {
+                older_page = false;
+            }
+            let merged_at = pull.get("merged_at").and_then(|v| v.as_str()).unwrap_or_default();
+            if !merged_at.is_empty() && merged_at >= since {
+                merged.push(pull);
+            }
+        }
+        if older_page || merged.len() >= max {
+            break;
+        }
+    }
+    merged.sort_by(|a, b| {
+        let at = |v: &Value| v.get("merged_at").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        at(b).cmp(&at(a))
+    });
+    merged.truncate(max);
+    Ok(merged)
+}
+
+/// Commits on `branch` between `since` and `until` (RFC 3339). More than 500 is
+/// an error, not a partial list: GitHub returns newest first, so a cut would
+/// drop exactly the commits right after a merge.
+pub async fn list_branch_commits(
+    token: &str,
+    repository: &str,
+    branch: &str,
+    since: &str,
+    until: &str,
+) -> Result<Vec<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    let mut commits = Vec::new();
+    for page in 1..=5 {
+        let batch = github_get(
+            token,
+            &format!(
+                "/repos/{owner}/{repo}/commits?sha={branch}&since={since}&until={until}&per_page=100&page={page}"
+            ),
+        )
+        .await?;
+        let items = batch.as_array().cloned().unwrap_or_default();
+        let full = items.len() == 100;
+        commits.extend(items);
+        if !full {
+            return Ok(commits);
+        }
+    }
+    anyhow::bail!("too_many_commits")
+}
+
+/// Status check names `branch` requires before merging, from repository
+/// rulesets and classic branch protection. None configured is an empty list.
+pub async fn required_status_checks(
+    token: &str,
+    repository: &str,
+    branch: &str,
+) -> Result<Vec<String>> {
+    let (owner, repo) = repository_parts(repository)?;
+    let mut required = Vec::new();
+    // Private repositories on plans without rulesets answer 403 ("Upgrade to
+    // GitHub Pro"), and 404 means none: both mean no ruleset requires a check.
+    // A rate-limited 403 cannot hide here: the branch read below fails too.
+    let rules = match github_get(token, &format!("/repos/{owner}/{repo}/rules/branches/{branch}")).await {
+        Ok(rules) => rules,
+        Err(error) if http_status(&error).is_some_and(|s| s == 403 || s == 404) => Value::Array(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    for rule in rules.as_array().into_iter().flatten() {
+        if rule.get("type").and_then(|v| v.as_str()) == Some("required_status_checks") {
+            for check in rule
+                .pointer("/parameters/required_status_checks")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(name) = check.get("context").and_then(|v| v.as_str()) {
+                    required.push(name.to_string());
+                }
+            }
+        }
+    }
+    let branch_info = github_get(token, &format!("/repos/{owner}/{repo}/branches/{branch}")).await?;
+    let protection = branch_info.pointer("/protection/required_status_checks");
+    for name in protection
+        .and_then(|p| p.get("contexts"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+    {
+        required.push(name.to_string());
+    }
+    for name in protection
+        .and_then(|p| p.get("checks"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("context").and_then(|v| v.as_str()))
+    {
+        required.push(name.to_string());
+    }
+    required.sort();
+    required.dedup();
+    Ok(required)
+}
+
+/// Creates a labelled issue with exactly one POST and no unlabelled retry: a
+/// timeout may hide a created issue, which the caller finds by its marker.
+pub async fn create_github_issue_once(
+    token: &str,
+    repository: &str,
+    title: &str,
+    body: &str,
+    labels: &[String],
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    for label in labels {
+        ensure_github_label(token, owner, repo, label).await;
+    }
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/issues"),
+        json!({"title":title,"body":body,"labels":labels}),
+    )
+    .await
+}
+
+/// A recent open issue whose body carries `marker` (and only that: a matching
+/// title is not enough).
+pub async fn find_github_issue_with_marker(token: &str, repository: &str, marker: &str) -> Result<Option<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    let value = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/issues?state=open&sort=created&direction=desc&per_page=100"),
+    )
+    .await?;
+    Ok(value.as_array().into_iter().flatten().find(|issue| {
+        issue.get("pull_request").is_none()
+            && issue.get("body").and_then(|b| b.as_str()).is_some_and(|body| body.contains(marker))
+    }).cloned())
 }
 
 pub async fn find_github_issue_by_marker(
@@ -593,6 +853,51 @@ pub async fn get_github_check_runs(token: &str, repository: &str, sha: &str) -> 
     .await
 }
 
+/// Every CI signal on a commit, for merge decisions: all check-run pages plus the
+/// combined commit status (Vercel, CircleCI and other non-Checks integrations)
+/// converted to check-run shape. Fails closed past `MAX_CHECKS` or on any
+/// unreadable page instead of judging a partial list.
+pub async fn list_commit_ci_runs(token: &str, repository: &str, sha: &str) -> Result<Vec<Value>> {
+    const MAX_CHECKS: usize = 1000;
+    let (owner, repo) = repository_parts(repository)?;
+    if sha.len() != 40 || !sha.chars().all(|value| value.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid_commit_sha")
+    }
+    let mut runs = Vec::new();
+    for page in 1.. {
+        let value = github_get(
+            token,
+            &format!("/repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100&page={page}"),
+        )
+        .await?;
+        let batch = value
+            .get("check_runs")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("check_runs_unreadable"))?
+            .clone();
+        let last = batch.len() < 100;
+        runs.extend(batch);
+        if runs.len() > MAX_CHECKS {
+            anyhow::bail!("too_many_checks")
+        }
+        if last {
+            break;
+        }
+    }
+    let combined = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/commits/{sha}/status?per_page=100"),
+    )
+    .await?;
+    if combined.get("total_count").and_then(|v| v.as_u64()) > Some(100) {
+        anyhow::bail!("too_many_checks")
+    }
+    runs.extend(
+        super::merge_gate::statuses_as_runs(&combined).map_err(|reason| anyhow::anyhow!(reason))?,
+    );
+    Ok(runs)
+}
+
 /// Best-effort: ensure a label exists (needs push/triage). Ignored on failure.
 /// Color for a label following the QA taxonomy (mirrors the kasymir-create-issues
 /// skill so autonomously-filed issues look identical to hand-filed ones).
@@ -712,7 +1017,7 @@ pub async fn close_github_pull(token: &str, repository: &str, number: i64) -> Re
     .await
 }
 
-async fn github_delete(token: &str, path: &str) -> Result<()> {
+pub(crate) async fn github_delete(token: &str, path: &str) -> Result<()> {
     let response = reqwest::Client::new()
         .delete(format!("https://api.github.com{path}"))
         .bearer_auth(token)
@@ -830,13 +1135,15 @@ pub async fn publish_pr_review(
 
 pub async fn send_slack(webhook_url: &str, summary: &str, nexusmind_url: &str) -> Result<()> {
     validate_slack_webhook(webhook_url)?;
-    reqwest::Client::new().post(webhook_url).json(&json!({
+    // The webhook URL is the secret: errors never carry it.
+    reqwest::Client::new().post(webhook_url).timeout(std::time::Duration::from_secs(15)).json(&json!({
         "text": summary,
         "blocks":[
             {"type":"section","text":{"type":"mrkdwn","text":summary.chars().take(2500).collect::<String>()}},
             {"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"Open in NexusMind"},"url":nexusmind_url}]}
         ]
-    })).send().await?.error_for_status()?;
+    })).send().await.map_err(|e| anyhow::anyhow!("slack_send_failed: {}", e.without_url()))?
+    .error_for_status().map_err(|e| anyhow::anyhow!("slack_send_failed: {}", e.without_url()))?;
     Ok(())
 }
 

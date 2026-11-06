@@ -1,10 +1,12 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useId } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 
 interface TagAutocompleteProps {
+  id?: string
+  'aria-label'?: string
   value: string
   onChange: (value: string) => void
   onSelect: (tag: string) => void
@@ -15,6 +17,8 @@ interface TagAutocompleteProps {
 }
 
 export function TagAutocomplete({
+  id,
+  'aria-label': ariaLabel = 'Tags',
   value,
   onChange,
   onSelect,
@@ -23,6 +27,7 @@ export function TagAutocomplete({
   className,
   existingTags = [],
 }: TagAutocompleteProps) {
+  const listId = useId()
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
@@ -93,6 +98,13 @@ export function TagAutocomplete({
   return (
     <div ref={containerRef} className="relative">
       <input
+        id={id}
+        aria-label={ariaLabel}
+        role="combobox"
+        aria-expanded={isOpen}
+        aria-autocomplete="list"
+        aria-controls={isOpen ? listId : undefined}
+        aria-activedescendant={isOpen && highlightedIndex >= 0 ? `${listId}-${highlightedIndex}` : undefined}
         type="text"
         value={value}
         onChange={e => {
@@ -106,10 +118,13 @@ export function TagAutocomplete({
         autoComplete="off"
       />
       {isOpen && (
-        <div className="border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[11px] py-1 absolute z-50 w-full mt-1">
+        <div id={listId} role="listbox" aria-label="Suggested tags" className="border border-border-primary bg-surface-elevated shadow-md rounded-md py-1 absolute z-50 w-full mt-1">
           {suggestions.map((stat, i) => (
             <button
               key={stat.name}
+              id={`${listId}-${i}`}
+              role="option"
+              aria-selected={highlightedIndex === i}
               type="button"
               onMouseDown={e => {
                 e.preventDefault()
@@ -119,8 +134,8 @@ export function TagAutocomplete({
               onMouseEnter={() => setHighlightedIndex(i)}
               className={`w-full px-3 py-1.5 text-xs cursor-pointer flex items-center justify-between text-left ${
                 i === highlightedIndex
-                  ? 'bg-accent-blue/10 text-text-primary'
-                  : 'text-text-secondary hover:bg-white/[0.05]'
+                  ? 'bg-action-primary/10 text-text-primary'
+                  : 'text-text-secondary hover:bg-foreground/[0.05]'
               }`}
             >
               <span>{stat.name}</span>

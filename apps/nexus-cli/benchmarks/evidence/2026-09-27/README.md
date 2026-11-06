@@ -1,0 +1,9 @@
+# Evidencia de las 14 ejecuciones
+
+Empieza por [`INFORME_BENCHMARK_REALWORLD_2026-09-27.md`](../../../INFORME_BENCHMARK_REALWORLD_2026-09-27.md). [`summary.json`](summary.json) contiene todas las métricas estructuradas. Las carpetas siguen el patrón `<caso>-<brazo>-<iteración>`: `web`, `corporate` o `service`; `codex` o `nexus`; iteraciones 1, 2 y, para el par recuperado del microservicio, 3.
+
+En cada carpeta, `timeline.md` muestra el pedido literal y la secuencia de herramientas. `agent.stdout.log`/`agent.stderr.log` son las transcripciones del ejecutable; `codex-rollout-1.jsonl` es la transcripción operativa de Codex dentro de OpenShell, cuando existe. `visible-tests.log`, `heldout-tests.initial.log` y `heldout-tests.final.log` guardan las pruebas; `implementation.diff` y `src/` (más `index.html` y `styles.css` en web) guardan el código. `metrics.json` agrega los resultados; `codex-usage.json` desglosa los tokens dentro de Nexus. `nexus-session.json` conserva la decisión de JEV y `jev-request-reconstruction.json` es una reconstrucción explícita, **no** una captura HTTP de su solicitud.
+
+Las transcripciones de OpenShell son operativas y fueron redactadas: no incluyen credenciales, instrucciones internas ni razonamiento privado. El cuerpo HTTP bruto de JEV no fue registrado por el harness. Para localizar una llamada concreta, busca `Consultando JEV` en `agent.stdout.log` y el evento `JEV` de `timeline.md`; la marca temporal y las probabilidades están en `nexus-session.json`.
+
+`service-codex-2` y `service-nexus-2` terminaron por cuota de Codex antes de completar la tarea; están preservados pero **excluidos** del análisis de calidad y promedios. Se reemplazaron por `service-codex-3` y `service-nexus-3`. Los archivos `heldout-tests.export-sandbox-error.log` registran un falso fallo de loopback durante una exportación y no son resultados del código.

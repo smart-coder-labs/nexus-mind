@@ -1,0 +1,151 @@
+name: Queue factory specialist eval rerun
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Queue a specialist eval rerun or inspect current progress without running model tasks
+        type: choice
+        options:
+          - queue
+          - status
+          - resume
+        default: queue
+        required: true
+      sets:
+        description: Frozen evaluation sets to rerun with new result files
+        type: choice
+        options:
+          - all
+          - docs
+          - tests
+          - ui
+        default: all
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-specialist-eval-rerun
+  cancel-in-progress: false
+
+jobs:
+  queue-evals:
+    name: Queue specialist eval reruns on Oracle
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Copy frozen inputs to new run sets and wake the runner
+        if: inputs.action == 'queue'
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          EVAL_SETS: ${{ inputs.sets }}
+          EVAL_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+
+          keyfile=$(mktemp)
+          trap 'rm -f "$keyfile"' EXIT
+          chmod 600 "$keyfile"
+          printf '%s\n' "$SSH_KEY" > "$keyfile"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSHOPTS=(-i "$keyfile" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+          REMOTE_DIR="/tmp/nexusmind-eval-rerun-${EVAL_RUN_ID}"
+
+          ssh "${SSHOPTS[@]}" "$REMOTE" "mkdir -m 700 -p '$REMOTE_DIR'"
+          scp "${SSHOPTS[@]}" scripts/factory/queue_specialist_eval_rerun.sh \
+            scripts/factory/queue_specialist_eval_rerun.mjs \
+            "$REMOTE:$REMOTE_DIR/"
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            "bash '$REMOTE_DIR/queue_specialist_eval_rerun.sh' '$EVAL_SETS' '$EVAL_RUN_ID'"
+
+      - name: Read specialist eval progress without running tasks
+        if: inputs.action == 'status'
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          EVAL_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+
+          keyfile=$(mktemp)
+          trap 'rm -f "$keyfile"' EXIT
+          chmod 600 "$keyfile"
+          printf '%s\n' "$SSH_KEY" > "$keyfile"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSHOPTS=(-i "$keyfile" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+          REMOTE_DIR="/tmp/nexusmind-factory-eval-status-${EVAL_RUN_ID}"
+
+          ssh "${SSHOPTS[@]}" "$REMOTE" "mkdir -m 700 -p '$REMOTE_DIR'"
+          scp "${SSHOPTS[@]}" scripts/factory/status_specialist_eval.sh \
+            scripts/factory/status_specialist_eval.mjs "$REMOTE:$REMOTE_DIR/"
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            "bash '$REMOTE_DIR/status_specialist_eval.sh' '$EVAL_RUN_ID'"
+
+      - name: Resume already queued specialist evals with Pi/OpenAI
+        if: inputs.action == 'resume'
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          EVAL_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+
+          keyfile=$(mktemp)
+          trap 'rm -f "$keyfile"' EXIT
+          chmod 600 "$keyfile"
+          printf '%s\n' "$SSH_KEY" > "$keyfile"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSHOPTS=(-i "$keyfile" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+
+          # An explicit resume dispatch authorizes the Pi/OpenAI eval queue to
+          # run. Preserve the prior pause marker for audit before waking it.
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            "EVAL_RUN_ID='$EVAL_RUN_ID' bash -s" <<'REMOTE'
+          set -euo pipefail
+          if command -v kubectl >/dev/null 2>&1; then
+            kubectl_cmd() { kubectl "$@"; }
+          elif command -v k3s >/dev/null 2>&1; then
+            kubectl_cmd() { k3s kubectl "$@"; }
+          else
+            echo 'kubectl is unavailable on the Oracle host' >&2
+            exit 1
+          fi
+          pod=$(kubectl_cmd -n nexusmind get pods -l app=nexusmind-backend \
+            --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          [[ -n "$pod" ]] || { echo 'no running NexusMind pod found' >&2; exit 1; }
+          kubectl_cmd -n nexusmind exec "$pod" -c autonomous-worker -- \
+            env EVAL_RUN_ID="$EVAL_RUN_ID" sh -ec '
+              marker=/data/factory-evals/STOP
+              if [ -f "$marker" ]; then
+                mv "$marker" "/data/factory-evals/STOP.paused-$EVAL_RUN_ID"
+              fi
+            '
+          REMOTE
+
+          ssh "${SSHOPTS[@]}" "$REMOTE" \
+            /usr/local/bin/nexusmind-ensure-eval-runner

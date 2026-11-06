@@ -28,17 +28,12 @@
   --color-surface-glass-dark: rgba(6, 5, 9, 0.85);
 
   /* Text — neutral ladder; violet is reserved for links/emphasis (accent-violet).
-     Values chosen for AA contrast on the near-black canvas (#060509):
-     secondary 9.6:1, tertiary 5.8:1, quaternary 4.76:1.
-     Quaternary was #6b6676 (3.66:1) and documented as "decorative only", but a
-     live audit found it carrying real information — organisation names on
-     /users and audit ids on /audit — in ~48 places. It is the least-emphasis
-     *text* step, so it has to clear 4.5:1 (WCAG 1.4.3) rather than be excused
-     as decoration. */
+     Quaternary carries real information, so it clears 4.5:1 on both the canvas
+     and card surfaces (including #13101a), not just the darkest background. */
   --color-text-primary: #faf5ff;
   --color-text-secondary: #b5b0c4;
   --color-text-tertiary: #8b8698;
-  --color-text-quaternary: #7d7889;
+  --color-text-quaternary: #827d8e;
   --color-text-inverse: #060509;
 
   /* Border */

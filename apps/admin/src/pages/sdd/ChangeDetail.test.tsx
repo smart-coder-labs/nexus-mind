@@ -389,7 +389,7 @@ describe('ChangeDetail — revision selector', () => {
       expect(screen.getByText('Write the migration')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /revision/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /revision/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /rev 1/i }))
 
     await waitFor(() => {
@@ -414,7 +414,7 @@ describe('ChangeDetail — revision selector', () => {
       expect(listSddArtifactRevisionsMock).toHaveBeenCalledWith('a-tasks')
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /revision/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /revision/i }), { key: 'Enter' })
 
     const option = await screen.findByRole('option', { name: /rev 1/i })
     // `rev 1 · import · <date>` — source and timestamp, per revision.
@@ -503,7 +503,7 @@ describe('ChangeDetail — the admin is read-only over artifacts', () => {
     await waitFor(() => {
       expect(getSddArtifactMock).toHaveBeenCalledWith('a-tasks')
     })
-    fireEvent.click(screen.getByRole('button', { name: /revision/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /revision/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /rev 1/i }))
     await waitFor(() => {
       expect(getSddArtifactRevisionMock).toHaveBeenCalledWith('a-tasks', 1)
@@ -525,23 +525,23 @@ describe('ChangeDetail — curation of change metadata (A7)', () => {
     renderAsMember(['sdd:read', 'sdd:write'])
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /^phase$/i })).toBeInTheDocument()
+      expect(screen.getByRole('combobox', { name: /^phase$/i })).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /^phase$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^phase$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /^verify$/i }))
 
     await waitFor(() => {
       expect(patchSddChangeMock).toHaveBeenCalledWith('c1', { phase: 'verify' })
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /^status$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^status$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /^abandoned$/i }))
     await waitFor(() => {
       expect(patchSddChangeMock).toHaveBeenCalledWith('c1', { status: 'abandoned' })
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /^sprint$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^sprint$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /sprint 12/i }))
     await waitFor(() => {
       expect(patchSddChangeMock).toHaveBeenCalledWith('c1', { sprint_id: 's1' })
@@ -557,9 +557,9 @@ describe('ChangeDetail — curation of change metadata (A7)', () => {
     renderAsMember(['sdd:read', 'sdd:write'])
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /^phase$/i })).toBeInTheDocument()
+      expect(screen.getByRole('combobox', { name: /^phase$/i })).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByRole('button', { name: /^phase$/i }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^phase$/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /^verify$/i }))
 
     await waitFor(() => {
@@ -577,9 +577,9 @@ describe('ChangeDetail — curation of change metadata (A7)', () => {
       expect(screen.getByRole('tab', { name: /^proposal$/i })).toBeInTheDocument()
     })
 
-    expect(screen.queryByRole('button', { name: /^phase$/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^status$/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^sprint$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: /^phase$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: /^status$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: /^sprint$/i })).not.toBeInTheDocument()
   })
 })
 
@@ -590,7 +590,7 @@ describe('ChangeDetail — memory links (A7)', () => {
     const memSection = await screen.findByTestId('linked-memories')
 
     // Link
-    fireEvent.click(within(memSection).getByRole('button', { name: /link memory/i }))
+    fireEvent.keyDown(within(memSection).getByRole('combobox', { name: /link memory/i }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('option', { name: /revision hashing gotcha/i }))
     fireEvent.click(within(memSection).getByRole('button', { name: /^link$/i }))
 
@@ -619,7 +619,7 @@ describe('ChangeDetail — memory links (A7)', () => {
       expect(within(memSection).getByText('Artifact store engine decision')).toBeInTheDocument()
     })
 
-    expect(within(memSection).queryByRole('button', { name: /link memory/i })).not.toBeInTheDocument()
+    expect(within(memSection).queryByRole('combobox', { name: /link memory/i })).not.toBeInTheDocument()
     expect(within(memSection).queryByRole('button', { name: /unlink/i })).not.toBeInTheDocument()
   })
 })

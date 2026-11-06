@@ -1,0 +1,66 @@
+✖ reused idempotency key with different payload is conflict (4.754542ms)
+✖ quantity must be a positive integer (1.909292ms)
+✖ invalid content type is rejected with JSON (0.23075ms)
+✖ request bodies over 64 KiB are rejected (0.193083ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 0
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 63.0845
+
+✖ failing tests:
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:14:1
+✖ reused idempotency key with different payload is conflict (4.754542ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:1987:21)
+      at listenInCluster (node:net:2066:12)
+      at node:net:2275:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:19:1
+✖ quantity must be a positive integer (1.909292ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:1987:21)
+      at listenInCluster (node:net:2066:12)
+      at node:net:2275:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:24:1
+✖ invalid content type is rejected with JSON (0.23075ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:1987:21)
+      at listenInCluster (node:net:2066:12)
+      at node:net:2275:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:28:1
+✖ request bodies over 64 KiB are rejected (0.193083ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:1987:21)
+      at listenInCluster (node:net:2066:12)
+      at node:net:2275:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }

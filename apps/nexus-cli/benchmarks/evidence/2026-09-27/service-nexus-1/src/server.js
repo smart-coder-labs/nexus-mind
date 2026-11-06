@@ -1,0 +1,135 @@
+import { randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
+
+const MAX_BODY_SIZE = 64 * 1024;
+const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
+const SKU_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+function sendJson(res, status, body) {
+  res.writeHead(status, JSON_HEADERS);
+  res.end(JSON.stringify(body));
+}
+
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    const declaredSize = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredSize) && declaredSize > MAX_BODY_SIZE) {
+      req.resume();
+      reject({ status: 413, error: 'request body too large' });
+      return;
+    }
+
+    let size = 0;
+    let settled = false;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        settled = true;
+        reject({ status: 413, error: 'request body too large' });
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        reject({ status: 400, error: 'invalid JSON body' });
+      }
+    });
+    req.on('error', () => {
+      if (!settled) {
+        settled = true;
+        reject({ status: 400, error: 'invalid request body' });
+      }
+    });
+  });
+}
+
+function validOrder(payload) {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const keys = Object.keys(payload);
+  return keys.length === 2
+    && keys.includes('sku')
+    && keys.includes('quantity')
+    && typeof payload.sku === 'string'
+    && SKU_PATTERN.test(payload.sku)
+    && Number.isSafeInteger(payload.quantity)
+    && payload.quantity > 0;
+}
+
+function isJsonContentType(value) {
+  return typeof value === 'string' && /^application\/json\s*(?:;|$)/i.test(value);
+}
+
+export function createServer() {
+  const orders = new Map();
+  const idempotencyKeys = new Map();
+
+  return createHttpServer(async (req, res) => {
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+
+    if (req.method === 'GET' && pathname === '/health') {
+      sendJson(res, 200, { status: 'ok' });
+      return;
+    }
+
+    if (req.method === 'GET' && pathname.startsWith('/orders/')) {
+      const id = pathname.slice('/orders/'.length);
+      const order = orders.get(id);
+      if (!id || id.includes('/') || !order) {
+        sendJson(res, 404, { error: 'order not found' });
+        return;
+      }
+      sendJson(res, 200, order);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/orders') {
+      if (!isJsonContentType(req.headers['content-type'])) {
+        sendJson(res, 415, { error: 'content-type must be application/json' });
+        return;
+      }
+
+      let payload;
+      try {
+        payload = await readJson(req);
+      } catch ({ status, error }) {
+        if (!res.writableEnded) sendJson(res, status, { error });
+        return;
+      }
+
+      if (!validOrder(payload)) {
+        sendJson(res, 400, { error: 'invalid order payload' });
+        return;
+      }
+
+      const key = req.headers['idempotency-key'];
+      if (typeof key === 'string' && key.length > 0) {
+        const previous = idempotencyKeys.get(key);
+        if (previous) {
+          if (previous.sku !== payload.sku || previous.quantity !== payload.quantity) {
+            sendJson(res, 409, { error: 'idempotency key was used with a different payload' });
+            return;
+          }
+          sendJson(res, 200, previous.order);
+          return;
+        }
+      }
+
+      const order = { id: randomUUID(), sku: payload.sku, quantity: payload.quantity };
+      orders.set(order.id, order);
+      if (typeof key === 'string' && key.length > 0) {
+        idempotencyKeys.set(key, { sku: payload.sku, quantity: payload.quantity, order });
+      }
+      sendJson(res, 201, order);
+      return;
+    }
+
+    sendJson(res, 404, { error: 'route not found' });
+  });
+}

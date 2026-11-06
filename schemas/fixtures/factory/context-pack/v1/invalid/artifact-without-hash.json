@@ -1,0 +1,1 @@
+{"schema_version":1,"task_id":"7f1c2a9e-3b4d-4e5f-8a6b-1c2d3e4f5a6b","repository":{"commit":"0123456789abcdef0123456789abcdef01234567"},"artifacts":[{"path":"a.ts","kind":"code","reason":"x"}],"constraints":[],"acceptance_tests":[]}

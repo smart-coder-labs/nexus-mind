@@ -5,9 +5,7 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(&config.log_level)
-        .init();
+    let _sentry = nexusmind::observability::init(&config.log_level);
 
     if !config.autonomous_agents_enabled {
         anyhow::bail!("AUTONOMOUS_AGENTS_ENABLED must be true for the worker")
@@ -25,7 +23,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!("NexusMind autonomous worker starting on the backend host");
-    nexusmind::automation::worker::spawn_local_worker(SqliteStore::new(conn), Arc::new(config))
-        .await?;
+    let worker =
+        nexusmind::automation::worker::spawn_local_worker(SqliteStore::new(conn), Arc::new(config));
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        result = worker => { result?; }
+        _ = terminate.recv() => {
+            tracing::info!("autonomous worker stopping (SIGTERM)");
+            // Queued spans go out before the pod stops; the flush blocks, so it
+            // runs off the async workers.
+            let _ = tokio::task::spawn_blocking(|| {
+                nexusmind::factory::otel::shutdown(std::time::Duration::from_secs(5))
+            })
+            .await;
+        }
+    }
     Ok(())
 }

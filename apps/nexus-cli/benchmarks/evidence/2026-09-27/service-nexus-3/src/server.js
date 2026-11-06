@@ -1,0 +1,152 @@
+import { randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
+
+const MAX_BODY_BYTES = 64 * 1024;
+
+function sendJson(res, status, body) {
+  const data = JSON.stringify(body);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(data),
+  });
+  res.end(data);
+}
+
+function sendError(res, status, error) {
+  sendJson(res, status, { error });
+}
+
+function isJsonContentType(value) {
+  return typeof value === 'string'
+    && value.split(';', 1)[0].trim().toLowerCase() === 'application/json';
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let finished = false;
+    const finish = (result) => {
+      if (!finished) {
+        finished = true;
+        resolve(result);
+      }
+    };
+
+    req.on('data', (chunk) => {
+      if (finished) return;
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        // Consume the remainder so the connection can be reused.
+        req.resume();
+        finish({ tooLarge: true });
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => finish({ body: Buffer.concat(chunks).toString('utf8') }));
+    req.on('error', reject);
+    req.on('aborted', () => reject(new Error('request aborted')));
+  });
+}
+
+function validOrderPayload(payload) {
+  if (payload === null || Array.isArray(payload) || typeof payload !== 'object') return false;
+  // Do not coerce: a SKU is a non-empty, printable identifier and quantity
+  // must be supplied as an integer JSON number.
+  if (typeof payload.sku !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(payload.sku)) return false;
+  return typeof payload.quantity === 'number'
+    && Number.isSafeInteger(payload.quantity)
+    && payload.quantity > 0;
+}
+
+export function createServer() {
+  const orders = new Map();
+  const idempotencyKeys = new Map();
+
+  return createHttpServer(async (req, res) => {
+    let pathname;
+    try {
+      pathname = new URL(req.url, 'http://localhost').pathname;
+    } catch {
+      sendError(res, 400, 'invalid request URL');
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/health') {
+      sendJson(res, 200, { status: 'ok' });
+      return;
+    }
+
+    if (req.method === 'GET') {
+      const match = /^\/orders\/([^/]+)$/.exec(pathname);
+      if (match) {
+        const order = orders.get(match[1]);
+        if (order) sendJson(res, 200, order);
+        else sendError(res, 404, 'order not found');
+        return;
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/orders') {
+      if (!isJsonContentType(req.headers['content-type'])) {
+        sendError(res, 415, 'content-type must be application/json');
+        return;
+      }
+
+      const length = Number(req.headers['content-length']);
+      if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
+        req.resume();
+        sendError(res, 413, 'request body too large');
+        return;
+      }
+
+      let received;
+      try {
+        received = await readBody(req);
+      } catch {
+        if (!res.headersSent) sendError(res, 400, 'could not read request body');
+        return;
+      }
+      if (received.tooLarge) {
+        sendError(res, 413, 'request body too large');
+        return;
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(received.body);
+      } catch {
+        sendError(res, 400, 'invalid JSON');
+        return;
+      }
+      if (!validOrderPayload(payload)) {
+        sendError(res, 400, 'invalid order payload');
+        return;
+      }
+
+      const key = req.headers['idempotency-key'];
+      if (typeof key === 'string' && key.length > 0) {
+        const previous = idempotencyKeys.get(key);
+        if (previous) {
+          if (previous.sku !== payload.sku || previous.quantity !== payload.quantity) {
+            sendError(res, 409, 'idempotency key was already used with a different payload');
+          } else {
+            sendJson(res, 200, previous.order);
+          }
+          return;
+        }
+      }
+
+      const order = { id: randomUUID(), sku: payload.sku, quantity: payload.quantity };
+      orders.set(order.id, order);
+      if (typeof key === 'string' && key.length > 0) {
+        idempotencyKeys.set(key, { sku: payload.sku, quantity: payload.quantity, order });
+      }
+      sendJson(res, 201, order);
+      return;
+    }
+
+    sendError(res, 404, 'route not found');
+  });
+}

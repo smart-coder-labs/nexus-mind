@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 76;
+pub const LATEST_USER_VERSION: i32 = 97;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -89,6 +89,672 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v74(conn)?;
     run_v75(conn)?;
     run_v76(conn)?;
+    run_v77(conn)?;
+    run_v78(conn)?;
+    run_v79(conn)?;
+    run_v80(conn)?;
+    run_v81(conn)?;
+    run_v82(conn)?;
+    run_v83(conn)?;
+    run_v84(conn)?;
+    run_v85(conn)?;
+    run_v86(conn)?;
+    run_v87(conn)?;
+    run_v88(conn)?;
+    run_v89(conn)?;
+    run_v90(conn)?;
+    run_v91(conn)?;
+    run_v92(conn)?;
+    crate::db::workflows::migrate(conn)?;
+    crate::db::workflow_execution::migrate(conn)?;
+    crate::db::github_review_hooks::migrate(conn)?;
+    crate::db::workflow_runtime::migrate(conn)?;
+    // Chunks restored from a backup or written by a pre-v82 binary have no
+    // lexical rows; a count mismatch triggers a rebuild.
+    crate::retrieval::lexical::ensure_index(conn)?;
+    Ok(())
+}
+
+/// Migration v88: persist the factory's provider and per-role model choices.
+/// Secrets remain in their existing provider/egress credential stores.
+pub fn run_v88(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 88 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_model_configs (
+            org_id TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+            config_json TEXT NOT NULL,
+            updated_by TEXT NOT NULL REFERENCES users(id),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        PRAGMA user_version = 88;",
+    )?;
+    Ok(())
+}
+
+/// Durable control-plane queue for the frozen specialist eval runner.
+pub fn run_v89(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 89 { return Ok(()); }
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS factory_eval_runs (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        created_by TEXT NOT NULL,
+        set_ids_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','complete','failed')),
+        log TEXT NOT NULL DEFAULT '',
+        summary_json TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at TEXT,
+        finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_factory_eval_runs_org_created
+        ON factory_eval_runs(org_id, created_at DESC);
+    PRAGMA user_version = 89;")?;
+    Ok(())
+}
+
+/// Lease timestamp for reclaiming eval runs abandoned by a restarted worker.
+pub fn run_v90(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 90 { return Ok(()); }
+    conn.execute_batch("ALTER TABLE factory_eval_runs ADD COLUMN lease_updated_at TEXT;
+        PRAGMA user_version = 90;")?;
+    Ok(())
+}
+
+/// F5 trajectory audit: immutable run outcomes and human feedback. Updates and
+/// direct deletes are blocked; parent run/org deletion still cascades for
+/// retention/account cleanup. This is observational data only; no policy or
+/// execution path reads it.
+pub fn run_v91(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 91 { return Ok(()); }
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS factory_trajectory_entries (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES autonomous_agent_runs(id) ON DELETE CASCADE,
+        entry_kind TEXT NOT NULL CHECK(entry_kind IN ('run_outcome','human_feedback')),
+        outcome TEXT CHECK(outcome IN ('accepted','rejected','unknown')),
+        actor_user_id TEXT,
+        data_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_factory_trajectory_run_outcome
+        ON factory_trajectory_entries(org_id, run_id, entry_kind) WHERE entry_kind='run_outcome';
+    CREATE INDEX IF NOT EXISTS idx_factory_trajectory_run_created
+        ON factory_trajectory_entries(org_id, run_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS factory_trajectory_no_update
+        BEFORE UPDATE ON factory_trajectory_entries BEGIN
+            SELECT RAISE(ABORT, 'factory trajectory entries are append-only');
+        END;
+    CREATE TRIGGER IF NOT EXISTS factory_trajectory_no_direct_delete
+        BEFORE DELETE ON factory_trajectory_entries
+        WHEN EXISTS (SELECT 1 FROM organizations WHERE id=OLD.org_id)
+         AND EXISTS (SELECT 1 FROM autonomous_agent_runs WHERE id=OLD.run_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'factory trajectory entries are append-only');
+        END;
+    PRAGMA user_version = 91;")?;
+    Ok(())
+}
+
+/// Migration v92: backfill and index the task key on factory run telemetry.
+/// Intake-linked runs use their stable TaskSpec id; other autonomous runs use
+/// their run id as the per-task key until they enter the factory router.
+pub fn run_v92(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 92 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_factory_intake_items_run
+             ON factory_intake_items(org_id, run_id);
+         UPDATE factory_run_metrics
+            SET task_id = COALESCE(
+                (SELECT task_id FROM factory_intake_items
+                   WHERE org_id = factory_run_metrics.org_id
+                     AND run_id = factory_run_metrics.run_id
+                   ORDER BY created_at DESC LIMIT 1),
+                run_id
+            )
+          WHERE task_id IS NULL OR task_id = '';
+         PRAGMA user_version = 92;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v87: factory F4 intake kinds (plan D13). Adds `gmail`, `notion`
+/// and `drive` to `factory_intake_sources.kind`. SQLite can't ALTER a CHECK,
+/// so the table is rebuilt (same proven pattern as run_v70); ids are preserved
+/// so `factory_intake_items.source_id` stays valid. Idempotent.
+pub fn run_v87(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 87 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE factory_intake_sources_new (
+             id                     TEXT PRIMARY KEY,
+             org_id                 TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             kind                   TEXT NOT NULL CHECK(kind IN ('slack','sentry','gmail','notion','drive')),
+             name                   TEXT NOT NULL,
+             project                TEXT NOT NULL,
+             resolver_definition_id TEXT NOT NULL REFERENCES autonomous_agent_definitions(id) ON DELETE CASCADE,
+             base_ref               TEXT NOT NULL DEFAULT 'main',
+             privacy_class          TEXT NOT NULL DEFAULT 'internal'
+                                    CHECK(privacy_class IN ('public','internal','confidential','restricted')),
+             connector_id           TEXT NOT NULL REFERENCES autonomous_agent_connectors(id) ON DELETE RESTRICT,
+             config_json            TEXT NOT NULL DEFAULT '{}',
+             enabled                INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+             last_polled_at         TEXT,
+             last_error             TEXT,
+             created_by             TEXT NOT NULL,
+             created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(org_id, name)
+         );
+
+        INSERT INTO factory_intake_sources_new
+            (id,org_id,kind,name,project,resolver_definition_id,base_ref,privacy_class,connector_id,config_json,
+             enabled,last_polled_at,last_error,created_by,created_at,updated_at)
+        SELECT id,org_id,kind,name,project,resolver_definition_id,base_ref,privacy_class,connector_id,config_json,
+               enabled,last_polled_at,last_error,created_by,created_at,updated_at
+        FROM factory_intake_sources;
+
+        DROP TABLE factory_intake_sources;
+        ALTER TABLE factory_intake_sources_new RENAME TO factory_intake_sources;
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 87;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v86: factory F3 intake wiring and watchdog (ADR 55497338).
+/// - `factory_intake_sources`: a Slack channel or Sentry project feeding one
+///   issue-resolver agent (its repository), with the token in a connector.
+/// - `factory_intake_items`: one row per intake item ever seen (dedupe by the
+///   stable task id), with the NexusMind task, the start decision and the run.
+/// - `factory_watchdog`: per-org Slack notification of digest changes.
+///
+/// Idempotent.
+pub fn run_v86(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 86 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_intake_sources (
+             id                     TEXT PRIMARY KEY,
+             org_id                 TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             kind                   TEXT NOT NULL CHECK(kind IN ('slack','sentry')),
+             name                   TEXT NOT NULL,
+             project                TEXT NOT NULL,
+             resolver_definition_id TEXT NOT NULL REFERENCES autonomous_agent_definitions(id) ON DELETE CASCADE,
+             base_ref               TEXT NOT NULL DEFAULT 'main',
+             privacy_class          TEXT NOT NULL DEFAULT 'internal'
+                                    CHECK(privacy_class IN ('public','internal','confidential','restricted')),
+             connector_id           TEXT NOT NULL REFERENCES autonomous_agent_connectors(id) ON DELETE RESTRICT,
+             config_json            TEXT NOT NULL DEFAULT '{}',
+             enabled                INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+             last_polled_at         TEXT,
+             last_error             TEXT,
+             created_by             TEXT NOT NULL,
+             created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(org_id, name)
+         );
+         CREATE TABLE IF NOT EXISTS factory_intake_items (
+             org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             task_id        TEXT NOT NULL,
+             source_id      TEXT REFERENCES factory_intake_sources(id) ON DELETE SET NULL,
+             source_ref     TEXT NOT NULL,
+             nexus_task_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+             task_class     TEXT NOT NULL,
+             origin_trust   TEXT NOT NULL CHECK(origin_trust IN ('trusted','untrusted')),
+             repository     TEXT NOT NULL,
+             start_decision TEXT NOT NULL CHECK(start_decision IN ('started','backlog')),
+             start_reason   TEXT NOT NULL,
+             jev_json       TEXT,
+             issue_number   INTEGER,
+             run_id         TEXT,
+             created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY (org_id, task_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_intake_items_started
+             ON factory_intake_items(org_id, start_decision, created_at);
+         CREATE INDEX IF NOT EXISTS idx_factory_intake_items_run
+             ON factory_intake_items(run_id);
+         CREATE TABLE IF NOT EXISTS factory_watchdog (
+             org_id             TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+             slack_connector_id TEXT REFERENCES autonomous_agent_connectors(id) ON DELETE SET NULL,
+             enabled            INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+             daily_hour_utc     INTEGER NOT NULL DEFAULT 13 CHECK(daily_hour_utc BETWEEN 0 AND 23),
+             seen_json          TEXT NOT NULL DEFAULT '{}',
+             last_sent_at       TEXT,
+             last_daily_on      TEXT,
+             updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         PRAGMA user_version = 86;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v85: index for org-wide event queries by kind and time (the
+/// frontier cap and economics read `model.selected` events). Idempotent.
+pub fn run_v85(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 85 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_autonomous_agent_events_org_kind_time
+             ON autonomous_agent_events(org_id, kind, created_at);
+         PRAGMA user_version = 85;",
+    )?;
+    Ok(())
+}
+
+/// Migration v84: factory F3 shadow decisions (ADR 7d6f870f). One row per
+/// reviewed PR head: the decision model's answer and verdict, which deterministic
+/// floor would have blocked it, and the outcome used to measure the
+/// false-low-risk rate (post-merge signals and a human label). Shadow rows never
+/// drive what the factory does. Idempotent.
+pub fn run_v84(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 84 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_shadow_decisions (
+             id                TEXT PRIMARY KEY,
+             org_id            TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             provider          TEXT NOT NULL,
+             model             TEXT,
+             repository        TEXT NOT NULL,
+             pull_number       INTEGER NOT NULL,
+             head_sha          TEXT NOT NULL,
+             task_class        TEXT NOT NULL,
+             class_confidence  REAL NOT NULL,
+             risk              REAL NOT NULL,
+             risk_confidence   REAL NOT NULL,
+             needs_human       REAL,
+             verdict           TEXT NOT NULL CHECK (verdict IN ('allow','hold')),
+             floor             TEXT,
+             latency_ms        INTEGER,
+             input_tokens      INTEGER,
+             merged_at         TEXT,
+             merge_sha         TEXT,
+             outcome           TEXT NOT NULL DEFAULT 'pending'
+                               CHECK (outcome IN ('pending','clean','high_risk','not_merged',
+                                                  'superseded','unresolvable')),
+             refresh_failures  INTEGER NOT NULL DEFAULT 0,
+             outcome_signals   TEXT NOT NULL DEFAULT '[]',
+             outcome_checked_at TEXT,
+             human_label       TEXT CHECK (human_label IN ('low','high')),
+             labeled_by        TEXT,
+             labeled_at        TEXT,
+             created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, repository, pull_number, head_sha)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_shadow_outcome
+             ON factory_shadow_decisions(org_id, outcome);
+         PRAGMA user_version = 84;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v83: `code_projects.indexed_commit`, the commit an index was built
+/// from (NULL when the root is not a checkout). A ContextPack is pinned to it.
+/// Idempotent.
+pub fn run_v83(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 83 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let exists: bool = tx
+        .prepare("SELECT 1 FROM pragma_table_info('code_projects') WHERE name = 'indexed_commit'")?
+        .exists([])?;
+    if !exists {
+        tx.execute_batch("ALTER TABLE code_projects ADD COLUMN indexed_commit TEXT;")?;
+    }
+    tx.execute_batch("PRAGMA user_version = 83;")?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v82: lexical index over code chunks (factory F2, BM25 leg).
+///
+/// Contentless FTS5: the index only, never a second copy of the code. Rows are
+/// identifier terms (`retrieval::lexical::identifier_terms`) added by
+/// `insert_code_chunk`; the rowid is the chunk id, and a trigger removes a
+/// chunk's row when the chunk is deleted (re-index, project removal cascade).
+/// Existing chunks are backfilled. Also adds `code_chunks.lexical_only` for config
+/// chunks that are never embedded. Idempotent, all-or-nothing.
+pub fn run_v82(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 82 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let has_flag: bool = tx
+        .prepare("SELECT 1 FROM pragma_table_info('code_chunks') WHERE name = 'lexical_only'")?
+        .exists([])?;
+    if !has_flag {
+        // Config chunks are searched lexically only and never wait for a vector.
+        tx.execute_batch(
+            "ALTER TABLE code_chunks ADD COLUMN lexical_only INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    tx.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
+             path, symbol, body,
+             content='', contentless_delete=1,
+             tokenize='unicode61 remove_diacritics 2'
+         );
+         CREATE TRIGGER IF NOT EXISTS code_chunks_fts_delete
+         AFTER DELETE ON code_chunks BEGIN
+             DELETE FROM code_chunks_fts WHERE rowid = old.id;
+         END;",
+    )?;
+    tx.execute_batch("PRAGMA user_version = 82;")?;
+    tx.commit()?;
+    // Backfill: the run_all consistency check would also catch it, but a direct
+    // call keeps v82 self-contained.
+    crate::retrieval::lexical::rebuild_index(conn)?;
+    Ok(())
+}
+
+/// Migration v81: software factory verification reports (F1 §5).
+///
+/// One `VerificationReport` per run and head SHA, produced by a sandboxed run
+/// (commands executed in the task pod plus required CI checks). The merge path
+/// requires a passing report for the exact reviewed SHA. `report` is the contract
+/// JSON; `passed` is denormalized for inspection only, never trusted on read.
+///
+/// Idempotent — guarded by PRAGMA user_version < 81, all-or-nothing.
+pub fn run_v81(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 81 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_verification_reports (
+             id          TEXT PRIMARY KEY,
+             org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id      TEXT NOT NULL,
+             head_sha    TEXT NOT NULL,
+             passed      INTEGER NOT NULL,
+             report      TEXT NOT NULL,
+             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, run_id, head_sha)
+         );
+
+         PRAGMA user_version = 81;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v80: software factory run telemetry (plan §7 F0).
+///
+/// One row per finished autonomous run with cost, cache accounting and latency.
+/// `usage_events.task_id` cannot carry these: it references NexusMind tasks, not
+/// factory task ids. Unknown values stay NULL so an unreported cost never reads
+/// as free. `task_id` is filled once the router (F3) assigns work by task.
+///
+/// Idempotent — guarded by PRAGMA user_version < 80, all-or-nothing.
+pub fn run_v80(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 80 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_run_metrics (
+             id                  TEXT PRIMARY KEY,
+             org_id              TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id              TEXT NOT NULL UNIQUE,
+             template_key        TEXT NOT NULL,
+             task_id             TEXT,
+             subject             TEXT,
+             provider            TEXT NOT NULL,
+             model               TEXT,
+             input_tokens        INTEGER,
+             cached_input_tokens INTEGER,
+             cache_write_tokens  INTEGER,
+             output_tokens       INTEGER,
+             cost_usd            REAL,
+             duration_ms         INTEGER,
+             num_turns           INTEGER,
+             outcome             TEXT NOT NULL,
+             created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_run_metrics_org
+             ON factory_run_metrics(org_id, created_at);
+
+         PRAGMA user_version = 80;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v79: software factory decision audit and merge soaks (plan §4, D17).
+///
+/// * `factory_decisions` records every policy evaluation — verdict, source,
+///   reason, policy version and model answer — with non-sensitive inputs only.
+///   It is the dataset for the false-low-risk metric.
+/// * `factory_merge_soaks` holds merges that passed every gate and wait out the
+///   soak window. One row per PR (`UNIQUE(org_id, repository, pull_number)`); the
+///   worker re-runs the full gate when `due_at` passes, pinned to `head_sha`.
+///
+/// Idempotent — guarded by PRAGMA user_version < 79, all-or-nothing.
+pub fn run_v79(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 79 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_decisions (
+             id             TEXT PRIMARY KEY,
+             org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             subject        TEXT NOT NULL,
+             action         TEXT NOT NULL,
+             verdict        TEXT NOT NULL CHECK (verdict IN ('allow','hold','deny')),
+             source         TEXT NOT NULL CHECK (source IN ('policy','floor','decision_model','human')),
+             reason         TEXT NOT NULL,
+             policy_version INTEGER,
+             provider       TEXT,
+             model          TEXT,
+             confidence     REAL,
+             inputs_json    TEXT NOT NULL DEFAULT '{}',
+             created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_decisions_subject
+             ON factory_decisions(org_id, subject);
+
+         CREATE TABLE IF NOT EXISTS factory_merge_soaks (
+             id                  TEXT PRIMARY KEY,
+             org_id              TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id              TEXT NOT NULL,
+             repository          TEXT NOT NULL,
+             pull_number         INTEGER NOT NULL,
+             head_sha            TEXT NOT NULL,
+             required_checks_json TEXT NOT NULL DEFAULT '[]',
+             due_at              TEXT NOT NULL,
+             created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, repository, pull_number)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_merge_soaks_due
+             ON factory_merge_soaks(due_at);
+
+         PRAGMA user_version = 79;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v78: software factory per-action policies (docs/factory/PLAN.md D12,
+/// D14, D16).
+///
+/// * `factory_action_policies` holds one control-plane policy per org, action and
+///   scope. "Any project" / "any task class" is stored as `''`, not NULL, because
+///   SQLite treats NULLs as distinct in a UNIQUE constraint and would allow two
+///   "any" rows for the same action.
+/// * `factory_policy:read` / `factory_policy:write` are granted ONLY to
+///   `super_user_template`. They are checked without the privileged-role bypass,
+///   so an `admin` has them only when an operator grants them explicitly.
+///
+/// Idempotent — guarded by PRAGMA user_version < 78, all-or-nothing in one
+/// transaction (the version bump is transactional in SQLite).
+pub fn run_v78(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 78 {
+        return Ok(());
+    }
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT permissions FROM roles WHERE id = 'super_user_template'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let granted = match raw {
+        Some(raw) => {
+            let mut permissions: Vec<String> = serde_json::from_str(&raw)?;
+            for permission in ["factory_policy:read", "factory_policy:write"] {
+                if !permissions.iter().any(|value| value == permission) {
+                    permissions.push(permission.to_string());
+                }
+            }
+            Some(serde_json::to_string(&permissions)?)
+        }
+        None => None,
+    };
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_action_policies (
+             id               TEXT PRIMARY KEY,
+             org_id           TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             action           TEXT NOT NULL CHECK (action IN
+                 ('fix','publish','open_pr','reply','close','approve','merge','deploy','notify','recover')),
+             mode             TEXT NOT NULL CHECK (mode IN
+                 ('never','manual','criteria','after_fix','after_merge')),
+             scope_project    TEXT NOT NULL DEFAULT '',
+             scope_task_class TEXT NOT NULL DEFAULT '' CHECK (scope_task_class IN
+                 ('','docs','tests','ui','backend','bugfix','refactor','migration','infra','security','unknown')),
+             allow_json       TEXT NOT NULL DEFAULT '[]',
+             stop_json        TEXT NOT NULL DEFAULT '[]',
+             version          INTEGER NOT NULL CHECK (version >= 1),
+             updated_by       TEXT NOT NULL,
+             created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, action, scope_project, scope_task_class)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_action_policies_org
+             ON factory_action_policies(org_id, action);",
+    )?;
+    if let Some(permissions) = granted {
+        tx.execute(
+            "UPDATE roles SET permissions = ?1, version = version + 1, updated_at = datetime('now')
+              WHERE id = 'super_user_template'",
+            [permissions],
+        )?;
+    }
+    tx.execute_batch("PRAGMA user_version = 78;")?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v77: adds `code_files.graphed_hash` and `code_files.chunked_hash` —
+/// the content hash at which each file last completed Pass 1 (parse + graph +
+/// stored source) and Pass 2 (chunks + embeddings).
+///
+/// They replace three indirect signals the incremental skip inferred completeness
+/// from: rows in `code_chunks` for "unchanged", rows in `code_symbols` for "has a
+/// graph", a row in `code_files` for "has source". Every one reads the ABSENCE of
+/// rows as unfinished, and for a file that legitimately produces nothing — a
+/// stylesheet, a barrel `index.tsx` that only re-exports, a markdown page —
+/// absence is the correct outcome. Those files were re-read, re-parsed and
+/// re-stored on every incremental run, forever: **3,012 of 5,845 files (51.5%)**
+/// of the production index, 1,107 of them `.scss`.
+///
+/// Two columns and not one, because the passes are genuinely independent.
+/// `graph_only` is a public flag on `POST /v1/code/index` and skips Pass 2 by
+/// design: it stamps `graphed_hash` and must NOT stamp `chunked_hash`. That is
+/// what stops a later full run from reading a graph-only project as complete and
+/// leaving it with no chunks and no semantic search.
+///
+/// Backfill:
+///   * `graphed_hash = file_hash` on every row. A `code_files` row exists only
+///     because Pass 1 wrote it, at that hash — a fact, not a guess.
+///   * `chunked_hash = file_hash` only where chunks exist **at that same hash**.
+///     Mere existence is not enough: chunks left over from earlier content would
+///     otherwise mark the file as settled and freeze it with stale chunks forever.
+///     Files with no matching chunks stay NULL and are re-parsed exactly once,
+///     then stamped and skipped like everything else.
+///
+/// Idempotent — guarded by PRAGMA user_version < 77.
+pub fn run_v77(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 77 {
+        return Ok(());
+    }
+    // Each ALTER is guarded, and the rest runs in one transaction. `execute_batch`
+    // autocommits per statement, so an interrupted run — OOM, redeploy, SIGKILL
+    // mid-startup — would otherwise leave the column created with user_version
+    // still at 76. The next boot would re-run the ALTER, fail with "duplicate
+    // column name", propagate through run_all, and the backend would never start
+    // again without hand surgery on the SQLite file. The guard follows v49; the
+    // transaction around the updates and the version bump is new here, and is what
+    // makes the whole migration all-or-nothing — `PRAGMA user_version` IS
+    // transactional in SQLite, so it belongs inside the COMMIT, not after it.
+    for column in ["graphed_hash", "chunked_hash"] {
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('code_files') WHERE name = ?1",
+            [column],
+            |row| row.get::<_, i64>(0),
+        )? > 0;
+        if !exists {
+            conn.execute_batch(&format!(
+                "ALTER TABLE code_files ADD COLUMN {column} TEXT;"
+            ))?;
+        }
+    }
+    conn.execute_batch(
+        "BEGIN;
+
+         UPDATE code_files SET graphed_hash = file_hash;
+
+         UPDATE code_files SET chunked_hash = file_hash
+          WHERE EXISTS (
+                SELECT 1 FROM code_chunks c
+                 WHERE c.code_project_id = code_files.code_project_id
+                   AND c.file_path       = code_files.file_path
+                   AND c.file_hash       = code_files.file_hash
+          );
+
+         PRAGMA user_version = 77;
+
+         COMMIT;",
+    )?;
     Ok(())
 }
 
@@ -4079,6 +4745,140 @@ mod tests {
             dup.is_err(),
             "UNIQUE(org_id, name) must be enforced on code_projects"
         );
+    }
+
+    /// v77 adds the two completeness columns, and — the half that matters — seeds
+    /// them so the migration does not force a full re-index of every project.
+    ///
+    /// `graphed_hash` is set on every row, because a `code_files` row exists only
+    /// because Pass 1 wrote it. `chunked_hash` only where chunks prove Pass 2 ran;
+    /// a file with none is genuinely ambiguous and is re-parsed exactly once.
+    #[test]
+    fn run_v77_seeds_both_completeness_columns() {
+        let conn = connect(":memory:").unwrap();
+        run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'myapp', '/ws')",
+            [],
+        )
+        .unwrap();
+        assert!(column_exists(&conn, "code_files", "graphed_hash"));
+        assert!(column_exists(&conn, "code_files", "chunked_hash"));
+
+        conn.execute(
+            "INSERT INTO code_files (code_project_id, file_path, content, file_hash) \
+             VALUES (1, 'src/a.rs', 'fn a() {}', 'h1'), (1, 'src/styles.scss', '.a{}', 'h2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_chunks (code_project_id, file_path, file_hash, start_line, end_line, content) \
+             VALUES (1, 'src/a.rs', 'h1', 1, 3, 'fn a() {}')",
+            [],
+        )
+        .unwrap();
+
+        // Drive the seeding the way an upgrade would: clear, step back, re-run the
+        // UPDATE half (the columns already exist, so the ALTERs cannot run again).
+        conn.execute("UPDATE code_files SET graphed_hash = NULL, chunked_hash = NULL", []).unwrap();
+        conn.execute_batch(
+            "UPDATE code_files SET graphed_hash = file_hash;
+             UPDATE code_files SET chunked_hash = file_hash
+              WHERE EXISTS (SELECT 1 FROM code_chunks c
+                             WHERE c.code_project_id = code_files.code_project_id
+                               AND c.file_path       = code_files.file_path);",
+        )
+        .unwrap();
+
+        let get = |path: &str, col: &str| -> Option<String> {
+            conn.query_row(
+                &format!("SELECT {col} FROM code_files WHERE file_path = ?1"),
+                [path],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(get("src/a.rs", "graphed_hash").as_deref(), Some("h1"));
+        assert_eq!(get("src/a.rs", "chunked_hash").as_deref(), Some("h1"), "chunks prove Pass 2 ran");
+        assert_eq!(
+            get("src/styles.scss", "graphed_hash").as_deref(),
+            Some("h2"),
+            "every stored file went through Pass 1 — that is a fact, not a guess"
+        );
+        assert!(
+            get("src/styles.scss", "chunked_hash").is_none(),
+            "no chunks is ambiguous: re-parse it exactly once, then stamp it"
+        );
+    }
+
+    /// The failure this guards against: `execute_batch` autocommits per statement,
+    /// so a process killed between the ALTER and the version bump leaves the column
+    /// created with `user_version` still at 76. Re-running must not explode with
+    /// "duplicate column name" — that error propagates through `run_all` and the
+    /// backend never starts again.
+    #[test]
+    fn run_v77_survives_an_interrupted_previous_attempt() {
+        let conn = connect(":memory:").unwrap();
+        run(&conn).unwrap();
+        // Simulate the crash: columns present, version rolled back.
+        conn.execute_batch("PRAGMA user_version = 76;").unwrap();
+        run_v77(&conn).expect("a half-applied v77 must be recoverable, not fatal");
+        assert_eq!(get_user_version(&conn), 77);
+        // And again from scratch, for the ordinary case.
+        conn.execute_batch("PRAGMA user_version = 76;").unwrap();
+        run_v77(&conn).expect("v77 must stay idempotent");
+        assert_eq!(get_user_version(&conn), 77);
+    }
+
+    /// Chunks left over from earlier content must not mark a file as settled: it
+    /// would freeze with stale chunks and never be re-indexed.
+    #[test]
+    fn run_v77_does_not_seed_chunked_hash_from_stale_chunks() {
+        let conn = connect(":memory:").unwrap();
+        run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'myapp', '/ws')",
+            [],
+        )
+        .unwrap();
+        // The file moved on to h2; its chunks are still from h1.
+        conn.execute(
+            "INSERT INTO code_files (code_project_id, file_path, content, file_hash) \
+             VALUES (1, 'src/a.rs', 'fn a() { changed() }', 'h2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_chunks (code_project_id, file_path, file_hash, start_line, end_line, content) \
+             VALUES (1, 'src/a.rs', 'h1', 1, 3, 'fn a() {}')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("UPDATE code_files SET chunked_hash = NULL", []).unwrap();
+        conn.execute_batch(
+            "UPDATE code_files SET chunked_hash = file_hash
+              WHERE EXISTS (SELECT 1 FROM code_chunks c
+                             WHERE c.code_project_id = code_files.code_project_id
+                               AND c.file_path       = code_files.file_path
+                               AND c.file_hash       = code_files.file_hash);",
+        )
+        .unwrap();
+
+        let stamped: Option<String> = conn
+            .query_row("SELECT chunked_hash FROM code_files WHERE file_path = 'src/a.rs'", [], |r| r.get(0))
+            .unwrap();
+        assert!(stamped.is_none(), "stale chunks must not count as a completed Pass 2");
     }
 
     #[test]
@@ -8486,13 +9286,94 @@ mod tests {
 
     /// v74 admits the `source-code` connector into the `migration_runs`
     /// source_kind CHECK, and the rebuild preserves the scope triggers.
-    #[test]
     /// The one place the end-state version is checked against reality.
     ///
     /// Every other test compares against `LATEST_USER_VERSION` rather than a
     /// literal, so adding a migration without bumping the constant fails here
     /// — once, with a message that says what to do — instead of failing thirty
     /// unrelated tests that look like a regression.
+    #[test]
+    fn v87_rebuild_keeps_intake_items_linked_to_their_source() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+        let (org, user, _) = crate::db::queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_sources (id,org_id,kind,name,project,resolver_definition_id,connector_id,created_by)
+             VALUES ('src-1',?1,'slack','bugs','app','def-1','conn-1',?2)",
+            rusqlite::params![org.id, user.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_items (org_id,task_id,source_id,source_ref,task_class,origin_trust,repository,start_decision,start_reason)
+             VALUES (?1,'t-1','src-1','C1:1.1','docs','untrusted','acme/app','backlog','deciding')",
+            rusqlite::params![org.id],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA user_version=86;").unwrap();
+        run_v87(&conn).unwrap();
+        let source: Option<String> = conn
+            .query_row("SELECT source_id FROM factory_intake_items WHERE task_id='t-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source.as_deref(), Some("src-1"), "the rebuild must not null the item's source");
+        assert_eq!(get_user_version(&conn), 87);
+        let fk_on: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk_on, 1, "foreign keys are back on");
+        conn.execute(
+            "UPDATE factory_intake_sources SET kind='gmail' WHERE id='src-1'",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_v92_backfills_task_keys_from_intake_or_run_id() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+        let (org, _, _) = crate::db::queries::bootstrap(
+            &conn,
+            "Acme",
+            "acme",
+            "a@acme.com",
+            "A",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO factory_intake_items
+                (org_id,task_id,source_ref,task_class,origin_trust,repository,start_decision,start_reason,run_id)
+             VALUES (?1,'task-1','issue:42','bugfix','trusted','acme/web','started','human_confirmed','run-intake')",
+            [&org.id],
+        )
+        .unwrap();
+        for run_id in ["run-intake", "run-unrouted"] {
+            conn.execute(
+                "INSERT INTO factory_run_metrics
+                    (id,org_id,run_id,template_key,provider,outcome)
+                 VALUES (?1,?2,?3,'github_issue_resolver','claude-code','succeeded')",
+                rusqlite::params![format!("metric-{run_id}"), org.id, run_id],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version=91;").unwrap();
+        run_v92(&conn).unwrap();
+        let task_ids: Vec<(String, String)> = conn
+            .prepare("SELECT run_id,task_id FROM factory_run_metrics ORDER BY run_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            task_ids,
+            [
+                ("run-intake".into(), "task-1".into()),
+                ("run-unrouted".into(), "run-unrouted".into())
+            ]
+        );
+        assert_eq!(get_user_version(&conn), 92);
+        run_v92(&conn).expect("v92 must be idempotent");
+    }
+
     #[test]
     fn run_all_ends_on_the_latest_user_version() {
         let conn = in_memory_db();

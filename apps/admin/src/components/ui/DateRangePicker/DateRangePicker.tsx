@@ -168,11 +168,11 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
                 aria-expanded={open}
                 aria-label="Filter by date range"
                 className={cn(
-                    'inline-flex items-center gap-2.5 h-9 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors',
-                    'bg-[#0d0f14]/60 backdrop-blur-[12px]',
+                    'inline-flex items-center gap-2.5 h-9 rounded-md border px-3 text-sm font-medium shadow-xs transition-colors',
+                    'bg-surface-primary ',
                     open
                         ? 'border-accent-blue/55 text-text-primary'
-                        : 'border-white/[0.09] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
+                        : 'border-border-primary text-text-tertiary hover:border-border-primary hover:text-text-secondary'
                 )}
             >
                 <Calendar className="w-3.5 h-3.5 text-accent-blue shrink-0" />
@@ -184,7 +184,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
                 <div
                     role="dialog"
                     aria-label="Choose date range"
-                    className="absolute left-0 top-[46px] z-30 w-[280px] rounded-[14px] border border-white/[0.10] bg-[#111319]/[0.98] backdrop-blur-[20px] shadow-[0_18px_50px_rgba(0,0,0,0.6)] p-3.5"
+                    className="absolute left-0 top-[46px] z-30 w-[280px] rounded-xl border border-border-primary bg-surface-elevated shadow-md p-3.5"
                 >
                     {/* Month nav */}
                     <div className="flex items-center justify-between mb-2.5">
@@ -192,16 +192,16 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
                             type="button"
                             onClick={() => setViewMonth((m) => addMonths(m, -1))}
                             aria-label="Previous month"
-                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-tertiary hover:bg-white/[0.07] hover:text-text-primary transition-colors"
+                            className="w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-tertiary hover:bg-foreground/[0.07] hover:text-text-primary transition-colors"
                         >
                             <ChevronLeft className="w-3.5 h-3.5" />
                         </button>
-                        <span className="text-[13px] font-bold text-text-primary">{monthLabelFmt.format(viewMonth)}</span>
+                        <span className="text-sm font-bold text-text-primary">{monthLabelFmt.format(viewMonth)}</span>
                         <button
                             type="button"
                             onClick={() => setViewMonth((m) => addMonths(m, 1))}
                             aria-label="Next month"
-                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-tertiary hover:bg-white/[0.07] hover:text-text-primary transition-colors"
+                            className="w-[26px] h-[26px] rounded-md flex items-center justify-center text-text-tertiary hover:bg-foreground/[0.07] hover:text-text-primary transition-colors"
                         >
                             <ChevronRight className="w-3.5 h-3.5" />
                         </button>
@@ -232,10 +232,10 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
                                     className={cn(
                                         'h-8 flex items-center justify-center text-[12.5px] tabular-nums transition-colors',
                                         isEdge
-                                            ? 'rounded-[9px] bg-accent-blue text-white font-extrabold'
+                                            ? 'rounded-md bg-action-primary text-action-foreground font-extrabold'
                                             : inRange
-                                                ? 'rounded-none bg-accent-blue/[0.14] text-text-primary font-medium'
-                                                : 'rounded-[8px] text-text-secondary font-medium hover:bg-accent-blue/[0.22]'
+                                                ? 'rounded-none bg-action-primary/[0.14] text-text-primary font-medium'
+                                                : 'rounded-md text-text-secondary font-medium hover:bg-action-primary/[0.22]'
                                     )}
                                 >
                                     {day.getDate()}
@@ -245,13 +245,13 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
                     </div>
 
                     {/* Presets */}
-                    <div className="flex gap-1.5 mt-3 pt-3 border-t border-white/[0.06]">
+                    <div className="flex gap-1.5 mt-3 pt-3 border-t border-border-primary">
                         {presets.map((p) => (
                             <button
                                 key={p.name}
                                 type="button"
                                 onClick={p.onClick}
-                                className="flex-1 text-center py-1.5 rounded-[8px] border border-white/[0.08] text-[11.5px] font-semibold text-text-tertiary hover:border-accent-blue/50 hover:text-text-primary transition-colors"
+                                className="flex-1 text-center py-1.5 rounded-md border border-border-primary text-[11.5px] font-semibold text-text-tertiary hover:border-accent-blue/50 hover:text-text-primary transition-colors"
                             >
                                 {p.name}
                             </button>

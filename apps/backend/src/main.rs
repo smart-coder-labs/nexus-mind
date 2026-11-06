@@ -9,12 +9,13 @@ use std::net::SocketAddr;
 async fn main() -> anyhow::Result<()> {
     let config = config::Config::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(&config.log_level)
-        .init();
+    let _sentry = nexusmind::observability::init(&config.log_level);
 
     let conn = db::connection::connect(&config.db_path)?;
+    // The autonomous worker starts beside us and may be writing; wait for it.
+    conn.busy_timeout(db::connection::MIGRATION_BUSY_TIMEOUT)?;
     db::migrations::run_all(&conn)?;
+    conn.busy_timeout(db::connection::BUSY_TIMEOUT)?;
 
     // Reset zombie index runs: a code project left in 'indexing' by a crash/OOM/restart
     // would report "indexing" forever and block re-indexing. Flip them to 'error'.

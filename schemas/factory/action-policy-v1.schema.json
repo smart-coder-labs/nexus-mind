@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusmind.dev/schemas/factory/action-policy-v1.schema.json",
+  "title": "Factory ActionPolicy v1",
+  "description": "Control-plane policy for one action. Owned by NexusMind, edited only by factory_policy:write holders; never read from repository content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "action", "mode", "scope", "allow", "stop", "version"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "action": { "enum": ["fix", "publish", "open_pr", "reply", "close", "approve", "merge", "deploy", "notify", "recover"] },
+    "mode": { "enum": ["never", "manual", "criteria", "after_fix", "after_merge"] },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "project": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "task_class": { "enum": ["docs", "tests", "ui", "backend", "bugfix", "refactor", "migration", "infra", "security", "unknown"] }
+      }
+    },
+    "allow": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "stop": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "version": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+  },
+  "allOf": [
+    {
+      "$comment": "criteria mode needs explicit allow conditions.",
+      "if": { "properties": { "mode": { "const": "criteria" } } },
+      "then": { "properties": { "allow": { "minItems": 1 } } }
+    }
+  ]
+}

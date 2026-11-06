@@ -1,0 +1,45 @@
+{
+  "case": "service",
+  "arm": "codex",
+  "trial": 2,
+  "startedAt": "2026-09-27T20:06:48.502Z",
+  "elapsedSeconds": 64.7,
+  "tool": "codex-cli 0.154.0",
+  "model": "gpt-5.6-terra",
+  "prompt": "Implementa un microservicio HTTP de pedidos sin dependencias externas: GET /health, POST /orders y GET /orders/:id, JSON consistente, validación estricta de sku y cantidad entera positiva, idempotencia por cabecera con 409 si la misma clave trae otro payload, 415 para content-type inválido, 413 para cuerpos mayores de 64 KiB y 404 JSON para rutas desconocidas. Mantén createServer y pasa node --test; no modifiques las pruebas.",
+  "exitCode": 1,
+  "signal": null,
+  "usage": null,
+  "nexusStatus": null,
+  "decision": null,
+  "visible": {
+    "exitCode": 1,
+    "pass": 0,
+    "fail": 5
+  },
+  "heldout": {
+    "exitCode": 1,
+    "pass": 0,
+    "fail": 4
+  },
+  "changedPaths": [],
+  "testsUnmodified": true,
+  "diffCheck": true,
+  "contextSourceCount": null,
+  "hashes": {
+    "fixtureTestSha256": "268a961a1b778e48744c4d1466d051effd3114124311a70a7be8981858062ed4",
+    "implementationDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdoutSha256": "132f5240af10adca3f948f7adc31dafa41f0d722aa548accab508532599dc2e4"
+  },
+  "heldoutInitial": {
+    "exitCode": 1,
+    "pass": 0,
+    "fail": 4
+  },
+  "codexDetailedUsage": null,
+  "evidence": {
+    "initialRunnerMetrics": "/private/tmp/nexus-bench-realworld-20260927/service-codex-2/metrics.json",
+    "initialHeldoutLog": "/private/tmp/nexus-bench-realworld-20260927/service-codex-2/heldout-tests.log",
+    "finalHeldoutRubric": "/Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs"
+  }
+}

@@ -17,7 +17,7 @@ const client = createClient()
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to keep pages independent.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 export default function Sessions() {
   const navigate = useNavigate()
@@ -69,7 +69,7 @@ export default function Sessions() {
         </div>
         <button
           onClick={() => setCreating(true)}
-          className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold flex items-center gap-1.5"
+          className="bg-action-primary text-action-foreground rounded-md px-4 py-1.5 text-sm font-medium flex items-center gap-1.5 h-9 shadow-xs"
         >
           <Plus className="w-3.5 h-3.5" />
           New Session
@@ -78,7 +78,7 @@ export default function Sessions() {
 
       {/* Create inline */}
       {creating && (
-        <div className="mb-4 flex items-center gap-2 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.06] p-3">
+        <div className="mb-4 flex items-center gap-2 rounded-md border border-accent-blue/30 bg-action-primary/[0.06] p-3">
           <input
             autoFocus
             value={newSessionName}
@@ -107,7 +107,7 @@ export default function Sessions() {
       {isLoading ? (
         <div className="space-y-2">
           {[...Array(5)].map((_, i) => (
-            <div key={i} className={`rounded-[18px] h-16 animate-pulse ${GLASS_PANEL}`} />
+            <div key={i} className={`rounded-xl h-16 animate-pulse ${GLASS_PANEL}`} />
           ))}
         </div>
       ) : sessions.length === 0 ? (
@@ -115,9 +115,9 @@ export default function Sessions() {
       ) : (
         <div className="space-y-2">
           {sessions.map((session: any) => (
-            <div key={session.id} className={`rounded-[18px] ${GLASS_PANEL}`}>
+            <div key={session.id} className={`rounded-xl ${GLASS_PANEL}`}>
               <div
-                className="flex items-center gap-3 p-4 cursor-pointer hover:bg-white/[0.04] rounded-[18px] transition-colors group"
+                className="flex items-center gap-3 p-4 cursor-pointer hover:bg-foreground/[0.04] rounded-xl transition-colors group"
                 onClick={() => setExpandedId(expandedId === session.id ? null : session.id)}
               >
                 <MessageSquare className="w-4 h-4 text-text-quaternary shrink-0" />
@@ -191,7 +191,7 @@ export default function Sessions() {
                     <p className="text-[10px] text-text-quaternary py-2">No memories in this session</p>
                   ) : (
                     (sessionMemories ?? []).map((m: any) => (
-                      <div key={m.id} className="rounded-[8px] bg-white/[0.04] p-2.5">
+                      <div key={m.id} className="rounded-md bg-foreground/[0.04] p-2.5">
                         <p className="text-xs text-text-secondary leading-relaxed">
                           {m.content?.slice(0, 200)}
                           {(m.content?.length ?? 0) > 200 ? '…' : ''}
@@ -201,7 +201,7 @@ export default function Sessions() {
                             {m.tags.map((t: string) => (
                               <span
                                 key={t}
-                                className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-secondary"
+                                className="rounded-full bg-foreground/[0.06] px-2 py-0.5 text-[10px] text-text-secondary"
                               >
                                 {t}
                               </span>

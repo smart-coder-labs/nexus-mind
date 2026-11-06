@@ -41,8 +41,8 @@ export const Combobox: React.FC<ComboboxProps> = ({
         <div ref={containerRef} className={cn('relative', className)}>
             <div
                 className={cn(
-                    'flex items-center gap-2.5 h-10 rounded-[11px] border bg-[#0d0f14]/60 backdrop-blur-[12px] px-3.5 transition-colors',
-                    open ? 'border-accent-blue/55' : 'border-white/[0.09]'
+                    'flex items-center gap-2.5 h-9 rounded-md border bg-surface-primary px-3.5 transition-colors',
+                    open ? 'border-accent-blue/55' : 'border-border-primary'
                 )}
             >
                 <Search className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
@@ -55,12 +55,12 @@ export const Combobox: React.FC<ComboboxProps> = ({
                     }}
                     onFocus={() => setOpen(true)}
                     placeholder={placeholder}
-                    className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-text-primary placeholder:text-text-quaternary"
+                    className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-quaternary"
                 />
             </div>
 
             {open && (
-                <div className="absolute left-0 right-0 top-[46px] z-30 rounded-[12px] border border-white/[0.10] bg-[#111319]/[0.98] backdrop-blur-[20px] shadow-[0_18px_50px_rgba(0,0,0,0.6)] p-1 max-h-[210px] overflow-y-auto">
+                <div className="absolute left-0 right-0 top-full mt-1.5 z-30 rounded-xl border border-border-primary bg-surface-elevated shadow-md p-1 max-h-[210px] overflow-y-auto">
                     {options.length === 0 ? (
                         <div className="py-3 text-center text-[12.5px] text-text-quaternary">{noResultsLabel}</div>
                     ) : (
@@ -72,7 +72,7 @@ export const Combobox: React.FC<ComboboxProps> = ({
                                     onSelect(opt);
                                     setOpen(false);
                                 }}
-                                className="w-full flex items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-[13px] text-text-secondary hover:bg-white/[0.06] transition-colors text-left"
+                                className="w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-text-secondary hover:bg-foreground/[0.06] transition-colors text-left"
                             >
                                 {opt.dotColor && (
                                     <span

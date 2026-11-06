@@ -32,6 +32,10 @@ pub const RESTORABLE_TABLES: &[&str] = &[
     "collections",
     "invite_links",
     "audit_logs",
+    "autonomous_agent_connectors", "github_review_subscriptions",
+    "factory_runners", "factory_workspaces", "factory_workflow_definitions", "factory_workflow_runs",
+    "factory_workflow_steps", "factory_workflow_events", "factory_workflow_artifacts",
+    "factory_workflow_approvals", "factory_workflow_publications", "factory_workflow_intakes", "factory_workflow_runtime",
 ];
 
 /// Summary returned by `restore_backup`. Tells the caller how many rows each
@@ -85,7 +89,17 @@ pub fn restore_from_dump(
         });
     }
 
+    // Restoring a snapshot must not resurrect runner credentials, approvals or
+    // expired leases that could repeat external writes. Operators reconcile first.
+    tx.execute_batch("UPDATE factory_runners SET revoked=1;
+      DELETE FROM factory_workflow_approvals;
+      UPDATE factory_workflow_steps SET status='blocked',lease_token=NULL,lease_until=NULL WHERE status='running';
+      UPDATE factory_workflow_runs SET status='blocked' WHERE status IN ('queued','running');
+      UPDATE factory_workflow_intakes SET enabled=0;
+      UPDATE factory_workflow_runtime SET report_json='{}',reported_at=NULL;")?;
     tx.commit().context("committing restore transaction")?;
+    // Restored code chunks bypass insert_code_chunk: re-derive the lexical index.
+    crate::retrieval::lexical::ensure_index(conn).context("rebuilding the lexical code index")?;
     Ok(summary)
 }
 
@@ -131,7 +145,12 @@ fn insert_rows_into_table(
         let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(columns.len());
         for col in &columns {
             let v = obj.get(*col).cloned().unwrap_or(serde_json::Value::Null);
-            bound.push(json_to_tosql(v));
+            if table_name=="factory_workflow_artifacts" && *col=="content" {
+                use base64::Engine;
+                let encoded=v.as_str().ok_or_else(||anyhow!("artifact content is not base64"))?;
+                let bytes=base64::engine::general_purpose::STANDARD.decode(encoded).context("decoding artifact content")?;
+                bound.push(Box::new(bytes));
+            } else {bound.push(json_to_tosql(v));}
         }
         let param_refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
         stmt.execute(param_refs.as_slice())

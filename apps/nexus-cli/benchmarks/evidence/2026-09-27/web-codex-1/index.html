@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Catálogo de tecnología para el día a día.">
+    <title>Catálogo | Selección diaria</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="catalogo" aria-labelledby="catalogo-titulo">
+      <header class="catalogo__cabecera">
+        <h1 id="catalogo-titulo">Encuentra tu próximo imprescindible.</h1>
+        <p>Una colección pequeña de tecnología pensada para trabajar, escuchar y crear mejor.</p>
+      </header>
+      <section class="catalogo__herramientas" aria-label="Buscar y ordenar productos">
+        <div class="campo campo--busqueda"><label for="busqueda">Buscar productos</label><input id="busqueda" name="busqueda" type="search" placeholder="Ej.: auriculares o teclado" autocomplete="off"></div>
+        <div class="campo"><label for="categoria">Categoría</label><select id="categoria" name="categoria"></select></div>
+        <div class="campo"><label for="orden">Ordenar por</label><select id="orden" name="orden"><option value="name">Nombre, de A a Z</option><option value="name-desc">Nombre, de Z a A</option><option value="price-asc">Precio, menor a mayor</option><option value="price-desc">Precio, mayor a menor</option></select></div>
+      </section>
+      <section class="catalogo__resultados" aria-labelledby="resultados-titulo">
+        <div class="resultados__encabezado"><h2 id="resultados-titulo">Productos disponibles</h2><p id="contador" aria-live="polite"></p></div>
+        <div id="productos" class="productos" aria-live="polite"></div>
+      </section>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

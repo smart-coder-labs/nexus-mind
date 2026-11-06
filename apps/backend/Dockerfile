@@ -1,20 +1,53 @@
 # Build stage
-FROM rust:1.88-slim AS builder
+# kube-rs (factory sandbox executor) requires Rust >= 1.89; same toolchain as nexus-builder.
+# Pinned to bookworm, the runtime's Debian release: a newer builder links against a
+# newer glibc and the binaries fail to start on the runtime (GLIBC_2.39 not found).
+FROM rust:1.98-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY apps/backend/Cargo.toml apps/backend/Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release 2>/dev/null; rm -rf src
 
-COPY src ./src
+COPY apps/backend/src ./src
 RUN cargo build --release
+
+FROM rust:1.98-slim-bookworm AS nexus-builder
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY apps/nexus-cli/Cargo.toml apps/nexus-cli/Cargo.lock ./
+COPY apps/nexus-cli/src ./src
+COPY apps/nexus-cli/sandbox ./sandbox
+RUN cargo build --release --locked
 
 # Runtime stage
 FROM debian:bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.235
+# Codex CLI for the `codex` executor (factory F3). It runs only in task pods,
+# with its OpenAI key injected by the egress proxy.
+ARG CODEX_VERSION=0.160.0
+# Pi task executor uses the worker's persisted ChatGPT OAuth, never task-pod credentials.
+ARG PI_VERSION=1.4.0
+ARG OPENSHELL_VERSION=v0.1.2
+
+# Client only. The OpenShell gateway is a separate service with its own
+# sandbox runtime; the backend image must never need a Docker socket.
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) os_arch=x86_64;; arm64) os_arch=aarch64;; *) exit 1;; esac; \
+    asset="openshell-${os_arch}-unknown-linux-musl.tar.gz"; \
+    base="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar; \
+    curl -fsSL "${base}/${asset}" -o "/tmp/${asset}"; \
+    curl -fsSL "${base}/openshell-checksums-sha256.txt" -o /tmp/openshell-checksums; \
+    grep "  ${asset}$" /tmp/openshell-checksums | (cd /tmp && sha256sum -c -); \
+    tar -xzf "/tmp/${asset}" -C /usr/local/bin openshell; \
+    openshell --version; \
+    rm -f "/tmp/${asset}" /tmp/openshell-checksums; \
+    rm -rf /var/lib/apt/lists/*
 
 # When true (default), the runtime image bundles Playwright's chromium +
 # chrome-for-testing so backend-spawned QA agents can drive a browser. The u2s
@@ -23,17 +56,20 @@ ARG CLAUDE_CODE_VERSION=2.1.235
 # main-arm64 / oracle keep the default. See .github/workflows/deploy-u2s.yml.
 ARG INSTALL_BROWSERS=true
 
-# Node 20 (from NodeSource, not Debian's Node 18) because Playwright requires
-# Node >= 20. Pin npm's global prefix to /usr/local so CLAUDE_CODE_BIN and the
+# Node 22 (from NodeSource) because the pinned Claude Code release requires
+# Node >= 22. Pin npm's global prefix to /usr/local so CLAUDE_CODE_BIN and the
 # global bins (claude, mcp-server-playwright) resolve where the rest of the
 # image expects them.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg gh git \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm config set prefix /usr/local \
-    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+    && npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && claude --version \
+    && codex --version \
+    && pi --version \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
@@ -65,7 +101,8 @@ RUN if [ "$INSTALL_SCANNERS" = "true" ]; then \
     fi
 
 # nuclei (active DAST) for the security_dast template. Templates are baked at build
-# time into /opt/nuclei-home/nuclei-templates — a path NOT shadowed by the runtime
+# time into /opt/nuclei-home/nuclei-templates (world-readable: sandbox task pods
+# run as a non-root UID; the public templates hold no secret) — a path NOT shadowed by the runtime
 # volume mounts on /claude-home — so runs use them via `-t` with update checks
 # disabled and never download templates or phone home at run time.
 #
@@ -84,6 +121,7 @@ RUN if [ "$INSTALL_NUCLEI" = "true" ]; then \
       && chmod +x /usr/local/bin/nuclei \
       && rm -f /tmp/nuclei.zip \
       && HOME=/opt/nuclei-home nuclei -update-templates \
+      && chmod -R a+rX /opt/nuclei-home \
       && nuclei -version \
       && rm -rf /var/lib/apt/lists/* ; \
     else \
@@ -116,7 +154,7 @@ RUN npm install -g @smart-coder-labs/nexusmind-mcp@0.15.0 \
 # (INSTALL_BROWSERS=false) none of it is installed. Default true keeps
 # oracle/main's browser-driven QA agents working.
 RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
-      npm install -g playwright@latest @playwright/mcp@latest \
+      npm install -g playwright@1.64.1 @playwright/mcp@0.0.84 \
       && PKG="$(npm root -g)/@playwright/mcp" \
       && BIN="$(node -e "const b=require('${PKG}/package.json').bin; process.stdout.write(typeof b==='string'?b:(Object.values(b)[0]||''))")" \
       && test -n "${BIN}" && test -f "${PKG}/${BIN}" \
@@ -124,6 +162,10 @@ RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
       && chmod +x "${PKG}/${BIN}" \
       && playwright install --with-deps chromium \
       && mcp-server-playwright install-browser chrome-for-testing \
+      && chromium_bin="$(find /ms-playwright -type f -path '*/chrome-linux*/chrome' -print | sort -V | tail -n 1)" \
+      && test -n "${chromium_bin}" \
+      && ln -sf "${chromium_bin}" /usr/local/bin/chromium \
+      && chmod -R a+rX /ms-playwright \
       && ls -la /ms-playwright/ \
       && npm cache clean --force \
       && rm -rf /var/lib/apt/lists/* ; \
@@ -144,6 +186,18 @@ RUN printf '%s' '{"mcpServers":{"plugin_nexusmind_nexusmind":{"command":"nexusmi
 
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
+# Sandbox egress proxy (factory F1): runs in the nexusmind-sandbox namespace.
+COPY --from=builder /app/target/release/factory-egress-proxy /app/factory-egress-proxy
+# Golden task replay through the verification gate (run inside the worker):
+#   factory-golden-replay <org_id> < tasks.jsonl
+COPY --from=builder /app/target/release/factory-golden-replay /app/factory-golden-replay
+# Jev shadow decisions over real PRs (factory F3): backfill, refresh, report.
+#   factory-shadow <backfill|refresh|report> <org_id> ...
+COPY --from=builder /app/target/release/factory-shadow /app/factory-shadow
+# F4 frozen specialist eval (docs/factory/specialist-eval.md), run in the worker:
+#   factory-specialist-eval <org_id> < tasks.jsonl
+COPY --from=builder /app/target/release/factory-specialist-eval /app/factory-specialist-eval
+COPY --from=nexus-builder /app/target/release/nexus /app/nexus
 # The SDD importer has to ship with the image, or it cannot be run where it is
 # actually needed. It is a one-shot binary, invoked manually:
 #   import-sdd --db /data/nexusmind.db --org-id <id> --root <checkout> [--dry-run]
@@ -161,6 +215,14 @@ COPY --from=builder /app/target/release/nexusmind-seed /app/nexusmind-seed
 #   backfill-embeddings --db-path /data/nexusmind.db
 # Safe to re-run; it skips memories that already have an embedding.
 COPY --from=builder /app/target/release/backfill-embeddings /app/backfill-embeddings
+
+# Fail the build, not the deploy, if any binary needs a library or glibc version
+# the runtime does not have.
+RUN for bin in nexusmind autonomous_worker factory-egress-proxy factory-golden-replay factory-shadow factory-specialist-eval nexus import-sdd nexusmind-seed backfill-embeddings; do \
+      if ldd "/app/$bin" 2>&1 | grep -q "not found"; then \
+        ldd "/app/$bin"; echo "incompatible binary: $bin"; exit 1; \
+      fi; \
+    done
 
 RUN mkdir -p /data /claude-home
 

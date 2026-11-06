@@ -16,7 +16,7 @@ const ALL_EVENTS = [
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to keep pages independent.
-const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_PANEL = 'border border-border-primary bg-surface-primary '
 
 function WebhookIcon() {
   return (
@@ -96,7 +96,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
       onClick={onClose}
     >
       <div
-        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md"
+        className="border border-border-primary bg-surface-elevated rounded-xl p-6 w-full max-w-md"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -118,7 +118,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
               value={url}
               onChange={e => setUrl(e.target.value)}
               placeholder="https://example.com/webhook"
-              className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
             />
           </div>
 
@@ -131,7 +131,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
                     type="checkbox"
                     checked={selectedEvents.has(event)}
                     onChange={() => toggleEvent(event)}
-                    className="accent-accent-blue w-3.5 h-3.5 rounded border-border-primary"
+                    className="accent-accent-blue w-3.5 h-3.5 rounded border-input shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                   />
                   <span className="text-xs text-text-secondary">{event}</span>
                 </label>
@@ -149,7 +149,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
                 value={secret}
                 onChange={e => setSecret(e.target.value)}
                 placeholder="Signing secret"
-                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 pr-8 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-3 py-2 pr-8 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
               <button
                 type="button"
@@ -170,14 +170,14 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
             <button
               type="button"
               onClick={onClose}
-              className="border border-border-primary text-text-secondary rounded-full px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
+              className="border border-border-primary text-text-secondary rounded-md px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:bg-accent-blue/90 transition-colors disabled:opacity-50"
+              className="bg-action-primary text-action-foreground rounded-md px-4 py-1.5 text-sm font-medium hover:bg-action-primary/90 transition-colors disabled:opacity-50 h-9 shadow-xs"
             >
               {submitting ? 'Adding…' : 'Add webhook'}
             </button>
@@ -209,7 +209,7 @@ function DeliveryLog({ webhook }: DeliveryLogProps) {
       {isLoading && (
         <div className="space-y-2">
           {[1, 2, 3].map(i => (
-            <div key={i} className="animate-pulse h-10 bg-white/[0.03] rounded-[8px]" />
+            <div key={i} className="animate-pulse h-10 bg-foreground/[0.03] rounded-md" />
           ))}
         </div>
       )}
@@ -226,15 +226,15 @@ function DeliveryLog({ webhook }: DeliveryLogProps) {
 function DeliveryRow({ delivery }: { delivery: WebhookDelivery }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="rounded-[8px] border border-border-primary bg-white/[0.04] overflow-hidden">
+    <div className="rounded-md border border-border-primary bg-foreground/[0.04] overflow-hidden">
       <button
         onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors"
+        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-foreground/[0.02] transition-colors"
       >
         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${delivery.success ? 'bg-status-success' : 'bg-status-error'}`} />
         <span className="text-xs text-text-secondary flex-1 truncate">{delivery.event_type}</span>
         {delivery.status_code && (
-          <span className={`text-[10px] rounded-[5px] px-1.5 py-0.5 ${delivery.success ? 'bg-status-success/10 text-status-success' : 'bg-status-error/10 text-status-error'}`}>
+          <span className={`text-[10px] rounded-sm px-1.5 py-0.5 ${delivery.success ? 'bg-status-success/10 text-status-success' : 'bg-status-error/10 text-status-error'}`}>
             {delivery.status_code}
           </span>
         )}
@@ -298,12 +298,12 @@ export default function Webhooks() {
 
       <div className="flex gap-5">
         {/* Webhook list */}
-        <div className={`flex-1 rounded-[18px] p-5 ${GLASS_PANEL}`}>
+        <div className={`flex-1 rounded-xl p-5 ${GLASS_PANEL}`}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xs font-semibold text-text-primary">Webhooks</h2>
             <button
               onClick={() => setShowCreate(true)}
-              className="text-xs px-3 py-1.5 rounded-full border border-border-primary text-text-secondary hover:text-text-primary hover:border-accent-blue/40 transition-colors"
+              className="text-xs px-3 py-1.5 rounded-md border border-border-primary text-text-secondary hover:text-text-primary hover:border-accent-blue/40 transition-colors"
             >
               Add webhook
             </button>
@@ -312,7 +312,7 @@ export default function Webhooks() {
           {isLoading && (
             <div className="space-y-3">
               {[1, 2, 3].map(i => (
-                <div key={i} className="animate-pulse h-12 bg-white/[0.04] rounded-[8px]" />
+                <div key={i} className="animate-pulse h-12 bg-foreground/[0.04] rounded-md" />
               ))}
             </div>
           )}
@@ -324,7 +324,7 @@ export default function Webhooks() {
               <p className="text-xs text-text-quaternary">Add a webhook to receive event notifications.</p>
               <button
                 onClick={() => setShowCreate(true)}
-                className="text-xs px-3 py-1.5 rounded-full border border-border-primary text-text-secondary hover:text-text-primary transition-colors"
+                className="text-xs px-3 py-1.5 rounded-md border border-border-primary text-text-secondary hover:text-text-primary transition-colors"
               >
                 Add webhook
               </button>
@@ -335,10 +335,10 @@ export default function Webhooks() {
             <div
               key={webhook.id}
               onClick={() => setSelectedWebhookId(webhook.id === selectedWebhookId ? null : webhook.id)}
-              className={`group flex items-center gap-3 px-3 py-2.5 rounded-[8px] cursor-pointer transition-colors ${
+              className={`group flex items-center gap-3 px-3 py-2.5 rounded-md cursor-pointer transition-colors ${
                 selectedWebhookId === webhook.id
-                  ? 'bg-accent-blue/10 border border-accent-blue/20'
-                  : 'hover:bg-white/[0.04] border border-transparent'
+                  ? 'bg-action-primary/10 border border-accent-blue/20'
+                  : 'hover:bg-foreground/[0.04] border border-transparent'
               }`}
             >
               <span
@@ -348,7 +348,7 @@ export default function Webhooks() {
               <span className="text-xs font-mono text-text-secondary truncate max-w-[280px] flex-1">
                 {webhook.target_url}
               </span>
-              <span className="rounded-[5px] bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-secondary flex-shrink-0">
+              <span className="rounded-sm bg-foreground/[0.06] px-2 py-0.5 text-[10px] text-text-secondary flex-shrink-0">
                 {webhook.events.length} event{webhook.events.length !== 1 ? 's' : ''}
               </span>
               <span className="text-[10px] text-text-quaternary flex-shrink-0">
@@ -357,7 +357,7 @@ export default function Webhooks() {
               <button
                 onClick={e => { e.stopPropagation(); testWebhookMut.mutate(webhook.id) }}
                 disabled={testWebhookMut.isPending && testWebhookMut.variables === webhook.id}
-                className="opacity-0 group-hover:opacity-100 border border-border-primary rounded-full px-2.5 py-1 text-[10px] text-text-quaternary hover:text-text-primary transition-colors disabled:opacity-40 flex items-center gap-1"
+                className="opacity-0 group-hover:opacity-100 border border-border-primary rounded-md px-2.5 py-1 text-[10px] text-text-quaternary hover:text-text-primary transition-colors disabled:opacity-40 flex items-center gap-1"
               >
                 <Zap className="w-3 h-3" />
                 {testWebhookMut.isPending && testWebhookMut.variables === webhook.id ? 'Sending…' : 'Test'}
@@ -375,7 +375,7 @@ export default function Webhooks() {
         </div>
 
         {/* Event log */}
-        <div className={`w-80 rounded-[18px] p-5 flex flex-col ${GLASS_PANEL}`}>
+        <div className={`w-80 rounded-xl p-5 flex flex-col ${GLASS_PANEL}`}>
           <h2 className="text-xs font-semibold text-text-primary mb-4">Event log</h2>
           {!selectedWebhook ? (
             <div className="flex flex-col items-center justify-center flex-1 gap-2 py-8">

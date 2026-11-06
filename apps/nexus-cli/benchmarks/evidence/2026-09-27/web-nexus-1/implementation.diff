@@ -1,0 +1,129 @@
+diff --git a/index.html b/index.html
+index 4e91457..00c9745 100644
+--- a/index.html
++++ b/index.html
+@@ -1,3 +1,14 @@
+ <!doctype html>
+-<html><head><meta charset="utf-8"><title>Catálogo</title><link rel="stylesheet" href="./styles.css"></head>
+-<body><div id="app"></div><script type="module" src="./src/app.js"></script></body></html>
++<html lang="es">
++  <head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <meta name="description" content="Catálogo de productos tecnológicos">
++    <title>Nexo · Catálogo</title>
++    <link rel="stylesheet" href="./styles.css">
++  </head>
++  <body>
++    <main id="app" aria-labelledby="catalog-title"></main>
++    <script type="module" src="./src/app.js"></script>
++  </body>
++</html>
+diff --git a/src/app.js b/src/app.js
+index 6cb9e59..f7ce097 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -5,14 +5,69 @@ export const products = [
+   { id: 'p4', name: 'Soporte Laptop', category: 'Oficina', price: 29 },
+ ];
+ 
++function normalizeText(value) {
++  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es');
++}
++
++function escapeHtml(value) {
++  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
++    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
++  }[character]));
++}
++
+ export function selectProducts(items, { query = '', category = 'all', sort = 'name' } = {}) {
+-  return items;
++  const normalizedQuery = normalizeText(query).trim();
++  const selected = items.filter((item) => {
++    const matchesQuery = !normalizedQuery || normalizeText(item.name).includes(normalizedQuery);
++    return matchesQuery && (category === 'all' || item.category === category);
++  });
++  return [...selected].sort((a, b) => {
++    if (sort === 'price-asc') return Number(a.price) - Number(b.price);
++    if (sort === 'price-desc') return Number(b.price) - Number(a.price);
++    return String(a.name).localeCompare(String(b.name), 'es', { sensitivity: 'base' });
++  });
+ }
+ 
+ export function renderProducts(items) {
+-  return items.map((item) => `<p>${item.name}</p>`).join('');
++  if (!items.length) return '<section class="empty" aria-live="polite"><h2>Sin resultados</h2><p>No hay productos que coincidan con tu búsqueda.</p></section>';
++  const euros = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
++  return `<ul class="products" aria-label="Productos">${items.map((item) => `
++    <li class="product" data-product-id="${escapeHtml(item.id)}">
++      <div><p class="product__category">${escapeHtml(item.category)}</p><h2 class="product__name">${escapeHtml(item.name)}</h2></div>
++      <p class="product__price">${euros.format(Number(item.price))}</p>
++    </li>`).join('')}</ul>`;
++}
++
++function categoryOptions(items) {
++  return [...new Set(items.map((item) => item.category))].sort((a, b) => a.localeCompare(b, 'es'))
++    .map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join('');
++}
++
++function mountCatalog(root) {
++  root.innerHTML = `
++    <section class="catalog">
++      <header class="catalog__header"><p class="eyebrow">Selección Nexo</p><h1 id="catalog-title">Encuentra lo que necesitas</h1><p class="catalog__intro">Explora accesorios elegidos para tu espacio de trabajo y tus momentos de audio.</p></header>
++      <form class="filters" role="search" aria-label="Filtrar catálogo">
++        <div class="field"><label for="search">Buscar productos</label><input id="search" name="search" type="search" placeholder="Ej. teclado o auriculares" autocomplete="off"></div>
++        <div class="field"><label for="category">Categoría</label><select id="category" name="category"><option value="all">Todas las categorías</option>${categoryOptions(products)}</select></div>
++        <div class="field"><label for="sort">Ordenar por</label><select id="sort" name="sort"><option value="name">Nombre (A–Z)</option><option value="price-asc">Precio: menor a mayor</option><option value="price-desc">Precio: mayor a menor</option></select></div>
++      </form>
++      <p id="results-count" class="catalog__results" aria-live="polite"></p><div id="product-list"></div>
++    </section>`;
++  const search = root.querySelector('#search');
++  const category = root.querySelector('#category');
++  const sort = root.querySelector('#sort');
++  const list = root.querySelector('#product-list');
++  const count = root.querySelector('#results-count');
++  const update = () => {
++    const visible = selectProducts(products, { query: search.value, category: category.value, sort: sort.value });
++    count.textContent = visible.length === 1 ? '1 producto encontrado' : `${visible.length} productos encontrados`;
++    list.innerHTML = renderProducts(visible);
++  };
++  search.addEventListener('input', update); category.addEventListener('change', update); sort.addEventListener('change', update); update();
+ }
+ 
+ if (typeof document !== 'undefined') {
+-  document.querySelector('#app').innerHTML = renderProducts(products);
++  const root = document.querySelector('#app');
++  if (root) mountCatalog(root);
+ }
+diff --git a/styles.css b/styles.css
+index 693ce9b..5370798 100644
+--- a/styles.css
++++ b/styles.css
+@@ -1 +1,25 @@
+-body { font-family: sans-serif; }
++:root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #16211b; background: #f5f7f3; }
++* { box-sizing: border-box; }
++body { margin: 0; min-width: 320px; }
++.catalog { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; padding: clamp(2rem, 5vw, 4.5rem) 0; }
++.catalog__header { max-width: 43rem; margin-bottom: 2rem; }
++.eyebrow { margin: 0 0 .65rem; color: #18794e; font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
++h1 { margin: 0; font-size: clamp(2.15rem, 6vw, 4rem); letter-spacing: -.055em; line-height: 1; }
++.catalog__intro { margin: 1rem 0 0; color: #56635b; font-size: 1.05rem; line-height: 1.55; }
++.filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(11rem, 1fr) minmax(12rem, 1fr); gap: 1rem; padding: 1rem; margin-bottom: 1.5rem; background: #fff; border: 1px solid #dce4dc; border-radius: 1rem; box-shadow: 0 10px 32px rgba(23, 51, 35, .06); }
++.field { display: grid; gap: .45rem; }
++label { color: #324339; font-size: .86rem; font-weight: 700; }
++input, select { width: 100%; min-height: 2.8rem; padding: .6rem .75rem; color: inherit; font: inherit; background: #fff; border: 1px solid #aab9ae; border-radius: .55rem; }
++input:focus, select:focus { outline: 3px solid #a8dfbd; outline-offset: 2px; border-color: #18794e; }
++.catalog__results { margin: 0 0 1rem; color: #56635b; font-size: .92rem; }
++.products { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; padding: 0; margin: 0; list-style: none; }
++.product { display: grid; gap: 1.15rem; min-height: 180px; padding: 1.25rem; background: #fff; border: 1px solid #dce4dc; border-radius: 1rem; transition: transform .18s ease, box-shadow .18s ease; }
++.product:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(23, 51, 35, .1); }
++.product__category { margin: 0; color: #18794e; font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
++.product__name { margin: .3rem 0 0; font-size: 1.18rem; letter-spacing: -.02em; }
++.product__price { align-self: end; margin: 0; font-size: 1.35rem; font-weight: 800; }
++.empty { padding: clamp(2rem, 8vw, 4rem) 1.5rem; text-align: center; background: #fff; border: 1px dashed #aab9ae; border-radius: 1rem; }
++.empty h2 { margin: 0; font-size: 1.35rem; }
++.empty p { margin: .5rem 0 0; color: #56635b; }
++@media (max-width: 680px) { .catalog { width: min(100% - 1.25rem, 1120px); padding-top: 2rem; } .filters, .products { grid-template-columns: 1fr; } }
++@media (prefers-reduced-motion: reduce) { .product { transition: none; } }

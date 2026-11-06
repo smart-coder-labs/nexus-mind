@@ -1,0 +1,261 @@
+//! Pi with ChatGPT OAuth. Local-only: task pods must remain credential-free.
+use serde_json::{json, Value};
+use tokio::process::Command;
+
+pub const TEMPLATES: [&str; 3] = ["github_issue_resolver", "github_pr_reviewer", "qa"];
+pub const MODEL: &str = "gpt-6.1-sol";
+pub const EVAL_MODEL: &str = "gpt-6-luna";
+pub const EVAL_MODEL_QUALIFIED: &str = "openai-codex/gpt-6-luna";
+pub const EVAL_THINKING: &str = "medium";
+
+fn base_command() -> Command {
+    let mut command = Command::new(std::env::var("AUTONOMOUS_PI_BIN").unwrap_or_else(|_| "pi".into()));
+    super::worker::restrict_claude_environment(&mut command);
+    command.env_remove("NEXUSMIND_API_KEY");
+    command
+}
+
+/// Check only readiness metadata, never request or emit the credential itself.
+pub async fn preflight() -> Result<(), &'static str> {
+    let bin = std::env::var("AUTONOMOUS_PI_BIN")
+        .unwrap_or_else(|_| "/claude-home/.npm-global/bin/pi".into());
+    let mut command = Command::new(bin);
+    super::worker::restrict_claude_environment(&mut command);
+    command.env_remove("NEXUSMIND_API_KEY");
+    command.args(["auth", "check", "--provider", "openai-codex", "--json"]);
+    command.stdin(std::process::Stdio::null()).kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+        .await.map_err(|_| "pi_auth_check_timeout")?
+        .map_err(|_| "pi_cli_unavailable")?;
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|_| "pi_auth_check_failed")?;
+    if output.status.success() && value["status"] == "ready" && value["authType"] == "oauth" {
+        Ok(())
+    } else {
+        Err("pi_oauth_required")
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PiRuntimeHealth {
+    pub status: String,
+    pub reason_code: Option<String>,
+}
+
+/// Read-only readiness metadata for Admin. Never returns Pi's raw output.
+pub async fn probe_runtime() -> PiRuntimeHealth {
+    match preflight().await {
+        Ok(()) => PiRuntimeHealth {
+            status: "ready".into(),
+            reason_code: None,
+        },
+        Err("pi_oauth_required") => PiRuntimeHealth {
+            status: "blocked".into(),
+            reason_code: Some("pi_oauth_required".into()),
+        },
+        Err("pi_cli_unavailable") => PiRuntimeHealth {
+            status: "unavailable".into(),
+            reason_code: Some("pi_binary_missing".into()),
+        },
+        Err(code) => PiRuntimeHealth {
+            status: "unavailable".into(),
+            reason_code: Some(code.into()),
+        },
+    }
+}
+
+fn agent_command(tools: &str, model: &str, thinking: Option<&str>) -> Command {
+    let mut command = base_command();
+    // Only explicitly supplied, worker-owned extensions may load.
+    command.args([
+        "--mode", "json", "--print", "--no-session", "--no-extensions",
+        "--no-skills", "--no-prompt-templates", "--no-themes",
+        "--no-context-files", "--no-approve", "--tools", tools,
+    ]);
+    if let Some(thinking) = thinking {
+        command.args(["--thinking", thinking]);
+    }
+    command.arg("--model").arg(format!("openai-codex/{model}"));
+    // Prompt is delivered over stdin, not exposed in process arguments.
+    command.stdin(std::process::Stdio::piped());
+    command
+}
+
+pub fn command(reviewer: bool) -> Command {
+    let tools = if reviewer { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" };
+    agent_command(tools, MODEL, None)
+}
+
+/// F4's frozen eval invokes Pi on the worker, where the OpenAI OAuth login is
+/// provisioned. Verification commands still run in isolated task pods.
+pub fn eval_command(read_only: bool) -> Command {
+    let tools = if read_only { "read,grep,find,ls" } else { "read,bash,edit,write,grep,find,ls" };
+    let mut command = agent_command(tools, EVAL_MODEL, Some(EVAL_THINKING));
+    command.arg("--no-mcp");
+    command
+}
+
+/// Preserve the existing QA screenshot location while exposing only Playwright.
+fn qa_mcp_config(base: &Value, screenshots: &std::path::Path) -> anyhow::Result<Value> {
+    let mut playwright = base.pointer("/mcpServers/playwright").cloned()
+        .ok_or_else(|| anyhow::anyhow!("pi_qa_playwright_missing"))?;
+    anyhow::ensure!(playwright.get("command").and_then(Value::as_str).is_some_and(|s| !s.is_empty()), "pi_qa_playwright_command_missing");
+    let args = playwright.get_mut("args").and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("pi_qa_playwright_args_missing"))?;
+    anyhow::ensure!(args.iter().all(Value::is_string), "pi_qa_playwright_args_invalid");
+    // Replace any baked output-dir; every run writes to its own evidence dir.
+    let mut clean = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--output-dir" {
+            let _ = iter.next();
+        } else if !arg.as_str().unwrap_or_default().starts_with("--output-dir=") {
+            clean.push(arg.clone());
+        }
+    }
+    clean.extend([json!("--output-dir"), json!(screenshots)]);
+    *args = clean;
+    playwright["exposure"] = json!("direct");
+    Ok(json!({"mcpServers":{"playwright":playwright}}))
+}
+
+pub fn qa_command(workdir: &std::path::Path, screenshots: &std::path::Path) -> anyhow::Result<Command> {
+    let base = std::env::var("AUTONOMOUS_QA_MCP_CONFIG").unwrap_or_else(|_| "/app/qa-mcp.json".into());
+    let base: Value = serde_json::from_slice(&std::fs::read(base)?)?;
+    let config = qa_mcp_config(&base, screenshots)?;
+    let parent = workdir.parent().ok_or_else(|| anyhow::anyhow!("pi_qa_workdir_invalid"))?;
+    let config_path = parent.join("pi-qa-mcp.json");
+    let extension_path = parent.join("pi-qa-extension.ts");
+    std::fs::create_dir_all(screenshots)?;
+    std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
+    std::fs::write(&extension_path, include_str!("pi_qa_extension.ts"))?;
+    Ok(qa_invocation(&extension_path, &config_path))
+}
+
+fn qa_invocation(extension: &std::path::Path, config: &std::path::Path) -> Command {
+    let mut command = agent_command("read,grep,find,ls,mcp__playwright__*", MODEL, None);
+    command.arg("--extension").arg(extension);
+    command.env("FACTORY_PI_QA_MCP_CONFIG", config);
+    command
+}
+
+/// Normalize Pi's authoritative message_end events, not duplicated agent_end messages.
+pub fn parse(stdout: &[u8]) -> anyhow::Result<(Value, Value)> {
+    anyhow::ensure!(stdout.len() <= 32 * 1_048_576, "pi_event_stream_too_large");
+    let mut last = None;
+    let mut settled = false;
+    let mut aborted = false;
+    let mut usage = [0i64; 4];
+    let mut turns = 0;
+    let mut model = String::new();
+    let mut failed = false;
+    for (index, line) in stdout.split(|b| *b == b'\n').filter(|line| !line.is_empty()).enumerate() {
+        anyhow::ensure!(index < 100_000 && line.len() <= 4 * 1_048_576, "pi_event_stream_limit_exceeded");
+        let event: Value = serde_json::from_slice(line)?;
+        match event["type"].as_str() {
+            Some("agent_settled") => {
+                settled = true;
+                aborted = event["aborted"].as_bool().unwrap_or(true);
+            }
+            Some("message_end") if event["message"]["role"] == "assistant" => {
+                let message = &event["message"];
+                failed = message["stopReason"].as_str() != Some("stop");
+                turns += 1;
+                model = message["model"].as_str().unwrap_or_default().to_string();
+                for (i, key) in ["input", "cacheRead", "cacheWrite", "output"].iter().enumerate() {
+                    usage[i] += message["usage"][key].as_i64().unwrap_or(0).max(0);
+                }
+                last = message["content"].as_array().map(|blocks| blocks.iter()
+                    .filter(|b| b["type"] == "text")
+                    .filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"));
+            }
+            _ => {}
+        }
+    }
+    anyhow::ensure!(settled && !aborted && !failed, "pi_run_incomplete_or_failed");
+    let text = last.filter(|text| !text.trim().is_empty()).ok_or_else(|| anyhow::anyhow!("pi_result_missing"))?;
+    // Subscription usage is not an API invoice: do not report a fictitious USD cost.
+    Ok((json!({"type":"result", "subtype":"success", "executor":"pi", "result":text,
+        "num_turns":turns, "modelUsage":{model: {}},
+        "usage":{"input_tokens":usage[0], "cache_read_input_tokens":usage[1],
+            "cache_creation_input_tokens":usage[2], "output_tokens":usage[3]}}),
+        json!({"format":"pi-jsonl", "turns":turns})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn normalizes_completed_run_without_claiming_subscription_cost() {
+        let bytes = br#"{"type":"message_end","message":{"role":"assistant","model":"gpt-6.1-sol","stopReason":"stop","content":[{"type":"text","text":"ok"}],"usage":{"input":12,"output":3,"cacheRead":4}}}
+{"type":"agent_end","messages":[]}
+{"type":"agent_settled","aborted":false}
+"#;
+        let (result, _) = parse(bytes).unwrap();
+        assert_eq!(result["result"], "ok");
+        assert_eq!(result["usage"]["input_tokens"], 12);
+        assert!(result.get("total_cost_usd").is_none());
+        assert_eq!(result["modelUsage"]["gpt-6.1-sol"], json!({}));
+        assert!(parse(b"{\"type\":\"agent_end\"}\n").is_err());
+    }
+    #[test]
+    fn reviewer_has_only_read_tools_and_no_project_resources() {
+        let command = command(true);
+        let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
+        assert!(args.windows(2).any(|pair| pair == ["--tools", "read,grep,find,ls"]));
+        assert!(args.windows(2).any(|pair| pair == ["--model", "openai-codex/gpt-6.1-sol"]));
+        for flag in ["--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session"] {
+            assert!(args.iter().any(|arg| arg == flag));
+        }
+        // Discovery stays disabled. Only apply_local's isolated, validated plan
+        // may explicitly enable builtin:mcp and its assigned servers.
+        assert!(!args.iter().any(|arg| arg == "--extension" || arg == "-e"));
+        assert!(!args.iter().any(|arg| arg == "--no-mcp"));
+    }
+
+    #[test]
+    fn qa_uses_only_playwright_and_a_run_scoped_output_directory() {
+        let base = json!({"mcpServers":{
+            "playwright":{"command":"mcp-server-playwright", "args":["--headless", "--output-dir", "/old", "--output-dir=/older"]},
+            "unrelated":{"command":"do-not-start"}
+        }});
+        let config = qa_mcp_config(&base, std::path::Path::new("/run/screenshots")).unwrap();
+        assert_eq!(config["mcpServers"].as_object().unwrap().len(), 1);
+        assert_eq!(config["mcpServers"]["playwright"]["args"], json!(["--headless", "--output-dir", "/run/screenshots"]));
+        assert_eq!(config["mcpServers"]["playwright"]["exposure"], "direct");
+        assert!(qa_mcp_config(&json!({}), std::path::Path::new("/shots")).is_err());
+        assert!(qa_mcp_config(&json!({"mcpServers":{"playwright":{"command":"pw", "args":[false]}}}), std::path::Path::new("/shots")).is_err());
+    }
+
+    #[test]
+    fn qa_enables_only_the_trusted_extension_and_read_browser_tools() {
+        let command = qa_invocation(std::path::Path::new("/run/trusted.ts"), std::path::Path::new("/run/mcp.json"));
+        let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
+        assert!(args.windows(2).any(|pair| pair == ["--tools", "read,grep,find,ls,mcp__playwright__*"]));
+        assert!(args.windows(2).any(|pair| pair == ["--extension", "/run/trusted.ts"]));
+        assert!(args.iter().any(|arg| arg == "--no-extensions"));
+        assert!(args.iter().any(|arg| arg == "--no-approve"));
+        assert!(!args.iter().any(|arg| arg == "--no-mcp"));
+    }
+
+    #[test]
+    fn counts_multiple_assistant_messages_not_turn_or_agent_duplicates() {
+        let bytes = br#"{"type":"message_end","message":{"role":"assistant","model":"gpt-6.1-sol","stopReason":"toolUse","content":[{"type":"toolCall","name":"read"}],"usage":{"input":10,"output":2,"cacheRead":5}}}
+{"type":"turn_end","message":{"role":"assistant","usage":{"input":10,"output":2}}}
+{"type":"message_end","message":{"role":"assistant","model":"gpt-6.1-sol","stopReason":"stop","content":[{"type":"text","text":"final"}],"usage":{"input":20,"output":3,"cacheRead":6}}}
+{"type":"agent_end","messages":[]}
+{"type":"agent_settled","aborted":false}"#;
+        let (result, _) = parse(bytes).unwrap();
+        assert_eq!(result["result"], "final");
+        assert_eq!(result["num_turns"], 2);
+        assert_eq!(result["usage"]["input_tokens"], 30);
+        assert_eq!(result["usage"]["cache_read_input_tokens"], 11);
+        assert_eq!(result["usage"]["output_tokens"], 5);
+    }
+
+    #[test]
+    fn rejects_aborted_and_error_runs() {
+        assert!(parse(br#"{"type":"agent_settled","aborted":true}"#).is_err());
+        assert!(parse(br#"{"type":"message_end","message":{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"partial"}]}}
+{"type":"agent_settled","aborted":false}"#).is_err());
+    }
+}

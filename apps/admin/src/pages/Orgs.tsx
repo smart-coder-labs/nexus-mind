@@ -29,7 +29,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
 
   return (
     <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="w-full max-w-sm border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-8 space-y-5">
+      <div className="w-full max-w-sm border border-border-primary bg-surface-elevated rounded-xl p-8 space-y-5">
         <div className="flex items-center gap-3">
           <Key className="w-5 h-5 text-accent-blue" />
           <h2 className="text-base font-semibold text-text-primary">Superuser access required</h2>
@@ -46,7 +46,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
                 value={key}
                 onChange={e => setKey(e.target.value)}
                 placeholder="sk_…"
-                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 pr-10"
+                className="w-full bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 pr-10 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                 autoFocus
               />
               <button
@@ -62,7 +62,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
           <button
             type="submit"
             disabled={loading || !key.trim()}
-            className="w-full bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
+            className="w-full bg-action-primary hover:bg-action-primary-hover disabled:opacity-40 text-action-foreground text-sm font-medium rounded-md px-4 py-1.5 transition-colors h-9 shadow-xs"
           >
             {loading ? 'Verifying…' : 'Unlock'}
           </button>
@@ -116,7 +116,7 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 space-y-5">
+      <div className="w-full max-w-md border border-border-primary bg-surface-elevated rounded-xl p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-text-primary">Create organization</h2>
           <button onClick={onClose} className="text-text-tertiary hover:text-text-secondary text-[18px] leading-none">×</button>
@@ -131,19 +131,19 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
                 onChange={set(key)}
                 placeholder={placeholder}
                 required
-                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
               />
             </div>
           ))}
           {error && <p className="text-[10px] text-status-error">{error}</p>}
           <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose} className="flex-1 border border-border-primary text-text-secondary hover:text-text-primary text-xs rounded-full px-4 py-1.5 transition-colors">
+            <button type="button" onClick={onClose} className="flex-1 border border-border-primary text-text-secondary hover:text-text-primary text-xs rounded-md px-4 py-1.5 transition-colors">
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading || !form.org_name || !form.org_slug || !form.admin_email || !form.admin_name}
-              className="flex-1 bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
+              className="flex-1 bg-action-primary hover:bg-action-primary-hover disabled:opacity-40 text-action-foreground text-sm font-medium rounded-md px-4 py-1.5 transition-colors h-9 shadow-xs"
             >
               {loading ? 'Creating…' : 'Create'}
             </button>
@@ -167,7 +167,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 space-y-4">
+      <div className="w-full max-w-md border border-border-primary bg-surface-elevated rounded-xl p-6 space-y-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-status-success" />
           <h2 className="text-base font-semibold text-text-primary">Organization created</h2>
@@ -178,7 +178,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
         </p>
         <div className="space-y-1.5">
           <label className="text-[10px] text-text-quaternary">Admin API key</label>
-          <div className="flex items-center gap-2 border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] px-3 py-2">
+          <div className="flex items-center gap-2 border border-border-primary bg-surface-primary rounded-md px-3 py-2">
             <code className="flex-1 text-xs text-text-primary font-mono break-all">{apiKey}</code>
             <button onClick={copy} className="flex-shrink-0 text-text-tertiary hover:text-accent-blue transition-colors">
               {copied ? <Check className="w-4 h-4 text-status-success" /> : <Copy className="w-4 h-4" />}
@@ -187,7 +187,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
         </div>
         <button
           onClick={onDone}
-          className="w-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
+          className="w-full bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium rounded-md px-4 py-1.5 transition-colors h-9 shadow-xs"
         >
           Done
         </button>
@@ -224,7 +224,7 @@ export default function Orgs() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
+          className="flex items-center gap-2 bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium rounded-md px-4 py-1.5 transition-colors h-9 shadow-xs"
         >
           <Plus className="w-4 h-4" />
           New org
@@ -232,8 +232,8 @@ export default function Orgs() {
       </div>
 
       {/* Table */}
-      <div className="border border-border-primary rounded-[18px] overflow-hidden">
-        <table className="w-full">
+      <div className="border border-border-primary rounded-xl overflow-hidden">
+        <table className="admin-data-table w-full">
           <thead>
             <tr className="border-b border-border-secondary">
               <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Name</th>
@@ -247,7 +247,7 @@ export default function Orgs() {
                 <tr key={i}>
                   {Array.from({ length: 3 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded-[5px] bg-white/[0.06] animate-pulse" style={{ width: `${[60, 40, 50][j]}%` }} />
+                      <div className="h-4 rounded-sm bg-foreground/[0.06] animate-pulse" style={{ width: `${[60, 40, 50][j]}%` }} />
                     </td>
                   ))}
                 </tr>
@@ -269,10 +269,10 @@ export default function Orgs() {
               </tr>
             )}
             {orgs.map(org => (
-              <tr key={org.id} className="hover:bg-white/[0.04] transition-colors">
+              <tr key={org.id} className="hover:bg-foreground/[0.04] transition-colors">
                 <td className="px-4 py-3 text-xs font-semibold text-text-primary">{org.name}</td>
                 <td className="px-4 py-3">
-                  <span className="font-mono text-xs bg-white/[0.04] px-2 py-0.5 rounded-[5px] text-text-secondary">{org.slug}</span>
+                  <span className="font-mono text-xs bg-foreground/[0.04] px-2 py-0.5 rounded-sm text-text-secondary">{org.slug}</span>
                 </td>
                 <td className="px-4 py-3 text-xs text-text-quaternary">
                   {new Date(org.created_at).toLocaleDateString()}

@@ -1,0 +1,90 @@
+✖ reused idempotency key with different payload is conflict (18.482084ms)
+✖ quantity must be a positive integer (5.156ms)
+✖ invalid content type is rejected with JSON (1.950209ms)
+✖ request bodies over 64 KiB are rejected (3.964625ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 0
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 108.218084
+
+✖ failing tests:
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:14:1
+✖ reused idempotency key with different payload is conflict (18.482084ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 201
+  
+      at file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:15:10
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:9:9)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 201,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:19:1
+✖ quantity must be a positive integer (5.156ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 400
+  
+      at file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:21:12
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:9:9)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 400,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:24:1
+✖ invalid content type is rejected with JSON (1.950209ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 415
+  
+      at file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:26:10
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:9:9)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 415,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:28:1
+✖ request bodies over 64 KiB are rejected (3.964625ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 413
+  
+      at file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:30:10
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs:9:9)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 413,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

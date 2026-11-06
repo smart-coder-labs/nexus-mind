@@ -1,8 +1,18 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
+/// How long a statement waits for another process's write lock before failing
+/// with SQLITE_BUSY. The backend and the autonomous worker share the database
+/// file; without a wait, any overlap is an immediate error.
+pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long startup migrations wait: a migration that rebuilds an index can hold
+/// the lock for seconds while the other container starts.
+pub const MIGRATION_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub fn connect(path: &str) -> Result<Connection> {
     let conn = Connection::open(path)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
@@ -11,6 +21,20 @@ pub fn connect(path: &str) -> Result<Connection> {
     )?;
     Ok(conn)
 }
+
+/// Nestable atomic unit used when an enqueue belongs to an outer webhook
+/// delivery transaction. Savepoints also start/commit a transaction when alone.
+pub(crate) struct AtomicSavepoint<'a> {conn:&'a Connection,name:String,finished:bool}
+impl<'a> AtomicSavepoint<'a> {
+    pub fn new(conn:&'a Connection)->rusqlite::Result<Self> {
+        let name=format!("atomic_{}",uuid::Uuid::new_v4().simple());
+        conn.execute_batch(&format!("SAVEPOINT {name}"))?;
+        Ok(Self{conn,name,finished:false})
+    }
+    pub fn commit(mut self)->rusqlite::Result<()> {self.conn.execute_batch(&format!("RELEASE {}",self.name))?;self.finished=true;Ok(())}
+}
+impl std::ops::Deref for AtomicSavepoint<'_>{type Target=Connection;fn deref(&self)->&Connection{self.conn}}
+impl Drop for AtomicSavepoint<'_>{fn drop(&mut self){if !self.finished {let _=self.conn.execute_batch(&format!("ROLLBACK TO {}; RELEASE {}",self.name,self.name));}}}
 
 #[cfg(test)]
 mod tests {
@@ -23,6 +47,22 @@ mod tests {
             .query_row("SELECT 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn a_writer_waits_for_another_connections_lock() {
+        let path = std::env::temp_dir().join(format!("busy-{}.db", std::process::id()));
+        let path = path.to_str().unwrap();
+        let first = connect(path).unwrap();
+        first.execute_batch("CREATE TABLE IF NOT EXISTS t (x INTEGER); BEGIN IMMEDIATE;").unwrap();
+        let waiter = std::thread::spawn({
+            let path = path.to_string();
+            move || connect(&path).unwrap().execute("INSERT INTO t VALUES (1)", [])
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        first.execute_batch("COMMIT;").unwrap();
+        assert!(waiter.join().unwrap().is_ok(), "the second writer waited instead of SQLITE_BUSY");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

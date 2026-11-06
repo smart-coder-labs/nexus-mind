@@ -1,3 +1,4 @@
+import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import React, { useMemo, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
@@ -119,8 +120,8 @@ export default function AuditLog() {
   const setField = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft(d => ({ ...d, [field]: e.target.value }))
 
-  const inputCls = 'bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
-  const selectCls = 'appearance-none bg-white/[0.04] border border-border-primary rounded-[8px] pl-3 pr-8 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer'
+  const inputCls = 'bg-foreground/[0.04] border border-border-primary rounded-md px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  const selectCls = 'appearance-none bg-foreground/[0.04] border border-border-primary rounded-md pl-3 pr-8 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer'
 
   const SelectWrapper = ({ children }: { children: React.ReactNode }) => (
     <div className="relative">
@@ -138,7 +139,7 @@ export default function AuditLog() {
         <button
           onClick={() => setPage(p => Math.max(0, p - 1))}
           disabled={page === 0}
-          className="p-1.5 rounded-full text-text-tertiary hover:text-text-secondary hover:bg-white/[0.04] disabled:opacity-20 transition-colors"
+          className="p-1.5 rounded-md text-text-tertiary hover:text-text-secondary hover:bg-foreground/[0.04] disabled:opacity-20 transition-colors"
           aria-label="Previous page"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -146,7 +147,7 @@ export default function AuditLog() {
         <button
           onClick={() => setPage(p => p + 1)}
           disabled={!entries || entries.length < PAGE_SIZE}
-          className="p-1.5 rounded-full text-text-tertiary hover:text-text-secondary hover:bg-white/[0.04] disabled:opacity-20 transition-colors"
+          className="p-1.5 rounded-md text-text-tertiary hover:text-text-secondary hover:bg-foreground/[0.04] disabled:opacity-20 transition-colors"
           aria-label="Next page"
         >
           <ChevronRight className="w-4 h-4" />
@@ -156,11 +157,11 @@ export default function AuditLog() {
   ) : null
 
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-8 max-w-6xl mx-auto space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-base font-semibold text-text-primary">Audit Log</h1>
-          <p className="text-xs text-text-quaternary mt-0.5">All actions performed in your organization</p>
+          <h1 className="text-[22px] font-semibold tracking-[-0.3px] text-text-primary">Audit Log</h1>
+          <p className="text-sm text-text-secondary mt-1">All actions performed in your organization</p>
         </div>
         <div className="flex items-center gap-2">
           {isPrivileged(session?.user.role) && (
@@ -168,7 +169,7 @@ export default function AuditLog() {
               <button
                 onClick={handleExportCsv}
                 disabled={exporting || exportingServer}
-                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                className="h-9 whitespace-nowrap border border-border-primary rounded-md px-3 text-sm text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
                 aria-label="Export audit log as CSV"
               >
                 <Download className="w-3 h-3" />
@@ -177,7 +178,7 @@ export default function AuditLog() {
               <button
                 onClick={handleExportServer}
                 disabled={exporting || exportingServer}
-                className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                className="h-9 whitespace-nowrap border border-border-primary rounded-md px-3 text-sm text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
                 aria-label="Export audit log via API"
               >
                 <Download className="w-3 h-3" />
@@ -195,27 +196,27 @@ export default function AuditLog() {
           placeholder="Search actions, resources…"
           value={searchRaw}
           onChange={e => setSearchRaw(e.target.value)}
-          className="bg-white/[0.04] border border-border-primary rounded-[8px] text-xs text-text-primary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48"
+          className="bg-foreground/[0.04] border border-input rounded-md text-xs text-text-primary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
         />
         <SelectWrapper>
-          <select value={draft.user_id} onChange={setField('user_id')} className={selectCls}>
+          <StyledSelect value={draft.user_id} onChange={setField('user_id')} className={selectCls}>
             <option value="">All users</option>
             {users?.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
+          </StyledSelect>
         </SelectWrapper>
         <SelectWrapper>
-          <select value={draft.action} onChange={setField('action')} className={selectCls}>
+          <StyledSelect value={draft.action} onChange={setField('action')} className={selectCls}>
             <option value="">All actions</option>
             {ACTION_TYPES.map(a => (
               <option key={a} value={a}>{a}</option>
             ))}
-          </select>
+          </StyledSelect>
         </SelectWrapper>
         <SelectWrapper>
-          <select value={draft.resource_type} onChange={setField('resource_type')} className={selectCls}>
+          <StyledSelect value={draft.resource_type} onChange={setField('resource_type')} className={selectCls}>
             <option value="">All resources</option>
             {['memory', 'user', 'org'].map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
+          </StyledSelect>
         </SelectWrapper>
         <label className="flex flex-col gap-1">
           <span className="text-[10px] text-text-quaternary px-0.5">From</span>
@@ -227,14 +228,14 @@ export default function AuditLog() {
         </label>
         <button
           onClick={applyFilters}
-          className="px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors"
+          className="px-3 py-2 rounded-md bg-action-primary hover:bg-action-primary-hover text-action-foreground text-sm font-medium transition-colors h-9 shadow-xs"
         >
           Apply
         </button>
         {(Object.values(filters).some(Boolean) || searchRaw) && (
           <button
             onClick={clearFilters}
-            className="flex items-center gap-1 border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors"
+            className="flex items-center gap-1 h-9 whitespace-nowrap border border-border-primary rounded-md px-3 text-sm text-text-secondary hover:text-text-primary transition-colors"
           >
             <X className="w-3 h-3" />
             Clear
@@ -249,7 +250,7 @@ export default function AuditLog() {
 
       {/* Timeline (same design as the dashboard Recent Activity) */}
       {!entriesError && (
-        <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5">
+        <div className="border border-border-primary bg-surface-primary rounded-xl p-5">
           <ActivityTimeline
             entries={entries}
             userMap={userMap}

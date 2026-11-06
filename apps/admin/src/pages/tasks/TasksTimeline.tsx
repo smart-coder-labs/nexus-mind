@@ -75,12 +75,12 @@ export default function TasksTimeline({ tasks, onTaskClick }: TasksTimelineProps
                     type="button"
                     onClick={() => onTaskClick(task)}
                     className={cn(
-                      'flex-1 min-w-0 text-left rounded-[11px] border border-border-secondary bg-white/[0.02] hover:border-accent-blue/40 transition-colors px-3 py-2.5',
+                      'flex-1 min-w-0 text-left rounded-md border border-border-secondary bg-foreground/[0.02] hover:border-accent-blue/40 transition-colors px-3 py-2.5',
                       FOCUS,
                     )}
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-[13px] font-semibold text-text-primary truncate">{task.title}</span>
+                      <span className="text-sm font-semibold text-text-primary truncate">{task.title}</span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         <StatusPill status={task.status} />
                         <PriorityPill priority={task.priority} />

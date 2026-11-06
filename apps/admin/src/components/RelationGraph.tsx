@@ -72,12 +72,12 @@ export function RelationGraph({
 
   return (
     <div
-      className="relative border border-border-primary rounded-[18px] overflow-hidden"
+      className="relative border border-border-primary rounded-xl overflow-hidden"
       style={{ height }}
     >
       {/* Stats bar */}
       {stats.length > 0 && (
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-white/[0.02] text-[10px] text-text-quaternary">
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-foreground/[0.02] text-[10px] text-text-quaternary">
           {stats.map((s, i) => (
             <Fragment key={s.label}>
               {i > 0 && <span>·</span>}
@@ -106,7 +106,7 @@ export function RelationGraph({
 
       {/* Detail panel */}
       {selectedNode && onNodeClick && (
-        <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#0f1117]/[0.94] border-l border-white/10 backdrop-blur-[22px] flex flex-col">
+        <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-surface-elevated border-l border-border-primary flex flex-col">
           <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary">
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-text-primary truncate">{selectedNode.label}</p>

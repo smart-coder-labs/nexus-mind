@@ -1,0 +1,1 @@
+{"schema_version":1,"task_id":"7f1c2a9e-3b4d-4e5f-8a6b-1c2d3e4f5a6b","summary":"x","operations":[{"path":"a.ts","action":"chmod","rationale":"x"}],"assumptions":[],"verification_plan":[],"needs_more_context":false,"requires_human_approval":false}

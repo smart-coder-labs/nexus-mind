@@ -22,6 +22,8 @@ fn seeded_db() -> Connection {
         [],
     )
     .unwrap();
+    conn.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,created_by) SELECT 'connector-test',o.id,'target_secret','Workflow target','fixture-ciphertext','{}','[]','ready',u.id FROM organizations o JOIN users u ON u.org_id=o.id LIMIT 1",[]).unwrap();
+    conn.execute("INSERT INTO github_review_subscriptions(org_id,repository,number,login,active) SELECT id,'acme/api',42,'cli-user',1 FROM organizations LIMIT 1",[]).unwrap();
     conn
 }
 
@@ -65,6 +67,8 @@ fn roundtrips_full_database_via_dump_and_restore() {
         .unwrap();
     assert_eq!(source_mems, target_mems);
     assert_eq!(source_mems, 2, "expect 2 seeded memories");
+    assert_eq!(target.query_row("SELECT secret_ciphertext FROM autonomous_agent_connectors WHERE id='connector-test'",[],|r|r.get::<_,String>(0)).unwrap(),"fixture-ciphertext");
+    assert_eq!(target.query_row("SELECT active FROM github_review_subscriptions WHERE repository='acme/api'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
 
     // Restore must clear pre-existing rows in the target first. Insert a
     // foreign row into `target` and confirm restore wipes it.

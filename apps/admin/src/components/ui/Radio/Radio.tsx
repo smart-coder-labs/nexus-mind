@@ -29,7 +29,7 @@ export const Radio: React.FC<RadioProps> = ({
                 className
             )}
         >
-            <span className="relative inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+            <span className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center">
                 <input
                     type="radio"
                     name={name}
@@ -38,15 +38,15 @@ export const Radio: React.FC<RadioProps> = ({
                     disabled={disabled}
                     onChange={() => onChange(value)}
                     className={cn(
-                        'peer appearance-none h-[18px] w-[18px] rounded-full border-[1.5px] transition-colors m-0',
+                        'peer appearance-none h-4 w-4 rounded-full border shadow-xs transition-colors m-0',
                         'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring',
-                        checked ? 'border-accent-blue' : 'border-white/[0.25]',
+                        checked ? 'border-accent-blue' : 'border-border-primary',
                         disabled ? 'cursor-not-allowed' : 'cursor-pointer'
                     )}
                 />
-                <span className="pointer-events-none absolute h-[9px] w-[9px] rounded-full bg-accent-blue opacity-0 peer-checked:opacity-100 transition-opacity" />
+                <span className="pointer-events-none absolute h-2.5 w-2.5 rounded-full bg-action-primary opacity-0 peer-checked:opacity-100 transition-opacity" />
             </span>
-            {label && <span className="text-[13px] text-text-secondary">{label}</span>}
+            {label && <span className="text-sm text-text-secondary">{label}</span>}
         </label>
     );
 };

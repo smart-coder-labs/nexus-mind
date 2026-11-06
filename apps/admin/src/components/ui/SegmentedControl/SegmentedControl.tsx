@@ -10,7 +10,7 @@ import type { SegmentedControlProps } from './SegmentedControl.types';
 
 const sizeStyles = {
     sm: { pad: 'px-2.5 py-1', text: 'text-xs' },
-    md: { pad: 'px-4 py-[7px]', text: 'text-[13px]' },
+    md: { pad: 'px-4 py-[7px]', text: 'text-sm' },
 };
 
 export function SegmentedControl<T extends string = string>({
@@ -25,7 +25,7 @@ export function SegmentedControl<T extends string = string>({
         <div
             role="group"
             className={cn(
-                'inline-flex items-center gap-0.5 rounded-[12px] border border-white/[0.08] bg-[#0d0f14]/60 backdrop-blur-[12px] p-1 w-max',
+                'inline-flex items-center gap-0.5 rounded-lg bg-muted p-1 w-max',
                 className
             )}
         >
@@ -40,11 +40,11 @@ export function SegmentedControl<T extends string = string>({
                         title={opt['aria-label']}
                         onClick={() => onChange(opt.value)}
                         className={cn(
-                            'inline-flex items-center gap-1.5 rounded-[9px] font-semibold transition-colors',
+                            'inline-flex items-center gap-1.5 rounded-md font-medium transition-colors',
                             sizes.pad,
                             sizes.text,
                             active
-                                ? 'bg-accent-blue/[0.18] text-accent-blue'
+                                ? 'bg-background text-foreground shadow-sm'
                                 : 'text-text-quaternary hover:text-text-secondary'
                         )}
                     >

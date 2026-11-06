@@ -1,0 +1,41 @@
+✔ empty query and default category preserve all products (7.609875ms)
+✔ descending price ordering is independent of source order (0.406958ms)
+✖ descending name ordering follows the requested sort (0.633292ms)
+✔ HTML-sensitive product names and categories are escaped (4.34725ms)
+✔ page exposes labelled controls and responsive CSS (0.269792ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 4
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 57.88375
+
+✖ failing tests:
+
+test at ../../../../Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/web.test.mjs:20:1
+✖ descending name ordering follows the requested sort (0.633292ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  +   'a',
+      'b',
+  -   'a'
+    ]
+  
+      at TestContext.<anonymous> (file:///Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/web.test.mjs:22:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'a', 'b' ],
+    expected: [ 'b', 'a' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

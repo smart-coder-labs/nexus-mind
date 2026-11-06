@@ -1,0 +1,14 @@
+✔ search is case-insensitive and accent-insensitive (0.877458ms)
+✔ category filter combines with search (0.09225ms)
+✔ price ordering does not mutate input (0.108ms)
+✔ empty matches are represented in the rendered output (0.169167ms)
+✔ product strings are escaped before HTML insertion (4.534333ms)
+✔ page has semantic language and a main landmark (0.339958ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 61.5285

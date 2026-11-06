@@ -1,0 +1,79 @@
+{
+  "reference": {
+    "portal": "e9e01b2a",
+    "uiCommons": "v2.0.670",
+    "uiCommit": "47968e54"
+  },
+  "reviewDisposition": "partially visually verified",
+  "missingCaptures": [
+    "reference-desktop.png",
+    "reference-mobile.png",
+    "design-system desktop/mobile recapture"
+  ],
+  "blocker": "Browser access restored for dashboard, Usage, Projects and Users. /design-system navigation returned net::ERR_BLOCKED_BY_CLIENT; no workaround attempted.",
+  "preview": "http://127.0.0.1:3005/design-system",
+  "publication": "local only; owner review required before admin push",
+  "checks": {
+    "typescript": "passed",
+    "productionBuild": "passed for prior chart iteration; counter-only follow-up verified with TypeScript and targeted tests",
+    "tests": {
+      "total": 374,
+      "files": 49,
+      "initialRun": {
+        "passed": 369,
+        "failed": 5
+      },
+      "correctedRegressions": {
+        "passed": 22,
+        "files": 4,
+        "covers": [
+          "Usage",
+          "App.only-context",
+          "Dashboard",
+          "chart data alternatives"
+        ]
+      },
+      "remainingFailures": 0
+    },
+    "diffWhitespace": "passed",
+    "previewHttp": 200,
+    "counterFollowup": {
+      "typescript": "passed",
+      "tests": {
+        "passed": 3,
+        "files": 2
+      },
+      "previewHttp": 200,
+      "visualValidation": "passed focused desktop/mobile visual review"
+    },
+    "visualFollowup": {
+      "typescript": "passed",
+      "tests": "5 tests passed across 3 files; Dashboard passed isolated rerun in 1.58s after initial 5-second timeout in concurrent run",
+      "consoleErrors": 0,
+      "viewports": [
+        "1280x900",
+        "390x844"
+      ],
+      "captures": [
+        "/private/tmp/nexusmind-dashboard-verified.jpg",
+        "/private/tmp/nexusmind-invite-mobile.jpg"
+      ],
+      "changes": [
+        "responsive summary grid",
+        "readable disabled-user rows",
+        "invitation dialog viewport margins and readable fields"
+      ]
+    }
+  },
+  "iteration": {
+    "scope": [
+      "compact metric badges and always-visible details",
+      "Audit1 shadcn analytical charts",
+      "dashboard controls",
+      "table spacing adapters",
+      "design-system examples"
+    ],
+    "visualValidation": "Reviewed authenticated real data: dashboard dark/light, Usage dark including all-time chart, Projects dark, Users light, invitation dialog desktop/mobile. Final captures confirm summary layout, readable disabled-user rows and mobile dialog margins. This is not an exhaustive admin or pixel-perfect reference certification.",
+    "dataConnection": "authenticated HTTPS API through local read-only proxy"
+  }
+}

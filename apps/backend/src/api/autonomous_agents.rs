@@ -52,12 +52,42 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "invalid_configuration"
         | "invalid_status"
         | "invalid_schedule_kind"
+        | "project_reviewer_requires_pr"
         | "schedule_expression_required"
         | "interval_too_short"
         | "invalid_timezone"
         | "invalid_daily_time"
-        | "invalid_misfire_policy" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
-        "invalid_connector_kind" | "invalid_connector" | "invalid_connector_secret" => {
+        | "invalid_misfire_policy"
+        | "invalid_executor"
+        | "invalid_agent_model"
+        | "invalid_model_source"
+        | "invalid_isolation"
+        | "sandbox_unsupported_template"
+        | "sandbox_unsupported_executor"
+        | "codex_unsupported_template"
+        | "codex_requires_sandbox"
+        | "pi_unsupported_template"
+        | "pi_requires_local"
+        | "invalid_sandbox_allowed_hosts"
+        | "too_many_sandbox_hosts" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
+        "invalid_agent_runtime" | "invalid_nexusmind_profile" | "too_many_runtime_components"
+        | "runtime_config_too_large" | "invalid_or_duplicate_runtime_component"
+        | "runtime_component_unsupported_for_executor" | "missing_mcp_server"
+        | "invalid_mcp_transport" | "invalid_mcp_args" | "invalid_mcp_command"
+        | "invalid_mcp_headers" | "invalid_mcp_url" | "unsafe_mcp_url"
+        | "invalid_http_mcp_config" | "mcp_secrets_require_environment_references"
+        | "runtime_executable_acknowledgement_required" | "invalid_runtime_files"
+        | "unsafe_runtime_file" | "skill_requires_SKILL_md" | "extension_requires_index" | "invalid_extension_tools" | "invalid_skill_frontmatter" | "instruction_files_must_be_markdown"
+        | "invalid_harness_selection" | "harness_not_found" | "harness_hash_or_status_mismatch"
+        | "harness_executor_incompatible" | "approval_required" | "unsupported_harness_format"
+        | "unsupported_harness_format_for_runtime" | "harness_component_not_found"
+        | "duplicate_harness_component" | "harness_content_missing" | "secret_scan_failed"
+        | "component_content_too_large" | "nexus_runtime_credentials_require_provider"
+        | "runtime_mcp_credentials_require_sandbox_proxy" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
+        "invalid_connector_kind"
+        | "invalid_connector"
+        | "invalid_connector_secret"
+        | "connector_binding_requires_new_secret" => {
             (StatusCode::UNPROCESSABLE_ENTITY, message.as_str())
         }
         "invalid_github_app_metadata"
@@ -65,6 +95,10 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "invalid_slack_webhook"
         | "invalid_target_kind"
         | "invalid_target"
+        | "invalid_project_scope"
+        | "ambiguous_reviewer_scope"
+        | "project_repository_required"
+        | "repository_not_allowed"
         | "invalid_target_connector"
         | "invalid_finding_status"
         | "invalid_retention_days" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
@@ -91,6 +125,10 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         code,
         if status == StatusCode::INTERNAL_SERVER_ERROR {
             "Database error"
+        } else if code == "invalid_agent_model" {
+            "El modelo no es compatible con el harness o, para Codex, no tiene un precio aprobado. Elige un modelo admitido o deja selección automática."
+        } else if code == "invalid_model_source" {
+            "La fuente del modelo debe ser agent o factory_roles; no se cambiará de proveedor como fallback."
         } else {
             &message
         },
@@ -138,7 +176,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "delivery:write".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 2, "max_cost_usd": 10, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo"},"github_publication_connector_id":{"type":"string","description":"Optional shared Workflow GitHub publisher; never changes the gh reviewer identity"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
             workflow: vec![
                 "checkout".into(),
                 "health_check".into(),
@@ -203,7 +241,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:draft_pr".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 3600, "max_attempts": 2, "max_cost_usd": 20, "max_changed_files": 20, "max_changed_lines": 800, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"},"review_after_deploy":{"type":"boolean","default":false,"description":"Mark opened PRs so your deploy workflow can deploy the branch and trigger the Judge to review the running preview"},"judge_agent_id":{"type":"string","description":"The Judge agent that reviews the deployed PR (required when review_after_deploy is on)"}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"github_publication_connector_id":{"type":"string","description":"Optional shared Workflow GitHub publisher for PRs; repo scope is enforced, reviewer identity stays on gh"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"},"review_after_deploy":{"type":"boolean","default":false,"description":"Mark opened PRs so your deploy workflow can deploy the branch and trigger the Judge to review the running preview"},"judge_agent_id":{"type":"string","description":"The Judge agent that reviews the deployed PR (required when review_after_deploy is on)"}}),
             workflow: vec![
                 "eligible_issue".into(),
                 "pinned_checkout".into(),
@@ -224,7 +262,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:review".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 1, "max_cost_usd": 10, "max_changed_lines": 1200, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"publish":{"enum":["comment_or_request_changes"]},"include_drafts":{"type":"boolean","default":false},"custom_instructions":{"type":"string","description":"Optional free-text guidance for what the review should focus on; cannot approve, merge, or publish"}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","description":"Fixed repository; mutually exclusive with project_id"},"project_id":{"type":"string","description":"NexusMind project id; reviews only its explicitly linked, active GitHub code repositories"},"github_auth":{"const":"server_gh_cli"},"publish":{"enum":["comment_or_request_changes"]},"include_drafts":{"type":"boolean","default":false},"custom_instructions":{"type":"string","description":"Optional free-text guidance for what the review should focus on; cannot approve, merge, or publish"}}),
             workflow: vec![
                 "pin_head".into(),
                 "bounded_diff".into(),
@@ -441,6 +479,21 @@ pub async fn get_runtime_health(
     Ok(Json(value))
 }
 
+/// Checks whether the worker's local Pi executor has a usable ChatGPT OAuth
+/// identity. Only readiness metadata leaves the worker; command output is never
+/// returned or persisted.
+pub async fn get_pi_runtime_health(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<crate::automation::pi::PiRuntimeHealth>> {
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    }
+    Ok(Json(crate::automation::pi::probe_runtime().await))
+}
+
 pub async fn check_runtime_health(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -496,6 +549,9 @@ pub async fn patch_org_settings(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:enable")?;
+    if req.enabled.is_some() {
+        require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    }
     Ok(Json(
         queries::patch_autonomous_agent_org_settings(
             &conn,
@@ -690,18 +746,28 @@ pub async fn run_now(
         }
         Some(serde_json::json!({ "trigger": trigger }))
     } else if definition.template_key == "github_pr_reviewer" {
-        // The PR to review is chosen per run (not baked into the agent).
-        body.as_ref()
-            .and_then(|b| b.targets.first())
-            .map(|target| {
-                serde_json::json!({
-                    "trigger": {
-                        "kind": "github_pr",
-                        "repository": target.repository,
-                        "number": target.number,
-                    }
-                })
+        let revision = queries::get_autonomous_agent_revision(&conn, &id, definition.current_revision)
+            .map_err(store_error)?.ok_or_else(not_found)?;
+        let targets = body.as_ref().map(|body| body.targets.as_slice()).unwrap_or_default();
+        if targets.len() > 1 || (targets.is_empty() && revision.config.get("project_id").is_some()) {
+            return Err(error(StatusCode::BAD_REQUEST, "review_target_required", "Choose one PR and its repository for this project reviewer."));
+        }
+        if let Some(target) = targets.first() {
+            if target.kind != "pr" || target.number == 0 {
+                return Err(error(StatusCode::BAD_REQUEST, "invalid_target", "Choose a PR with a positive number."));
+            }
+            crate::db::autonomous_scope::authorize_review(&conn, &auth.org_id, &revision.config, &target.repository).map_err(store_error)?;
+        }
+        // The PR to review is chosen per run, bounded to the current project/repo scope.
+        targets.first().map(|target| {
+            serde_json::json!({
+                "trigger": {
+                    "kind": "github_pr",
+                    "repository": target.repository,
+                    "number": target.number,
+                }
             })
+        })
     } else {
         None
     };
@@ -830,6 +896,24 @@ pub async fn get_run(
             .map_err(store_error)?
             .ok_or_else(not_found)?,
     ))
+}
+
+/// The verification reports of a run (F1 gate), newest first.
+pub async fn list_run_verification_reports(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    // 404 for a run of another org, as get_run does.
+    queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
+        .map_err(store_error)?
+        .ok_or_else(not_found)?;
+    let reports = crate::db::factory_queries::list_verification_reports(&conn, &auth.org_id, &id)
+        .map_err(store_error)?;
+    Ok(Json(serde_json::json!({ "reports": reports })))
 }
 
 pub async fn cancel_run(
@@ -1023,8 +1107,8 @@ pub async fn archive_all_findings(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
-    let archived = queries::archive_all_autonomous_agent_findings(&conn, &auth.org_id)
-        .map_err(store_error)?;
+    let archived =
+        queries::archive_all_autonomous_agent_findings(&conn, &auth.org_id).map_err(store_error)?;
     Ok(Json(serde_json::json!({ "archived": archived })))
 }
 
@@ -1069,7 +1153,11 @@ pub async fn upload_brand_asset(
 
     let mut found: Option<(Vec<u8>, String, String)> = None;
     while let Some(field) = multipart.next_field().await.map_err(|source| {
-        error(StatusCode::BAD_REQUEST, "invalid_upload", &source.to_string())
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_upload",
+            &source.to_string(),
+        )
     })? {
         if field.name() != Some("file") {
             continue;
@@ -1093,10 +1181,13 @@ pub async fn upload_brand_asset(
                 "Upload a PNG, JPEG, WebP or SVG image.",
             ));
         };
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_upload", "Could not read the uploaded file."))?;
+        let bytes = field.bytes().await.map_err(|_| {
+            error(
+                StatusCode::BAD_REQUEST,
+                "invalid_upload",
+                "Could not read the uploaded file.",
+            )
+        })?;
         if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
             return Err(error(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -1140,10 +1231,20 @@ pub async fn upload_brand_asset(
     );
     let stored = crate::automation::r2::put_object(&cfg, &key, &bytes, &mime)
         .await
-        .map_err(|source| error(StatusCode::BAD_GATEWAY, "upload_failed", &source.to_string()))?;
+        .map_err(|source| {
+            error(
+                StatusCode::BAD_GATEWAY,
+                "upload_failed",
+                &source.to_string(),
+            )
+        })?;
     // A permanent public base is guaranteed above, so this returns a stable URL
     // and the expiry argument is never used.
-    let url = crate::automation::r2::object_url(&cfg, &stored, crate::automation::r2::MAX_PRESIGN_EXPIRY_SECS);
+    let url = crate::automation::r2::object_url(
+        &cfg,
+        &stored,
+        crate::automation::r2::MAX_PRESIGN_EXPIRY_SECS,
+    );
     Ok(Json(serde_json::json!({ "url": url })))
 }
 
@@ -1249,7 +1350,10 @@ pub async fn linkedin_callback(
         return page(false, "Invalid state payload.");
     };
     let org_id = payload.get("org_id").and_then(|v| v.as_str()).unwrap_or("");
-    let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+    let user_id = payload
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let destination = payload
         .get("destination")
         .and_then(|v| v.as_str())
@@ -1306,7 +1410,9 @@ pub async fn linkedin_callback(
     }
     page(
         true,
-        &format!("Connected as {display_name} ({destination}). Approved posts can now be published."),
+        &format!(
+            "Connected as {display_name} ({destination}). Approved posts can now be published."
+        ),
     )
 }
 
@@ -1520,10 +1626,14 @@ mod tests {
             },
         )
         .unwrap();
-        let validated =
-            queries::validate_autonomous_agent_definition(conn, org_id, user_id, &created.definition.id)
-                .unwrap()
-                .unwrap();
+        let validated = queries::validate_autonomous_agent_definition(
+            conn,
+            org_id,
+            user_id,
+            &created.definition.id,
+        )
+        .unwrap()
+        .unwrap();
         validated
             .revision
             .validation
@@ -1569,7 +1679,10 @@ mod tests {
             "visual_style": "editorial dark-tech",
         });
         let errors = content_manager_errors(&conn, &org_id, &user_id, "With system", ok_config);
-        assert!(errors.is_empty(), "expected a clean validation, got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "expected a clean validation, got {errors:?}"
+        );
     }
 
     /// A malformed design system reaches the image model as prose and skews the
@@ -1625,7 +1738,10 @@ mod tests {
         let (conn, org_id, user_id) = fixture();
         let errors =
             content_manager_errors(&conn, &org_id, &user_id, "Default", base_content_config());
-        assert!(errors.is_empty(), "expected a clean validation, got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "expected a clean validation, got {errors:?}"
+        );
         let template = managed_templates()
             .into_iter()
             .find(|t| t.key == "ai_content_manager")
@@ -1644,13 +1760,23 @@ mod tests {
         let (conn, org_id, _user_id) = fixture();
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         let delivery = queries::create_autonomous_agent_delivery(
-            &conn, &org_id, "run1", Some("f1"), "linkedin", "f1",
+            &conn,
+            &org_id,
+            "run1",
+            Some("f1"),
+            "linkedin",
+            "f1",
         )
         .unwrap();
         // Creating it twice returns the same row, which is why the row alone
         // cannot decide who sends.
         let again = queries::create_autonomous_agent_delivery(
-            &conn, &org_id, "run1", Some("f1"), "linkedin", "f1",
+            &conn,
+            &org_id,
+            "run1",
+            Some("f1"),
+            "linkedin",
+            "f1",
         )
         .unwrap();
         assert_eq!(delivery.id, again.id);
@@ -1664,8 +1790,13 @@ mod tests {
         );
 
         // A failed attempt published nothing, so it becomes claimable again.
-        queries::fail_autonomous_agent_delivery(&conn, &org_id, &delivery.id, "linkedin_post_failed")
-            .unwrap();
+        queries::fail_autonomous_agent_delivery(
+            &conn,
+            &org_id,
+            &delivery.id,
+            "linkedin_post_failed",
+        )
+        .unwrap();
         assert!(queries::claim_autonomous_agent_delivery(&conn, &org_id, &delivery.id).unwrap());
 
         // Once delivered, nothing can claim it again.
@@ -1730,7 +1861,12 @@ mod tests {
             "security_dast must carry the active-scan capability tag"
         );
         // Never a write/deploy/repository capability — it is evidence-only.
-        for forbidden in ["repository:read", "repository:branch", "github:draft_pr", "tests:run"] {
+        for forbidden in [
+            "repository:read",
+            "repository:branch",
+            "github:draft_pr",
+            "tests:run",
+        ] {
             assert!(
                 !template.capabilities.iter().any(|c| c == forbidden),
                 "{forbidden} must not be granted to security_dast"
@@ -1740,7 +1876,10 @@ mod tests {
         // it comes from a registered web_application target.
         assert!(template.config_schema.pointer("/repository").is_none());
         assert!(template.config_schema.pointer("/url").is_none());
-        assert!(template.default_budgets.pointer("/requests_per_second").is_some());
+        assert!(template
+            .default_budgets
+            .pointer("/requests_per_second")
+            .is_some());
     }
 
     #[test]
@@ -2273,6 +2412,99 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn nexus_run_can_be_claimed_when_host_claude_needs_reauth() {
+        let (conn, org_id, user_id) = fixture();
+        let mut nexus_request = request();
+        nexus_request.config["executor"] = serde_json::json!("nexus");
+        let created =
+            queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &nexus_request)
+                .unwrap();
+        queries::validate_autonomous_agent_definition(
+            &conn,
+            &org_id,
+            &user_id,
+            &created.definition.id,
+        )
+        .unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &created.definition.id, "enabled")
+            .unwrap();
+        queries::enqueue_autonomous_agent_run(
+            &conn,
+            &org_id,
+            &created.definition.id,
+            "manual",
+            "nexus-health",
+            None,
+            None,
+        )
+        .unwrap();
+        queries::save_autonomous_runtime_health(
+            &conn,
+            &crate::automation::runtime::RuntimeHealth {
+                status: "reauth_required".into(),
+                reason_code: Some("host_claude_login".into()),
+                claude_version: None,
+                checked_at: None,
+                last_success_at: None,
+                last_failure_at: None,
+            },
+        )
+        .unwrap();
+        let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
+            .unwrap()
+            .expect("Nexus uses sandbox login, not host Claude health");
+        assert_eq!(
+            queries::autonomous_executor(&claim.config).unwrap(),
+            "nexus"
+        );
+    }
+
+    #[test]
+    fn pi_run_can_be_claimed_without_host_claude_login() {
+        for template in ["github_pr_reviewer", "qa"] {
+            let (conn, org_id, user_id) = fixture();
+            let mut pi_request = request();
+            pi_request.template_key = template.into();
+            pi_request.config = serde_json::json!({"executor":"pi", "repository":"acme/repo", "outputs":["nexusmind"]});
+            let created =
+                queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &pi_request)
+                    .unwrap();
+            queries::validate_autonomous_agent_definition(
+                &conn,
+                &org_id,
+                &user_id,
+                &created.definition.id,
+            )
+            .unwrap();
+            queries::set_autonomous_agent_status(&conn, &org_id, &created.definition.id, "enabled")
+                .unwrap();
+            queries::enqueue_autonomous_agent_run(
+                &conn,
+                &org_id,
+                &created.definition.id,
+                "manual",
+                "pi-health",
+                None,
+                None,
+            )
+            .unwrap();
+            let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
+                .unwrap()
+                .expect("Pi checks its own OAuth, not host Claude health");
+            assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "pi");
+        }
+    }
+
+    #[test]
+    fn pi_configuration_errors_are_client_errors() {
+        for code in ["pi_requires_local", "pi_unsupported_template"] {
+            let (status, Json(body)) = store_error(anyhow::anyhow!(code));
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(body.code, code);
+        }
     }
 
     #[test]

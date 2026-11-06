@@ -190,3 +190,43 @@ Freeze was in effect while main ran the full test suite + push. Main confirmed p
 | — | unassigned | `auth/AuthContext.tsx` 429 resilience (#12) | queued (explicit grant needed) |
 | legacy-diag | nm-authz-audit | `GET /v1/admin/org/projects/over-enrolled` — read-only admin diagnostic for auto-enrolled projects | **complete** (2026-07-03). Returns projects where member_count >= active_user_count. 5 tests: 403 non-admin, 200 admin + over-enrolled detection, partial exclusion, suspended-user exclusion. |
 | — | escalated to main | NULL-email 500 (#22), 429 backend tuning, `/agents` product decision (#19) | waiting on main/user |
+
+## 11. Factory section (2026-10-06)
+
+The factory (autonomous agents, their runs, and the rules that bound them) is the only part of the admin that *acts*. Everything else stores knowledge. Its UI answers three questions, in this order: **is anything waiting on me, is the fleet healthy, and what did the agents do.**
+
+### Information architecture
+
+One nav group, `Factory`, so "agent" means one thing:
+
+| Route | Page | Job |
+|---|---|---|
+| `/factory` | Agents | Fleet health strip, "Needs you" preview, agent cards |
+| `/factory/runs` | Runs | Master–detail: run list left, run story right |
+| `/factory/findings` | Findings | Triage: filters, list, detail with one primary action |
+| `/factory/inbox` | Needs a human | Every held action, decided one at a time |
+| `/factory/intake` | Intake | Sources that bring work in (GitHub, Slack, Sentry) |
+| `/factory/policies` | Autonomy policies | Action × autonomy matrix; safety floors always visible |
+| `/factory/decision-model` | Decision model | Readiness per task class; labelling feed |
+| `/factory/settings` | Factory settings | Runtime health, kill switch, retention, sandbox bot |
+| `/factory/templates` | Templates | Managed templates catalog (linked from Agents, not in the nav) |
+
+Old routes (`/autonomous-agents`, `/factory-*`) redirect.
+
+### Chassis
+
+Same tokens, type scale, radius grammar and components as §2–§5. No new colors, no new fonts.
+
+### The one memorable element: the outcome tape
+
+A run's outcome is the factory's unit of truth, so it gets the only distinctive visual: a row of small square cells, one per run, oldest left, colored by outcome (`success` / `warning` for partial or budget / `error` for failed or blocked / neutral for cancelled / empty for no run). It appears on agent cards (last 14 runs) and nowhere decorative. It always carries an `aria-label` that reads the outcomes in words, and a legend on the page that uses it. Everything around it stays quiet.
+
+### Rules specific to the factory
+
+- **State is the only color.** Status colors encode run/finding/policy state; never identity. Templates and agents are told apart by name and icon, not tint.
+- **Lead with the sentence, not the JSON.** Every run and finding opens with a plain-language outcome ("Opened draft PR #301; all required checks passed"). Raw payloads sit behind a disclosure at the bottom.
+- **One primary action per object.** The Action Blue pill is the thing a person most likely does next (Run, Review, Resolve with agent, Continue). Everything else is a ghost pill or lives in an overflow menu. No rows of six text links.
+- **Held means held.** Anything waiting for a person is phrased as a decision ("Merge held for a person") with the reason (the policy or floor that held it) and one button that opens the decision.
+- **No template chrome.** No uppercase eyebrow above page titles, no `A · B · C` meta chains longer than two items (use spaced items or a definition list), no `→` appended to links, monospace only for literal code identifiers (SHAs, commands, `owner/repo#n`, action names), never for ordinary data labels.
+- **Copy names what the user controls**: "Pause all agents", not "Organization kill switch"; "Who decides", not "mode". Enum values (`after_fix`, `blocked_policy`) never appear raw; map them to words.
+- **States are designed, not defaulted**: loading = skeletons shaped like the content; empty = what this is plus the one action that fills it; error = what failed and how to retry; permission-denied = which permission and who grants it.

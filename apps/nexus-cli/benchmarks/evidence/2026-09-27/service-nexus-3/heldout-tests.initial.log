@@ -1,0 +1,12 @@
+✔ reused idempotency key with different payload is conflict (19.244292ms)
+✔ quantity must be a positive integer (13.014541ms)
+✔ invalid content type is rejected with JSON (6.320542ms)
+✔ request bodies over 64 KiB are rejected (2.644584ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 108.852083

@@ -46,6 +46,11 @@ spec:
       labels:
         app: nexusmind-backend
     spec:
+      # The factory-worker identity (task pods in nexusmind-sandbox) belongs to the
+      # worker only. The API container shares this pod, so no token is mounted
+      # pod-wide: the worker alone gets a projected token below.
+      serviceAccountName: factory-worker
+      automountServiceAccountToken: false
       imagePullSecrets:
         - name: ghcr-pull
       initContainers:
@@ -67,6 +72,8 @@ spec:
             - secretRef:
                 name: nexusmind-env
           env:
+            - name: SENTRY_ENVIRONMENT
+              value: production
             - name: AUTONOMOUS_AGENTS_ENABLED
               value: "true"
             - name: CLAUDE_CODE_BIN
@@ -122,10 +129,20 @@ spec:
           env:
             - name: AUTONOMOUS_AGENTS_ENABLED
               value: "true"
+            # The Nexus executor's CLI requires an explicit registered gateway
+            # name. Keep this aligned with the production registration under
+            # /claude-home/.config/openshell; without it the worker silently
+            # targets no gateway even when the gateway is reachable.
+            - name: OPENSHELL_GATEWAY
+              value: production
             - name: CLAUDE_CODE_BIN
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME
               value: /claude-home
+            # Pi is installed in the PVC-backed npm prefix; ChatGPT OAuth lives
+            # in /claude-home/.pi/agent/auth.json and survives pod replacement.
+            - name: AUTONOMOUS_PI_BIN
+              value: /claude-home/.npm-global/bin/pi
             # The AI Content Manager generates post imagery by shelling out to the
             # Higgsfield CLI. That CLI keeps a browser-OAuth session in
             # $HOME/.config/higgsfield, so it is installed into the PVC (which HOME
@@ -143,12 +160,45 @@ spec:
             # URLs (the public /evidence re-signing endpoint) in GitHub comments.
             - name: PUBLIC_API_BASE_URL
               value: https://api.nexusmind.smartcoderlabs.com
+            # Factory F1: task pod image. FACTORY_PROXY_SIGNING_KEY comes from
+            # nexusmind-env. Agents run sandboxed only with isolation=sandbox until
+            # FACTORY_ISOLATION_DEFAULT=sandbox is set (after the drill).
+            - name: FACTORY_SANDBOX_IMAGE
+              value: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+            # Verification commands get a separate image with Cargo; the
+            # serving backend and model-running task pods stay on the lean image.
+            - name: FACTORY_COMMANDS_IMAGE
+              value: ghcr.io/smart-coder-labs/nexusmind-factory-commands:main-arm64
+            # Orgs whose PR metadata may go to the decision model (Jev, TypeSafe)
+            # for F3 shadow decisions. SmartCoderLabs only, by owner decision
+            # (ADR 7d6f870f); every other tenant needs its own opt-in.
+            - name: FACTORY_JEV_SHADOW_ORGS
+              value: bdf4b2aa-3f52-422e-8bee-a1babbb7d337
+            # Codex executor (ADR 74e25f77): USD per 1M tokens [input, cached input,
+            # output]. A Codex run whose model has no price does not start. These
+            # are OpenAI's long-context (>272K input) standard-tier rates, checked
+            # 2026-10-05 at developers.openai.com/api/docs/pricing: the cost cap
+            # overestimates rather than letting a run overspend. Cached long-context
+            # input is not published separately; 2x the short rate is assumed.
+            - name: FACTORY_OPENAI_PRICES
+              value: '{"gpt-6-luna":[0.20,0.02,0.75],"gpt-6.1-sol":[4.00,0.20,15.00],"gpt-6-astra":[20.00,2.00,75.00]}'
+            # OTel GenAI spans (factory F3): one `invoke_agent` span per finished run
+            # (provider, model, tokens, cost, tier, outcome; never prompt or repo
+            # text). Off until a collector exists: with no endpoint nothing is built.
+            # To enable, set here (an auth header belongs in nexusmind-env instead):
+            #   OTEL_EXPORTER_OTLP_ENDPOINT  base OTLP/HTTP URL, e.g.
+            #                                http://otel-collector:4318 (/v1/traces is appended)
+            #   OTEL_EXPORTER_OTLP_HEADERS   optional, e.g. authorization=Bearer%20<token>
+            #   OTEL_SERVICE_NAME            optional, defaults to nexusmind-worker
           volumeMounts:
             - name: data
               mountPath: /data
             - name: data
               mountPath: /claude-home
               subPath: claude-home
+            - name: factory-worker-token
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
           resources:
             requests:
               cpu: 250m
@@ -159,6 +209,20 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: nexusmind-data
+        # What automount would have provided, for the worker container only.
+        - name: factory-worker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3607
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: {fieldPath: metadata.namespace}
 ---
 apiVersion: v1
 kind: Service

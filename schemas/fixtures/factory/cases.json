@@ -1,0 +1,179 @@
+{
+  "cases": [
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/valid/criteria-merge.json",
+      "valid": true
+    },
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/valid/integral-float-version.json",
+      "valid": true
+    },
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/valid/never-deploy.json",
+      "valid": true
+    },
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/invalid/criteria-without-allow.json",
+      "valid": false
+    },
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/invalid/unknown-mode.json",
+      "valid": false
+    },
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/invalid/unknown-scope-field.json",
+      "valid": false
+    },
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/invalid/version-overflow.json",
+      "valid": false
+    },
+    {
+      "contract": "action-policy",
+      "fixture": "action-policy/v1/invalid/zero-version.json",
+      "valid": false
+    },
+    {
+      "contract": "code-change-proposal",
+      "fixture": "code-change-proposal/v1/valid/create-component.json",
+      "valid": true
+    },
+    {
+      "contract": "code-change-proposal",
+      "fixture": "code-change-proposal/v1/invalid/bad-operation.json",
+      "valid": false
+    },
+    {
+      "contract": "code-change-proposal",
+      "fixture": "code-change-proposal/v1/invalid/empty-summary.json",
+      "valid": false
+    },
+    {
+      "contract": "context-pack",
+      "fixture": "context-pack/v1/valid/symbols.json",
+      "valid": true
+    },
+    {
+      "contract": "context-pack",
+      "fixture": "context-pack/v1/invalid/artifact-without-hash.json",
+      "valid": false
+    },
+    {
+      "contract": "context-pack",
+      "fixture": "context-pack/v1/invalid/bad-artifact-kind.json",
+      "valid": false
+    },
+    {
+      "contract": "context-pack",
+      "fixture": "context-pack/v1/invalid/missing-commit.json",
+      "valid": false
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/valid/docs-cheap.json",
+      "valid": true
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/valid/integral-floats.json",
+      "valid": true
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/valid/minimal.json",
+      "valid": true
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/invalid/fractional-attempts.json",
+      "valid": false
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/invalid/risk-out-of-range.json",
+      "valid": false
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/invalid/too-many-attempts.json",
+      "valid": false
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/invalid/unknown-action.json",
+      "valid": false
+    },
+    {
+      "contract": "routing-decision",
+      "fixture": "routing-decision/v1/invalid/unknown-tier.json",
+      "valid": false
+    },
+    {
+      "contract": "task-spec",
+      "fixture": "task-spec/v1/valid/github-issue.json",
+      "valid": true
+    },
+    {
+      "contract": "task-spec",
+      "fixture": "task-spec/v1/valid/gmail-minimal.json",
+      "valid": true
+    },
+    {
+      "contract": "task-spec",
+      "fixture": "task-spec/v1/invalid/trusted-gmail.json",
+      "valid": false
+    },
+    {
+      "contract": "task-spec",
+      "fixture": "task-spec/v1/invalid/unknown-field.json",
+      "valid": false
+    },
+    {
+      "contract": "task-spec",
+      "fixture": "task-spec/v1/invalid/unknown-task-class.json",
+      "valid": false
+    },
+    {
+      "contract": "task-spec",
+      "fixture": "task-spec/v1/invalid/wrong-version.json",
+      "valid": false
+    },
+    {
+      "contract": "verification-report",
+      "fixture": "verification-report/v1/valid/eligible.json",
+      "valid": true
+    },
+    {
+      "contract": "verification-report",
+      "fixture": "verification-report/v1/valid/failed.json",
+      "valid": true
+    },
+    {
+      "contract": "verification-report",
+      "fixture": "verification-report/v1/invalid/bad-status.json",
+      "valid": false
+    },
+    {
+      "contract": "verification-report",
+      "fixture": "verification-report/v1/invalid/eligible-but-failed.json",
+      "valid": false
+    },
+    {
+      "contract": "verification-report",
+      "fixture": "verification-report/v1/invalid/eligible-with-blocking.json",
+      "valid": false
+    },
+    {
+      "contract": "verification-report",
+      "fixture": "verification-report/v1/invalid/short-sha.json",
+      "valid": false
+    }
+  ]
+}

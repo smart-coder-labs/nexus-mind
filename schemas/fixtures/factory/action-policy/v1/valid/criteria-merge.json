@@ -1,0 +1,1 @@
+{"schema_version":1,"action":"merge","mode":"criteria","scope":{"project":"nexus-mind","task_class":"docs"},"allow":["all verification checks pass","docs/tests paths only"],"stop":["security-sensitive paths"],"version":3}
