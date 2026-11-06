@@ -11,6 +11,32 @@ use nexusmind::{
 use serde_json::{json, Value};
 use tower::util::ServiceExt;
 #[tokio::test]
+async fn native_git_media_types_reach_real_source_routes_without_bypassing_guards() {
+    let app = app("super_user");
+    let upload = "/v1/factory/runner/runs/probe/steps/prepare/sources/0/git-upload-pack";
+    let refs = "/v1/factory/runner/runs/probe/steps/prepare/sources/0/info/refs?service=git-upload-pack";
+    let push = "/v1/factory/runner/runs/probe/steps/prepare/sources/0/info/refs?service=git-receive-pack";
+    for (method, path, accept, status, code) in [
+        ("POST", upload, "application/x-git-upload-pack-result", StatusCode::CONFLICT, Some("lease_conflict")),
+        ("GET", refs, "application/x-git-upload-pack-advertisement", StatusCode::CONFLICT, Some("lease_conflict")),
+        ("GET", push, "application/x-git-upload-pack-advertisement", StatusCode::UNPROCESSABLE_ENTITY, Some("source_git_read_only")),
+        ("POST", "/v1/memory/store", "application/x-git-upload-pack-result", StatusCode::NOT_ACCEPTABLE, None),
+        ("GET", "/v1/health", "application/x-git-upload-pack-advertisement", StatusCode::NOT_ACCEPTABLE, None),
+        ("GET", upload, "application/x-git-upload-pack-result", StatusCode::NOT_ACCEPTABLE, None),
+    ] {
+        let response = app.clone().oneshot(Request::builder().method(method).uri(path)
+            .header("Accept", accept).header("Content-Type", "application/x-git-upload-pack-request")
+            .body(Body::from("0000")).unwrap()).await.unwrap();
+        assert_eq!(response.status(), status, "{method} {path}: {accept}");
+        if let Some(code) = code {
+            let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], code);
+        }
+    }
+}
+
+#[tokio::test]
 async fn authenticated_api_has_no_plan_request_quota_but_still_requires_auth() {
     let app = app("super_user");
     let cookie = login(&app).await;
