@@ -84,7 +84,7 @@ describe('GitHub review hooks', () => {
       screen.queryByRole('button', { name: 'Conectar webhook de GitHub' }),
     ).not.toBeInTheDocument()
   })
-  it('registers the selected repository without requiring an administrator token', async () => {
+  it('connects the whole project when no repository is selected', async () => {
     show(permissions)
     const user = await fill()
     await user.click(screen.getByRole('button', { name: 'Conectar webhook de GitHub' }))
@@ -99,6 +99,14 @@ describe('GitHub review hooks', () => {
     expect(
       screen.getByLabelText('Token de administración del webhook (opcional)'),
     ).not.toBeRequired()
+  })
+  it('refreshes already connected hooks after a partial registration failure', async () => {
+    api.registerGithubReviewHook.mockRejectedValueOnce(new Error('GitHub denied webhook administration'))
+    show(permissions)
+    const user = await fill()
+    await user.click(screen.getByRole('button', { name: 'Conectar webhook de GitHub' }))
+    await waitFor(() => expect(api.getGithubReviewHooks).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('GitHub denied webhook administration')).toBeInTheDocument()
   })
   it('passes an explicit linked repository for a project reviewer', async () => {
     show(permissions)

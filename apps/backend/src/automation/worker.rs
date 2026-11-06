@@ -7834,7 +7834,8 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                     tracing::error!("Failed to persist autonomous runtime health: {error:#}");
                 }
             }
-            if ticks == 1 || ticks.is_multiple_of(240) {
+            // Recover requested reviews even when repository webhook setup is incomplete.
+            if ticks == 1 || ticks.is_multiple_of(20) {
                 reconcile_github_triggers(&store).await;
                 // F3 shadow: settle Jev decisions whose PRs merged or closed,
                 // beside the loop so claiming work never waits on GitHub.
