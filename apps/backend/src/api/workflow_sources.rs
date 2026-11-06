@@ -70,7 +70,7 @@ pub async fn upload_pack(State(store): State<SqliteStore>, headers: HeaderMap,
 }
 
 fn upstream_request(repository: &str, token: String, protocol: Option<&axum::http::HeaderValue>,
-                    body: Option<Bytes>) -> Result<reqwest::RequestBuilder> {
+                    encoding: Option<&axum::http::HeaderValue>, body: Option<Bytes>) -> Result<reqwest::RequestBuilder> {
     crate::automation::connectors::validate_repository(repository)?;
     let suffix = if body.is_some() { "git-upload-pack" } else { "info/refs?service=git-upload-pack" };
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
@@ -81,6 +81,14 @@ fn upstream_request(repository: &str, token: String, protocol: Option<&axum::htt
     if let Some(protocol) = protocol {
         if protocol != "version=2" { bail!("invalid_source_git_protocol"); }
         request = request.header("git-protocol", "version=2");
+    }
+    if let Some(encoding) = encoding {
+        if body.is_none() || !["gzip", "identity"].iter().any(|value| encoding == *value) {
+            bail!("invalid_source_git_encoding");
+        }
+        // Git compresses larger negotiation requests; forward only this typed
+        // encoding header, never caller authorization/cookies/lease headers.
+        request = request.header(header::CONTENT_ENCODING, encoding);
     }
     if let Some(body) = body {
         request = request.header(header::CONTENT_TYPE, "application/x-git-upload-pack-request").body(body);
@@ -108,7 +116,7 @@ async fn proxy(store: SqliteStore, headers: HeaderMap, run: String, step: String
     let token = crate::automation::worker::server_github_token().await
         .map_err(|_| fail(anyhow::anyhow!("github_cli_auth_required")))?;
     let expected = if body.is_some() { "application/x-git-upload-pack-result" } else { "application/x-git-upload-pack-advertisement" };
-    let request = upstream_request(&repository, token, headers.get("git-protocol"), body).map_err(fail)?;
+    let request = upstream_request(&repository, token, headers.get("git-protocol"), headers.get(header::CONTENT_ENCODING), body).map_err(fail)?;
     let upstream = request.send().await.map_err(|_| fail(anyhow::anyhow!("source_github_unavailable")))?;
     if !upstream.status().is_success() {
         let code = if matches!(upstream.status().as_u16(), 401 | 403 | 404) { "source_github_access_denied" } else { "source_github_unavailable" };
@@ -199,7 +207,12 @@ mod tests {
         use base64::Engine;
         let protocol = axum::http::HeaderValue::from_static("version=2");
         for body in [None, Some(Bytes::from_static(b"fixture git request"))] {
-            let request = upstream_request("acme/api", "fixture-github-secret".into(), Some(&protocol), body).unwrap().build().unwrap();
+            let gzip = axum::http::HeaderValue::from_static("gzip");
+            let encoding = body.as_ref().map(|_| &gzip);
+            let request = upstream_request("acme/api", "fixture-github-secret".into(), Some(&protocol), encoding, body).unwrap().build().unwrap();
+            if request.method() == reqwest::Method::POST {
+                assert_eq!(request.headers()[header::CONTENT_ENCODING], "gzip");
+            }
             assert_eq!(request.url().host_str(), Some("github.com"));
             assert!(matches!(request.method().as_str(), "GET" | "POST"));
             let auth = request.headers()[header::AUTHORIZATION].to_str().unwrap().strip_prefix("Basic ").unwrap();
@@ -208,7 +221,8 @@ mod tests {
             assert!(!request.headers().contains_key("cookie"));
             assert!(request.url().path().ends_with("/info/refs") || request.url().path().ends_with("/git-upload-pack"));
         }
-        assert!(upstream_request("https://evil.example/repo", "fixture".into(), None, None).is_err());
-        assert!(upstream_request("acme/api", "fixture".into(), Some(&axum::http::HeaderValue::from_static("unsupported")), None).is_err());
+        assert!(upstream_request("https://evil.example/repo", "fixture".into(), None, None, None).is_err());
+        assert!(upstream_request("acme/api", "fixture".into(), Some(&axum::http::HeaderValue::from_static("unsupported")), None, None).is_err());
+        assert!(upstream_request("acme/api", "fixture".into(), None, Some(&axum::http::HeaderValue::from_static("unsupported")), Some(Bytes::new())).is_err());
     }
 }

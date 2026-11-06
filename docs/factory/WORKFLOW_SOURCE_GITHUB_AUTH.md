@@ -25,7 +25,9 @@ inició una ejecución de agentes para estas comprobaciones.
 - Solo se sirven anuncios de `git-upload-pack` y `git-upload-pack`. No se ofrecen
   push, `git-receive-pack`, rutas arbitrarias ni acceso a repos fuera del snapshot.
 - El backend usa Basic auth GitHub con su propio token. No reenvía la autorización,
-  lease, cookies ni headers arbitrarios del cliente hacia GitHub.
+  lease, cookies ni headers arbitrarios del cliente hacia GitHub. Solo conserva
+  `Git-Protocol: version=2` y los encodings HTTP aprobados: Git puede comprimir las
+  negociaciones grandes con gzip; el payload se transmite sin descomprimir en el backend.
 - Streaming acotado: cuatro transferencias concurrentes, 256 MiB por respuesta,
   1 MiB por request y 16 requests por repo/intento; tiempo limitado y lease revisado
   durante transferencias. Sin bundles temporales que llenen el disco del servidor.

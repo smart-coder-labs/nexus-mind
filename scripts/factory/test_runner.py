@@ -165,6 +165,8 @@ class RunnerTests(unittest.TestCase):
                        'REQUEST_METHOD': self.command, 'QUERY_STRING': parsed.query,
                        'CONTENT_TYPE': self.headers.get('Content-Type', ''), 'CONTENT_LENGTH': str(len(body)),
                        'GIT_PROTOCOL': self.headers.get('Git-Protocol', ''), 'REMOTE_USER': 'fixture'}
+                if self.headers.get('Content-Encoding'):
+                    env['HTTP_CONTENT_ENCODING'] = self.headers['Content-Encoding']
                 result = subprocess.run(['git', 'http-backend'], input=body, capture_output=True, env=env, check=True)
                 headers, separator, content = result.stdout.partition(b'\r\n\r\n')
                 if not separator:
