@@ -79,6 +79,12 @@ Backend/worker and egress image:
   `/data/pre-workflows-20261106T080952Z.db`. No new schema migration or production
   migration job was required. Existing agents, credentials and drafts were not modified.
 
+Post-deployment SDK permission repair and five-to-one definition consolidation:
+[WORKFLOW_CONSOLIDATION_20261106.md](WORKFLOW_CONSOLIDATION_20261106.md).
+The workspace now reports runtime revision 23 applied, ready=true and no missing
+requirements; the old group-writable recipe issue is resolved without weakening
+its trust check.
+
 Refresh the admin to load the new client. Previously orphaned empty harnesses
 can use Publish version to attach the original/corrected upload; do not recreate
 or delete them automatically. The isolated runner still has no `nexusmind_mcp`
