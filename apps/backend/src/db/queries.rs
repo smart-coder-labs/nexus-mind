@@ -16830,7 +16830,16 @@ fn validate_autonomous_executor(config: &serde_json::Value, template_key: &str) 
         }
     }
     crate::factory::sandbox::parse_allowed_hosts(config.get("sandbox_allowed_hosts"))?;
-    crate::factory::sandbox::autonomous_isolation(config, template_key, executor).map(|_| ())
+    let isolation = crate::factory::sandbox::autonomous_isolation(config, template_key, executor)?;
+    if isolation == crate::factory::sandbox::Isolation::Sandbox {
+        if let Some(raw) = config.get("runtime") {
+            let runtime: crate::automation::agent_runtime::RuntimeConfig = serde_json::from_value(raw.clone()).map_err(|_| anyhow::anyhow!("invalid_agent_runtime"))?;
+            if runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).any(|s| !s.env.is_empty() || !s.headers.is_empty()) {
+                anyhow::bail!("runtime_mcp_credentials_require_sandbox_proxy");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -16919,6 +16928,7 @@ pub fn create_autonomous_agent_definition(
         anyhow::bail!("invalid_configuration");
     }
     validate_autonomous_executor(&req.config, &req.template_key)?;
+    let runtime_config = crate::automation::agent_runtime::prepare_config(conn, org_id, user_id, &req.config)?;
     let capabilities = autonomous_agent_capabilities(&req.template_key)?;
     let definition_id = Uuid::new_v4().to_string();
     let revision_id = Uuid::new_v4().to_string();
@@ -16926,7 +16936,7 @@ pub fn create_autonomous_agent_definition(
     let config_hash = autonomous_agent_config_hash(
         &req.template_key,
         template_version,
-        &req.config,
+        &runtime_config,
         &req.budgets,
     )?;
     let tx = conn.unchecked_transaction()?;
@@ -16940,7 +16950,7 @@ pub fn create_autonomous_agent_definition(
         "INSERT INTO autonomous_agent_revisions
          (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,created_by)
          VALUES (?1,?2,1,?3,?4,?5,?6,?7)",
-        rusqlite::params![revision_id, definition_id, serde_json::to_string(&req.config)?, config_hash,
+        rusqlite::params![revision_id, definition_id, serde_json::to_string(&runtime_config)?, config_hash,
             serde_json::to_string(&capabilities)?, serde_json::to_string(&req.budgets)?, user_id],
     )?;
     tx.commit()?;
@@ -16975,6 +16985,8 @@ pub fn update_autonomous_agent_definition(
         anyhow::bail!("invalid_configuration");
     }
     validate_autonomous_executor(config, &current.definition.template_key)?;
+    let prepared_config = crate::automation::agent_runtime::prepare_config(conn, org_id, user_id, config)?;
+    let config = &prepared_config;
     let description = req
         .description
         .as_ref()

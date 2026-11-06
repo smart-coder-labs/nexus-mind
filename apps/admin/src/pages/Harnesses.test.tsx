@@ -234,6 +234,7 @@ describe('Harnesses page', () => {
 
     fireEvent.change(within(publishDialog).getByLabelText(/version/i), { target: { value: '1.1.0' } })
     await user.click(screen.getByRole('option', { name: 'Hook Script' }))
+    await user.click(within(publishDialog).getByRole('checkbox', { name: 'Codex' }))
     expect(within(publishDialog).getByText(/executable hook/i)).toBeInTheDocument()
     const file = new File(['#!/bin/sh\nexit 0'], 'pre-commit.sh', { type: 'text/x-shellscript' })
     fireEvent.change(within(publishDialog).getByLabelText(/upload files/i), { target: { files: [file] } })
@@ -243,6 +244,7 @@ describe('Harnesses page', () => {
     await waitFor(() => expect(publishHarnessVersionMock).toHaveBeenCalledTimes(1))
     const payload = publishHarnessVersionMock.mock.calls[0][1]
     expect(payload.version).toBe('1.1.0')
+    expect(payload.manifest.targets).toEqual(['claude', 'codex'])
     expect(payload.manifest).toEqual(expect.objectContaining({ format: 'hook', security: expect.objectContaining({ executable: true, requires_approval: true }) }))
     expect(payload.manifest.components[0]).toEqual(expect.objectContaining({
       kind: 'file',
@@ -443,10 +445,59 @@ describe('Harnesses page', () => {
     fireEvent.click(within(createDialog).getByRole('button', { name: /^create$/i }))
 
     await waitFor(() => expect(createHarnessMock).toHaveBeenCalledWith(expect.objectContaining({ slug: 'team-open-code', name: 'Team OpenCode' })))
-    await waitFor(() => expect(publishHarnessVersionMock).toHaveBeenCalledWith('h-new', expect.objectContaining({
-      version: '1.0.0',
-      manifest: expect.objectContaining({ format: 'agent' }),
-    })))
+    expect(createHarnessMock.mock.calls[0][0].initial_version).toEqual(expect.objectContaining({
+      version: '1.0.0', manifest: expect.objectContaining({ format: 'agent' }),
+    }))
+    expect(publishHarnessVersionMock).not.toHaveBeenCalled()
+  })
+
+  it('selects creation targets and sends the uploaded file in one atomic request', async () => {
+    renderWithProviders(<Harnesses />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /new harness/i }))
+    const dialog = await screen.findByRole('dialog', { name: /create harness/i })
+    fireEvent.change(within(dialog).getByLabelText(/^name$/i), { target: { value: 'Portable review' } })
+    fireEvent.change(within(dialog).getByLabelText(/^slug$/i), { target: { value: 'portable-review' } })
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Claude' }))
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Pi' }))
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Codex' }))
+    fireEvent.change(within(dialog).getByLabelText(/upload files/i), { target: { files: [new File(['# Review contracts'], 'review.md', { type: 'text/markdown' })] } })
+    await within(dialog).findByText(/review.md ·/)
+    await user.click(within(dialog).getByRole('button', { name: /^create$/i }))
+    await waitFor(() => expect(createHarnessMock).toHaveBeenCalledTimes(1))
+    const initial = createHarnessMock.mock.calls[0][0].initial_version
+    expect(initial.manifest.targets).toEqual(['pi', 'codex'])
+    expect(initial.manifest.components[0].content).toBe('# Review contracts')
+    expect(publishHarnessVersionMock).not.toHaveBeenCalled()
+  })
+
+  it('retains an upload when the server rejects it instead of reporting partial creation', async () => {
+    createHarnessMock.mockRejectedValueOnce(new Error('secret_scan_failed'))
+    renderWithProviders(<Harnesses />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /new harness/i }))
+    const dialog = await screen.findByRole('dialog', { name: /create harness/i })
+    fireEvent.change(within(dialog).getByLabelText(/^name$/i), { target: { value: 'Review' } })
+    fireEvent.change(within(dialog).getByLabelText(/^slug$/i), { target: { value: 'review' } })
+    fireEvent.change(within(dialog).getByLabelText(/upload files/i), { target: { files: [new File(['# Review'], 'review.md', { type: 'text/markdown' })] } })
+    await within(dialog).findByText(/review.md ·/)
+    await user.click(within(dialog).getByRole('button', { name: /^create$/i }))
+    expect(await within(dialog).findByText(/No se guardó la versión ni el archivo/)).toBeInTheDocument()
+    expect((within(dialog).getByLabelText(/manifest json preview/i) as HTMLTextAreaElement).value).toContain('# Review')
+    expect(publishHarnessVersionMock).not.toHaveBeenCalled()
+  })
+
+  it('requires a target before creating a harness with an initial version', async () => {
+    renderWithProviders(<Harnesses />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /new harness/i }))
+    const dialog = await screen.findByRole('dialog', { name: /create harness/i })
+    fireEvent.change(within(dialog).getByLabelText(/^name$/i), { target: { value: 'Review' } })
+    fireEvent.change(within(dialog).getByLabelText(/^slug$/i), { target: { value: 'review' } })
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Claude' }))
+    await user.click(within(dialog).getByRole('button', { name: /^create$/i }))
+    expect(await within(dialog).findByText('Select at least one target.')).toBeInTheDocument()
+    expect(createHarnessMock).not.toHaveBeenCalled()
   })
 
   it('requires explicit approval before downloading a manifest', async () => {

@@ -810,6 +810,21 @@ export interface HarnessVersionSummary {
 }
 
 export type HarnessFormat = 'agent' | 'skill' | 'command' | 'hook' | 'output_style' | 'claude_code_plugin' | 'theme'
+export interface AgentRuntimeComponent {
+  id: string
+  kind: 'instructions' | 'skill' | 'script' | 'plugin' | 'extension' | 'prompt_template' | 'mcp'
+  enabled?: boolean
+  tools?: string[]
+  files?: Record<string, string>
+  server?: { command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string> }
+}
+export interface AgentRuntimeConfig {
+  nexusmind_profile?: string
+  acknowledge_executable?: boolean
+  harnesses?: { id: string; version: string; manifest_hash: string; components: string[] }[]
+  components?: AgentRuntimeComponent[]
+}
+
 export type HarnessComponentKind = 'file' | 'folder' | 'plugin_marketplace' | 'theme_json'
 
 export interface HarnessOwner {
@@ -839,7 +854,7 @@ export interface HarnessManifestComponent {
 
 export interface HarnessManifest {
   schema_version: '1.1'
-  targets: Array<'claude' | 'codex' | 'cursor'>
+  targets: Array<'claude' | 'codex' | 'cursor' | 'pi'>
   format: HarnessFormat
   components: HarnessManifestComponent[]
   provenance: { source: string }
@@ -864,6 +879,7 @@ export interface Harness {
 }
 
 export interface CreateHarnessRequest {
+  initial_version?: PublishHarnessVersionRequest
   slug: string
   name: string
   description?: string
