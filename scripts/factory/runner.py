@@ -44,18 +44,26 @@ def inside(path, roots):
     return resolved
 
 
-def git(args, cwd, timeout=60, binary=False, input_data=None, allowed_codes=(0,), credentials=None):
+def git(args, cwd, timeout=60, binary=False, input_data=None, allowed_codes=(0,), credentials=None, http_headers=None):
     # Never inherit GIT_CONFIG, SSH commands, access tokens, hooks or user filters.
     # Empty HOME prevents reading user git configuration. Network fetches may use
     # only an explicit operator-owned, host-bound source read credential profile.
     with tempfile.TemporaryDirectory(prefix="nexusmind-git-home-") as home:
         env = {"PATH": os.defpath, "HOME": home, "LANG": "C", "GIT_CONFIG_NOSYSTEM": "1",
                "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_GLOBAL": os.devnull}
+        settings = []
         if credentials:
             host, username, token = credentials
             basic = base64.b64encode((username + ':' + token).encode()).decode()
-            env.update({'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'http.https://' + host + '/.extraHeader',
-                        'GIT_CONFIG_VALUE_0': 'Authorization: Basic ' + basic})
+            settings.append(('http.https://' + host + '/.extraHeader', 'Authorization: Basic ' + basic))
+        if http_headers:
+            origin, headers = http_headers
+            settings.extend(('http.' + origin.rstrip('/') + '/.extraHeader', value) for value in headers)
+        if settings:
+            env['GIT_CONFIG_COUNT'] = str(len(settings))
+            for index, (key, value) in enumerate(settings):
+                env['GIT_CONFIG_KEY_' + str(index)] = key
+                env['GIT_CONFIG_VALUE_' + str(index)] = value
         result = subprocess.run(
             ["git", "-c", "core.hooksPath=" + os.devnull, "-c", "protocol.ext.allow=never",
              "-c", "protocol.file.allow=always", *args],
@@ -136,8 +144,8 @@ def safe_id(value):
     return isinstance(value, str) and 0 < len(value) <= 100 and all(c.isascii() and (c.isalnum() or c in "-_") for c in value)
 
 
-def fetch_source(repo, destination, config, workspace_id, roots):
-    """Fetch only a confirmed HTTPS remote/branch, using explicit read credentials."""
+def fetch_source(repo, destination, config, workspace_id, roots, proxy=None):
+    """Read a confirmed branch through the backend, or an explicit local profile."""
     remote = urllib.parse.urlsplit(repo['remote'])
     hosts = config.get('source_hosts', ['github.com'])
     if (not isinstance(hosts, list) or remote.scheme != 'https' or not remote.hostname or remote.hostname not in hosts
@@ -160,14 +168,21 @@ def fetch_source(repo, destination, config, workspace_id, roots):
                 or any(c in value['username'] + value['token'] for c in '\r\n')):
             raise ValueError('Invalid source read credential profile')
         credentials = (value['host'], value['username'], value['token'])
+    target = repo['remote']
+    headers = None
+    if not filename:
+        if not proxy:
+            raise ValueError('Source refresh requires the authenticated backend transport')
+        target = proxy['url']
+        headers = (target, proxy['headers'])
     try:
         git(['-c', 'http.followRedirects=false', '-c', 'protocol.file.allow=never',
-             'fetch', '--no-tags', '--no-recurse-submodules', '--', repo['remote'], 'refs/heads/' + branch],
-            destination, timeout=60, credentials=credentials)
+             'fetch', '--depth=1', '--no-tags', '--no-recurse-submodules', '--', target, 'refs/heads/' + branch],
+            destination, timeout=60, credentials=credentials, http_headers=headers)
         return git(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], destination)
     except (ValueError, subprocess.TimeoutExpired):
         raise ValueError('No se pudieron actualizar las fuentes de ' + repo['path'] +
-                         '; verifica la rama, conectividad y el perfil de lectura Git del workspace. No se usará el commit antiguo.') from None
+                         '; verifica la rama y el acceso GitHub autorizado en el backend (o el perfil local si lo seleccionaste). No se usará el commit antiguo.') from None
 
 
 def prepare(job, roots, state_dir, config=None, heartbeat=lambda: None):
@@ -187,6 +202,10 @@ def prepare(job, roots, state_dir, config=None, heartbeat=lambda: None):
     if mode.st_uid != os.getuid() or mode.st_mode & 0o077:
         raise ValueError("Runner state directory must be private (0700)")
     target = state_dir / job["run_id"]
+    # A failed first preparation leaves only its completion journal; after that
+    # journal is acknowledged, an empty directory is safe to prepare again.
+    if target.is_dir() and not target.is_symlink() and not any(target.iterdir()):
+        target.rmdir()
     if target.exists() or target.is_symlink():
         manifest_path = target / 'checkout-manifest.json'
         if target.is_symlink() or not manifest_path.is_file():
@@ -205,7 +224,7 @@ def prepare(job, roots, state_dir, config=None, heartbeat=lambda: None):
     stage = Path(tempfile.mkdtemp(prefix="prepare-", dir=state_dir))
     commits = {}
     try:
-        for repo in workspace["repositories"]:
+        for index, repo in enumerate(workspace["repositories"]):
             heartbeat()
             relative = Path(repo["path"])
             if relative.is_absolute() or ".." in relative.parts or not relative.parts:
@@ -224,7 +243,16 @@ def prepare(job, roots, state_dir, config=None, heartbeat=lambda: None):
             if refresh:
                 if git(['config', '--get', 'remote.origin.url'], source) != repo['remote']:
                     raise ValueError('Source remote differs from the confirmed inventory')
-                sha = fetch_source(repo, destination, config, workspace['id'], roots)
+                proxy = None
+                if config.get('api_url') and config.get('runner_token'):
+                    api = API(config['api_url'], config['runner_token'])
+                    if not safe_id(job['step']['id']):
+                        raise ValueError('Invalid source preparation step')
+                    proxy = {'url': api.base + '/v1/factory/runner/runs/' + job['run_id'] +
+                             '/steps/' + job['step']['id'] + '/sources/' + str(index),
+                             'headers': ['Authorization: Bearer ' + config['runner_token'],
+                                         'X-NexusMind-Lease: ' + job['lease_token']]}
+                sha = fetch_source(repo, destination, config, workspace['id'], roots, proxy)
             git(["checkout", "--detach", sha, "--"], destination, 300)
             # Avoid publishing back into the user's source clone by accident.
             git(["remote", "remove", "origin"], destination)
@@ -351,7 +379,7 @@ def tick_locked(config, roots):
     for name in adapters:
         if not safe_id(name): raise ValueError('Invalid adapter name')
         capabilities.append('adapter:' + name)
-    capabilities += ['agent-runtime:v1', 'agent-runtime:v2', 'workspace-sources:v1']
+    capabilities += ['agent-runtime:v1', 'agent-runtime:v2', 'workspace-sources:v1', 'workspace-git-read:v1']
     capabilities += ['executor:' + profile.get('executor', profile.get('harness', profile.get('format', 'claude'))) for profile in adapters.values() if profile.get('kind') == 'agent']
     capabilities += config.get('capabilities', []) + remote_capabilities
     job = api.call('/claim', {'capabilities': capabilities})['job']

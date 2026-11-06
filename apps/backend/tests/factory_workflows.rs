@@ -212,7 +212,7 @@ fn fresh_sources_seal_only_during_initial_fenced_preparation() {
     assert!(execution::approve(&c, &org, &user, &run, "publish", 0).is_err());
     execution::approve(&c, &org, &user, &run, "fix", 0).unwrap();
     assert!(db::claim(&c, &org, &runner, &["adapter:test".into(), "adapter:prepare-workspace".into()], 100).unwrap().is_none());
-    let caps = vec!["adapter:prepare-workspace".into(), "workspace-sources:v1".into()];
+    let caps = vec!["adapter:prepare-workspace".into(), "workspace-sources:v1".into(), "workspace-git-read:v1".into()];
     let job = db::claim(&c, &org, &runner, &caps, 101).unwrap().unwrap();
     assert_eq!(job["step"]["id"], "prepare");
     assert!(db::claim(&c, &org, &runner, &["adapter:test".into()], 102).unwrap().is_none());

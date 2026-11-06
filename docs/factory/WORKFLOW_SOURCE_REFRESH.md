@@ -26,10 +26,12 @@ sin recurrir silenciosamente al commit viejo.
 ## Activación y compatibilidad
 
 1. Actualizar backend y admin primero; no requiere una migración SQL nueva.
-2. Actualizar el runner coordinadamente. Anuncia `workspace-sources:v1`.
+2. Actualizar el runner coordinadamente. Anuncia `workspace-sources:v1` y
+   `workspace-git-read:v1`; las ejecuciones nuevas requieren ambas capacidades.
 3. Redescubrir y confirmar **una vez** el inventario que incluye las ramas. La
    confirmación verifica también la rama; no puede introducir otra no descubierta.
-4. Configurar acceso Git de lectura, si los repositorios son privados.
+4. Verificar que la cuenta `gh` existente en el backend puede leer los repositorios;
+   se reutiliza mediante el transporte acotado descrito abajo. No crear otro token.
 5. Crear una ejecución nueva y comprobar su manifiesto/evento de fuentes fijadas.
 
 Los runs antiguos mantienen su contrato de commits fijados: no se reescriben ni
@@ -51,11 +53,33 @@ admitidos y ramas inválidas. No procesa hooks de Git, submódulos ni código de
 repositorio en el host. Un workflow de este modo necesita una única fase inicial
 `prepare` con adapter `prepare-workspace`.
 
-## Acceso a repositorios privados
+## Acceso a repositorios privados: reutilizar la cuenta existente
 
-El runner no hereda credenciales del usuario, del modelo, de producción ni el token
-de registro del runner para hablar con GitHub. El operador puede proporcionar un
-perfil de lectura explícito en su configuración privada:
+Por defecto se usa la cuenta ya autenticada en el `gh` del backend, autorizada
+para esta organización mediante el permiso operativo existente
+`FACTORY_GITHUB_PUBLISH_ORG_ID`. La lectura no cambia la cuenta de publicación
+seleccionada ni reutiliza silenciosamente otro publicador si ese conector falla.
+No hace falta otro PAT ni copiar el token GitHub al runner.
+
+El runner hace Git smart-HTTP contra un proxy de NexusMind. Su credencial de
+registro se envía exclusivamente a ese origen; el backend no la reenvía a GitHub.
+El backend autentica cada operación con runner/org/run, lease vigente de la
+preparación y un índice del repositorio en el snapshot. Solo ofrece `info/refs`
+para `git-upload-pack` y `git-upload-pack`: no hay push, URL arbitraria ni acceso
+posterior al sellado. Las credenciales GitHub quedan dentro del backend.
+
+Se limitan solicitudes por repositorio/intento, concurrencia, duración y bytes;
+se vuelve a comprobar el lease durante el streaming. No se almacenan bundles en
+el servidor ni se registran headers o cuerpos del protocolo. Se descartan cookies
+y cabeceras del usuario al construir la petición al upstream. Los remotos deben
+seguir perteneciendo al alcance confirmado.
+
+### Alternativa avanzada: perfil local explícito
+
+Solo para un operador que quiera otra conexión de lectura distinta del backend.
+Si se selecciona este perfil y falla, no se cambia de identidad automáticamente.
+El runner no hereda credenciales del usuario, del modelo o de producción: el
+operador debe proporcionar explícitamente el perfil en su configuración privada:
 
 ```json
 {
@@ -85,8 +109,15 @@ usa un host de credenciales por workspace; ampliar a perfiles por host si llega
 un workspace con múltiples proveedores privados.
 
 No se copiaron credenciales ni se amplió ninguna allowlist en Oracle durante la
-implementación. Sin acceso de lectura, la fase se bloqueará con el repositorio y
-la indicación de revisar rama/conectividad/perfil, antes del trabajo de modelos.
+implementación. Sin acceso de lectura en la conexión elegida, la fase se bloqueará
+antes del trabajo de modelos. No se recurre al SHA viejo ni a otra identidad.
+La cuenta existente del backend fue comprobada mediante `git ls-remote` en las
+49 ramas seleccionadas: todas legibles, Accounting master en `5584540` al revisar.
+
+Una primera preparación fallida puede dejar un directorio vacío después de que
+se reconcilia su journal. El runner puede recrear únicamente ese directorio vacío;
+si hay archivos sin manifiesto, conserva todo y exige reconciliación. Esto permite
+reintentar la preparación fresca todavía no sellada sin borrar evidencias.
 
 ## Comprobaciones
 
