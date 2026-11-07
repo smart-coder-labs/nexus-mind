@@ -10,6 +10,7 @@ import { GithubReviewHooks } from './GithubReviewHooks'
 import { RuntimeEditor, type RuntimeDraft } from './RuntimeEditor'
 import { WorkflowConnectorForm } from './WorkflowConnectorForm'
 import { RepositoryInventory } from './RepositoryInventory'
+import { RepoSecrets } from './RepoSecrets'
 import { ExecutionDetail } from './ExecutionDetail'
 import { WorkflowEditor } from './WorkflowEditor'
 import { blockerLabel, emptyRuntime } from './runtime'
@@ -28,6 +29,7 @@ const tabs = [
 ] as const
 const sections = [
   ['repositories', 'Repositorios'],
+  ['secrets', 'Secretos por repositorio'],
   ['agents', 'Agentes y modelos'],
   ['checks', 'Tests y QA'],
   ['services', 'Servicios y entornos'],
@@ -603,6 +605,14 @@ export default function WorkflowsPage({
                     ),
                   )
                 }}
+              />
+            )}
+            {section === 'secrets' && (
+              <RepoSecrets
+                key={workspace.id}
+                workspaceId={workspace.id}
+                repositories={workspace.repositories.map((r) => r.path)}
+                disabled={busy || !writable}
               />
             )}
             {['agents', 'checks', 'services'].includes(section) && (

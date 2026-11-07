@@ -2,6 +2,7 @@ pub mod workflows;
 pub mod workflow_execution;
 pub mod workflow_logs;
 pub mod workflow_runtime;
+pub mod workspace_secrets;
 pub mod github_review_hooks;
 pub mod autonomous_scope;
 pub mod connection;

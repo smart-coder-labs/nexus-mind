@@ -743,3 +743,57 @@ async fn runner_token_cannot_edit_control_plane_and_can_be_revoked() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[tokio::test]
+async fn repo_secrets_are_write_only_encrypted_and_lease_gated() {
+    std::env::set_var("NEXUSMIND_TOKEN_ENCRYPTION_KEY", "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    let app = app("super_user");
+    let cookie = login(&app).await;
+    let (_, r) = request(&app, "POST", "/v1/factory/runners", Some(&cookie), None, Some(json!({"name":"Secrets"}))).await;
+    let token = r["token"].as_str().unwrap();
+    let (_, w) = request(&app, "POST", "/v1/factory/workspaces", Some(&cookie), None,
+        Some(json!({"runner_id":r["id"],"name":"Secrets","root_path":"/work/secrets"}))).await;
+    let id = w["id"].as_str().unwrap();
+    let repo = json!({"path":"api","remote":"https://github.com/example/api.git","head_sha":"a".repeat(40),"writable":false});
+    let (status, _) = request(&app, "POST", &format!("/v1/factory/runner/workspaces/{id}/inventory"), None, Some(token),
+        Some(json!({"repositories":[repo.clone()]}))).await;
+    assert!(status.is_success(), "{status}");
+    let (_, catalog) = request(&app, "GET", "/v1/factory/workflow-catalog", Some(&cookie), None, None).await;
+    let revision = catalog["workspaces"].as_array().unwrap().iter().find(|x| x["id"] == id).unwrap()["inventory_revision"].clone();
+    let (status, _) = request(&app, "POST", &format!("/v1/factory/workspaces/{id}/confirm"), Some(&cookie), None,
+        Some(json!({"revision":revision,"repositories":[repo]}))).await;
+    assert!(status.is_success(), "{status}");
+
+    let secrets = format!("/v1/factory/workspaces/{id}/repo-secrets");
+    let npmrc = "@kasymir:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=ghp_secretvalue123\n";
+    // A runner token is not an operator.
+    let (status, _) = request(&app, "PUT", &secrets, None, Some(token), Some(json!({"repository":"api","kind":"npmrc","content":npmrc}))).await;
+    assert!(status.is_client_error());
+    // Only inventory repositories, only allowed npm keys.
+    let (status, body) = request(&app, "PUT", &secrets, Some(&cookie), None, Some(json!({"repository":"web","kind":"env","content":"A=1"}))).await;
+    assert_eq!((status, body["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("repo_secret_repository_invalid")));
+    let (status, body) = request(&app, "PUT", &secrets, Some(&cookie), None, Some(json!({"repository":"api","kind":"npmrc","content":"script-shell=/bin/sh"}))).await;
+    assert_eq!((status, body["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("repo_secret_npmrc_key_not_allowed")));
+
+    let (status, _) = request(&app, "PUT", &secrets, Some(&cookie), None, Some(json!({"repository":"api","kind":"npmrc","content":npmrc}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, listed) = request(&app, "PUT", &secrets, Some(&cookie), None, Some(json!({"repository":"api","kind":"env","content":"DB_PASSWORD=supersecret\nPORT=3000"}))).await;
+    assert_eq!(status, StatusCode::OK);
+    // Write-only: names and hosts are visible, values never are.
+    let text = listed.to_string();
+    assert!(!text.contains("ghp_secretvalue123") && !text.contains("supersecret"), "{text}");
+    assert!(text.contains("DB_PASSWORD") && text.contains("npm.pkg.github.com") && text.contains("@kasymir"));
+    assert_eq!(listed["encryption_configured"], true);
+
+    // Plaintext only with a live lease for this runner.
+    let (status, body) = request(&app, "POST", "/v1/factory/runner/runs/unknown/steps/verify/repo-secrets", None, Some(token),
+        Some(json!({"lease_token":"forged"}))).await;
+    assert_eq!((status, body["code"].as_str()), (StatusCode::CONFLICT, Some("lease_conflict")));
+    let (status, _) = request(&app, "POST", "/v1/factory/runner/runs/unknown/steps/verify/repo-secrets", Some(&cookie), None,
+        Some(json!({"lease_token":"forged"}))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, listed) = request(&app, "DELETE", &format!("{secrets}?repository=api&kind=env"), Some(&cookie), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["secrets"].as_array().unwrap().len(), 1);
+}

@@ -1824,6 +1824,28 @@ export class NexusMindClient {
       body: JSON.stringify({ revision, config }),
     })
   }
+  listRepoSecrets(workspace: string): Promise<import('../pages/factory/workflows/RepoSecrets').RepoSecretList> {
+    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/repo-secrets`)
+  }
+  saveRepoSecret(
+    workspace: string,
+    repository: string,
+    kind: import('../pages/factory/workflows/RepoSecrets').RepoSecretKind,
+    content: string,
+  ): Promise<import('../pages/factory/workflows/RepoSecrets').RepoSecretList> {
+    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/repo-secrets`, {
+      method: 'PUT',
+      body: JSON.stringify({ repository, kind, content }),
+    })
+  }
+  deleteRepoSecret(
+    workspace: string,
+    repository: string,
+    kind: import('../pages/factory/workflows/RepoSecrets').RepoSecretKind,
+  ): Promise<import('../pages/factory/workflows/RepoSecrets').RepoSecretList> {
+    const qs = new URLSearchParams({ repository, kind })
+    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/repo-secrets?${qs}`, { method: 'DELETE' })
+  }
   getFactoryWorkflowRun(id: string): Promise<WorkflowRun> {
     return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}`)
   }

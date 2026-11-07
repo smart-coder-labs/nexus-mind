@@ -30,6 +30,27 @@ class API:
         return {'active': True}
 
 
+class RepoSecretsTests(unittest.TestCase):
+    def test_env_is_written_privately_inside_the_staged_copy_and_values_are_redacted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work=Path(directory);(work/'api').mkdir()
+            repos={'api':{'env':'DATABASE_URL=postgres://u:secretpass@db/x\n# c\nTOKEN="abcd1234"','npmrc':'//npm.pkg.github.com/:_authToken=ghp_fixture123\n'}}
+            execution.write_env_files(work,repos)
+            env=work/'api'/'.env'
+            self.assertEqual(env.stat().st_mode & 0o777,0o600)
+            self.assertIn('DATABASE_URL=',env.read_text())
+            self.assertTrue(execution.ignored_source('.env'),'never published')
+            values=execution.secret_values(repos)
+            for value in ('postgres://u:secretpass@db/x','abcd1234','ghp_fixture123'):self.assertIn(value,values)
+            self.assertNotIn('ghp_fixture123',execution.redact('token ghp_fixture123 ok',values))
+            with self.assertRaises(ValueError):execution.write_env_files(work,{'../escape':{'env':'A=1'}})
+    def test_older_backend_without_repo_secrets_is_tolerated(self):
+        api=Mock();api.call.side_effect=execution.ControlPlaneError('POST','/repo-secrets','rid',status=404)
+        self.assertEqual(execution.repo_secrets(api,{'run_id':'r','step':{'id':'s'},'lease_token':'t'}),{})
+        api.call.side_effect=execution.ControlPlaneError('POST','/repo-secrets','rid',status=409)
+        with self.assertRaises(execution.ControlPlaneError):execution.repo_secrets(api,{'run_id':'r','step':{'id':'s'},'lease_token':'t'})
+
+
 class ExecutionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
