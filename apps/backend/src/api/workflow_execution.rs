@@ -247,55 +247,41 @@ pub async fn lease(
     .map_err(fail)?;
     Ok(Json(json!({"active":true})))
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Event {
-    lease_token: String,
-    kind: String,
-    message: String,
-}
 pub async fn event(
     State(store): State<SqliteStore>,
     headers: HeaderMap,
     Path((run, step)): Path<(String, String)>,
-    AppJson(b): AppJson<Event>,
+    AppJson(b): AppJson<crate::db::workflow_logs::Ingest>,
 ) -> Response {
-    if ![
-        "agent.started",
-        "agent.tool",
-        "command.started",
-        "command.finished",
-        "service.ready",
-        "log.chunk",
-    ]
-    .contains(&b.kind.as_str())
-        || b.message.len() > 4096
-    {
-        return Err(fail(anyhow::anyhow!("invalid_event")));
-    }
     let handle = store.conn();
     let c = handle.lock().map_err(|_| locked())?;
     let (runner, org) = runner_auth(&c, &headers)?;
-    execution::lease(
-        &c,
-        &org,
-        &runner,
-        &run,
-        &step,
-        &b.lease_token,
-        chrono::Utc::now().timestamp(),
-    )
-    .map_err(fail)?;
-    let count: i64 = c
-        .query_row(
-            "SELECT count(*) FROM factory_workflow_events WHERE run_id=?1",
-            [&run],
-            |r| r.get(0),
+    let request_id = crate::api::middleware::request_id(&headers);
+    Ok(Json(
+        crate::db::workflow_logs::ingest(
+            &c,
+            &org,
+            &runner,
+            &run,
+            &step,
+            &b,
+            request_id.as_deref(),
+            chrono::Utc::now().timestamp(),
         )
-        .map_err(|e| fail(e.into()))?;
-    if count > 3000 {
-        return Err(fail(anyhow::anyhow!("event_quota")));
-    }
-    workflows::event(&c, &run, Some(&step), &b.kind, json!({"message":b.message})).map_err(fail)?;
-    Ok(Json(json!({"recorded":true})))
+        .map_err(fail)?,
+    ))
+}
+/// Cursor-paginated history of one run, scoped to the caller's organization.
+pub async fn run_events(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(run): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<crate::db::workflow_logs::Query>,
+) -> Response {
+    let handle = store.conn();
+    let c = handle.lock().map_err(|_| locked())?;
+    require_explicit_permission(&c, &auth, None, "factory_policy:read")?;
+    Ok(Json(
+        crate::db::workflow_logs::list(&c, &auth.org_id, &run, &q).map_err(fail)?,
+    ))
 }

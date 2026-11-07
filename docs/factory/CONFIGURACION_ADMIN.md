@@ -34,7 +34,7 @@ Los borradores de perfiles se conservan **solo en memoria de la página** al cam
 
 ## Preparación local obligatoria
 
-El admin no introduce credenciales en Oracle ni autoriza imágenes arbitrarias. El workflow sí descarga automáticamente el SDK Node registrado por el operador y prepara dependencias verificadas; el usuario no tiene que instalarlo a mano. Al actualizar el programa del runner, incluye `runtime_settings.py`, `node_environment.py` y `control_plane.py` junto a `runner.py`, `execution.py`, `delivery.py` y `container_entry.py`; conserva su archivo de configuración y estado privados. No basta con actualizar el backend.
+El admin no introduce credenciales en Oracle ni autoriza imágenes arbitrarias. El workflow sí descarga automáticamente el SDK Node registrado por el operador y prepara dependencias verificadas; el usuario no tiene que instalarlo a mano. Al actualizar el programa del runner, incluye `runtime_settings.py`, `node_environment.py`, `control_plane.py`, `log_stream.py` e `infra_incidents.py` junto a `runner.py`, `execution.py`, `delivery.py` y `container_entry.py`; conserva su archivo de configuración y estado privados. No basta con actualizar el backend.
 
 El operador debe preparar una vez los siguientes campos en el archivo privado del runner, conservando su token, raíces y estado existentes:
 

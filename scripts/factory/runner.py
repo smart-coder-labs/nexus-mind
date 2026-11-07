@@ -11,6 +11,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -294,6 +295,9 @@ class API:
         self.base = base_url.rstrip("/")
         self.token = token
         self.opener = urllib.request.build_opener(NoRedirect)
+        # Transient failures seen during the current step (retried or not),
+        # reported afterwards as `runner.connectivity`. Bounded.
+        self.incidents = []
 
     def call(self, path, data=None, timeout=30):
         method = 'GET' if data is None else 'POST'
@@ -303,6 +307,10 @@ class API:
             try:
                 return self._send(path, method, body, timeout)
             except ControlPlaneError as error:
+                if error.transient and len(self.incidents) < 50:
+                    self.incidents.append({'at': int(time.time()), 'route': error.route, 'status': error.status,
+                                           'code': error.backend_code or error.reason or None,
+                                           'request_id': error.request_id})
                 if not error.transient or attempt == len(delays):
                     raise
                 time.sleep(delays[attempt])
@@ -348,6 +356,43 @@ def reconcile(config, api):
                 cleanup(config, manifest.parent.name, state)
 
 
+def prune_checkouts(config, api, now=None):
+    """Remove disposable run checkouts of finished runs after a retention period.
+    Only runner-owned directories with a matching ownership marker, whose run the
+    backend reports as succeeded/cancelled, with no pending completion or live
+    services. Unknown or blocked runs are always kept (they may be retried)."""
+    now = now or time.time()
+    state = Path(config['state_dir'])
+    marker = state / '.checkout-retention'
+    if not state.is_dir():
+        return []
+    if marker.exists() and now - marker.stat().st_mtime < 3600:
+        return []
+    days = config.get('checkout_retention_days', 7)
+    if not isinstance(days, (int, float)) or days <= 0:
+        return []
+    manifests = [m for m in state.glob('*/checkout-manifest.json') if now - m.stat().st_mtime > days * 86400]
+    statuses = {r['id']: r['status'] for r in api.call('/runs').get('runs', [])} if manifests else {}
+    removed = []
+    for manifest in manifests:
+        root = manifest.parent
+        if root.is_symlink() or root.parent != state or statuses.get(root.name) not in ('succeeded', 'cancelled'):
+            continue
+        if any((root / name).exists() for name in ('pending-completion.json', 'services.json', 'application-images.json')):
+            continue
+        try:
+            owned = json.loads(manifest.read_text()).get('run_id') == root.name
+        except ValueError:
+            owned = False
+        if owned:
+            shutil.rmtree(root)
+            removed.append(root.name)
+    marker.touch()
+    if removed:
+        print('Removed ' + str(len(removed)) + ' finished run checkout(s) past retention', flush=True)
+    return removed
+
+
 def exception_diagnostic(error):
     """Report system failure kinds without exposing commands, paths or secrets."""
     if isinstance(error, (ControlPlaneError, urllib.error.HTTPError)):
@@ -377,6 +422,32 @@ def exception_diagnostic(error):
     return {'error': code, 'exception_type': type(error).__name__, 'solution': solution, 'hold': True}
 
 
+def report_event(api, job, kind, message, severity, data):
+    """Best-effort diagnostic event; never replaces the step's own outcome."""
+    from execution import send_event
+    try:
+        send_event(api, job, kind, message, {'source': 'runner', 'severity': severity, 'data': data})
+    except OSError:
+        pass
+
+
+def report_connectivity(config, api, job):
+    """Summarize control-plane failures seen during this step, with their request
+    ids, and attach operator-collected infrastructure incidents of that window."""
+    if not api.incidents:
+        return
+    incidents = api.incidents
+    first, last = incidents[0], incidents[-1]
+    report_event(api, job, 'runner.connectivity',
+           'Backend no disponible ' + str(len(incidents)) + ' veces entre ' + time.strftime('%H:%M:%S', time.gmtime(first['at'])) + ' y ' + time.strftime('%H:%M:%S', time.gmtime(last['at'])) + ' UTC',
+           'warning', {'failures': len(incidents), 'first_failure_at': first['at'], 'last_failure_at': last['at'],
+                       'last_status': last['status'], 'last_code': last['code'], 'last_route': last['route'],
+                       'request_ids': [i['request_id'] for i in incidents[-5:]]})
+    from infra_incidents import collect
+    for incident in collect(config.get('infra_collector'), first['at'] - 300, last['at'] + 300):
+        report_event(api, job, 'infra.incident', incident['reason'] + ': ' + incident['object'], 'warning', incident)
+
+
 def tick_locked(config, roots):
     from execution import isolated_adapter, cleanup, upload, WorkspaceOutputError
     from delivery import services, validate_services, gate, publish
@@ -386,6 +457,7 @@ def tick_locked(config, roots):
             cleanup(config,manifest.parent.name,config['state_dir'])
     api = API(config['api_url'], config['runner_token'])
     reconcile(config, api)
+    prune_checkouts(config, api)
     # Polling has its own persisted due times and scoped connectors; no intake
     # credential is ever downloaded to the runner.
     api.call('/poll-intakes', {})
@@ -418,10 +490,13 @@ def tick_locked(config, roots):
         return
     evidence, success = [], False
     outcome = {'input_revision': job['execution']['revision'], 'heads': job['execution']['heads'], 'output': {}, 'cost_usd': 0}
+    api.incidents = []
+    job['_trace'] = {'stage': 'configuration', 'started_at': int(time.time())}
     try:
         config=for_job(config,job,roots,private_file)
         adapter = job['step']['adapter']
         if adapter == 'prepare-workspace' and job['step']['kind'] == 'prepare':
+            job['_trace']['stage'] = 'prepare_sources'
             validate_environment_references(config, job['snapshot']['workspace']['id'], roots)
             started = time.monotonic()
             def source_heartbeat():
@@ -437,13 +512,17 @@ def tick_locked(config, roots):
                 outcome['output'] = {'sources_refreshed': True}
             success = True
         elif adapter == 'integrated-environment':
+            job['_trace']['stage'] = 'integrated_environment'
             success, evidence, outcome = services(config, job, roots, api, git, private_file)
         elif adapter == 'evidence-gate':
+            job['_trace']['stage'] = 'evidence_gate'
             success, evidence, outcome = gate(job, api)
         elif adapter == 'policy-publisher':
+            job['_trace']['stage'] = 'publication'
             success, evidence, outcome = publish(config, job, api, git)
         else:
             profile = config.get('adapters',{})[adapter]
+            job['_trace']['stage'] = 'isolated_adapter'
             if job['step']['write_repositories']:
                 cleanup(config, job['run_id'], config['state_dir'])
             if profile.get('network') == 'services': validate_services(config, job)
@@ -465,7 +544,14 @@ def tick_locked(config, roots):
         outcome['output'] = (error.details if isinstance(error, WorkspaceOutputError)
                              else {'error': str(error)[:1000], 'hold': True} if isinstance(error, ValueError)
                              else exception_diagnostic(error))
+        # Structured cause: where it failed and, for coded errors, which rule.
+        outcome['output']['stage'] = job['_trace']['stage']
+        if isinstance(error, ValueError) and error.args and re.fullmatch(r'[a-z][a-z0-9_]{2,80}', str(error.args[0])):
+            outcome['output']['code'] = error.args[0]
         print('Workflow step blocked: ' + json.dumps(outcome['output']), flush=True)
+        report_event(api, job, 'runner.diagnostic', outcome['output'].get('error', 'error'), 'error',
+               {k: v for k, v in outcome['output'].items() if k in ('error', 'code', 'stage', 'exception_type', 'http_status', 'request', 'request_id', 'retryable', 'backend_code', 'path')})
+    report_connectivity(config, api, job)
     body = {'lease_token': job['lease_token'], 'success': success, 'evidence': evidence, 'outcome': outcome}
     journal = Path(config['state_dir']) / job['run_id'] / 'pending-completion.json'
     journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -1,7 +1,9 @@
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
 import { RawJson } from '../shared/ui'
-import type { WorkflowRun } from './types'
+import { useState } from 'react'
+import { StepObservability } from './StepObservability'
+import type { WorkflowEventPage, WorkflowEventQuery, WorkflowRun } from './types'
 const status = (s: string) =>
   (
     ({
@@ -36,13 +38,18 @@ export function ExecutionDetail({
   control,
   approve,
   artifact,
+  events,
 }: {
   run: WorkflowRun
   disabled: boolean
   control: (action: 'cancel' | 'retry' | 'resume', step?: string) => void
   approve: (action: string, revision: number) => void
   artifact: (id: string) => void
+  /** Paginated history; when present each phase offers its console and transcript. */
+  events?: (q: WorkflowEventQuery) => Promise<WorkflowEventPage>
 }) {
+  const [opened, setOpened] = useState<string | null>(null)
+  const live = ['queued', 'running', 'blocked'].includes(run.status)
   return (
     <section aria-label="Detalle de ejecución" className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -101,6 +108,29 @@ export function ExecutionDetail({
                 </p>
               )}
               <StepFailure result={state?.result} />
+              {events && (state?.attempt ?? 0) > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="mt-2"
+                  aria-expanded={opened === step.id}
+                  onClick={() => setOpened(opened === step.id ? null : step.id)}
+                >
+                  {opened === step.id ? 'Ocultar ejecución' : 'Ver ejecución: conversación, consola y artefactos'}
+                </Button>
+              )}
+              {events && opened === step.id && (
+                <StepObservability
+                  runId={run.id}
+                  stepId={step.id}
+                  agent={!!role}
+                  state={state}
+                  live={live}
+                  artifacts={run.artifacts ?? []}
+                  openArtifact={artifact}
+                  load={events}
+                />
+              )}
               {state?.result != null && (
                 <RawJson label="Ver resultado y evidencia" value={state.result} />
               )}

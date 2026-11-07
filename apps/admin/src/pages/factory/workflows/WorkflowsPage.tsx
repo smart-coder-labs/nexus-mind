@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowRight, CheckCircle2, Circle, GitPullRequest, Play, Server, X } from 'lucide-react'
@@ -13,7 +13,7 @@ import { RepositoryInventory } from './RepositoryInventory'
 import { ExecutionDetail } from './ExecutionDetail'
 import { WorkflowEditor } from './WorkflowEditor'
 import { blockerLabel, emptyRuntime } from './runtime'
-import { deliveryWorkflow, preparationWorkflow, type WorkflowDefinition } from './types'
+import { deliveryWorkflow, preparationWorkflow, type WorkflowDefinition, type WorkflowEventQuery } from './types'
 
 const select =
   'h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring'
@@ -106,6 +106,13 @@ export default function WorkflowsPage({
   })
   const backendPublisherReady =
     publicationIdentity.data?.enabled && !!publicationIdentity.data?.login
+  // Stable across the detail's 2.5 s refetches so an open console keeps its cursor.
+  const clientRef = useRef(client)
+  clientRef.current = client
+  const loadEvents = useCallback(
+    (q: WorkflowEventQuery) => clientRef.current.getWorkflowRunEvents(runId, q),
+    [runId],
+  )
   const run = useQuery({
     queryKey: ['workflow-run', runId],
     queryFn: () => client.getFactoryWorkflowRun(runId),
@@ -419,6 +426,7 @@ export default function WorkflowsPage({
               artifact={(id) => {
                 void perform(async () => setOpenedArtifact(await client.getWorkflowArtifact(id)))
               }}
+              events={loadEvents}
             />
           )}
         </div>

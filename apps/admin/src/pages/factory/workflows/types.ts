@@ -79,6 +79,42 @@ export type WorkflowRun = WorkflowRunSummary & {
     created_at: string
   }[]
 }
+export type WorkflowEvent = {
+  seq: number
+  step_id: string | null
+  kind: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+export type WorkflowEventQuery = {
+  after?: number
+  before?: number
+  limit?: number
+  step?: string
+  attempt?: number
+  class?: 'logs' | 'control'
+}
+export type WorkflowEventPage = {
+  events: WorkflowEvent[]
+  has_older: boolean
+  has_newer: boolean
+  coverage: {
+    log_events: number
+    log_limit: number
+    control_events: number
+    control_limit: number
+    truncated: string[]
+    pruned_events: number
+    dropped_events: number
+    gap_bytes: number
+    complete: boolean
+  }
+  context: {
+    run_created_at: string
+    backend_started_at: string
+    runner: { name: string; last_seen: string | null; revoked: boolean } | null
+  }
+}
 export type WorkflowIntake = {
   id: string
   definition_id: string

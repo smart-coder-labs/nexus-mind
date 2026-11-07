@@ -72,6 +72,26 @@ async fn main() -> anyhow::Result<()> {
         let _handle = backup::job::spawn_background_job(pool, store.conn(), job_cfg);
     }
 
+    // Bulky workflow output of finished runs is removed after the retention
+    // period; results, evidence and artifacts are kept.
+    db::workflow_logs::mark_boot();
+    let retention_conn = store.conn();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            ticker.tick().await;
+            let pruned = match retention_conn.lock() {
+                Ok(c) => db::workflow_logs::prune(&c, db::workflow_logs::retention_days()),
+                Err(_) => continue,
+            };
+            match pruned {
+                Ok(n) if n > 0 => tracing::info!("Pruned {n} workflow log event(s) past retention"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Workflow log retention failed: {e:#}"),
+            }
+        }
+    });
+
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     tracing::info!("NexusMind listening on {addr}");
 

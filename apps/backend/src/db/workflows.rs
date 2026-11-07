@@ -431,7 +431,7 @@ pub fn run_detail(conn: &Connection, org: &str, run: &str) -> Result<Value> {
         "SELECT step_id,status,attempt,result_json FROM factory_workflow_steps WHERE run_id=?1",
     )?;
     let steps=s.query_map([run],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u32>(2)?,r.get::<_,Option<String>>(3)?)))?.map(|r|{let(id,status,attempt,result)=r?;Ok(json!({"id":id,"status":status,"attempt":attempt,"result":result.map(parse).transpose()?}))}).collect::<Result<Vec<Value>>>()?;
-    let mut s=conn.prepare("SELECT seq,step_id,kind,payload_json,created_at FROM factory_workflow_events WHERE run_id=?1 ORDER BY seq DESC LIMIT 1000")?;
+    let mut s=conn.prepare("SELECT seq,step_id,kind,payload_json,created_at FROM factory_workflow_events WHERE run_id=?1 AND kind NOT IN ('log.chunk','service.log','dependency.log') ORDER BY seq DESC LIMIT 1000")?;
     let events=s.query_map([run],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)))?.map(|r|{let(seq,step,kind,payload,at)=r?;Ok(json!({"seq":seq,"step_id":step,"kind":kind,"payload":parse(payload)?,"created_at":at}))}).collect::<Result<Vec<Value>>>()?;
     Ok(
         json!({"id":run,"status":row.0,"task":parse(row.1)?,"snapshot":parse(row.2)?,"source_key":row.3,"steps":steps,"events":events,"execution":super::workflow_execution::metadata(conn,run)?,"artifacts":super::workflow_execution::artifacts(conn,run)?}),

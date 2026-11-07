@@ -1,8 +1,9 @@
 # Plan: ejecución de workflows observable de principio a fin
 
-**Estado: plan, implementación parcial previa.** Ya existen diagnósticos tipados de
-excepciones del runner (`exception_diagnostic`, `c46da57`) y el contrato de eventos
-corregido en preparación de dependencias (`dcf9842`). Las entregas 0–5 siguen pendientes.
+**Estado: entregas 0–5 implementadas.** La 0 está en producción (`6411373`); las
+1–5 están en la rama `feat/workflow-observability-1-5` (ver «Implementación de las
+entregas 1–5»). **Sin migración:** todo se apoya en `factory_workflow_events`
+(`seq` + `payload_json`) y los artefactos existentes.
 **Base inspeccionada:** main `e3716af`; revisado de nuevo contra main `17fc776`
 tras el bloqueo `adapter_os_error_HTTPError` (ver «Incidente que motivó la entrega 0»).
 
@@ -237,6 +238,63 @@ u OOM y un reinicio del backend sin confundirlos con errores de tests.
   No operar el migration runner.
 - Desplegar backend compatible, admin y runner de forma coordinada. Activar primero
   con una ejecución de prueba aislada, no reintentar automáticamente runs reales.
+
+## Implementación de las entregas 1–5
+
+Decisión principal: **ninguna tabla ni índice nuevos.** La tabla de eventos ya tiene
+secuencia de ingestión (`seq`, índice `(run_id, seq)`) y un payload JSON libre, así
+que no hizo falta que el usuario aplicara una migración de producción.
+
+- **1. Contrato e historial** (`db/workflow_logs.rs`). `POST …/events` acepta campos
+  opcionales `source`, `stream`, `severity`, `repository`, `offset`, `origin_ts` y
+  `data`; el backend añade `attempt`, `input_revision`, `request_id` y `received_at`
+  a partir del lease y la cabecera, nunca del productor. Un reenvío con el mismo
+  `offset` se descarta (ventana de los últimos 400 eventos). Presupuestos separados:
+  6000 eventos de salida (`log.chunk`, `service.log`, `dependency.log`) y 3000 de
+  control por run; al agotarse se deja un marcador `capture.truncated`.
+  `GET /v1/factory/workflow-runs/:id/events` pagina por cursor (`after`, `before`,
+  `limit`, `step`, `attempt`, `class`) y devuelve la cobertura y el contexto (inicio del
+  backend, heartbeat del runner). El detalle del run ya no incluye la salida.
+  Los bloqueos llevan `stage` y, para errores con código (p. ej. lockfile), `code`.
+- **2. Captura** (`log_stream.py`, `container_entry.py`). Lectura secuencial por
+  offsets, sin saltos al tail, cortada en líneas y nunca dentro de un secreto. Hay
+  una cola local acotada (512 KiB) mientras el API no responde; lo que se pierde
+  se cuenta como `gap_bytes`. Los checks, `npm ci` y el stderr del agente se emiten
+  en vivo. Cada proceso deja `command.finished` (exit code, señal, duración, timeout,
+  posible OOM con 137, bytes y huecos). Ante una excepción, timeout o cancelación se
+  suben las colas de los logs como artefactos `failure-*`, sin ocultar el error
+  original. La salida ya no se duplica como tail tras la ejecución.
+- **3. Panel** (`StepObservability.tsx`). «Ver ejecución» en cada fase, con pestañas:
+  Resumen, Conversación (`TranscriptView` sobre las líneas JSON del stream), Consola
+  (filtros, búsqueda, seguir/pausar, cargar anteriores) y Artefactos, más selector de
+  intento y descarga redactada. Polling con cursor cada 3 s, solo mientras la fase
+  está abierta y en ejecución. Estados distintos para cargando, sin permiso,
+  conexión perdida, sin salida, no registrado y fase no ejecutada.
+- **4. Backend, runner e infraestructura.** El middleware registra
+  `backend.rejected` (ruta, status, código, request ID) en la fase, solo si lo pide
+  el runner dueño del run, con un máximo de 100 por run. El runner resume en
+  `runner.connectivity` los fallos transitorios de la fase y añade
+  `runner.diagnostic` al bloquearse. El recolector de incidentes
+  (`infra_incidents.py`) es opcional y está **desactivado** salvo `infra_collector`
+  en la configuración privada; reenvía solo una lista cerrada de razones de eventos
+  de Kubernetes, marcadas como coincidentes y nunca como causa confirmada. El panel
+  indica si el backend se reinició durante el run o si el runner perdió el heartbeat.
+- **5. Retención y seguridad.** Redacción de formas de credencial en el runner y otra
+  vez en el backend (Bearer, cabeceras, URLs con usuario, tokens GitHub/Anthropic/
+  OpenAI/Slack/NexusMind, AWS, claves privadas), con pruebas de secretos partidos
+  entre fragmentos. El panel elimina secuencias de terminal y bytes de control, y
+  React nunca interpreta HTML. Cada hora se borra la salida de runs terminados con
+  más de 14 días (`FACTORY_WORKFLOW_LOG_RETENTION_DAYS`) y queda un marcador
+  `capture.pruned`; los resultados, evidencias y artefactos se conservan. El runner
+  borra los checkouts de runs terminados con más de 7 días
+  (`checkout_retention_days`); los runs bloqueados o desconocidos se conservan.
+  «Registro completo» solo aparece si no hubo pérdidas, truncado ni retención.
+
+**Desviaciones:** el reenvío de logs usa memoria acotada, no una cola en disco: si
+el runner muere, lo no enviado queda en los artefactos `failure-*` o se pierde, y se
+declara como hueco. No se añadió object storage privado: con los límites actuales
+basta la base de datos. Las búsquedas filtran el historial cargado en el navegador,
+no el servidor.
 
 ## Archivos principales previstos
 
