@@ -19,6 +19,7 @@ pub mod factory_lookback;
 pub mod workflows;
 pub mod workflow_execution;
 pub mod workflow_runtime;
+pub mod workspace_secrets;
 pub mod workflow_model;
 pub mod workflow_sources;
 pub mod github_auth;

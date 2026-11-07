@@ -10,6 +10,7 @@ import { GithubReviewHooks } from './GithubReviewHooks'
 import { RuntimeEditor, type RuntimeDraft } from './RuntimeEditor'
 import { WorkflowConnectorForm } from './WorkflowConnectorForm'
 import { RepositoryInventory } from './RepositoryInventory'
+import { RepoSecrets } from './RepoSecrets'
 import { ExecutionDetail } from './ExecutionDetail'
 import { WorkflowEditor } from './WorkflowEditor'
 import { blockerLabel, emptyRuntime } from './runtime'
@@ -28,6 +29,7 @@ const tabs = [
 ] as const
 const sections = [
   ['repositories', 'Repositorios'],
+  ['secrets', 'Secretos por repositorio'],
   ['agents', 'Agentes y modelos'],
   ['checks', 'Tests y QA'],
   ['services', 'Servicios y entornos'],
@@ -101,7 +103,8 @@ export default function WorkflowsPage({
   const publicationIdentity = useQuery({
     queryKey: ['workflow-publication-identity'],
     queryFn: () => client.getWorkflowPublicationIdentity(),
-    enabled: readable && tab === 'settings' && section === 'delivery',
+    // Also on runs: "Nuevo workflow" there needs to know the publisher is ready.
+    enabled: readable && (tab === 'runs' || (tab === 'settings' && section === 'delivery')),
     retry: false,
   })
   const backendPublisherReady =
@@ -219,6 +222,32 @@ export default function WorkflowsPage({
   function submit(e: FormEvent, work: () => Promise<unknown>) {
     e.preventDefault()
     void perform(work)
+  }
+  /** Why a full workflow cannot be created yet, in words the user can act on. */
+  function fullWorkflowBlocker(): string {
+    if (!workspace) return 'Selecciona o crea un workspace primero.'
+    if (!writable) return 'Necesitas el permiso factory_policy:write para crear workflows.'
+    if (workspace.confirmed_revision !== workspace.inventory_revision)
+      return 'Confirma los repositorios en Configuración → Repositorios.'
+    if (!workspace.repositories.some((r) => r.writable))
+      return 'Marca al menos un repositorio con escritura en Configuración → Repositorios.'
+    if (!connectorId) return 'Elige una cuenta de GitHub en Configuración → Publicación y límites.'
+    if (connectorId === 'server_gh_cli' && !backendPublisherReady)
+      return 'La cuenta de GitHub del backend no está lista para publicar. Revísala en Configuración → Publicación y límites.'
+    if (!Number.isFinite(budget) || budget < 0.01 || budget > 1000)
+      return 'El presupuesto debe estar entre 0.01 y 1000 USD.'
+    if (!Number.isInteger(repairs) || repairs < 0 || repairs > 2)
+      return 'Las reparaciones deben estar entre 0 y 2.'
+    return ''
+  }
+  function startNewWorkflow() {
+    const blocker = fullWorkflowBlocker()
+    if (blocker) {
+      setError(blocker)
+      navigate({ tab: 'settings', section: 'delivery' })
+      return
+    }
+    newDefinition(true)
   }
   function newDefinition(full: boolean) {
     if (!workspace) return
@@ -605,6 +634,14 @@ export default function WorkflowsPage({
                 }}
               />
             )}
+            {section === 'secrets' && (
+              <RepoSecrets
+                key={workspace.id}
+                workspaceId={workspace.id}
+                repositories={workspace.repositories.map((r) => r.path)}
+                disabled={busy || !writable}
+              />
+            )}
             {['agents', 'checks', 'services'].includes(section) && (
               <>
                 {agentCatalog.isError && (
@@ -746,20 +783,7 @@ export default function WorkflowsPage({
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <Button
-                    disabled={
-                      busy ||
-                      !writable ||
-                      !connectorId ||
-                      (connectorId === 'server_gh_cli' && !backendPublisherReady) ||
-                      !Number.isFinite(budget) ||
-                      budget < 0.01 ||
-                      budget > 1000 ||
-                      !Number.isInteger(repairs) ||
-                      repairs < 0 ||
-                      repairs > 2 ||
-                      !workspace.repositories.some((r) => r.writable) ||
-                      workspace.confirmed_revision !== workspace.inventory_revision
-                    }
+                    disabled={busy || Boolean(fullWorkflowBlocker())}
                     onClick={() => newDefinition(true)}
                   >
                     Crear workflow completo
@@ -776,6 +800,11 @@ export default function WorkflowsPage({
                     Crear prueba de preparación
                   </Button>
                 </div>
+                {fullWorkflowBlocker() && (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    Para crear un workflow completo: {fullWorkflowBlocker()}
+                  </p>
+                )}
               </>
             )}
             {runtime.missing.length > 0 && section !== 'repositories' && (
@@ -842,12 +871,8 @@ export default function WorkflowsPage({
                   duplicadas.
                 </p>
               </div>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => navigate({ tab: 'settings', section: 'delivery' })}
-              >
-                Crear una definición
+              <Button size="sm" variant="secondary" disabled={busy || !writable} onClick={startNewWorkflow}>
+                Nuevo workflow
               </Button>
             </div>
             <form
@@ -871,14 +896,20 @@ export default function WorkflowsPage({
                     value={definitionId}
                     required
                     disabled={!writable}
-                    onChange={(e) => setDefinitionId(e.target.value)}
+                    onChange={(e) => {
+                      if (e.target.value === '__new__') startNewWorkflow()
+                      else setDefinitionId(e.target.value)
+                    }}
                   >
-                    <option value="">Seleccionar definición</option>
+                    <option value="">
+                      {definitions.length ? 'Seleccionar definición' : 'No hay workflows guardados'}
+                    </option>
                     {definitions.map((d) => (
                       <option key={d.id} value={d.id}>
                         {d.definition.name}
                       </option>
                     ))}
+                    <option value="__new__">+ Crear nuevo workflow…</option>
                   </select>
                 </label>
                 <label className="space-y-1.5 text-sm">

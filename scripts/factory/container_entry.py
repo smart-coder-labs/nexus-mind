@@ -38,7 +38,9 @@ def bootstrap_node(root, output):
         with tempfile.TemporaryDirectory(prefix='nm-npm-',dir='/tmp') as temporary:
             for filename in ('package.json','package-lock.json'):shutil.copyfile(root/filename,Path(temporary)/filename)
             user_config=Path(temporary)/'.user.npmrc';global_config=Path(temporary)/'.global.npmrc'
-            user_config.write_text('');global_config.write_text('')
+            # Scope routing only; credentials never enter the container (install is offline).
+            scopes=json.loads(Path('/input/node-dependencies/manifest.json').read_text()).get('scopes',{})
+            user_config.write_text(''.join(scope+':registry='+url+'\n' for scope,url in sorted(scopes.items()) if scope.startswith('@') and url.startswith('https://') and '\n' not in scope+url));global_config.write_text('')
             env={**clean_env,'NPM_CONFIG_USERCONFIG':str(user_config),'NPM_CONFIG_GLOBALCONFIG':str(global_config),'NPM_CONFIG_CACHE':cache,'NPM_CONFIG_REGISTRY':'https://registry.npmjs.org','NPM_CONFIG_IGNORE_SCRIPTS':'true','NPM_CONFIG_AUDIT':'false','NPM_CONFIG_FUND':'false'}
             installed=tee(['npm','ci','--offline','--ignore-scripts','--no-audit','--no-fund','--cache',cache],log,cwd=temporary,env=env)
             if installed:return installed

@@ -37,6 +37,47 @@ class NodeEnvironmentTests(unittest.TestCase):
             with patch.object(node.urllib.request,'build_opener') as build:
                 with self.assertRaises(node.NodeEnvironmentError):node.prepare(root,[{'cwd':'web'}],root/'bad',root/'cache')
                 build.assert_not_called()
+    NPMRC='@kasymir:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=ghp_fixturetoken\n'
+    def private_lock(self):
+        data,package,lock=self.fixture()
+        entry=lock['packages'].pop('node_modules/nm-fixture')
+        entry['resolved']='https://npm.pkg.github.com/download/@kasymir/common/1.0.0/abc'
+        lock['packages']['node_modules/@kasymir/common']=entry
+        return data,package,lock
+    def test_private_registry_requires_operator_npmrc(self):
+        data,package,lock=self.private_lock()
+        with self.assertRaises(node.NodeEnvironmentError):node.packages(lock)
+        config=node.parse_npmrc(self.NPMRC)
+        self.assertEqual(len(node.packages(lock,config)),1)
+        self.assertEqual(node.authorization(config,'https://npm.pkg.github.com/download/x'),'Bearer ghp_fixturetoken')
+        self.assertIsNone(node.authorization(config,'https://registry.npmjs.org/x'))
+        self.assertEqual(node.secrets(config),['ghp_fixturetoken'])
+        other=copy.deepcopy(lock);other['packages']['node_modules/@kasymir/common']['resolved']='https://evil.example/x.tgz'
+        with self.assertRaises(node.NodeEnvironmentError):node.packages(other,config)
+        with self.assertRaises(node.NodeEnvironmentError):node.parse_npmrc('@x:registry=http://insecure.example')
+    def test_missing_resolved_is_derived_and_bundled_entries_are_skipped(self):
+        data,package,lock=self.fixture()
+        del lock['packages']['node_modules/nm-fixture']['resolved']
+        lock['packages']['node_modules/nm-fixture/node_modules/inner']={'version':'1.0.0','inBundle':True}
+        self.assertEqual(list(node.packages(lock)),['https://registry.npmjs.org/nm-fixture/-/nm-fixture-1.0.0.tgz'])
+        scoped={'lockfileVersion':3,'packages':{'':{},'node_modules/@kasymir/common':{'version':'2.1.0','integrity':lock['packages']['node_modules/nm-fixture']['integrity']}}}
+        self.assertEqual(list(node.packages(scoped,node.parse_npmrc(self.NPMRC))),['https://npm.pkg.github.com/@kasymir/common/-/common-2.1.0.tgz'])
+    def test_private_fetch_sends_unredirected_credential_and_records_scopes(self):
+        data,package,lock=self.private_lock()
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);repo=root/'web';repo.mkdir();(repo/'package.json').write_text(json.dumps(package));(repo/'package-lock.json').write_text(json.dumps(lock))
+            with patch.object(node.urllib.request,'build_opener') as build:
+                build.return_value.open.return_value.__enter__.return_value.read.return_value=data
+                node.prepare(root,[{'cwd':'web'}],root/'input',root/'cache',npmrc={'web':self.NPMRC})
+                request=build.return_value.open.call_args[0][0]
+                self.assertEqual(request.unredirected_hdrs.get('Authorization'),'Bearer ghp_fixturetoken')
+                self.assertNotIn('Authorization',request.headers)
+            manifest=json.loads((root/'input'/'manifest.json').read_text())
+            self.assertEqual(manifest['scopes'],{'@kasymir':'https://npm.pkg.github.com/'})
+            self.assertNotIn('ghp_fixturetoken',(root/'input'/'manifest.json').read_text())
+    def test_private_redirect_is_https_only(self):
+        handler=node.PrivateRedirect()
+        with self.assertRaises(node.NodeEnvironmentError):handler.redirect_request(None,None,302,'',{},'http://pkg.example/x')
     @unittest.skipUnless(os.environ.get('FACTORY_NODE_IMAGE'),'Requires the installed immutable Node SDK')
     def test_real_offline_node_check_prepares_dependencies_without_running_install_scripts(self):
         import test_execution as fixtures,runner,execution

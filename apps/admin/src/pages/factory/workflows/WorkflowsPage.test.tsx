@@ -136,6 +136,26 @@ describe('guided workspace workflows', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Crear workflow completo' }))
     expect(screen.getByText('test-bot', { exact: true })).toBeInTheDocument()
   })
+  it('opens the workflow editor from the runs tab and explains blockers', async () => {
+    const confirmed = {
+      ...workspace,
+      confirmed_revision: 1,
+      repositories: [{ path: 'api', remote: 'https://github.com/acme/api.git', head_sha: 'a'.repeat(40), writable: true }],
+    }
+    api.getWorkflowCatalog.mockResolvedValue({ runners: [], workspaces: [confirmed], definitions: [], runs: [] })
+    show(write, '/factory/workflows?tab=runs')
+    const selector = await screen.findByRole('combobox', { name: 'Workflow' })
+    expect(selector).toHaveTextContent('No hay workflows guardados')
+    expect(screen.getByRole('option', { name: '+ Crear nuevo workflow…' })).toBeInTheDocument()
+    await waitFor(() => expect(api.getWorkflowPublicationIdentity).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Nuevo workflow' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Nuevo workflow' }))
+    expect(await screen.findByRole('heading', { name: 'Revisar definición antes de guardarla' })).toBeInTheDocument()
+  })
+  it('says why a full workflow cannot be created yet', async () => {
+    show(write, '/factory/workflows?tab=settings&section=delivery')
+    expect(await screen.findByText(/Para crear un workflow completo: Confirma los repositorios/)).toBeInTheDocument()
+  })
   it('requires explicit read permission without API calls', () => {
     show([])
     expect(screen.getByRole('alert')).toHaveTextContent('factory_policy:read')

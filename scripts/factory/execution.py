@@ -361,6 +361,51 @@ def protect_verification_scripts(config,job,adapter,git):
                     raise ValueError('Verification script changed; configure independently trusted checks before publishing')
 
 
+def repo_secrets(api, job):
+    """Operator-managed secrets per repository for this leased step ({} when none,
+    or when the backend predates them). The backend never serves review steps."""
+    try:
+        return api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/repo-secrets',
+                        {'lease_token': job['lease_token']}).get('repositories', {})
+    except ControlPlaneError as error:
+        if error.status == 404:
+            return {}
+        raise
+
+
+def secret_values(repositories):
+    """Values to redact from logs: every .env value and every .npmrc credential."""
+    from node_environment import parse_npmrc, secrets as npm_secrets
+    values = []
+    for entry in repositories.values():
+        for line in entry.get('env', '').splitlines():
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                value = line.split('=', 1)[1].strip()
+                values.extend([value, value.strip('\'"')])
+        if entry.get('npmrc'):
+            values.extend(npm_secrets(parse_npmrc(entry['npmrc'])))
+    return [v for v in values if len(v) >= 4]
+
+
+def write_env_files(work, repositories):
+    """Write each repository's .env into the disposable step copy. `.env` is an
+    ignored source name, so it never flows back into commits or publication."""
+    root = Path(work).resolve()
+    for path, entry in repositories.items():
+        if 'env' not in entry:
+            continue
+        repo = (root / path).resolve()
+        if repo == root or root not in repo.parents or not repo.is_dir() or (root / path).is_symlink():
+            raise ValueError('Repository secret target is outside the staged workspace')
+        target = repo / '.env'
+        if target.is_symlink() or target.exists():
+            target.unlink()
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(entry['env'] if entry['env'].endswith('\n') else entry['env'] + '\n')
+
+
 def isolated_adapter(config, job, adapter, roots, api, git, private_file):
     if adapter.get('kind') not in ('agent','checks'): raise ValueError('Invalid adapter kind')
     if adapter['kind']=='checks' and (not adapter.get('checks') or any(not SAFE_NAME.fullmatch(c.get('name','')) for c in adapter['checks'])):
@@ -377,6 +422,11 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         # Reviews should reason about code/evidence, never need application secrets.
         raise ValueError('Independent reviewers cannot receive environment secrets')
     env_files, secrets = environment(config, job['snapshot']['workspace']['id'], refs, roots, private_file)
+    # Operator secrets reach only deterministic checks, never an LLM agent's
+    # context: .env goes into the staged copy, .npmrc stays on the host.
+    repositories = repo_secrets(api, job) if adapter['kind'] == 'checks' and job['step']['kind'] != 'review' else {}
+    secrets.extend(secret_values(repositories))
+    write_env_files(work, repositories)
     backend_model = adapter.get('model_connection') == 'backend'
     if backend_model and (adapter.get('driver', 'container') != 'container' or adapter.get('kind') != 'agent' or adapter.get('harness') != 'pi' or adapter.get('network') != 'none' or not config.get('allow_backend_models') or adapter['image'] != config.get('managed_images', {}).get('agent')):
         raise ValueError('Backend models require the locally authorized, offline Pi runtime')
@@ -419,7 +469,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
                 api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/lease',{'lease_token':job['lease_token']});last_heartbeat=time.monotonic()
         mark_stage(job, 'node_dependencies')
         log_event(api,job,'command.started','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
-        prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']))
+        prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']),npmrc={path:entry['npmrc'] for path,entry in repositories.items() if entry.get('npmrc')})
         remaining=job['step']['timeout_seconds']-(time.monotonic()-started)
         if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
         # Shallow copy keeps the shared step trace; only the timeout changes.
