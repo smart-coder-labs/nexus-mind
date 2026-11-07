@@ -44,6 +44,15 @@ class RepoSecretsTests(unittest.TestCase):
             for value in ('postgres://u:secretpass@db/x','abcd1234','ghp_fixture123'):self.assertIn(value,values)
             self.assertNotIn('ghp_fixture123',execution.redact('token ghp_fixture123 ok',values))
             with self.assertRaises(ValueError):execution.write_env_files(work,{'../escape':{'env':'A=1'}})
+    def test_trivial_values_never_break_structured_results(self):
+        repos={'api':{'env':'SYNC=true\nPORT=3000\nDEBUG=false\nRATIO=0.25\nNULLISH=null\nAPI_KEY=realsecret1'}}
+        values=execution.secret_values(repos)
+        self.assertEqual(sorted(set(values)),['realsecret1'])
+        result={'success':True,'cost_usd':0,'port':3000,'summary':'uses realsecret1 on 3000','items':[None,False]}
+        redacted=execution.redact_structure(result,values+['true','3000'])
+        self.assertEqual(redacted['success'],True);self.assertEqual(redacted['port'],3000)
+        self.assertEqual(redacted['summary'],'uses [REDACTED] on 3000')
+        json.dumps(redacted)
     def test_older_backend_without_repo_secrets_is_tolerated(self):
         api=Mock();api.call.side_effect=execution.ControlPlaneError('POST','/repo-secrets','rid',status=404)
         self.assertEqual(execution.repo_secrets(api,{'run_id':'r','step':{'id':'s'},'lease_token':'t'}),{})

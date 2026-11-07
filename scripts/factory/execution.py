@@ -50,9 +50,26 @@ def environment(config, workspace_id, refs, roots, private_file):
     return files, secrets
 
 
+def secret_like(value):
+    """Literals that carry no secret (booleans, null, numbers) are never redacted:
+    replacing them corrupts structured output and floods logs with markers."""
+    return len(value) >= 4 and value.lower() not in ('true', 'false', 'null', 'none') and not re.fullmatch(r'[-+]?\d+(\.\d+)?', value)
+
+
+def redact_structure(value, secrets):
+    """Redact inside strings only, so JSON structure can never be broken."""
+    if isinstance(value, str):
+        return redact(value, secrets)
+    if isinstance(value, list):
+        return [redact_structure(v, secrets) for v in value]
+    if isinstance(value, dict):
+        return {redact(k, secrets) if isinstance(k, str) else k: redact_structure(v, secrets) for k, v in value.items()}
+    return value
+
+
 def redact(text, secrets):
     for secret in sorted(set(secrets), key=len, reverse=True):
-        if len(secret) >= 4:
+        if secret_like(secret):
             text = text.replace(secret, '[REDACTED]')
     text = re.sub(r'(?i)(bearer\s+|(?:api[_-]?key|password|secret|token)[\"\s]*[:=][\"\s]*)([^\s\",}]+)', r'\1[REDACTED]', text)
     text = re.sub(r'(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,}|nmr_[A-Za-z0-9-]+)', '[REDACTED]', text)
@@ -385,7 +402,7 @@ def secret_values(repositories):
                 values.extend([value, value.strip('\'"')])
         if entry.get('npmrc'):
             values.extend(npm_secrets(parse_npmrc(entry['npmrc'])))
-    return [v for v in values if len(v) >= 4]
+    return [v for v in values if secret_like(v)]
 
 
 def write_env_files(work, repositories):
@@ -531,7 +548,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         result = json.loads((out / 'result.json').read_text())
         if not isinstance(result, dict) or not isinstance(result.get('success'), bool):
             raise ValueError('Invalid adapter result')
-    result = json.loads(redact(json.dumps(result), secrets))
+    result = redact_structure(result, secrets)
     evidence = []
     # Upload text logs only after redaction. Binary screenshots are explicitly
     # named artifacts and must not contain secrets (operator QA responsibility).
