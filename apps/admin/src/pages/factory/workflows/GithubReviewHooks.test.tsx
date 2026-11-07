@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   listAutonomousAgents: vi.fn(),
   registerGithubReviewHook: vi.fn(),
   disconnectGithubReviewHook: vi.fn(),
+  revokeAutonomousAgentConnector: vi.fn(),
 }))
 const auth = vi.hoisted(() => ({ permissions: [] as string[] }))
 vi.mock('../../../api/client', () => ({ createClient: () => api }))
@@ -72,6 +73,33 @@ describe('GitHub review hooks', () => {
     )
     await waitFor(() => expect(input).toHaveValue(''))
     expect(screen.getByText('cli-account')).toBeInTheDocument()
+  })
+  it('retries remote cleanup after revocation using a replacement management token', async () => {
+    api.getGithubReviewHooks.mockResolvedValue({login:'cli-account',hooks:[{id:'hook',health:'revoked',management_credential_id:'credential',metadata:{repository:'acme/api',remote_deleted:false}}]})
+    api.disconnectGithubReviewHook.mockResolvedValue({remote_deleted:false,cleanup_pending:true,cleanup_error:{error:'GitHub denied webhook administration'}})
+    vi.spyOn(window,'confirm').mockReturnValue(true)
+    show(permissions)
+    const user=userEvent.setup()
+    await screen.findByText('Desconectado localmente; falta eliminarlo en GitHub.')
+    await user.type(screen.getByLabelText('Token de administración del webhook (opcional)'),'replacement')
+    await user.click(screen.getByRole('button',{name:'Reintentar eliminación en GitHub'}))
+    await waitFor(()=>expect(api.disconnectGithubReviewHook).toHaveBeenCalledWith('hook','replacement'))
+    expect(await screen.findByRole('status')).toHaveTextContent('no se pudo eliminar en GitHub')
+    expect(screen.getByRole('button',{name:'Reintentar eliminación en GitHub'})).toBeInTheDocument()
+    expect(screen.getByLabelText('Token de administración del webhook (opcional)')).toHaveValue('')
+  })
+  it('reuses saved credentials and allows forgetting their encrypted copy', async () => {
+    api.getGithubReviewHooks.mockResolvedValue({login:'cli-account',hooks:[{id:'hook',health:'ready',management_credential_id:'credential',metadata:{repository:'acme/api'}}]})
+    api.disconnectGithubReviewHook.mockResolvedValue({remote_deleted:true,cleanup_pending:false})
+    vi.spyOn(window,'confirm').mockReturnValue(true)
+    show(permissions)
+    const user=userEvent.setup()
+    await screen.findByText('Token de administración guardado y cifrado')
+    await user.click(screen.getByRole('button',{name:'Desconectar'}))
+    await waitFor(()=>expect(api.disconnectGithubReviewHook).toHaveBeenCalledWith('hook',undefined))
+    expect(await screen.findByRole('status')).toHaveTextContent('eliminado en GitHub')
+    await user.click(screen.getByRole('button',{name:'Olvidar token'}))
+    await waitFor(()=>expect(api.revokeAutonomousAgentConnector).toHaveBeenCalledWith('credential'))
   })
   it('does not contact the CLI without permission', () => {
     show([])

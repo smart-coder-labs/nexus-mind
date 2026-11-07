@@ -73,16 +73,30 @@ def agent_result(raw, format, prices=None):
 
 
 
-def stage_runtime(config, job, adapter, inp):
+def effective_runtime(job, adapter):
     options = job['step'].get('options')
-    runtime = options.get('runtime_snapshot') if isinstance(options, dict) else None
+    selected = options.get('runtime_snapshot') if isinstance(options, dict) else None
+    return selected or adapter.get('runtime_snapshot') or {}
+
+
+def stage_runtime(config, job, adapter, inp):
+    runtime = effective_runtime(job, adapter)
     if runtime:
+        # Markdown-only catalog bindings are applied in the prompt, without enabling
+        # MCP/network access in offline workflow containers.
+        if runtime.get('plan') is None:
+            components = runtime.get('config', {}).get('runtime_resolved', {}).get('components', [])
+            if any(c.get('enabled', True) and c.get('kind') != 'instructions' for c in components):
+                raise ValueError('Native agent resources require an executable runtime plan')
+            return
         if adapter['kind'] != 'agent': raise ValueError('Agent runtime requires an agent adapter')
         if adapter.get('driver', 'container') != 'container' and not adapter.get('supports_agent_runtime'):
             raise ValueError('VM driver must explicitly support agent-runtime v1')
         executor = adapter.get('executor', adapter.get('format', 'claude'))
         if runtime['executor'] != executor:
             raise ValueError('Selected agent executor does not match the installed adapter executor')
+        if adapter.get('model_connection') == 'backend':
+            raise ValueError('Native agent resources require an adapter with an approved MCP transport; offline backend-model adapters support markdown harnesses only')
         nexusmind = config.get('nexusmind_mcp')
         if not isinstance(nexusmind, dict) or not nexusmind.get('command'):
             raise ValueError('Configure the runner NexusMind MCP transport before using agent runtimes')

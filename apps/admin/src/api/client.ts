@@ -1725,11 +1725,13 @@ export class NexusMindClient {
     hooks: {
       id: string
       health: string
+      management_credential_id?: string | null
       metadata: {
         repository?: string
         reviewer_login?: string
         callback_url?: string
         hook_id?: number
+        remote_deleted?: boolean
       }
     }[]
   }> {
@@ -1746,9 +1748,10 @@ export class NexusMindClient {
       body: JSON.stringify({ definition_id, public_base_url, administration_token, repository }),
     })
   }
-  disconnectGithubReviewHook(id: string): Promise<{ remote_deleted: boolean }> {
+  disconnectGithubReviewHook(id: string, administration_token?: string): Promise<{ remote_deleted: boolean; cleanup_pending: boolean; cleanup_error?: {code:string;error:string} | null }> {
     return this.request(`/v1/autonomous-agents/github/review-hooks/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+      body: JSON.stringify({ administration_token }),
     })
   }
   getWorkflowCatalog(): Promise<WorkflowCatalog> {
