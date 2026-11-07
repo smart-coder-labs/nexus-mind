@@ -21,6 +21,7 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
     let status = match message.as_str() {
         "not_found" => StatusCode::NOT_FOUND,
         "runner_unauthorized" => StatusCode::UNAUTHORIZED,
+        "runner_version_unsupported" => StatusCode::UPGRADE_REQUIRED,
         "lease_conflict"
         | "inventory_conflict"
         | "run_conflict"
@@ -385,6 +386,18 @@ pub async fn report_inventory(
     db::report_inventory(&conn, &org, &runner, &id, &b.repositories).map_err(fail)?;
     Ok(Json(json!({"reported":true})))
 }
+/// Oldest runner protocol this backend still serves. Runners announce theirs as a
+/// `runner-contract:<n>` capability; runners from before the announcement are
+/// contract 1 and send none. Refusing at claim keeps an incompatible runner from
+/// failing half way through a leased step.
+pub(crate) const RUNNER_CONTRACT_MIN: u32 = 1;
+
+pub(crate) fn runner_contract_supported(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .filter_map(|c| c.strip_prefix("runner-contract:"))
+        .all(|v| v.parse::<u32>().is_ok_and(|n| n >= RUNNER_CONTRACT_MIN))
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claim {
@@ -398,6 +411,9 @@ pub async fn claim(
     let db = store.conn();
     let conn = db.lock().map_err(|_| locked())?;
     let (runner, org) = runner_auth(&conn, &headers)?;
+    if !runner_contract_supported(&b.capabilities) {
+        return Err(fail(anyhow::anyhow!("runner_version_unsupported")));
+    }
     Ok(Json(
         json!({"job":db::claim(&conn,&org,&runner,&b.capabilities,chrono::Utc::now().timestamp()).map_err(fail)?}),
     ))

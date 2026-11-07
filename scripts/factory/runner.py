@@ -7,6 +7,7 @@ import argparse
 import base64
 import errno
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from control_plane import (RUNNER_CONTRACT, ControlPlaneError, control_plane_diagnostic, from_http_error,
+                           idempotent, route_template)
 
 SKIP = {".git", "node_modules", "vendor", "target", ".worktrees", ".next", ".cache"}
 
@@ -279,6 +283,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class API:
+    retry_delays = (1, 2, 4)
+
     def __init__(self, base_url, token):
         parsed = urllib.parse.urlsplit(base_url)
         if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
@@ -290,11 +296,33 @@ class API:
         self.opener = urllib.request.build_opener(NoRedirect)
 
     def call(self, path, data=None, timeout=30):
-        request = urllib.request.Request(self.base + "/v1/factory/runner" + path,
-            data=None if data is None else json.dumps(data).encode(),
-            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
-        with self.opener.open(request, timeout=timeout) as response:
-            return json.load(response)
+        method = 'GET' if data is None else 'POST'
+        body = None if data is None else json.dumps(data).encode()
+        delays = self.retry_delays if idempotent(method, path) else ()
+        for attempt in range(len(delays) + 1):
+            try:
+                return self._send(path, method, body, timeout)
+            except ControlPlaneError as error:
+                if not error.transient or attempt == len(delays):
+                    raise
+                time.sleep(delays[attempt])
+
+    def _send(self, path, method, body, timeout):
+        request_id = 'rn-' + os.urandom(8).hex()
+        request = urllib.request.Request(self.base + "/v1/factory/runner" + path, data=body, method=method,
+            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json",
+                     "X-Request-Id": request_id})
+        route = route_template(path)
+        try:
+            with self.opener.open(request, timeout=timeout) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            raise from_http_error(error, method, route, request_id) from None
+        except urllib.error.URLError as error:
+            reason = error.reason
+            raise ControlPlaneError(method, route, request_id, reason=type(reason).__name__ if isinstance(reason, BaseException) else 'URLError') from None
+        except (TimeoutError, ConnectionError, http.client.HTTPException) as error:
+            raise ControlPlaneError(method, route, request_id, reason=type(error).__name__) from None
 
 
 def reconcile(config, api):
@@ -322,6 +350,8 @@ def reconcile(config, api):
 
 def exception_diagnostic(error):
     """Report system failure kinds without exposing commands, paths or secrets."""
+    if isinstance(error, (ControlPlaneError, urllib.error.HTTPError)):
+        return control_plane_diagnostic(error)
     code = 'adapter_internal_error'
     solution = 'Revisa los eventos y artefactos de esta fase; no reintentes sin identificar la causa.'
     if isinstance(error, subprocess.TimeoutExpired):
@@ -379,7 +409,8 @@ def tick_locked(config, roots):
     for name in adapters:
         if not safe_id(name): raise ValueError('Invalid adapter name')
         capabilities.append('adapter:' + name)
-    capabilities += ['agent-runtime:v1', 'agent-runtime:v2', 'workspace-sources:v1', 'workspace-git-read:v1']
+    capabilities += ['agent-runtime:v1', 'agent-runtime:v2', 'workspace-sources:v1', 'workspace-git-read:v1',
+                     'runner-contract:' + str(RUNNER_CONTRACT)]
     capabilities += ['executor:' + profile.get('executor', profile.get('harness', profile.get('format', 'claude'))) for profile in adapters.values() if profile.get('kind') == 'agent']
     capabilities += config.get('capabilities', []) + remote_capabilities
     job = api.call('/claim', {'capabilities': capabilities})['job']
@@ -434,15 +465,6 @@ def tick_locked(config, roots):
         outcome['output'] = (error.details if isinstance(error, WorkspaceOutputError)
                              else {'error': str(error)[:1000], 'hold': True} if isinstance(error, ValueError)
                              else exception_diagnostic(error))
-        if isinstance(error, urllib.error.HTTPError):
-            try:
-                code = json.load(error).get('code', '')
-                outcome['output'] = {'error': code, 'hold': code in ('policy_approval_required', 'policy_never')
-                                     or (400 <= error.code < 500 and error.code not in (408, 429))}
-                if code == 'invalid_event':
-                    outcome['output']['solution'] = 'El backend rechazó un evento del runner. Actualiza el runner para usar el contrato de eventos admitido; no es un fallo de los tests y no se reintentará automáticamente.'
-            except (ValueError, OSError): pass
-            finally: error.close()
         print('Workflow step blocked: ' + json.dumps(outcome['output']), flush=True)
     body = {'lease_token': job['lease_token'], 'success': success, 'evidence': evidence, 'outcome': outcome}
     journal = Path(config['state_dir']) / job['run_id'] / 'pending-completion.json'
@@ -479,12 +501,13 @@ def main():
         try:
             tick(config)
         except (ValueError, OSError, urllib.error.URLError, subprocess.TimeoutExpired) as error:
-            if isinstance(error,urllib.error.HTTPError) and error.code==401:
+            if isinstance(error, ControlPlaneError) and error.status == 401:
                 from execution import cleanup
                 for manifest in list(Path(config['state_dir']).glob('*/services.json')) + list(Path(config['state_dir']).glob('*/application-images.json')):
                     cleanup(config,manifest.parent.name,config['state_dir'])
                 raise SystemExit('Runner credential revoked or rotated; update the private configuration and restart')
-            print("Runner tick failed; check connectivity, local roots and registration", flush=True)
+            detail = (' ' + json.dumps(control_plane_diagnostic(error)) if isinstance(error, ControlPlaneError) else '')
+            print("Runner tick failed; check connectivity, local roots and registration" + detail, flush=True)
             if args.once:
                 raise SystemExit(1)
         if args.once:

@@ -93,7 +93,7 @@ Schema 96 incorpora perfiles versionados; schema **97** amplía el CHECK de entr
 
 Para npm, [Node se prepara automáticamente](ENTORNO_NODE.md): entorno común registrado, descarga del SDK y dependencias verificadas, instalación offline sin scripts. Los paquetes privados requieren una conexión autorizada, no otro digest pegado a mano.
 
-El runner debe actualizarse junto al backend/admin: `runner.py`, `execution.py`, `runtime_settings.py`, `node_environment.py`, `delivery.py` y `container_entry.py`, conservando configuración privada y estado. Actualizar solo la interfaz no instala un harness ni autoriza una red.
+El runner debe actualizarse junto al backend/admin: `runner.py`, `control_plane.py`, `execution.py`, `runtime_settings.py`, `node_environment.py`, `delivery.py` y `container_entry.py`, conservando configuración privada y estado. Actualizar solo la interfaz no instala un harness ni autoriza una red.
 
 Vista previa: <http://127.0.0.1:3016/factory>. Datos ilustrativos, sin acceso productivo ni guardado; todas las operaciones mutables reciben 405. Instrucciones de arranque en [CONFIGURACION_ADMIN.md](CONFIGURACION_ADMIN.md).
 

@@ -37,6 +37,54 @@ async fn native_git_media_types_reach_real_source_routes_without_bypassing_guard
 }
 
 #[tokio::test]
+async fn runner_protocol_failures_are_named_json_and_correlated() {
+    let app = app("super_user");
+    let cookie = login(&app).await;
+    let (_, runner) = request(&app, "POST", "/v1/factory/runners", Some(&cookie), None, Some(json!({"name":"Contract"}))).await;
+    let token = runner["token"].as_str().unwrap();
+    // A runner newer than the backend: unknown route and wrong method are named,
+    // not an empty body the runner can only report as a generic HTTP error.
+    for (method, path, status, code) in [
+        ("POST", "/v1/factory/runner/runs/r/steps/s/not-yet-deployed", StatusCode::NOT_FOUND, "route_not_found"),
+        ("GET", "/v1/factory/runner/claim", StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed"),
+    ] {
+        let response = app.clone().oneshot(Request::builder().method(method).uri(path)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("X-Request-Id", "rn-0123456789abcdef")
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), status, "{method} {path}");
+        assert_eq!(response.headers()["x-request-id"], "rn-0123456789abcdef");
+        let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], code);
+        assert!(body["error"].as_str().unwrap().contains("versiones de contrato"));
+    }
+    // Ids that could inject log content are neither echoed nor logged.
+    let response = app.clone().oneshot(Request::builder().uri("/v1/factory/runner/workspaces")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Request-Id", "bad id;forged=1").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("x-request-id"));
+    // Paths outside the runner protocol keep their existing behavior.
+    let response = app.clone().oneshot(Request::builder().uri("/v1/not-a-route").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // Contract announcement: absent (older runner) and current are served; an
+    // older contract than the backend supports is refused before leasing work.
+    for (capabilities, status) in [
+        (json!(["adapter:prepare-workspace"]), StatusCode::OK),
+        (json!(["adapter:prepare-workspace", "runner-contract:1"]), StatusCode::OK),
+        (json!(["adapter:prepare-workspace", "runner-contract:0"]), StatusCode::UPGRADE_REQUIRED),
+        (json!(["runner-contract:next"]), StatusCode::UPGRADE_REQUIRED),
+    ] {
+        let (actual, body) = request(&app, "POST", "/v1/factory/runner/claim", None, Some(token), Some(json!({"capabilities":capabilities}))).await;
+        assert_eq!(actual, status, "{capabilities}");
+        if status == StatusCode::UPGRADE_REQUIRED {
+            assert_eq!(body["code"], "runner_version_unsupported");
+        }
+    }
+}
+
+#[tokio::test]
 async fn authenticated_api_has_no_plan_request_quota_but_still_requires_auth() {
     let app = app("super_user");
     let cookie = login(&app).await;

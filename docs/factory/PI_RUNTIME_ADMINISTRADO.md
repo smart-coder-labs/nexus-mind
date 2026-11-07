@@ -20,7 +20,7 @@ No hace falta escribir un digest, una conexión de modelo ni una red. Los adapta
 
 ## Habilitación del operador, una vez
 
-1. Desplegar backend, admin y los archivos coordinados del runner: `runner.py`, `execution.py`, `delivery.py`, `container_entry.py`, `runtime_settings.py`, `node_environment.py`, `model_relay.py`, `managed_agent.py`, `application_environment.py`, `application_node.py`, `Dockerfile.agent` y `requirements.txt`.
+1. Desplegar backend, admin y los archivos coordinados del runner: `runner.py`, `control_plane.py`, `execution.py`, `delivery.py`, `container_entry.py`, `runtime_settings.py`, `node_environment.py`, `model_relay.py`, `managed_agent.py`, `application_environment.py`, `application_node.py`, `Dockerfile.agent` y `requirements.txt`.
 2. Autorizar únicamente la organización aprobada mediante `FACTORY_BACKEND_MODEL_ORG_ID` en el contenedor backend. Sin esta variable, ninguna organización puede usar su cuenta.
 3. Conservar el JSON privado del runner y activar `allow_backend_models: true` y `auto_provision_agent_runtime: true`. Mantener su permiso de configuración remota y sus allowlists existentes. No añadir archivos de autenticación ni claves personales.
 4. Reiniciar el servicio y esperar la construcción/inspección del SDK y el reporte del runner. El digest lo obtiene el programa; no se escribe manualmente.
