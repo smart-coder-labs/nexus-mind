@@ -903,6 +903,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/factory/runner/claim", post(workflows::claim))
         .route("/v1/factory/runner/model-runtime", get(super::workflow_model::capabilities))
         .route("/v1/factory/runner/runs/:run/steps/:step/model", post(super::workflow_model::invoke))
+        .route("/v1/factory/runner/runs/:run/steps/:step/validation-plan", post(super::workflow_validation::plan))
         .route("/v1/factory/runner/runs/:run/steps/:step/repo-secrets", post(super::workspace_secrets::runner))
         .route("/v1/factory/runner/runs/:run/steps/:step/sources/:index/info/refs", get(super::workflow_sources::advertise))
         .route("/v1/factory/runner/runs/:run/steps/:step/sources/:index/git-upload-pack", post(super::workflow_sources::upload_pack))

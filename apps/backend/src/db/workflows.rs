@@ -829,8 +829,17 @@ pub fn complete_with_outcome(
         .get("allow_not_applicable")
         .and_then(Value::as_bool)
         == Some(true);
+    // Checks the backend itself planned to skip (validation.planned, this
+    // attempt) count as applicable: the runner cannot claim a skip on its own.
+    let attempt: u32 = tx.query_row(
+        "SELECT attempt FROM factory_workflow_steps WHERE run_id=?1 AND step_id=?2",
+        params![run, step_id],
+        |r| r.get(0),
+    )?;
+    let planned_skips = planned_skips(&tx, run, step_id, attempt)?;
     let applicable = |e: &Evidence| {
         e.status == EvidenceStatus::Pass
+            || (e.status == EvidenceStatus::NotApplicable && planned_skips.contains(&e.check))
             || (optional
                 && e.status == EvidenceStatus::NotApplicable
                 && outcome.output["not_applicable_reason"]
@@ -913,54 +922,243 @@ pub fn complete_with_outcome(
         && matches!(step.kind, StepKind::Check | StepKind::Review)
         && outcome.output.get("hold").and_then(Value::as_bool) != Some(true)
     {
-        if let Some(target) = &d.repair_step {
-            let repairs = execution["repairs"].as_u64().unwrap_or(0);
-            if repairs < u64::from(d.max_repairs) {
-                let mut reset = std::collections::BTreeSet::from([target.clone()]);
-                loop {
-                    let before = reset.len();
-                    for s in &d.steps {
-                        if s.depends_on.iter().any(|id| reset.contains(id)) {
-                            reset.insert(s.id.clone());
-                        }
-                    }
-                    if before == reset.len() {
-                        break;
-                    }
-                }
-                let mut eligible = reset.contains(step_id);
-                for id in &reset {
-                    let attempts: u32 = tx.query_row(
-                        "SELECT attempt FROM factory_workflow_steps WHERE run_id=?1 AND step_id=?2",
-                        params![run, id],
-                        |r| r.get(0),
-                    )?;
-                    if d.steps
-                        .iter()
-                        .find(|s| &s.id == id)
-                        .is_some_and(|s| attempts >= s.max_attempts)
-                    {
-                        eligible = false;
-                    }
-                }
-                if eligible {
-                    for id in &reset {
-                        tx.execute("UPDATE factory_workflow_steps SET status='pending',lease_token=NULL,lease_until=NULL,result_json=NULL WHERE run_id=?1 AND step_id=?2",params![run,id])?;
-                    }
-                    tx.execute("UPDATE factory_workflow_runs SET status='queued',repair_count=repair_count+1,repair_feedback_json=?1 WHERE id=?2",params![result.to_string(),run])?;
-                    event(
-                        &tx,
-                        run,
-                        Some(target),
-                        "repair.queued",
-                        json!({"failed_step":step_id,"cycle":repairs+1}),
-                    )?;
-                }
+        // With active Jev decisions the API asks Jev which phase can recover
+        // after commit; the static repair step is only its fallback.
+        if crate::factory::validation::decision_key(org).is_none() {
+            if let Some(target) = &d.repair_step {
+                let repairs = execution["repairs"].as_u64().unwrap_or(0);
+                queue_repair(&tx, run, &d, target, step_id, &result, repairs, json!({}))?;
             }
         }
     }
     tx.commit()?;
     Ok(())
+}
+/// Check names the backend planned to skip for this step attempt.
+pub fn planned_skips(conn: &Connection, run: &str, step: &str, attempt: u32) -> Result<std::collections::BTreeSet<String>> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM factory_workflow_events WHERE run_id=?1 AND step_id=?2 AND kind='validation.planned' ORDER BY seq DESC LIMIT 1",
+            params![run, step],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else { return Ok(Default::default()) };
+    let payload: Value = serde_json::from_str(&payload)?;
+    if payload["attempt"].as_u64() != Some(u64::from(attempt)) {
+        return Ok(Default::default());
+    }
+    let decisions = payload["decisions"].as_array().cloned().unwrap_or_default();
+    // A skipped instance never hides a failure: executed instances still report
+    // their own pass/fail evidence for the same check name.
+    Ok(decisions
+        .iter()
+        .filter(|d| d["run"] == false)
+        .filter_map(|d| d.pointer("/check/name").and_then(Value::as_str).map(str::to_string))
+        .collect())
+}
+
+/// Re-queues `target` and every step after it, if attempts allow.
+#[allow(clippy::too_many_arguments)]
+fn queue_repair(
+    tx: &Connection,
+    run: &str,
+    d: &Definition,
+    target: &str,
+    failed_step: &str,
+    result: &Value,
+    repairs: u64,
+    extra: Value,
+) -> Result<bool> {
+    if repairs >= u64::from(d.max_repairs) {
+        return Ok(false);
+    }
+    let mut reset = std::collections::BTreeSet::from([target.to_string()]);
+    loop {
+        let before = reset.len();
+        for s in &d.steps {
+            if s.depends_on.iter().any(|id| reset.contains(id)) {
+                reset.insert(s.id.clone());
+            }
+        }
+        if before == reset.len() {
+            break;
+        }
+    }
+    if !reset.contains(failed_step) {
+        return Ok(false);
+    }
+    for id in &reset {
+        let attempts: u32 = tx.query_row(
+            "SELECT attempt FROM factory_workflow_steps WHERE run_id=?1 AND step_id=?2",
+            params![run, id],
+            |r| r.get(0),
+        )?;
+        if d.steps.iter().find(|s| &s.id == id).is_some_and(|s| attempts >= s.max_attempts) {
+            return Ok(false);
+        }
+    }
+    for id in &reset {
+        tx.execute("UPDATE factory_workflow_steps SET status='pending',lease_token=NULL,lease_until=NULL,result_json=NULL WHERE run_id=?1 AND step_id=?2",params![run,id])?;
+    }
+    tx.execute("UPDATE factory_workflow_runs SET status='queued',repair_count=repair_count+1,repair_feedback_json=?1 WHERE id=?2",params![result.to_string(),run])?;
+    let mut payload = json!({"failed_step": failed_step, "cycle": repairs + 1});
+    if let (Some(p), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
+        p.extend(e.clone());
+    }
+    event(tx, run, Some(target), "repair.queued", payload)?;
+    Ok(true)
+}
+
+fn role_description(step: &crate::factory::workflows::Step) -> String {
+    let role = match step.adapter.as_str() {
+        "isolated-investigator" => "investigates the task and plans; does not edit code",
+        "isolated-test-author" => "writes or fixes automated tests",
+        "isolated-implementer" => "writes or fixes production code, build and configuration in the repositories",
+        "isolated-reviewer" => "reviews the change and reports findings",
+        other => other,
+    };
+    format!("{} ({}): {}", step.name, step.id, role)
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// What Jev needs to choose a recovery phase, or None when no decision applies.
+pub struct RecoveryContext {
+    pub task: Value,
+    pub failure: Value,
+    pub candidates: Vec<crate::factory::validation::Candidate>,
+}
+
+pub fn recovery_context(conn: &Connection, org: &str, run: &str, failed_step: &str) -> Result<Option<RecoveryContext>> {
+    let row: Option<(String, String, String, u32)> = conn
+        .query_row(
+            "SELECT status,snapshot_json,task_json,repair_count FROM factory_workflow_runs WHERE id=?1 AND org_id=?2",
+            params![run, org],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((status, snapshot, task, repairs)) = row else { return Ok(None) };
+    if status != "blocked" {
+        return Ok(None);
+    }
+    let (step_status, attempt, result): (String, u32, Option<String>) = conn.query_row(
+        "SELECT status,attempt,result_json FROM factory_workflow_steps WHERE run_id=?1 AND step_id=?2",
+        params![run, failed_step],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    if step_status != "blocked" {
+        return Ok(None);
+    }
+    let d: Definition = serde_json::from_value(parse(snapshot)?["definition"].clone())?;
+    if repairs >= d.max_repairs {
+        event(conn, run, Some(failed_step), "recovery.skipped", json!({"reason": "repair_budget_exhausted"}))?;
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
+    for s in d.steps.iter().filter(|s| matches!(s.kind, StepKind::Agent)) {
+        let attempts: u32 = conn.query_row(
+            "SELECT attempt FROM factory_workflow_steps WHERE run_id=?1 AND step_id=?2",
+            params![run, s.id],
+            |r| r.get(0),
+        )?;
+        if attempts < s.max_attempts {
+            candidates.push(crate::factory::validation::Candidate { id: s.id.clone(), description: role_description(s) });
+        }
+    }
+    if candidates.is_empty() {
+        event(conn, run, Some(failed_step), "recovery.skipped", json!({"reason": "no_phase_with_attempts_left"}))?;
+        return Ok(None);
+    }
+    let result: Value = result.map(parse).transpose()?.unwrap_or(Value::Null);
+    let mut failed_checks = Vec::new();
+    let mut logs = Vec::new();
+    let mut q = conn.prepare("SELECT name,content FROM factory_workflow_artifacts WHERE run_id=?1 AND step_id=?2 AND attempt=?3 AND name LIKE '%-result.json' ORDER BY created_at")?;
+    let rows = q.query_map(params![run, failed_step, attempt], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (name, content) in rows {
+        let parsed: Value = serde_json::from_slice(&content).unwrap_or(Value::Null);
+        if parsed["success"] == true {
+            continue;
+        }
+        let check = name.trim_end_matches("-result.json").to_string();
+        if logs.len() < 4 {
+            let log: Option<Vec<u8>> = conn
+                .query_row(
+                    "SELECT content FROM factory_workflow_artifacts WHERE run_id=?1 AND step_id=?2 AND attempt=?3 AND name=?4",
+                    params![run, failed_step, attempt, format!("{check}-{check}.log-0")],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(log) = log {
+                let text = strip_ansi(&String::from_utf8_lossy(&log));
+                let tail: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty() && !l.contains("npm warn")).collect();
+                let tail = tail[tail.len().saturating_sub(12)..].join("\n");
+                logs.push(json!({"check": check, "tail": tail.chars().take(1500).collect::<String>()}));
+            }
+        }
+        failed_checks.push(json!({"check": check, "preparation_error": parsed.pointer("/checks/0/preparation_error")}));
+    }
+    let failure = json!({
+        "error": result.pointer("/output/error").or_else(|| result.get("reason")),
+        "code": result.pointer("/output/code"),
+        "failed_checks": failed_checks.into_iter().take(30).collect::<Vec<_>>(),
+        "logs": logs,
+    });
+    Ok(Some(RecoveryContext { task: parse(task)?, failure, candidates }))
+}
+
+/// Applies a recovery decision: re-queues `target` (or the static repair step
+/// as a fallback) when the run is still blocked. Always records the decision.
+pub fn apply_recovery(conn: &Connection, org: &str, run: &str, failed_step: &str, target: Option<&str>, decision: Value, fallback: bool) -> Result<bool> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let row: Option<(String, String, u64)> = tx
+        .query_row(
+            "SELECT status,snapshot_json,repair_count FROM factory_workflow_runs WHERE id=?1 AND org_id=?2",
+            params![run, org],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((status, snapshot, repairs)) = row else { return Ok(false) };
+    let (step_status, result): (String, Option<String>) = tx.query_row(
+        "SELECT status,result_json FROM factory_workflow_steps WHERE run_id=?1 AND step_id=?2",
+        params![run, failed_step],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let d: Definition = serde_json::from_value(parse(snapshot)?["definition"].clone())?;
+    let result: Value = result.map(parse).transpose()?.unwrap_or(Value::Null);
+    let step_kind = d.steps.iter().find(|s| s.id == failed_step).map(|s| s.kind.clone());
+    let target = match (target, fallback) {
+        (Some(t), _) => Some(t.to_string()),
+        // Jev unavailable: the previous static rule, unchanged.
+        (None, true) if matches!(step_kind, Some(StepKind::Check | StepKind::Review)) && result.pointer("/output/hold") != Some(&Value::Bool(true)) => d.repair_step.clone(),
+        _ => None,
+    };
+    let queued = if status == "blocked" && step_status == "blocked" {
+        match &target {
+            Some(t) => queue_repair(&tx, run, &d, t, failed_step, &result, repairs, json!({"source": if fallback {"fallback"} else {"jev"}}))?,
+            None => false,
+        }
+    } else {
+        false
+    };
+    event(&tx, run, Some(failed_step), "recovery.decided", json!({"decision": decision, "target": target, "queued": queued}))?;
+    tx.commit()?;
+    Ok(queued)
 }
 pub fn control_run(
     conn: &Connection,

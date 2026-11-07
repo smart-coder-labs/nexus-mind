@@ -1,6 +1,6 @@
 import copy,json,os,tempfile,unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import runtime_settings as settings
 from runner import private_file
 
@@ -86,4 +86,49 @@ class RuntimeSettingsTests(unittest.TestCase):
   self.config['allowed_images']=[]
   report=settings.inventory(self.config,{'id':'w'},[self.root],private_file)
   self.assertEqual(report['model_connections'],['model']);self.assertNotIn(str(self.env),json.dumps(report));self.assertNotIn('lease-fixture',json.dumps(report))
+
+
+class ValidationPlanSuiteTests(unittest.TestCase):
+    def job(self):
+        return {'run_id':'r','lease_token':'t','step':{'id':'verify','timeout_seconds':60,'options':{'required_checks':[]}},
+                'execution':{'revision':1,'heads':{'api':'b'*40,'web':'c'*40}},
+                'snapshot':{'workspace':{'repositories':[{'path':'api','head_sha':'a'*40},{'path':'web','head_sha':'c'*40}]}}}
+    def profile(self):
+        return {'kind':'suite','checks':[{'name':'tests','cwd':'api','image':'i','command':['x']},{'name':'tests','cwd':'web','image':'i','command':['x']},{'name':'build','cwd':'web','image':'i','command':['x']}]}
+    def run_suite(self,decisions,adapter_effect=None):
+        import runtime_settings as rs
+        calls=[];api=Mock()
+        def call(path,data=None):
+            if path.endswith('/validation-plan'):
+                if decisions is None:
+                    from control_plane import ControlPlaneError
+                    raise ControlPlaneError('POST','/validation-plan','rid',status=404)
+                return {'decisions':decisions}
+            if path.endswith('/artifacts'):return {'digest':'d'*64}
+            return {}
+        api.call.side_effect=call
+        def adapter(config,child,adapter,roots,named,git,private_file):
+            calls.append((child['step']['options']['required_checks'][0],adapter['checks'][0]['cwd']))
+            if adapter_effect:adapter_effect(adapter)
+            return True,[{'check':adapter['checks'][0]['name'],'status':'pass'}],{}
+        with patch('execution.isolated_adapter',side_effect=adapter),patch.object(rs,'repository_facts',return_value=[]):
+            return rs.suite({'state_dir':'/tmp'},self.job(),self.profile(),[],api,Mock(),Mock()),calls
+    def test_skipped_checks_do_not_run_and_are_reported_as_not_applicable(self):
+        decisions=[{'check':{'name':'tests','cwd':'api'},'run':True},{'check':{'name':'tests','cwd':'web'},'run':False},{'check':{'name':'build','cwd':'web'},'run':False}]
+        (success,evidence,_),calls=self.run_suite(decisions)
+        self.assertTrue(success)
+        self.assertEqual(calls,[('tests-0','api')])
+        self.assertEqual(sorted(e['status'] for e in evidence),['not_applicable','not_applicable','pass'])
+    def test_older_backend_runs_every_check(self):
+        (_,evidence,_),calls=self.run_suite(None)
+        self.assertEqual(len(calls),3)
+    def test_repository_without_lockfile_is_not_applicable_instead_of_aborting(self):
+        def effect(adapter):
+            if adapter['checks'][0]['cwd']=='web':raise ValueError('node_committed_package_lock_required')
+        (success,evidence,_),calls=self.run_suite(None,effect)
+        self.assertEqual(len(calls),3)
+        self.assertEqual([e['status'] for e in evidence].count('not_applicable'),2)
+        def other(adapter):raise ValueError('something_else')
+        with self.assertRaises(ValueError):self.run_suite(None,other)
+
 if __name__=='__main__':unittest.main()

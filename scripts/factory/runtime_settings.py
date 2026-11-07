@@ -134,6 +134,49 @@ def for_job(config,job,roots,private_file):
     report=inventory(config,workspace,roots,private_file)
     return apply_settings(config,workspace,runtime['config'],report,roots,private_file)
 
+UNPROFILED_NODE={'node_committed_package_lock_required','node_lockfile_v2_or_v3_required','node_workspace_requires_explicit_profile'}
+
+def repository_facts(config,job,git):
+    """Per repository: package identity, internal dependencies and changed paths
+    since the run's base. Facts only; no file contents leave the runner."""
+    import json as _json
+    run_root=Path(config['state_dir'])/job['run_id'];facts=[]
+    for repo in job['snapshot']['workspace']['repositories']:
+        path=repo['path'];root=run_root/path;package={}
+        manifest=root/'package.json'
+        if manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_size<=1024*1024:
+            try:package=_json.loads(manifest.read_text())
+            except ValueError:package={}
+        changed=[]
+        head=job['execution']['heads'].get(path)
+        if head and head!=repo['head_sha']:
+            try:changed=[l for l in git(['diff','--name-only',repo['head_sha'],head],root).splitlines() if l][:200]
+            except (OSError,ValueError,subprocess.SubprocessError):changed=['<unknown>']
+        deps=sorted({*package.get('dependencies',{}),*package.get('devDependencies',{}),*package.get('peerDependencies',{})}) if isinstance(package,dict) else []
+        facts.append({'path':path,'package':package.get('name') if isinstance(package.get('name'),str) else None,
+                      'description':package.get('description')[:300] if isinstance(package.get('description'),str) else None,
+                      'dependencies':[d for d in deps if d.startswith('@')][:200],'changed_paths':changed})
+    return facts
+
+def validation_plan(config,job,profile,api,git):
+    """Backend + Jev decide which checks this change needs. Older backends: all."""
+    from control_plane import ControlPlaneError
+    checks=[{'name':c['name'],'cwd':c['cwd']} for c in profile['checks']]
+    try:
+        plan=api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/validation-plan',{'lease_token':job['lease_token'],'checks':checks,'repositories':repository_facts(config,job,git)})
+    except ControlPlaneError as error:
+        if error.status==404:return None
+        raise
+    decisions=plan.get('decisions') if isinstance(plan,dict) else None
+    return decisions if isinstance(decisions,list) else None
+
+def skip_evidence(api,job,name,payload):
+    """A not_applicable evidence backed by a stored artifact explaining why."""
+    import base64,json as _json
+    data=_json.dumps(payload,ensure_ascii=False).encode()
+    stored=api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/artifacts',{'lease_token':job['lease_token'],'name':name,'mime':'application/json','content_base64':base64.b64encode(data).decode()})
+    return stored['digest']
+
 def suite(config,job,profile,roots,api,git,private_file):
     from execution import isolated_adapter, node_bootstrap_image
     from delivery import validate_services
@@ -143,8 +186,20 @@ def suite(config,job,profile,roots,api,git,private_file):
         changed=[r['path'] for r in job['snapshot']['workspace']['repositories'] if job['execution']['heads'][r['path']]!=r['head_sha']]
         if any(not any(c['name']==role and c['cwd']==repo for c in profile['checks']) for repo in changed for role in ('tests','build')):
             raise RuntimeSettingsError('Tests and build must cover every changed repository')
+    # Coverage is checked statically first; backend floors never skip a changed
+    # repository, so the plan below can only narrow unchanged ones.
+    decisions=validation_plan(config,job,profile,api,git)
+    skipped=set()
+    if decisions is not None:
+        planned={(d['check']['name'],d['check']['cwd']):d for d in decisions if isinstance(d,dict) and isinstance(d.get('check'),dict)}
+        skipped={key for key,d in planned.items() if d.get('run') is False}
+        if skipped:
+            digest=skip_evidence(api,job,'validation-plan.json',{'decisions':decisions})
+            for name,cwd in sorted(skipped):
+                evidence.append({'check':name,'status':'not_applicable','commits':job['execution']['heads'],'artifact_digest':digest})
     for index,check in enumerate(profile['checks']):
         if time.monotonic()-start>=job['step']['timeout_seconds']:raise RuntimeSettingsError('Suite time budget exceeded')
+        if (check['name'],check['cwd']) in skipped:continue
         role=check['name'];unique=role+'-'+str(index);child=copy.deepcopy(job)
         child['step'].setdefault('options',{})['required_checks']=[unique]
         child['step']['timeout_seconds']=max(1,int(job['step']['timeout_seconds']-(time.monotonic()-start)))
@@ -155,7 +210,16 @@ def suite(config,job,profile,roots,api,git,private_file):
             def call(self,path,data=None):
                 if path.endswith('/artifacts'):data=dict(data,name=unique+'-'+data['name'])
                 return api.call(path,data)
-        passed,items,_=isolated_adapter(config,child,adapter,roots,NamedArtifacts(),git,private_file)
+        try:
+            passed,items,_=isolated_adapter(config,child,adapter,roots,NamedArtifacts(),git,private_file)
+        except ValueError as error:
+            # A repository Node cannot install deterministically (no committed
+            # lockfile, v1 lockfile, workspaces) is not verifiable here: record
+            # it as not applicable with its reason instead of aborting the suite.
+            if not (error.args and error.args[0] in UNPROFILED_NODE):raise
+            digest=skip_evidence(api,job,unique+'-not-applicable.json',{'check':unique,'cwd':check['cwd'],'code':error.args[0],'reason':str(error)})
+            evidence.append({'check':role,'status':'not_applicable','commits':job['execution']['heads'],'artifact_digest':digest})
+            continue
         for item in items:item['check']=role
         evidence.extend(items);success=success and passed
         if adapter.get('network')=='services':validate_services(config,job)
