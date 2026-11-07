@@ -17,6 +17,8 @@ import tempfile
 import time
 import uuid
 
+from control_plane import ControlPlaneError
+
 MAX_LOG = 1024 * 1024
 IGNORE = {'.git', '.codex', '.claude', 'node_modules', 'target', '.next', '__pycache__'}
 SAFE_NAME = re.compile(r'^[a-zA-Z0-9_-]{1,100}$')
@@ -257,8 +259,24 @@ def upload(api, job, name, mime, data):
 
 
 def log_event(api, job, kind, message):
-    api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/events',
-             {'lease_token': job['lease_token'], 'kind': kind, 'message': message.encode()[:4000].decode(errors='ignore')})
+    """Best-effort: a backend outage or the per-run event quota must not abort the
+    step it describes. Contract and lease errors still raise. Lost events are
+    counted and announced in the next event that does get through."""
+    path = '/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/events'
+    message = message.encode()[:4000].decode(errors='ignore')
+    dropped = job.get('dropped_events', 0)
+    if dropped:
+        message = ('[runner: ' + str(dropped) + ' eventos anteriores no se registraron]\n' + message).encode()[:4000].decode(errors='ignore')
+    try:
+        api.call(path, {'lease_token': job['lease_token'], 'kind': kind, 'message': message})
+    except ControlPlaneError as error:
+        if not (error.transient or error.backend_code == 'event_quota'):
+            raise
+        job['dropped_events'] = dropped + 1
+        print('Workflow event not recorded: ' + json.dumps({'kind': kind, 'status': error.status,
+              'code': error.backend_code or None, 'request_id': error.request_id}), flush=True)
+        return
+    job.pop('dropped_events', None)
 
 
 def protect_verification_scripts(config,job,adapter,git):

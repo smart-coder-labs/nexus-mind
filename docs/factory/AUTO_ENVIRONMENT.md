@@ -29,7 +29,7 @@ Esto es un subconjunto deliberado de Compose, no compatibilidad universal. El mo
 
 ## Instalación del runner (una vez)
 
-1. Instala coordinadamente `runner.py`, `execution.py`, `delivery.py`, `runtime_settings.py`, `application_environment.py`, `application_node.py`, `node_environment.py`, `managed_agent.py`, `model_relay.py`, `container_entry.py` y la receta SDK instalada por el operador.
+1. Instala coordinadamente `runner.py`, `control_plane.py`, `execution.py`, `delivery.py`, `runtime_settings.py`, `application_environment.py`, `application_node.py`, `node_environment.py`, `managed_agent.py`, `model_relay.py`, `container_entry.py` y la receta SDK instalada por el operador.
 2. Instala `scripts/factory/requirements.txt` en el entorno Python del runner (PyYAML fijado, SafeLoader; nunca evalúa YAML como código).
 3. Autoriza `allow_remote_configuration: true` y `allow_application_builds: true` en la configuración privada del runner. Esta última permite provisionar automáticamente el SDK si no se desactivó expresamente. Conserva credenciales, allowlists y referencias existentes.
 4. Ejecuta el runner en un servicio/scope systemd de cgroup v2 con **MemoryMax finito (64 MiB–4 GiB)** y **TasksMax finito (32–4096)**. Dimensiona estos límites según el proyecto; se recomienda un runner dedicado con cuotas de disco y CPU.

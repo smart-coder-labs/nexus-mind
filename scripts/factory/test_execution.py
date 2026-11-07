@@ -264,7 +264,9 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn('dependencias npm',self.api.events[-1]['message'])
 
     def test_api_contract_rejections_hold_instead_of_exhausting_attempts(self):
-        for status,code,hold in [(400,'invalid_event',True),(403,'policy_never',True),(429,'temporarily_limited',False),(503,'temporary_upstream_failure',False)]:
+        # Every control-plane failure holds: hold=false on a check/review step queues
+        # an agent repair, which an unavailable backend must never trigger.
+        for status,code,hold in [(400,'invalid_event',True),(403,'policy_never',True),(429,'temporarily_limited',True),(503,'temporary_upstream_failure',True)]:
             with self.subTest(status=status):
                 error = urllib.error.HTTPError('http://localhost',status,'fixture',{},io.BytesIO(json.dumps({'code':code}).encode()))
                 api = Mock()
@@ -276,6 +278,7 @@ class ExecutionTests(unittest.TestCase):
                 self.assertFalse(completion['success'])
                 self.assertEqual(completion['outcome']['output']['error'],code)
                 self.assertEqual(completion['outcome']['output']['hold'],hold)
+                self.assertEqual(completion['outcome']['output']['retryable'],status in (429,503))
                 if code=='invalid_event':
                     self.assertTrue(completion['outcome']['output']['solution'])
 

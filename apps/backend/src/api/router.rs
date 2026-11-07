@@ -946,6 +946,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .layer(cors)
         .layer(CookieManagerLayer::new())
         .layer(middleware::from_fn(api_mw::accept_json))
+        .layer(middleware::from_fn(api_mw::runner_diagnostics))
         .layer(TraceLayer::new_for_http())
         .with_state(store.clone());
 
