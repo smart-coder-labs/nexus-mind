@@ -99,6 +99,43 @@ pub async fn plan(
     Ok(Json(json!({"decisions": decisions})))
 }
 
+/// Jev classifies the task once per run (`task.classified`). A confident
+/// `docs` class tells agents the change is documentation-only.
+pub async fn task_scope(store: &SqliteStore, org: &str, run: &str, task: &Value) -> Option<&'static str> {
+    let key = v::decision_key(org)?;
+    let cached: Option<String> = {
+        let h = store.conn();
+        let c = h.lock().ok()?;
+        rusqlite::OptionalExtension::optional(c.query_row(
+            "SELECT payload_json FROM factory_workflow_events WHERE run_id=?1 AND kind='task.classified' ORDER BY seq DESC LIMIT 1",
+            [run],
+            |r| r.get(0),
+        ))
+        .ok()?
+    };
+    let classified: Value = match cached {
+        Some(payload) => serde_json::from_str(&payload).unwrap_or(Value::Null),
+        None => {
+            let title = task["title"].as_str().unwrap_or("");
+            let description = task["acceptance_criteria"].as_str().unwrap_or("");
+            let change = crate::factory::jev::Change { title, description, paths: &[] };
+            let payload = match crate::factory::jev::decide(&reqwest::Client::new(), &key, &change).await {
+                Ok((answer, _)) => json!({"task_class": answer.task_class, "class_confidence": answer.class_confidence, "risk": answer.risk}),
+                Err(e) => json!({"error": e.to_string()}),
+            };
+            {
+                let h = store.conn();
+                let guard = h.lock();
+                if let Ok(c) = &guard {
+                    let _ = db::event(c, run, None, "task.classified", payload.clone());
+                }
+            }
+            payload
+        }
+    };
+    v::scope_from_classification(&classified)
+}
+
 /// After a step blocks: ask Jev which phase can resolve it and re-queue it.
 /// Runs detached from the runner's completion request; failures are recorded.
 pub async fn recover(store: SqliteStore, org: String, run: String, step: String) {

@@ -420,15 +420,25 @@ pub async fn claim(
     headers: HeaderMap,
     AppJson(b): AppJson<Claim>,
 ) -> Response {
-    let db = store.conn();
-    let conn = db.lock().map_err(|_| locked())?;
-    let (runner, org) = runner_auth(&conn, &headers)?;
-    if !runner_contract_supported(&b.capabilities) {
-        return Err(fail(anyhow::anyhow!("runner_version_unsupported")));
+    // The lock guard must not live across the Jev call below.
+    let (org, mut job) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| locked())?;
+        let (runner, org) = runner_auth(&conn, &headers)?;
+        if !runner_contract_supported(&b.capabilities) {
+            return Err(fail(anyhow::anyhow!("runner_version_unsupported")));
+        }
+        let job = json!(db::claim(&conn, &org, &runner, &b.capabilities, chrono::Utc::now().timestamp()).map_err(fail)?);
+        (org, job)
+    };
+    if job["step"]["kind"] == "agent" {
+        if let Some(run) = job["run_id"].as_str().map(str::to_string) {
+            if let Some(scope) = super::workflow_validation::task_scope(&store, &org, &run, &job["task"]).await {
+                job["task_scope"] = json!(scope);
+            }
+        }
     }
-    Ok(Json(
-        json!({"job":db::claim(&conn,&org,&runner,&b.capabilities,chrono::Utc::now().timestamp()).map_err(fail)?}),
-    ))
+    Ok(Json(json!({"job": job})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

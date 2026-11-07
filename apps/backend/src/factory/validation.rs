@@ -177,6 +177,14 @@ pub fn apply_validation(open: &[CheckRef], answers: Option<&Value>) -> Vec<Decis
         .collect()
 }
 
+/// Minimum confidence for a `docs` task class to restrict agents to documentation.
+pub const DOCUMENTATION_CONFIDENCE: f64 = 0.8;
+
+pub fn scope_from_classification(classified: &Value) -> Option<&'static str> {
+    let confident = classified["class_confidence"].as_f64().is_some_and(|c| c >= DOCUMENTATION_CONFIDENCE);
+    (classified["task_class"] == "docs" && confident).then_some("documentation")
+}
+
 /// Failures no phase can fix by running again: re-running only spends the
 /// repair budget. They block immediately with their reason.
 pub const INFRASTRUCTURE_FAILURES: [&str; 1] = ["model_unavailable"];
@@ -317,6 +325,14 @@ mod tests {
         assert_eq!(decisions.iter().map(|d| d.run).collect::<Vec<_>>(), vec![false, true, true]);
         assert_eq!(decisions[2].source, "fallback");
         assert!(apply_validation(&open, None).iter().all(|d| d.run));
+    }
+
+    #[test]
+    fn only_a_confident_docs_class_restricts_agents() {
+        assert_eq!(scope_from_classification(&json!({"task_class": "docs", "class_confidence": 0.93})), Some("documentation"));
+        assert_eq!(scope_from_classification(&json!({"task_class": "docs", "class_confidence": 0.5})), None);
+        assert_eq!(scope_from_classification(&json!({"task_class": "backend", "class_confidence": 0.99})), None);
+        assert_eq!(scope_from_classification(&json!({"error": "jev_http_500"})), None);
     }
 
     #[test]

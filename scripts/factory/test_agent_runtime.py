@@ -104,5 +104,16 @@ class ModelFailureTests(unittest.TestCase):
         self.assertIsNone(model_failure(self.transcript('stop')))
         self.assertIsNone(model_failure('not json'))
 
+
+
+class DocumentationScopeTests(unittest.TestCase):
+    def test_documentation_scope_restricts_implementation_and_tests_only(self):
+        from container_entry import agent_prompt
+        base={'step':{'id':'implement','kind':'agent'},'task':{},'task_scope':'documentation'}
+        self.assertIn('documentation-only',agent_prompt(base,{'role':'implementation'}))
+        self.assertIn('documentation-only',agent_prompt(dict(base,step={'id':'tests','kind':'agent'}),{'role':'test_author'}))
+        self.assertNotIn('documentation-only',agent_prompt(dict(base,step={'id':'investigate','kind':'agent'}),{'role':'investigation'}))
+        self.assertNotIn('documentation-only',agent_prompt({'step':{'id':'implement','kind':'agent'},'task':{}},{'role':'implementation'}))
+
 if __name__ == '__main__':
     unittest.main()

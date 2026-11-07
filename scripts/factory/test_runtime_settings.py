@@ -143,4 +143,20 @@ class CommentOnlyTests(unittest.TestCase):
         self.assertTrue(rs.comment_only('@@ -1 +1 @@\n+# setting docs\n','config.yml'))
         self.assertFalse(rs.comment_only('Binary files a/x and b/x differ','x.png'))
 
+
+
+class EnvironmentPlanTests(unittest.TestCase):
+    def job(self):
+        return {'run_id':'r','lease_token':'t','step':{'id':'environment'},'execution':{'revision':2,'heads':{'api':'b'*40}},
+                'snapshot':{'workspace':{'id':'w','repositories':[{'path':'api','head_sha':'a'*40}]}}}
+    def test_environment_is_skipped_only_when_floors_find_no_code_change(self):
+        import delivery, runtime_settings as rs
+        skip=[{'check':{'name':'environment','cwd':'api'},'run':False,'source':'floor'}]
+        with patch.object(rs,'validation_plan',return_value=skip),patch.object(rs,'skip_evidence',return_value='d'*64):
+            ok,evidence,out=delivery.services({},self.job(),[],Mock(),Mock(),Mock())
+        self.assertTrue(ok);self.assertEqual(evidence[0]['status'],'not_applicable');self.assertEqual(out['output'],{'skipped':'no_code_changes'})
+        jev_skip=[{'check':{'name':'environment','cwd':'api'},'run':False,'source':'jev'}]
+        with patch.object(rs,'validation_plan',return_value=jev_skip),patch.object(delivery,'cleanup',side_effect=RuntimeError('normal setup reached')),self.assertRaisesRegex(RuntimeError,'normal setup'):
+            delivery.services({'state_dir':'/tmp'},self.job(),[],Mock(),Mock(),Mock())  # a Jev-only skip never skips the environment
+
 if __name__=='__main__':unittest.main()
