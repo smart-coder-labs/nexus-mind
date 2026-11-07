@@ -49,9 +49,9 @@ fn schema_97_upgrades_existing_96_intakes_without_losing_rows_or_indexes() {
     c.execute_batch("INSERT INTO factory_workflow_intakes SELECT 'github-source',org_id,definition_id,'github',connector_id,config_json,enabled,next_poll,last_error,created_by FROM factory_workflow_intakes WHERE id='legacy'").unwrap();
     migrations::run(&c).unwrap();
     assert_eq!(
-        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, i32>(0))
             .unwrap(),
-        97
+        migrations::LATEST_USER_VERSION
     );
     assert_eq!(
         c.query_row("SELECT count(*) FROM factory_workflow_intakes", [], |r| r
