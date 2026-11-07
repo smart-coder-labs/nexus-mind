@@ -131,4 +131,16 @@ class ValidationPlanSuiteTests(unittest.TestCase):
         def other(adapter):raise ValueError('something_else')
         with self.assertRaises(ValueError):self.run_suite(None,other)
 
+
+
+class CommentOnlyTests(unittest.TestCase):
+    def test_comment_only_diffs(self):
+        import runtime_settings as rs
+        diff='diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1,0 +2,3 @@\n+// note\n+/* block\n+ * more */\n+\n'
+        self.assertTrue(rs.comment_only(diff,'src/x.ts'))
+        self.assertFalse(rs.comment_only(diff.replace('+// note','+const a = 1'),'src/x.ts'))
+        self.assertFalse(rs.comment_only('@@ -1 +1 @@\n+#private = 1\n','src/x.ts'),'# is code in TypeScript')
+        self.assertTrue(rs.comment_only('@@ -1 +1 @@\n+# setting docs\n','config.yml'))
+        self.assertFalse(rs.comment_only('Binary files a/x and b/x differ','x.png'))
+
 if __name__=='__main__':unittest.main()

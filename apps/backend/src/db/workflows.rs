@@ -1086,6 +1086,10 @@ pub fn recovery_context(conn: &Connection, org: &str, run: &str, failed_step: &s
         return Ok(None);
     }
     let result: Value = result.map(parse).transpose()?.unwrap_or(Value::Null);
+    if let Some(code) = crate::factory::validation::infrastructure_failure(&result) {
+        event(conn, run, Some(failed_step), "recovery.skipped", json!({"reason": "infrastructure", "code": code, "detail": result.pointer("/output/detail")}))?;
+        return Ok(None);
+    }
     let mut failed_checks = Vec::new();
     let mut logs = Vec::new();
     let mut q = conn.prepare("SELECT name,content FROM factory_workflow_artifacts WHERE run_id=?1 AND step_id=?2 AND attempt=?3 AND name LIKE '%-result.json' ORDER BY created_at")?;

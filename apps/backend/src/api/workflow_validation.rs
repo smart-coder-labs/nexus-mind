@@ -59,20 +59,30 @@ pub async fn plan(
     let (mut decisions, open) = v::floors(&b.checks, &b.repositories);
     let mut jev_error = None;
     if !open.is_empty() {
-        let answers = match v::decision_key(&org) {
-            Some(key) => match v::ask(&key, &v::validation_request(&task, &b.repositories, &open)).await {
-                Ok(answers) => Some(answers),
-                Err(e) => {
-                    jev_error = Some(e.to_string());
-                    None
+        match v::decision_key(&org) {
+            Some(key) => {
+                // One Jev call per batch of MAX_QUESTIONS, in parallel; a failed
+                // batch runs its checks and never affects the other batches.
+                let batches: Vec<&[v::CheckRef]> = open.chunks(v::MAX_QUESTIONS).collect();
+                let answers = futures_util::future::join_all(
+                    batches.iter().map(|batch| v::ask(&key, v::validation_request_owned(&task, &b.repositories, batch))),
+                )
+                .await;
+                for (batch, answer) in batches.iter().zip(answers) {
+                    match answer {
+                        Ok(answer) => decisions.extend(v::apply_validation(batch, Some(&answer))),
+                        Err(e) => {
+                            jev_error = Some(e.to_string());
+                            decisions.extend(v::apply_validation(batch, None));
+                        }
+                    }
                 }
-            },
+            }
             None => {
                 jev_error = Some("jev_not_enabled".into());
-                None
+                decisions.extend(v::apply_validation(&open, None));
             }
-        };
-        decisions.extend(v::apply_validation(&open, answers.as_ref()));
+        }
     }
     {
         let h = store.conn();
