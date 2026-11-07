@@ -50,6 +50,9 @@ pub struct Agent {
     pub inherit_model: bool,
     #[serde(default)]
     pub instructions: String,
+    /// Derived from the bound agent revision, never trusted from a caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_snapshot: Option<Value>,
     pub image: String,
     pub model: String,
     pub model_connection: String,
@@ -382,6 +385,7 @@ pub fn resolve_bindings(
 ) -> Result<RuntimeConfig> {
     let mut config = incoming.clone();
     for agent in &mut config.agents {
+        agent.runtime_snapshot = None;
         if let Some(binding) = &agent.binding {
             let detail = super::queries::get_autonomous_agent_detail(c, org, &binding.id)?
                 .ok_or_else(|| anyhow::anyhow!("workflow_agent_unavailable"))?;
@@ -406,6 +410,15 @@ pub fn resolve_bindings(
                 .unwrap_or("")
                 .to_owned();
             validate_agent_instructions(&agent.instructions)?;
+            if detail.revision.config.get("runtime").is_some() {
+                let runtime = crate::automation::agent_runtime::runtime_from_config(&detail.revision.config)?;
+                let config = json!({"executor":agent.harness,"runtime":detail.revision.config["runtime"],"runtime_resolved":runtime});
+                let plan = if runtime.components.iter().any(|c| c.enabled && c.kind != "instructions") {
+                    serde_json::to_value(crate::automation::agent_runtime::plan(&runtime, &agent.harness,
+                        "/tmp/nexusmind-agent-runtime", json!({"command":"nexusmind-mcp","env":{}}))?)?
+                } else { Value::Null };
+                agent.runtime_snapshot = Some(json!({"executor":agent.harness,"config":config,"plan":plan,"agent_revision_id":detail.revision.id}));
+            }
             agent.binding = Some(AgentBinding {
                 id: detail.definition.id,
                 revision: detail.revision.revision,
@@ -655,6 +668,7 @@ mod tests {
                     role: (*r).into(),
                     harness: "claude".into(),
                     binding: None,
+                    runtime_snapshot: None,
                     inherit_model: false,
                     instructions: String::new(),
                     image: img.clone(),
@@ -749,7 +763,7 @@ mod tests {
             name: "Code profile".into(),
             description: None,
             template_key: "github_issue_resolver".into(),
-            config: json!({"executor":"claude","model":"sonnet","custom_instructions":instructions,"target_password":"fixture-never-copy"}),
+            config: json!({"executor":"claude","model":"sonnet","custom_instructions":instructions,"target_password":"fixture-never-copy","runtime":{"components":[{"id":"review-rules","kind":"instructions","files":{"RULES.md":"Check tenant isolation and error handling."}}]}}),
             budgets: json!({}),
         };
         let d = super::super::queries::create_autonomous_agent_definition(
@@ -774,6 +788,13 @@ mod tests {
         assert_eq!(frozen.agents[0].model, "sonnet");
         assert_eq!(frozen.agents[0].binding.as_ref().unwrap().revision, 1);
         assert_eq!(frozen.agents[0].instructions, instructions);
+        let snapshot=frozen.agents[0].runtime_snapshot.as_ref().unwrap();
+        assert_eq!(snapshot["agent_revision_id"],d.revision.id);
+        assert_eq!(snapshot["config"]["runtime_resolved"]["components"][0]["files"]["RULES.md"],"Check tenant isolation and error handling.");
+        assert!(snapshot["plan"].is_null(),"Markdown must not require MCP/network access in an offline workflow");
+        let mut forged=config.clone();
+        forged.agents[0].runtime_snapshot=Some(json!({"forged":"unapproved"}));
+        assert!(!serde_json::to_string(&resolve_bindings(&c,&org.id,&forged).unwrap()).unwrap().contains("unapproved"));
         assert!(!serde_json::to_string(&frozen)
             .unwrap()
             .contains("fixture-never-copy"));
@@ -799,6 +820,8 @@ mod tests {
             "haiku"
         );
         assert_eq!(frozen.agents[0].model, "sonnet");
+        assert!(frozen.agents[0].runtime_snapshot.is_some());
+        assert!(resolve_bindings(&c,&org.id,&config).unwrap().agents[0].runtime_snapshot.is_none());
         c.execute(
             "UPDATE autonomous_agent_definitions SET status='disabled' WHERE id=?1",
             [&d.definition.id],

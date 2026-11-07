@@ -18660,7 +18660,7 @@ pub fn record_github_webhook_delivery(
     Ok(true)
 }
 
-pub enum GithubRunOrigin<'a> { Webhook(&'a str), Reconciliation(&'a str) }
+pub enum GithubRunOrigin<'a> { Webhook(&'a str), RequestedReview(&'a str), Reconciliation(&'a str) }
 #[allow(clippy::too_many_arguments)]
 pub fn enqueue_github_webhook_agents(
     conn: &Connection,
@@ -18673,11 +18673,12 @@ pub fn enqueue_github_webhook_agents(
     payload_hash: &str,
 ) -> Result<usize> {
     let repository=repository.to_ascii_lowercase();
+    let explicit_review = matches!(origin, GithubRunOrigin::RequestedReview(_));
     let (trigger_kind,provenance)=match origin {
-        GithubRunOrigin::Webhook(delivery)=>{
-            let received:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_github_deliveries WHERE org_id=?1 AND delivery_id=?2 AND lower(repository)=?3 AND payload_hash=?4)",rusqlite::params![org_id,delivery,repository,payload_hash],|r|r.get(0))?;
+        GithubRunOrigin::Webhook(delivery) | GithubRunOrigin::RequestedReview(delivery)=>{
+            let received:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_github_deliveries WHERE org_id=?1 AND delivery_id=?2 AND lower(repository)=?3 AND payload_hash=?4 AND (?5=0 OR (event_name='pull_request' AND action='review_requested')))",rusqlite::params![org_id,delivery,repository,payload_hash,explicit_review],|r|r.get(0))?;
             if !received {anyhow::bail!("github_delivery_evidence_required")}
-            ("github_webhook",serde_json::json!({"kind":"github_webhook","delivery_id":delivery}))
+            ("github_webhook",serde_json::json!({"kind":"github_webhook","delivery_id":delivery,"explicit_review_request":explicit_review,"payload_hash":payload_hash}))
         },
         GithubRunOrigin::Reconciliation(scan)=>("reconcile",serde_json::json!({"kind":"github_reconciliation","scan_id":scan})),
     };
@@ -18722,10 +18723,12 @@ pub fn enqueue_github_webhook_agents(
         let mut generation=0_i64;
         if kind=="github_pr" {
             let head=head_sha.filter(|sha|crate::factory::workflows::valid_sha(sha)).ok_or_else(||anyhow::anyhow!("invalid_pull_request_head"))?;
-            let (count,live):(i64,i64)=conn.query_row("SELECT count(*),COALESCE(sum(CASE WHEN r.status!='cancelled' THEN 1 ELSE 0 END),0) FROM autonomous_agent_work_items w JOIN autonomous_agent_runs r ON r.id=w.run_id WHERE w.definition_id=?1 AND lower(w.repository)=?2 AND w.kind='github_pr' AND w.external_number=?3 AND w.head_sha=?4",rusqlite::params![definition_id,repository,external_number,head],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            let (count,live):(i64,i64)=conn.query_row("SELECT count(*),COALESCE(sum(CASE WHEN r.status IN ('queued','leased','running') OR (?5=0 AND r.status!='cancelled') THEN 1 ELSE 0 END),0) FROM autonomous_agent_work_items w JOIN autonomous_agent_runs r ON r.id=w.run_id WHERE w.definition_id=?1 AND lower(w.repository)=?2 AND w.kind='github_pr' AND w.external_number=?3 AND w.head_sha=?4",rusqlite::params![definition_id,repository,external_number,head,explicit_review],|r|Ok((r.get(0)?,r.get(1)?)))?;
             if live>0 {continue;}generation=count;
         }
-        let identity = if generation>0 {format!("{}:retry:{generation}",head_sha.unwrap_or(payload_hash))}else{head_sha.unwrap_or(payload_hash).to_string()};
+        let identity = if explicit_review {
+            format!("{}:request:{}", head_sha.unwrap_or(payload_hash), provenance["delivery_id"].as_str().unwrap_or_default())
+        } else if generation>0 {format!("{}:retry:{generation}",head_sha.unwrap_or(payload_hash))}else{head_sha.unwrap_or(payload_hash).to_string()};
         let occurrence = format!(
             "github:{}",
             hex::encode(Sha256::digest(
@@ -18751,7 +18754,12 @@ pub fn enqueue_github_webhook_agents(
             "UPDATE autonomous_agent_runs SET snapshot_sha=?2 WHERE id=?1",
             rusqlite::params![run.id, head_sha],
         )?;
-        conn.execute("INSERT OR IGNORE INTO autonomous_agent_work_items(id,org_id,definition_id,run_id,repository,kind,external_number,head_sha,payload_hash,eligibility) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'eligible')",rusqlite::params![Uuid::new_v4().to_string(),org_id,definition_id,run.id,repository,kind,external_number,head_sha,payload_hash])?;
+        // The work-item uniqueness key must distinguish explicit re-requests/retries,
+        // even if GitHub sends identical bodies. The raw body hash remains in the delivery ledger.
+        let work_hash = if explicit_review || generation > 0 {
+            hex::encode(Sha256::digest(format!("{payload_hash}|{identity}")))
+        } else { payload_hash.to_string() };
+        conn.execute("INSERT INTO autonomous_agent_work_items(id,org_id,definition_id,run_id,repository,kind,external_number,head_sha,payload_hash,eligibility) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'eligible')",rusqlite::params![Uuid::new_v4().to_string(),org_id,definition_id,run.id,repository,kind,external_number,head_sha,work_hash])?;
         created += 1;
     }
     Ok(created)
@@ -19050,6 +19058,12 @@ pub fn resolve_open_findings_for_issue(
         rusqlite::params![org_id, issue_url],
     )?;
     Ok(changed)
+}
+
+/// `ignored` is the persisted archived status. Correct earlier resolutions too.
+pub fn close_findings_for_github_issue(conn: &Connection, org: &str, url: &str, status: &str) -> Result<usize> {
+    if !matches!(status, "resolved" | "ignored") { anyhow::bail!("invalid_finding_status") }
+    conn.execute("UPDATE autonomous_agent_findings SET status=?3,updated_at=datetime('now') WHERE org_id=?1 AND status!=?3 AND id IN (SELECT finding_id FROM autonomous_agent_deliveries WHERE org_id=?1 AND channel='github_issue' AND external_url=?2 COLLATE NOCASE AND finding_id IS NOT NULL)", rusqlite::params![org,url,status]).map_err(Into::into)
 }
 
 pub fn list_autonomous_agent_deliveries(

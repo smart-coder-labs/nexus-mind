@@ -8,6 +8,35 @@ from container_entry import agent_result, configure_runtime
 
 
 class AgentRuntimeTests(unittest.TestCase):
+    def test_bound_harness_snapshot_survives_adapter_compilation_without_enabling_mcp(self):
+        from agent_runtime import effective_runtime, stage_runtime
+        from runtime_settings import compile_settings
+        from container_entry import agent_prompt
+        snapshot = {'executor': 'claude', 'plan': None, 'config': {'runtime_resolved': {'components': [
+            {'id': 'rules', 'kind': 'instructions', 'files': {'RULES.md': 'Check tenant isolation.'}}
+        ]}}}
+        profile = {'agents': [{'role': 'reviewer', 'harness': 'claude', 'model': 'sonnet',
+                              'image': 'image', 'network': 'model-net', 'model_connection': 'proxy',
+                              'runtime_snapshot': snapshot}]}
+        adapters, _ = compile_settings(profile)
+        adapter = adapters['isolated-reviewer']
+        job = {'step': {'id': 'review', 'kind': 'review', 'options': {}}}
+        self.assertEqual(effective_runtime(job, adapter), snapshot)
+        context = {'step': job['step'], 'harness_markdown': snapshot['config']['runtime_resolved']['components']}
+        prompt = agent_prompt(context, adapter)
+        self.assertIn('Apply context.harness_markdown', prompt)
+        self.assertIn('Check tenant isolation.', prompt)
+        with tempfile.TemporaryDirectory() as temp:
+            stage_runtime({}, job, adapter, Path(temp))
+            self.assertFalse((Path(temp) / 'runtime-plan.json').exists())
+        explicit = {'config': {'runtime_resolved': {}}, 'plan': {}}
+        job['step']['options']['runtime_snapshot'] = explicit
+        self.assertEqual(effective_runtime(job, adapter), explicit)
+        job['step']['options'] = {}
+        snapshot['config']['runtime_resolved']['components'].append({'kind': 'extension', 'enabled': True})
+        with self.assertRaisesRegex(ValueError, 'executable runtime plan'):
+            stage_runtime({}, job, adapter, Path('/unused'))
+
     def test_materializes_only_pinned_resources_and_resolves_container_env(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / 'runtime'

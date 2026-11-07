@@ -87,7 +87,7 @@ def compile_settings(profile,config=None):
             command=[x.replace('{model}',agent['model']) for x in local['command']];format_=local['format']
         elif harness=='claude':command=['claude','--model',agent['model'],'--permission-mode','bypassPermissions','--allowedTools',tools];format_='claude'
         else:raise RuntimeSettingsError('runtime_harness_missing')
-        adapters[ROLES[role]]={'kind':'agent','format':format_,'role':role,'harness':harness,'model':agent['model'],'agent_binding':agent.get('binding'),'instructions':agent.get('instructions',''),'image':agent['image'],'network':agent['network'],'model_connection':agent['model_connection'],'command':command}
+        adapters[ROLES[role]]={'kind':'agent','format':format_,'role':role,'harness':harness,'model':agent['model'],'agent_binding':agent.get('binding'),'instructions':agent.get('instructions',''),'runtime_snapshot':agent.get('runtime_snapshot'),'image':agent['image'],'network':agent['network'],'model_connection':agent['model_connection'],'command':command}
     for phase,alias in [('verify','isolated-verification'),('functional','isolated-functional-qa'),('design','isolated-design-qa'),('security','isolated-security-qa')]:
         checks=[c for c in profile.get('checks',[]) if c['name'] in PHASES] if phase=='verify' else [c for c in profile.get('checks',[]) if c['name']==phase]
         if checks:adapters[alias]={'kind':'suite','checks':checks}

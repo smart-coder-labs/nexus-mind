@@ -102,16 +102,27 @@ and apply the supplied runtime plan inside their isolated guest.
 
 Select an agent or enable step customization in the workflow phase editor to
 use the versioned runtime. NexusMind is mandatory in that selection. Existing
-workspace infrastructure, role bindings, phase prompts, and legacy definitions
-without this selection retain their current behavior.
+workspace infrastructure and phase security policies remain unchanged. A catalog
+agent selected through a workspace **role binding** now also contributes its pinned
+runtime/resources, not just its model and custom instructions. Each new run freezes
+the bound revision; existing runs are unchanged. An explicit per-step runtime takes
+precedence. Markdown-only bindings are applied directly in the role prompt without
+enabling MCP/network access. Native executable resources require an adapter with an
+approved MCP transport; offline backend-model adapters fail closed for those resources.
 
 ## Operator provisioning
 
 Local autonomous workers require `AUTONOMOUS_NEXUSMIND_MCP_CONFIG` (default
-`/app/nexusmind-mcp.json`) containing a NexusMind stdio server, and a scoped
-`NEXUSMIND_API_KEY` (or a key in that trusted server configuration). Resources and
-MCP configuration are staged in a private temporary directory, removed after the
-invocation. Pi shares only its existing `auth.json`, not global resources or
+`/app/nexusmind-mcp.json`) containing a NexusMind stdio server, and an active
+organization `nexus-bot` identity (configure it through Factory bot setup). For local
+Claude/Pi invocations the worker issues a temporary key for that bot, never uses a
+personal/global API key, and passes it only to the NexusMind MCP. Its permissions
+remain the bot's configured role/memberships; no grants are added. The key is revoked
+on normal exit, cancellation or setup failure, with budget-bounded expiry as crash
+protection. Existing bot/proxy keys are not rotated. The selected non-secret identity
+is recorded as `runtime.identity_selected`. OpenShell retains provider-owned credentials;
+sandboxed tasks retain the existing scoped egress proxy. Resources and MCP configuration
+are staged in a private temporary directory, removed after the invocation. Pi shares only its existing `auth.json`, not global resources or
 settings. This does not turn local Pi into a sandbox: local mode remains unsafe.
 
 For additional local MCP credentials, explicitly allow environment names in
