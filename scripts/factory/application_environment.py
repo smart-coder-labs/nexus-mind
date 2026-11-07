@@ -257,7 +257,7 @@ def resolve_image(config, reference, job=None, api=None):
             subprocess.run([runtime, 'pull', reference], check=True, capture_output=True, timeout=240, env=client_env)
         else:
             log = Path(config['state_dir']) / job['run_id'] / ('image-pull-' + hashlib.sha256(reference.encode()).hexdigest()[:12] + '.log')
-            if monitor([runtime, 'pull', reference], config, job, api, None, log) != 0:
+            if monitor([runtime, 'pull', reference], config, job, api, None, log, source='service') != 0:
                 raise EnvironmentDecision('Approved public image could not be prepared')
     metadata = json.loads(subprocess.check_output([runtime, 'image', 'inspect', reference], timeout=15, env=client_env))[0]
     if metadata.get('Config', {}).get('OnBuild'):
@@ -422,7 +422,7 @@ def prepare(config, job, work, api, roots, private_file):
                 log = run_root / ('build-' + name + '.log')
                 build_redactions = redactions + service['_redactions']
                 from execution import redact, upload
-                status = monitor(command, config, job, api, None, log, build_redactions)
+                status = monitor(command, config, job, api, None, log, build_redactions, source='service')
                 upload(api, job, 'application-build-' + name + '.log', 'text/plain', redact(log.read_text(errors='replace')[-512 * 1024:], build_redactions).encode()[:1024 * 1024])
                 if status != 0:
                     raise EnvironmentDecision('Candidate build failed; inspect the redacted build log (build egress is disabled)')

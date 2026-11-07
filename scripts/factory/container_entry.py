@@ -8,7 +8,22 @@ import shutil
 import tempfile
 import sys
 import threading
+import time
 from agent_runtime import configure_runtime, codex_prices, agent_result
+
+
+def tee(command, log, **kwargs):
+    """Run a command, writing its combined output to `log` and to this container's
+    stdout as it is produced, so the runner can stream it while it runs."""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+    for line in process.stdout:
+        log.write(line); log.flush()
+        sys.stdout.buffer.write(line); sys.stdout.buffer.flush()
+    return process.wait()
+
+
+def announce(text):
+    sys.stdout.write('[nexusmind] ' + text + '\n'); sys.stdout.flush()
 
 
 def bootstrap_node(root, output):
@@ -17,15 +32,16 @@ def bootstrap_node(root, output):
     clean_env={'PATH':os.environ['PATH'],'HOME':'/home/runner','LANG':'C.UTF-8'}
     cache_script="""const fs=require('fs');const c=require('/usr/local/lib/node_modules/npm/node_modules/cacache');(async()=>{for(const p of JSON.parse(fs.readFileSync('/input/node-dependencies/manifest.json')).packages){await c.put('/tmp/nm-npm-cache/_cacache',p.url,fs.readFileSync('/input/node-dependencies/'+p.file),{integrity:p.integrity})}})().catch(e=>{console.error(e.message);process.exit(1)})"""
     with (output/'dependencies.log').open('ab') as log:
-        prepared=subprocess.run(['node','-e',cache_script],stdout=log,stderr=subprocess.STDOUT,env=clean_env)
-        if prepared.returncode:return prepared.returncode
+        announce('dependencies '+str(root.relative_to('/work') if root!=Path('/work') else '.')+': preparando caché verificada')
+        prepared=tee(['node','-e',cache_script],log,env=clean_env)
+        if prepared:return prepared
         with tempfile.TemporaryDirectory(prefix='nm-npm-',dir='/tmp') as temporary:
             for filename in ('package.json','package-lock.json'):shutil.copyfile(root/filename,Path(temporary)/filename)
             user_config=Path(temporary)/'.user.npmrc';global_config=Path(temporary)/'.global.npmrc'
             user_config.write_text('');global_config.write_text('')
             env={**clean_env,'NPM_CONFIG_USERCONFIG':str(user_config),'NPM_CONFIG_GLOBALCONFIG':str(global_config),'NPM_CONFIG_CACHE':cache,'NPM_CONFIG_REGISTRY':'https://registry.npmjs.org','NPM_CONFIG_IGNORE_SCRIPTS':'true','NPM_CONFIG_AUDIT':'false','NPM_CONFIG_FUND':'false'}
-            installed=subprocess.run(['npm','ci','--offline','--ignore-scripts','--no-audit','--no-fund','--cache',cache],cwd=temporary,env=env,stdout=log,stderr=subprocess.STDOUT)
-            if installed.returncode:return installed.returncode
+            installed=tee(['npm','ci','--offline','--ignore-scripts','--no-audit','--no-fund','--cache',cache],log,cwd=temporary,env=env)
+            if installed:return installed
             target=root/'node_modules'
             if target.exists() or target.is_symlink():raise ValueError('Unexpected existing dependencies')
             source=Path(temporary)/'node_modules'
@@ -123,14 +139,20 @@ def main():
             (directory / 'settings.json').write_text(json.dumps(PI_SETTINGS))
             env['PI_CODING_AGENT_DIR'] = str(directory)
         with (output / 'agent.stdout.log').open('wb') as stdout, (output / 'agent.stderr.log').open('wb') as stderr:
-            process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=stderr,cwd='/work',env=env)
+            process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd='/work',env=env)
+            def errors():
+                # stderr goes to its own log and to the container's stderr, which
+                # the runner streams; the transcript parser ignores non-JSON lines.
+                for line in process.stderr:
+                    stderr.write(line);stderr.flush();sys.stderr.buffer.write(line);sys.stderr.buffer.flush()
+            reader=threading.Thread(target=errors,daemon=True);reader.start()
             def feed():
                 try: process.stdin.write(prompt.encode()); process.stdin.close()
                 except (BrokenPipeError,OSError): pass
             writer=threading.Thread(target=feed,daemon=True);writer.start()
             for line in process.stdout:
                 stdout.write(line);stdout.flush();sys.stdout.buffer.write(line);sys.stdout.buffer.flush()
-            returncode=process.wait();writer.join(timeout=1)
+            returncode=process.wait();writer.join(timeout=1);reader.join(timeout=5)
         raw=(output / 'agent.stdout.log').read_bytes()
         if returncode:
             result = {'success': False, 'error': 'agent_process_failed', 'hold': True, 'cost_usd': 0}
@@ -165,9 +187,12 @@ def main():
                     checks.append({'name':check['name'],'exit_code':preparation,'preparation_error':'node_dependency_install_failed'})
                     continue
                 prepared_repositories.add(str(cwd))
-            completed = subprocess.run(check['command'], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            (output / (check['name'] + '.log')).write_bytes(completed.stdout)
-            checks.append({'name': check['name'], 'exit_code': completed.returncode})
+            announce('check ' + check['name'] + ': inicio')
+            started = time.monotonic()
+            with (output / (check['name'] + '.log')).open('wb') as log:
+                code = tee(check['command'], log, cwd=cwd)
+            announce('check ' + check['name'] + ': exit ' + str(code) + ' en ' + str(round(time.monotonic() - started, 1)) + ' s')
+            checks.append({'name': check['name'], 'exit_code': code})
         result = {'success': bool(checks) and all(c['exit_code'] == 0 or c.get('status')=='not_applicable' for c in checks), 'checks': checks, 'cost_usd': 0}
         if any(c.get('status')=='not_applicable' for c in checks): result['not_applicable_reason']='; '.join(c['reason'] for c in checks if c.get('reason'))
     else:

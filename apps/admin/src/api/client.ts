@@ -2,6 +2,8 @@ import type {
   WorkflowCatalog,
   WorkflowDefinition,
   WorkflowRun,
+  WorkflowEventPage,
+  WorkflowEventQuery,
   Workspace,
   Repository,
   StoredWorkflow,
@@ -1824,6 +1826,11 @@ export class NexusMindClient {
   }
   getFactoryWorkflowRun(id: string): Promise<WorkflowRun> {
     return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}`)
+  }
+  getWorkflowRunEvents(id: string, query: WorkflowEventQuery): Promise<WorkflowEventPage> {
+    const qs = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) if (value != null) qs.set(key, String(value))
+    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/events?${qs}`)
   }
   controlFactoryWorkflowRun(
     id: string,

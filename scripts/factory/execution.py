@@ -18,6 +18,7 @@ import time
 import uuid
 
 from control_plane import ControlPlaneError
+from log_stream import LogStream
 
 MAX_LOG = 1024 * 1024
 IGNORE = {'.git', '.codex', '.claude', 'node_modules', 'target', '.next', '__pycache__'}
@@ -216,37 +217,65 @@ def stage_sources(job, state_dir, git):
     return working, work
 
 
-def monitor(command, config, job, api, name, log_path, secrets=None):
-    """Bound process lifetime, output and cancellation; no shell interpolation."""
+def monitor(command, config, job, api, name, log_path, secrets=None, source='runner'):
+    """Bound process lifetime, output and cancellation; no shell interpolation.
+    Output is streamed sequentially (no tail jumps) while the process runs, and
+    the outcome is recorded as `command.finished` on every exit path."""
     started = time.monotonic()
-    streamed = 0
     deadline = min(job['step']['timeout_seconds'], max(1, job['lease_until'] - int(time.time()) - 5))
-    with log_path.open('wb') as stream:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
-                                   env=runtime_environment(config, job['run_id']) if command[0] in ('docker', 'podman') else {'PATH': os.defpath, 'HOME': os.environ.get('HOME', '/tmp'), 'LANG': 'C'})
+    stream = LogStream(lambda kind, text, fields: send_event(api, job, kind, text, fields), log_path,
+                       lambda text: redact(text, secrets or []), secrets or [], source=source)
+    finished = {'exit_code': None, 'timed_out': False, 'output_exceeded': False}
+    last_lease = started
+    try:
+        with log_path.open('wb') as output:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                       env=runtime_environment(config, job['run_id']) if command[0] in ('docker', 'podman') else {'PATH': os.defpath, 'HOME': os.environ.get('HOME', '/tmp'), 'LANG': 'C'})
+            try:
+                while process.poll() is None:
+                    if time.monotonic() - started > deadline:
+                        finished['timed_out'] = True
+                        raise ValueError('Adapter time budget exceeded (' + str(int(deadline)) + ' s)')
+                    if log_path.stat().st_size > 16 * MAX_LOG:
+                        finished['output_exceeded'] = True
+                        raise ValueError('Adapter output budget exceeded (' + str(16 * MAX_LOG) + ' bytes)')
+                    time.sleep(1)
+                    stream.poll()
+                    if time.monotonic() - last_lease >= 5:
+                        api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/lease', {'lease_token': job['lease_token']})
+                        last_lease = time.monotonic()
+                finished['exit_code'] = process.returncode
+                return process.returncode
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill(); process.wait()
+                if name:
+                    subprocess.run([runtime_command(config), 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    finally:
         try:
-            while process.poll() is None:
-                if time.monotonic() - started > deadline or log_path.stat().st_size > 16 * MAX_LOG:
-                    raise ValueError('Adapter time/output budget exceeded')
-                time.sleep(1)
-                if int(time.monotonic() - started) % 5 == 0:
-                    if log_path.stat().st_size > streamed:
-                        with log_path.open('rb') as log:
-                            log.seek(max(streamed, log_path.stat().st_size-4096))
-                            text=log.read(4096).decode(errors='replace')
-                            streamed=log.tell()
-                        log_event(api,job,'log.chunk',redact(text,secrets or []))
-                    api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/lease', {'lease_token': job['lease_token']})
-            return process.returncode
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill(); process.wait()
-            if name:
-                subprocess.run([runtime_command(config), 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+            stats = stream.finish()
+            code = finished['exit_code']
+            data = dict(finished, duration_ms=int((time.monotonic() - started) * 1000), bytes=stats['bytes'],
+                        gap_bytes=stats['gap_bytes'], truncated=stats['truncated'],
+                        dropped_events=job.pop('dropped_events', 0))
+            if code is not None and code < 0:
+                data['signal'] = -code
+            if code == 137:
+                data['hint'] = 'killed_or_out_of_memory'
+            summary = ('exit ' + str(code)) if code is not None else ('timeout' if finished['timed_out'] else 'interrupted')
+            send_event(api, job, 'command.finished', summary, {'source': source, 'data': data,
+                       'severity': 'info' if code == 0 else 'error'})
+        except OSError:
+            pass  # A lost lease or I/O error must never hide the primary outcome.
+
+
+def mark_stage(job, stage):
+    if isinstance(job.get('_trace'), dict):
+        job['_trace']['stage'] = stage
 
 
 def upload(api, job, name, mime, data):
@@ -258,25 +287,60 @@ def upload(api, job, name, mime, data):
     })
 
 
-def log_event(api, job, kind, message):
+def send_event(api, job, kind, message, fields=None):
+    """Send one structured event. Returns 'ok', 'retry' (transient failure) or
+    'quota' (the run's budget for this class is exhausted). Contract and lease
+    errors raise. Structured fields are dropped for a backend that predates them."""
+    path = '/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/events'
+    body = {'lease_token': job['lease_token'], 'kind': kind, 'message': message.encode()[:4000].decode(errors='ignore')}
+    if fields and not getattr(api, 'legacy_events', False):
+        body.update({k: v for k, v in fields.items() if v is not None})
+    try:
+        api.call(path, body)
+        return 'ok'
+    except ControlPlaneError as error:
+        if error.backend_code == 'invalid_json' and len(body) > 3:
+            api.legacy_events = True
+            return send_event(api, job, kind, message)
+        if error.backend_code == 'event_quota':
+            return 'quota'
+        if error.transient:
+            print('Workflow event not recorded: ' + json.dumps({'kind': kind, 'status': error.status,
+                  'code': error.backend_code or None, 'request_id': error.request_id}), flush=True)
+            return 'retry'
+        raise
+
+
+def log_event(api, job, kind, message, fields=None):
     """Best-effort: a backend outage or the per-run event quota must not abort the
     step it describes. Contract and lease errors still raise. Lost events are
     counted and announced in the next event that does get through."""
-    path = '/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/events'
-    message = message.encode()[:4000].decode(errors='ignore')
     dropped = job.get('dropped_events', 0)
     if dropped:
-        message = ('[runner: ' + str(dropped) + ' eventos anteriores no se registraron]\n' + message).encode()[:4000].decode(errors='ignore')
-    try:
-        api.call(path, {'lease_token': job['lease_token'], 'kind': kind, 'message': message})
-    except ControlPlaneError as error:
-        if not (error.transient or error.backend_code == 'event_quota'):
-            raise
+        message = '[runner: ' + str(dropped) + ' eventos anteriores no se registraron]\n' + message
+    if send_event(api, job, kind, message, fields) != 'ok':
         job['dropped_events'] = dropped + 1
-        print('Workflow event not recorded: ' + json.dumps({'kind': kind, 'status': error.status,
-              'code': error.backend_code or None, 'request_id': error.request_id}), flush=True)
         return
     job.pop('dropped_events', None)
+
+
+@contextlib.contextmanager
+def preserve_failure_logs(api, job, working, out, secrets):
+    """On timeout, cancellation or an exception, keep the redacted tail of every
+    log as an artifact. A failed export never replaces the original error."""
+    try:
+        yield
+    except BaseException:
+        for path in [working / 'runtime.log', *sorted(out.glob('*.log'))]:
+            try:
+                if path.is_file() and not path.is_symlink():
+                    with path.open('rb') as log:
+                        log.seek(max(0, path.stat().st_size - MAX_LOG // 2))
+                        tail = log.read().decode(errors='replace')
+                    upload(api, job, ('failure-' + path.name)[:120], 'text/plain', redact(tail, secrets).encode()[:MAX_LOG])
+            except Exception:  # noqa: BLE001 - best effort by design
+                pass
+        raise
 
 
 def protect_verification_scripts(config,job,adapter,git):
@@ -303,6 +367,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         raise ValueError('Checks need safe, unique named commands')
     if adapter['kind']=='checks' and len({c['name'] for c in adapter['checks']})!=len(adapter['checks']): raise ValueError('Duplicate check names')
     if adapter['kind']=='checks': protect_verification_scripts(config,job,adapter,git)
+    mark_stage(job, 'stage_sources')
     working, work = stage_sources(job, config['state_dir'], git)
     verified_source = tree_fingerprint(work)
     out = working / 'output'; out.mkdir()
@@ -352,12 +417,13 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             nonlocal last_heartbeat
             if time.monotonic()-last_heartbeat>=5:
                 api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/lease',{'lease_token':job['lease_token']});last_heartbeat=time.monotonic()
+        mark_stage(job, 'node_dependencies')
         log_event(api,job,'command.started','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
         prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']))
         remaining=job['step']['timeout_seconds']-(time.monotonic()-started)
         if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
-        import copy
-        job=copy.deepcopy(job);job['step']['timeout_seconds']=int(remaining)
+        # Shallow copy keeps the shared step trace; only the timeout changes.
+        job=dict(job);job['step']=dict(job['step']);job['step']['timeout_seconds']=int(remaining)
     from agent_runtime import stage_runtime
     stage_runtime(config, job, adapter, inp)
     (inp / 'context.json').write_text(json.dumps(context))
@@ -396,10 +462,13 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             raise ValueError('VM drivers must broker secrets themselves; host env files are not forwarded')
     else:
         raise ValueError('Unsupported isolation driver')
+    mark_stage(job, 'container')
     log_event(api, job, 'agent.started' if adapter['kind'] == 'agent' else 'command.started', job['step']['adapter'])
     from model_relay import Relay
-    with Relay(model_root, api, job) if backend_model else contextlib.nullcontext():
-        exit_code = monitor(command, config, job, api, name, working / 'runtime.log', secrets)
+    with Relay(model_root, api, job) if backend_model else contextlib.nullcontext(), preserve_failure_logs(api, job, working, out, secrets):
+        exit_code = monitor(command, config, job, api, name, working / 'runtime.log', secrets,
+                            source='agent' if adapter['kind'] == 'agent' else 'check')
+    mark_stage(job, 'collect_output')
     check_tree(out)
     check_tree(work)
     if adapter['kind']=='checks' and {k:v for k,v in tree_fingerprint(work).items() if k in verified_source}!=verified_source:
@@ -422,9 +491,8 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         text = redact(path.read_text(errors='replace'), secrets)
         for offset in range(0, max(1, len(text)), MAX_LOG // 2):
             chunk = text[offset:offset + MAX_LOG // 2].encode()
+            # Complete, redacted logs as artifacts; the live history was streamed.
             upload(api, job, path.name[:80] + '-' + str(offset), 'text/plain', chunk)
-            # High-signal tail for live workflow history, full log in artifacts.
-            log_event(api, job, 'log.chunk', chunk.decode(errors='replace')[-2000:])
     for path in sorted(out.rglob('*')):
         if path.suffix in ('.png', '.jpg', '.jpeg') and path.is_file() and not path.is_symlink():
             mime = 'image/png' if path.suffix == '.png' else 'image/jpeg'
@@ -451,6 +519,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             preview=redact(''.join(chunks),secrets).encode()
             if len(preview)>MAX_LOG: raise ValueError('Candidate diff exceeds review artifact budget')
             if preview: upload(api,job,'candidate-'+hashlib.sha256(repo['path'].encode()).hexdigest()[:12]+'.diff','text/plain',preview)
+    mark_stage(job, 'upload_artifacts')
     result_data = json.dumps(result, sort_keys=True).encode()
     artifact = upload(api, job, 'result.json', 'application/json', result_data)
     heads = dict(job['execution']['heads'])

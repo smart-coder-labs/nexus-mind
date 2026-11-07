@@ -736,3 +736,73 @@ fn publisher_never_bypasses_control_plane_policies() {
         .is_none());
     assert_eq!(db::run_detail(&c, &o, &run).unwrap()["status"], "blocked");
 }
+
+#[test]
+fn observable_history_is_attributed_paginated_budgeted_and_retained() {
+    use nexusmind::db::workflow_logs as logs;
+    let (c, org, user, runner, workspace) = setup();
+    let d = define(&c, &org, &user, &workspace, vec![step("prepare", &[], StepKind::Prepare)]);
+    let run = run(&c, &org, &d);
+    let job = claim(&c, &org, &runner, 100);
+    let fence = job["lease_token"].as_str().unwrap().to_string();
+    let ingest = |body: serde_json::Value| -> anyhow::Result<serde_json::Value> {
+        let mut body = body;
+        body["lease_token"] = fence.clone().into();
+        let e: logs::Ingest = serde_json::from_value(body).unwrap();
+        logs::ingest(&c, &org, &runner, &run, "prepare", &e, Some("rn-0123456789abcdef"), 101)
+    };
+    // Identity comes from the lease; a producer cannot claim another attempt.
+    assert!(serde_json::from_value::<logs::Ingest>(json!({"lease_token":"x","kind":"log.chunk","message":"m","attempt":9})).is_err());
+    ingest(json!({"kind":"log.chunk","message":"line 0 Authorization: Bearer abcdefghijklmnop\n","stream":"combined","source":"agent","offset":0})).unwrap();
+    assert_eq!(ingest(json!({"kind":"log.chunk","message":"line 0 again","stream":"combined","source":"agent","offset":0})).unwrap()["duplicate"], true);
+    assert_eq!(ingest(json!({"kind":"log.chunk","message":"x","source":"elsewhere"})).unwrap_err().to_string(), "invalid_event");
+    let page = logs::list(&c, &org, &run, &logs::Query { step: Some("prepare".into()), attempt: Some(1), ..Default::default() }).unwrap();
+    let first = &page["events"].as_array().unwrap().iter().find(|e| e["kind"] == "log.chunk").unwrap()["payload"];
+    assert_eq!(first["attempt"], 1);
+    assert_eq!(first["input_revision"], 0);
+    assert_eq!(first["request_id"], "rn-0123456789abcdef");
+    assert!(!first["message"].as_str().unwrap().contains("abcdefghijklmnop"));
+    // More than 1000 events stay reachable, oldest included, by cursor.
+    for i in 1..1300 {
+        ingest(json!({"kind":"log.chunk","message":format!("line {i}\n"),"offset":i * 10})).unwrap();
+    }
+    let mut before = None;
+    let mut seen = Vec::new();
+    loop {
+        let page = logs::list(&c, &org, &run, &logs::Query { before, limit: Some(500), class: Some("logs".into()), ..Default::default() }).unwrap();
+        let events = page["events"].as_array().unwrap().clone();
+        before = events.first().and_then(|e| e["seq"].as_i64());
+        seen.splice(0..0, events);
+        if page["has_older"] != true { break }
+    }
+    assert_eq!(seen.len(), 1300);
+    assert!(seen[0]["payload"]["message"].as_str().unwrap().starts_with("line 0"));
+    let newer = logs::list(&c, &org, &run, &logs::Query { after: seen[1298]["seq"].as_i64(), ..Default::default() }).unwrap();
+    assert_eq!(newer["events"].as_array().unwrap().len(), 1);
+    // Output exhausting its budget never blocks control events, and is marked.
+    for i in 1300..logs::LOG_LIMIT {
+        c.execute("INSERT INTO factory_workflow_events(run_id,step_id,kind,payload_json) VALUES (?1,'prepare','log.chunk',?2)", rusqlite::params![run, json!({"message":i.to_string(),"attempt":1}).to_string()]).unwrap();
+    }
+    assert_eq!(ingest(json!({"kind":"log.chunk","message":"over"})).unwrap_err().to_string(), "event_quota");
+    ingest(json!({"kind":"command.finished","message":"exit 0","data":{"exit_code":0,"gap_bytes":0,"dropped_events":2}})).unwrap();
+    let coverage = logs::coverage(&c, &run, Some("prepare"), Some(1)).unwrap();
+    assert_eq!(coverage["truncated"], json!(["logs"]));
+    assert_eq!(coverage["dropped_events"], 2);
+    assert_eq!(coverage["complete"], false);
+    // The run detail stays light: output is served by the paginated history.
+    let detail = db::run_detail(&c, &org, &run).unwrap();
+    assert!(detail["events"].as_array().unwrap().iter().all(|e| e["kind"] != "log.chunk"));
+    // Other organizations and other runners cannot read or attribute.
+    assert_eq!(logs::list(&c, "another-organization", &run, &logs::Query::default()).unwrap_err().to_string(), "not_found");
+    assert!(!logs::record_rejection(&c, &db::token_hash("nmr_wrong"), &run, "prepare", "/x", 409, "lease_conflict", None).unwrap());
+    let hash: String = c.query_row("SELECT token_hash FROM factory_runners WHERE id=?1", [&runner], |r| r.get(0)).unwrap();
+    assert!(logs::record_rejection(&c, &hash, &run, "prepare", "/v1/factory/runner/runs/:run/steps/:step/lease", 409, "lease_conflict", Some("rn-1")).unwrap());
+    // Retention removes only bulky output of finished runs and says so.
+    c.execute("UPDATE factory_workflow_runs SET status='succeeded' WHERE id=?1", [&run]).unwrap();
+    c.execute("UPDATE factory_workflow_events SET created_at=datetime('now','-30 days') WHERE run_id=?1", [&run]).unwrap();
+    assert_eq!(logs::prune(&c, 14).unwrap(), logs::LOG_LIMIT);
+    let coverage = logs::coverage(&c, &run, None, None).unwrap();
+    assert_eq!(coverage["log_events"], 0);
+    assert_eq!(coverage["pruned_events"], logs::LOG_LIMIT);
+    assert!(db::run_detail(&c, &org, &run).unwrap()["events"].as_array().unwrap().iter().any(|e| e["kind"] == "backend.rejected"));
+}

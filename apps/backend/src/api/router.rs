@@ -224,6 +224,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/factory/workflow-runs", post(workflows::start_run))
         .route("/v1/factory/workflow-runs/:id", get(workflows::get_run))
         .route("/v1/factory/workflow-runs/:id/control", post(workflows::control_run))
+        .route("/v1/factory/workflow-runs/:id/events", get(workflow_execution::run_events))
         .route("/v1/factory/workflow-runs/:id/approve", post(workflow_execution::approve))
         .route("/v1/factory/workflow-artifacts/:id", get(workflow_execution::get_artifact))
         .route("/v1/factory/workflow-intakes", post(workflow_execution::create_intake))
@@ -946,7 +947,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .layer(cors)
         .layer(CookieManagerLayer::new())
         .layer(middleware::from_fn(api_mw::accept_json))
-        .layer(middleware::from_fn(api_mw::runner_diagnostics))
+        .layer(middleware::from_fn_with_state(store.conn(), api_mw::runner_diagnostics))
         .layer(TraceLayer::new_for_http())
         .with_state(store.clone());
 
