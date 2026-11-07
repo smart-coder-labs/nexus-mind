@@ -80,6 +80,11 @@ spec:
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME
               value: /claude-home
+            # Orgs where Jev decides which workflow checks run and which phase
+            # retries a failure (floors still apply; Jev errors run everything).
+            # Explicit opt-in, separate from shadow mode.
+            - name: FACTORY_JEV_DECISION_ORGS
+              value: bdf4b2aa-3f52-422e-8bee-a1babbb7d337
           volumeMounts:
             - name: data
               mountPath: /data

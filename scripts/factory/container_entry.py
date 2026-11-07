@@ -48,6 +48,17 @@ def bootstrap_node(root, output):
             if target.exists() or target.is_symlink():raise ValueError('Unexpected existing dependencies')
             source=Path(temporary)/'node_modules'
             if source.exists():shutil.move(str(source),target)
+        # Install scripts never run, so Prisma clients are not generated. Generate
+        # them offline (`--no-engine`: types and client only, no native engine
+        # download). Best effort: a failure is logged, the check still runs.
+        prisma=root/'node_modules'/'.bin'/'prisma'
+        if prisma.exists() and ((root/'prisma').is_dir() or (root/'schema.prisma').is_file()):
+            announce('dependencies: prisma generate --no-engine')
+            try:
+                if tee([str(prisma),'generate','--no-engine'],log,cwd=root,env={**clean_env,'PRISMA_HIDE_UPDATE_MESSAGE':'1','CHECKPOINT_DISABLE':'1'}):
+                    announce('dependencies: prisma generate falló; se continúa sin cliente generado')
+            except (OSError,subprocess.SubprocessError):
+                announce('dependencies: prisma generate no disponible')
     return 0
 
 

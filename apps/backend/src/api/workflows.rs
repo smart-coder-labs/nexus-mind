@@ -75,6 +75,8 @@ pub(super) fn fail(e: anyhow::Error) -> Failure {
                 "repo_secret_npmrc_key_not_allowed"=>"Solo se admiten registry, @scope:registry, always-auth y //host/:_authToken|_auth|username|_password|email.",
                 "repo_secret_unavailable"=>"No se pudo descifrar un secreto del repositorio. Vuelve a guardarlo desde el admin.",
                 "encryption_required"=>"El backend no tiene NEXUSMIND_TOKEN_ENCRYPTION_KEY configurada; no se guardan secretos sin cifrar.",
+                "invalid_validation_plan_request"=>"El runner envió un plan de validación inválido (sin checks o demasiados).",
+                "validation_plan_step_not_check"=>"El plan de validación solo aplica a fases de comprobación.",
                 _=>public,
             }.into(),
         }),
@@ -458,7 +460,10 @@ pub async fn complete(
         chrono::Utc::now().timestamp(),
     )
     .map_err(fail)?;
-    Ok(Json(
-        json!({"recorded":true,"status":db::run_detail(&conn,&org,&run).map_err(fail)?["status"]}),
-    ))
+    let status = db::run_detail(&conn, &org, &run).map_err(fail)?["status"].clone();
+    if status == "blocked" && crate::factory::validation::decision_key(&org).is_some() {
+        // Jev chooses which phase (if any) can resolve the failure.
+        tokio::spawn(super::workflow_validation::recover(store.clone(), org.clone(), run.clone(), step.clone()));
+    }
+    Ok(Json(json!({"recorded":true,"status":status})))
 }
