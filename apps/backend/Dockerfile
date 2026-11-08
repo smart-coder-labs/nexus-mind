@@ -32,21 +32,25 @@ ARG CODEX_VERSION=0.160.0
 # Pi task executor uses the worker's persisted ChatGPT OAuth, never task-pod credentials.
 ARG PI_VERSION=1.4.0
 ARG OPENSHELL_VERSION=v0.1.2
+# Pinned release digests (GitHub release asset digests for v0.1.2). Bump them
+# together with OPENSHELL_VERSION; the build no longer depends on fetching the
+# separate checksums asset, whose CDN path can fail independently.
+ARG OPENSHELL_SHA256_AARCH64=9880c5776688231d5242deb046cdee361734f94901b9123949a0baf29fdadd9e
+ARG OPENSHELL_SHA256_X86_64=7eb6917285331a09e3300266a0558616481a5e9927cae2612ea07c4045b6dd6f
 
 # Client only. The OpenShell gateway is a separate service with its own
 # sandbox runtime; the backend image must never need a Docker socket.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
-    case "$arch" in amd64) os_arch=x86_64;; arm64) os_arch=aarch64;; *) exit 1;; esac; \
+    case "$arch" in amd64) os_arch=x86_64; digest="${OPENSHELL_SHA256_X86_64}";; arm64) os_arch=aarch64; digest="${OPENSHELL_SHA256_AARCH64}";; *) exit 1;; esac; \
     asset="openshell-${os_arch}-unknown-linux-musl.tar.gz"; \
     base="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar; \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "${base}/${asset}" -o "/tmp/${asset}"; \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "${base}/openshell-checksums-sha256.txt" -o /tmp/openshell-checksums; \
-    grep "  ${asset}$" /tmp/openshell-checksums | (cd /tmp && sha256sum -c -); \
+    curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 "${base}/${asset}" -o "/tmp/${asset}"; \
+    echo "${digest}  /tmp/${asset}" | sha256sum -c -; \
     tar -xzf "/tmp/${asset}" -C /usr/local/bin openshell; \
     openshell --version; \
-    rm -f "/tmp/${asset}" /tmp/openshell-checksums; \
+    rm -f "/tmp/${asset}"; \
     rm -rf /var/lib/apt/lists/*
 
 # When true (default), the runtime image bundles Playwright's chromium +
@@ -62,7 +66,7 @@ ARG INSTALL_BROWSERS=true
 # image expects them.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg gh git \
-    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm config set prefix /usr/local \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
@@ -90,7 +94,7 @@ RUN if [ "$INSTALL_SCANNERS" = "true" ]; then \
       && apt-get install -y --no-install-recommends python3 python3-pip \
       && pip3 install --no-cache-dir --break-system-packages "semgrep==${SEMGREP_VERSION}" \
       && ARCH="$(dpkg --print-architecture)" \
-      && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /usr/local/bin/osv-scanner \
+      && curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -o /usr/local/bin/osv-scanner \
            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${ARCH}" \
       && chmod +x /usr/local/bin/osv-scanner \
       && semgrep --version \
@@ -115,7 +119,7 @@ RUN if [ "$INSTALL_NUCLEI" = "true" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends unzip \
       && ARCH="$(dpkg --print-architecture)" \
-      && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/nuclei.zip \
+      && curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -o /tmp/nuclei.zip \
            "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${ARCH}.zip" \
       && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin \
       && chmod +x /usr/local/bin/nuclei \
