@@ -453,6 +453,8 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         env_files.append(model_file);secrets.extend(model_secrets)
     secrets.append(config['runner_token'])
     context = {k: job[k] for k in ['run_id', 'step', 'task', 'dependency_results']}
+    if job.get('task_scope') == 'documentation':
+        context['task_scope'] = 'documentation'
     context['step'] = dict(job['step'])
     if isinstance(job['step'].get('options'), dict):
         context['step']['options'] = {k: v for k, v in job['step']['options'].items() if k not in ('runtime', 'runtime_snapshot')}

@@ -12,6 +12,13 @@ from execution import (restrictions, runtime_command, network_name, cleanup, pin
 
 
 def services(config, job, roots, api, git, private_file):
+    # No code changes anywhere (backend floor): no later check needs services.
+    from runtime_settings import validation_plan, skip_evidence
+    repos = [r['path'] for r in job['snapshot']['workspace']['repositories']]
+    decisions = validation_plan(config, job, {'checks': [{'name': 'environment', 'cwd': r} for r in repos]}, api, git) if repos else None
+    if decisions and all(d.get('run') is False and d.get('source') == 'floor' for d in decisions):
+        digest = skip_evidence(api, job, 'environment-plan.json', {'decisions': decisions})
+        return True, [{'check': 'environment', 'status': 'not_applicable', 'commits': job['execution']['heads'], 'artifact_digest': digest}], outcome(job, {'skipped': 'no_code_changes'})
     profile = config.get('workspace_profiles', {}).get(job['snapshot']['workspace']['id'], {})
     configured = profile.get('services', {})
     automatic = not configured and job['snapshot']['workspace'].get('runtime', {}).get('config', {}).get('auto_environment', True)

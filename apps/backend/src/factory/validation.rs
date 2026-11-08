@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const RUN_THRESHOLD: f64 = 0.35;
 /// Minimum confidence for Jev to send a failure back to another phase.
 pub const RECOVERY_CONFIDENCE: f64 = 0.6;
-/// Checks Jev is asked about in one call; the rest run.
+/// Checks per Jev call; larger plans are split into parallel batches.
 pub const MAX_QUESTIONS: usize = 40;
 pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -52,6 +52,10 @@ pub struct RepoInfo {
     /// Paths changed by the run in this repository (relative to its root).
     #[serde(default)]
     pub changed_paths: Vec<String>,
+    /// Code files whose diff only adds or removes comments and blank lines.
+    /// Context for Jev; never counted as a code change by the floors.
+    #[serde(default)]
+    pub comment_only_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -124,6 +128,7 @@ fn repository_state(repos: &[RepoInfo]) -> Value {
             "package": r.package,
             "responsibility": r.description.as_deref().map(|d| truncate(d, 300)),
             "changed_paths": r.changed_paths.iter().take(50).collect::<Vec<_>>(),
+            "comment_only_paths": r.comment_only_paths.iter().take(50).collect::<Vec<_>>(),
         }))
         .collect::<Vec<_>>())
 }
@@ -172,6 +177,23 @@ pub fn apply_validation(open: &[CheckRef], answers: Option<&Value>) -> Vec<Decis
         .collect()
 }
 
+/// Minimum confidence for a `docs` task class to restrict agents to documentation.
+pub const DOCUMENTATION_CONFIDENCE: f64 = 0.8;
+
+pub fn scope_from_classification(classified: &Value) -> Option<&'static str> {
+    let confident = classified["class_confidence"].as_f64().is_some_and(|c| c >= DOCUMENTATION_CONFIDENCE);
+    (classified["task_class"] == "docs" && confident).then_some("documentation")
+}
+
+/// Failures no phase can fix by running again: re-running only spends the
+/// repair budget. They block immediately with their reason.
+pub const INFRASTRUCTURE_FAILURES: [&str; 1] = ["model_unavailable"];
+
+pub fn infrastructure_failure(step_result: &Value) -> Option<&str> {
+    let code = step_result.pointer("/output/error").and_then(Value::as_str)?;
+    INFRASTRUCTURE_FAILURES.contains(&code).then_some(code)
+}
+
 /// A phase Jev may send a failure back to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
@@ -216,7 +238,13 @@ pub fn apply_recovery(answers: &Value, candidates: &[Candidate]) -> (Option<Stri
     }
 }
 
-pub async fn ask(key: &str, request: &Value) -> anyhow::Result<Value> {
+/// Owned request for concurrent batches.
+pub fn validation_request_owned(task: &Value, repos: &[RepoInfo], batch: &[CheckRef]) -> Value {
+    validation_request(task, repos, batch)
+}
+
+pub async fn ask(key: &str, request: impl std::borrow::Borrow<Value>) -> anyhow::Result<Value> {
+    let request = request.borrow();
     let response = reqwest::Client::new()
         .post(crate::factory::jev::ENDPOINT)
         .bearer_auth(key)
@@ -252,6 +280,7 @@ mod tests {
             description: None,
             dependencies: deps.iter().map(|d| d.to_string()).collect(),
             changed_paths: changed.iter().map(|p| p.to_string()).collect(),
+            comment_only_paths: Vec::new(),
         }
     }
     fn check(name: &str, cwd: &str) -> CheckRef {
@@ -265,6 +294,14 @@ mod tests {
         assert!(open.is_empty());
         assert!(decided.iter().all(|d| !d.run && d.source == "floor"));
         assert!(documentation_only("LICENSE") && !documentation_only("src/docs.ts"));
+    }
+
+    #[test]
+    fn comment_only_code_changes_do_not_force_checks() {
+        let mut api = repo("api", "@x/api", &[], &["docs/design.md"]);
+        api.comment_only_paths = vec!["src/refund.ts".into()];
+        let (decided, open) = floors(&[check("tests", "api")], &[api]);
+        assert!(open.is_empty() && !decided[0].run);
     }
 
     #[test]
@@ -288,6 +325,21 @@ mod tests {
         assert_eq!(decisions.iter().map(|d| d.run).collect::<Vec<_>>(), vec![false, true, true]);
         assert_eq!(decisions[2].source, "fallback");
         assert!(apply_validation(&open, None).iter().all(|d| d.run));
+    }
+
+    #[test]
+    fn only_a_confident_docs_class_restricts_agents() {
+        assert_eq!(scope_from_classification(&json!({"task_class": "docs", "class_confidence": 0.93})), Some("documentation"));
+        assert_eq!(scope_from_classification(&json!({"task_class": "docs", "class_confidence": 0.5})), None);
+        assert_eq!(scope_from_classification(&json!({"task_class": "backend", "class_confidence": 0.99})), None);
+        assert_eq!(scope_from_classification(&json!({"error": "jev_http_500"})), None);
+    }
+
+    #[test]
+    fn an_unavailable_model_is_infrastructure_not_a_phase_to_retry() {
+        assert_eq!(infrastructure_failure(&json!({"output": {"error": "model_unavailable"}})), Some("model_unavailable"));
+        assert_eq!(infrastructure_failure(&json!({"output": {"error": "agent_invalid_json"}})), None);
+        assert_eq!(infrastructure_failure(&Value::Null), None);
     }
 
     #[test]

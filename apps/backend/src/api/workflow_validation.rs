@@ -59,20 +59,30 @@ pub async fn plan(
     let (mut decisions, open) = v::floors(&b.checks, &b.repositories);
     let mut jev_error = None;
     if !open.is_empty() {
-        let answers = match v::decision_key(&org) {
-            Some(key) => match v::ask(&key, &v::validation_request(&task, &b.repositories, &open)).await {
-                Ok(answers) => Some(answers),
-                Err(e) => {
-                    jev_error = Some(e.to_string());
-                    None
+        match v::decision_key(&org) {
+            Some(key) => {
+                // One Jev call per batch of MAX_QUESTIONS, in parallel; a failed
+                // batch runs its checks and never affects the other batches.
+                let batches: Vec<&[v::CheckRef]> = open.chunks(v::MAX_QUESTIONS).collect();
+                let answers = futures_util::future::join_all(
+                    batches.iter().map(|batch| v::ask(&key, v::validation_request_owned(&task, &b.repositories, batch))),
+                )
+                .await;
+                for (batch, answer) in batches.iter().zip(answers) {
+                    match answer {
+                        Ok(answer) => decisions.extend(v::apply_validation(batch, Some(&answer))),
+                        Err(e) => {
+                            jev_error = Some(e.to_string());
+                            decisions.extend(v::apply_validation(batch, None));
+                        }
+                    }
                 }
-            },
+            }
             None => {
                 jev_error = Some("jev_not_enabled".into());
-                None
+                decisions.extend(v::apply_validation(&open, None));
             }
-        };
-        decisions.extend(v::apply_validation(&open, answers.as_ref()));
+        }
     }
     {
         let h = store.conn();
@@ -87,6 +97,43 @@ pub async fn plan(
         .map_err(fail)?;
     }
     Ok(Json(json!({"decisions": decisions})))
+}
+
+/// Jev classifies the task once per run (`task.classified`). A confident
+/// `docs` class tells agents the change is documentation-only.
+pub async fn task_scope(store: &SqliteStore, org: &str, run: &str, task: &Value) -> Option<&'static str> {
+    let key = v::decision_key(org)?;
+    let cached: Option<String> = {
+        let h = store.conn();
+        let c = h.lock().ok()?;
+        rusqlite::OptionalExtension::optional(c.query_row(
+            "SELECT payload_json FROM factory_workflow_events WHERE run_id=?1 AND kind='task.classified' ORDER BY seq DESC LIMIT 1",
+            [run],
+            |r| r.get(0),
+        ))
+        .ok()?
+    };
+    let classified: Value = match cached {
+        Some(payload) => serde_json::from_str(&payload).unwrap_or(Value::Null),
+        None => {
+            let title = task["title"].as_str().unwrap_or("");
+            let description = task["acceptance_criteria"].as_str().unwrap_or("");
+            let change = crate::factory::jev::Change { title, description, paths: &[] };
+            let payload = match crate::factory::jev::decide(&reqwest::Client::new(), &key, &change).await {
+                Ok((answer, _)) => json!({"task_class": answer.task_class, "class_confidence": answer.class_confidence, "risk": answer.risk}),
+                Err(e) => json!({"error": e.to_string()}),
+            };
+            {
+                let h = store.conn();
+                let guard = h.lock();
+                if let Ok(c) = &guard {
+                    let _ = db::event(c, run, None, "task.classified", payload.clone());
+                }
+            }
+            payload
+        }
+    };
+    v::scope_from_classification(&classified)
 }
 
 /// After a step blocks: ask Jev which phase can resolve it and re-queue it.

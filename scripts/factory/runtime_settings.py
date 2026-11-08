@@ -136,6 +136,20 @@ def for_job(config,job,roots,private_file):
 
 UNPROFILED_NODE={'node_committed_package_lock_required','node_lockfile_v2_or_v3_required','node_workspace_requires_explicit_profile'}
 
+HASH_COMMENTS=('.py','.sh','.bash','.zsh','.yml','.yaml','.toml','.rb','.conf','.ini','.cfg','dockerfile','.env.example')
+
+def comment_only(diff,name):
+    """True when every added/removed line is a comment or blank. Unknown or
+    binary diffs are code. `#` only counts where it is a comment syntax."""
+    lower=name.lower();hashes=lower.endswith(HASH_COMMENTS) or lower.rsplit('/',1)[-1]=='dockerfile'
+    lines=[l[1:] for l in diff.splitlines() if l[:1] in '+-' and not l.startswith(('+++','---'))]
+    if not lines or 'Binary files' in diff:return False
+    for line in lines:
+        s=line.strip()
+        if not s or s.startswith(('//','/*','*/')) or (s.startswith('*') and not s.startswith('**=')) or (hashes and s.startswith('#')):continue
+        return False
+    return True
+
 def repository_facts(config,job,git):
     """Per repository: package identity, internal dependencies and changed paths
     since the run's base. Facts only; no file contents leave the runner."""
@@ -147,15 +161,17 @@ def repository_facts(config,job,git):
         if manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_size<=1024*1024:
             try:package=_json.loads(manifest.read_text())
             except ValueError:package={}
-        changed=[]
+        changed=[];comments=[]
         head=job['execution']['heads'].get(path)
         if head and head!=repo['head_sha']:
-            try:changed=[l for l in git(['diff','--name-only',repo['head_sha'],head],root).splitlines() if l][:200]
+            try:
+                for name in [l for l in git(['diff','--name-only',repo['head_sha'],head],root).splitlines() if l][:200]:
+                    (comments if comment_only(git(['diff','-U0','--no-ext-diff','--no-textconv',repo['head_sha'],head,'--',name],root),name) else changed).append(name)
             except (OSError,ValueError,subprocess.SubprocessError):changed=['<unknown>']
         deps=sorted({*package.get('dependencies',{}),*package.get('devDependencies',{}),*package.get('peerDependencies',{})}) if isinstance(package,dict) else []
         facts.append({'path':path,'package':package.get('name') if isinstance(package.get('name'),str) else None,
                       'description':package.get('description')[:300] if isinstance(package.get('description'),str) else None,
-                      'dependencies':[d for d in deps if d.startswith('@')][:200],'changed_paths':changed})
+                      'dependencies':[d for d in deps if d.startswith('@')][:200],'changed_paths':changed,'comment_only_paths':comments})
     return facts
 
 def validation_plan(config,job,profile,api,git):

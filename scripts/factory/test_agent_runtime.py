@@ -88,5 +88,32 @@ class AgentRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError): agent_result('\n'.join(map(json.dumps, events)), 'codex', [2, 1, 10])
 
 
+
+
+class ModelFailureTests(unittest.TestCase):
+    def transcript(self,stop,error=None):
+        import json as _j
+        msg={'role':'assistant','content':[],'stopReason':stop}
+        if error:msg['errorMessage']=error
+        return '\n'.join(_j.dumps(e) for e in [{'type':'agent_start'},{'type':'message_end','message':msg},{'type':'agent_settled','aborted':False}])
+    def test_unavailable_model_is_named_not_invalid_json(self):
+        from container_entry import model_failure
+        self.assertEqual(model_failure(self.transcript('error','Codex error: Model relay unavailable; inspect execution readiness'))[0],'model_unavailable')
+        self.assertEqual(model_failure(self.transcript('error','You exceeded your usage limit'))[0],'model_unavailable')
+        self.assertEqual(model_failure(self.transcript('error','context window exceeded'))[0],'agent_model_error')
+        self.assertIsNone(model_failure(self.transcript('stop')))
+        self.assertIsNone(model_failure('not json'))
+
+
+
+class DocumentationScopeTests(unittest.TestCase):
+    def test_documentation_scope_restricts_implementation_and_tests_only(self):
+        from container_entry import agent_prompt
+        base={'step':{'id':'implement','kind':'agent'},'task':{},'task_scope':'documentation'}
+        self.assertIn('documentation-only',agent_prompt(base,{'role':'implementation'}))
+        self.assertIn('documentation-only',agent_prompt(dict(base,step={'id':'tests','kind':'agent'}),{'role':'test_author'}))
+        self.assertNotIn('documentation-only',agent_prompt(dict(base,step={'id':'investigate','kind':'agent'}),{'role':'investigation'}))
+        self.assertNotIn('documentation-only',agent_prompt({'step':{'id':'implement','kind':'agent'},'task':{}},{'role':'implementation'}))
+
 if __name__ == '__main__':
     unittest.main()
