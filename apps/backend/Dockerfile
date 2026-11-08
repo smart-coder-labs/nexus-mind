@@ -37,16 +37,22 @@ ARG OPENSHELL_VERSION=v0.1.2
 # separate checksums asset, whose CDN path can fail independently.
 ARG OPENSHELL_SHA256_AARCH64=9880c5776688231d5242deb046cdee361734f94901b9123949a0baf29fdadd9e
 ARG OPENSHELL_SHA256_X86_64=7eb6917285331a09e3300266a0558616481a5e9927cae2612ea07c4045b6dd6f
+# Release asset ids for the same files. The API asset endpoint keeps working
+# when github.com/<owner>/<repo>/releases/download answers 504 (seen 2026-11-08).
+ARG OPENSHELL_ASSET_AARCH64=594438335
+ARG OPENSHELL_ASSET_X86_64=594438336
 
 # Client only. The OpenShell gateway is a separate service with its own
 # sandbox runtime; the backend image must never need a Docker socket.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
-    case "$arch" in amd64) os_arch=x86_64; digest="${OPENSHELL_SHA256_X86_64}";; arm64) os_arch=aarch64; digest="${OPENSHELL_SHA256_AARCH64}";; *) exit 1;; esac; \
+    case "$arch" in amd64) os_arch=x86_64; digest="${OPENSHELL_SHA256_X86_64}"; asset_id="${OPENSHELL_ASSET_X86_64}";; arm64) os_arch=aarch64; digest="${OPENSHELL_SHA256_AARCH64}"; asset_id="${OPENSHELL_ASSET_AARCH64}";; *) exit 1;; esac; \
     asset="openshell-${os_arch}-unknown-linux-musl.tar.gz"; \
     base="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar; \
-    curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 "${base}/${asset}" -o "/tmp/${asset}"; \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -H "Accept: application/octet-stream" \
+        "https://api.github.com/repos/NVIDIA/OpenShell/releases/assets/${asset_id}" -o "/tmp/${asset}" \
+      || curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 "${base}/${asset}" -o "/tmp/${asset}"; \
     echo "${digest}  /tmp/${asset}" | sha256sum -c -; \
     tar -xzf "/tmp/${asset}" -C /usr/local/bin openshell; \
     openshell --version; \
