@@ -17179,6 +17179,12 @@ pub fn validate_autonomous_agent_definition(
             if !repositories_valid {
                 errors.push("repositories_required")
             }
+            if !matches!(
+                current.revision.config.get("judge_mode").and_then(|v| v.as_str()).unwrap_or("auto"),
+                "auto" | "live" | "code" | "both"
+            ) {
+                errors.push("invalid_judge_mode")
+            }
             // Findings delivery, same channels as QA.
             let outputs = current
                 .revision
