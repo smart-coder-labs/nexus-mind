@@ -31,6 +31,8 @@ ARG CLAUDE_CODE_VERSION=2.1.235
 ARG CODEX_VERSION=0.160.0
 # Pi task executor uses the worker's persisted ChatGPT OAuth, never task-pod credentials.
 ARG PI_VERSION=1.4.0
+# Resolver verification runs pnpm workspaces (lockfile v9).
+ARG PNPM_VERSION=10.34.7
 ARG OPENSHELL_VERSION=v0.1.2
 # Pinned release digests (GitHub release asset digests for v0.1.2). Bump them
 # together with OPENSHELL_VERSION; the build no longer depends on fetching the
@@ -77,9 +79,11 @@ RUN apt-get update \
     && npm config set prefix /usr/local \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
     && npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && npm install -g "pnpm@${PNPM_VERSION}" \
     && claude --version \
     && codex --version \
     && pi --version \
+    && pnpm --version \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
