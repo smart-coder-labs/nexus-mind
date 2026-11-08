@@ -2775,11 +2775,7 @@ async fn publish_template_output_verified(
                 .get("summary")
                 .and_then(|v| v.as_str())
                 .unwrap_or("NexusMind autonomous review completed.");
-            let body = format!(
-                "{}\n\nNexusMind run: `{}`",
-                summary.chars().take(20_000).collect::<String>(),
-                claim.run.id
-            );
+            let body = review_body(summary, &findings, &claim.run.id);
             let head = claim
                 .config
                 .pointer("/trigger/head_sha")
@@ -7766,6 +7762,40 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
     };
 }
 
+/// The posted PR review: the agent's short verdict followed by every finding
+/// (severity, title, detail), so the review carries the actual issues and not
+/// only their one-line summary. Bounded well under GitHub's 65536-char body limit.
+fn review_body(summary: &str, findings: &[serde_json::Value], run: &str) -> String {
+    const LIMIT: usize = 60_000;
+    let mut body: String = summary.trim().chars().take(20_000).collect();
+    let mut listed = 0;
+    for finding in findings {
+        let text = |key: &str| finding.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let (title, severity, detail) = (text("title"), text("severity"), text("summary"));
+        if title.is_empty() && detail.is_empty() {
+            continue;
+        }
+        let severity = if severity.is_empty() { "info".to_string() } else { severity };
+        let item = if detail.is_empty() {
+            format!("\n- **[{severity}] {title}**")
+        } else if title.is_empty() {
+            format!("\n- **[{severity}]** {detail}")
+        } else {
+            format!("\n- **[{severity}] {title}** — {detail}")
+        };
+        if listed == 0 {
+            body.push_str("\n\n**Findings**\n");
+        }
+        if body.chars().count() + item.chars().count() > LIMIT {
+            body.push_str(&format!("\n- …and {} more", findings.len() - listed));
+            break;
+        }
+        body.push_str(&item);
+        listed += 1;
+    }
+    format!("{body}\n\nNexusMind run: `{run}`")
+}
+
 /// One review per agent, PR and head commit, so retries and repeated automatic
 /// events never post twice. An explicit "request review" is someone asking for a
 /// fresh review of the same commit (for example after the harness changed), so
@@ -8654,6 +8684,23 @@ mod tests {
         assert_eq!(nexus_failure_code(b"Claude login is not ready in OpenShell"), "nexus_auth_required");
         assert_eq!(nexus_failure_code(b"OpenShell gateway is unavailable"), "nexus_gateway_unavailable");
         assert_eq!(nexus_failure_code(b"worker changes were not safely synchronized"), "nexus_sync_failed");
+    }
+    #[test]
+    fn review_body_lists_every_finding() {
+        let findings = vec![
+            json!({"title":"Preserve fractional ticks","severity":"medium","summary":"lib/trend-axis.ts:86 rounds ticks; keep precision."}),
+            json!({"title":"","severity":"","summary":""}),
+            json!({"title":"Null guard","severity":"high","summary":""}),
+        ];
+        let body = review_body("One issue.", &findings, "run-1");
+        assert!(body.starts_with("One issue.\n\n**Findings**\n"));
+        assert!(body.contains("- **[medium] Preserve fractional ticks** — lib/trend-axis.ts:86 rounds ticks; keep precision."));
+        assert!(body.contains("- **[high] Null guard**"));
+        assert!(body.ends_with("NexusMind run: `run-1`"));
+        assert_eq!(review_body("Looks good.", &[], "r"), "Looks good.\n\nNexusMind run: `r`");
+        let many: Vec<_> = (0..100).map(|i| json!({"title":format!("t{i}"),"severity":"low","summary":"x".repeat(2000)})).collect();
+        let long = review_body("s", &many, "r");
+        assert!(long.chars().count() < 65_536 && long.contains("more"));
     }
     #[test]
     fn explicit_review_requests_get_a_fresh_review_of_the_same_head() {
