@@ -1123,12 +1123,24 @@ pub async fn publish_pr_review(
     number: i64,
     body: &str,
     request_changes: bool,
+    commit_id: Option<&str>,
+    comments: &[Value],
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
+    let mut payload =
+        json!({"body":body,"event":if request_changes {"REQUEST_CHANGES"} else {"COMMENT"}});
+    // Pinning the reviewed head keeps inline line numbers tied to the code the
+    // agent actually read, even if the PR moved since.
+    if let Some(commit) = commit_id.filter(|c| c.len() == 40 && c.bytes().all(|b| b.is_ascii_hexdigit())) {
+        payload["commit_id"] = json!(commit);
+    }
+    if !comments.is_empty() {
+        payload["comments"] = json!(comments);
+    }
     github_post(
         token,
         &format!("/repos/{owner}/{repo}/pulls/{number}/reviews"),
-        json!({"body":body,"event":if request_changes {"REQUEST_CHANGES"} else {"COMMENT"}}),
+        payload,
     )
     .await
 }
