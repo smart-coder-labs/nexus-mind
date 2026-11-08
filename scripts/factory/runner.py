@@ -27,14 +27,20 @@ from control_plane import (RUNNER_CONTRACT, ControlPlaneError, control_plane_dia
 SKIP = {".git", "node_modules", "vendor", "target", ".worktrees", ".next", ".cache"}
 
 
-def private_file(path):
+CONFIG_LIMIT = 65536
+# A completion journal holds up to 100 evidence items, each with every
+# repository head; on large workspaces it is far above the config limit.
+JOURNAL_LIMIT = 16 * 1024 * 1024
+
+
+def private_file(path, limit=CONFIG_LIMIT):
     """Read a private, non-symlink regular file without following its final link."""
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("Configuration must be an owned regular file with mode 0600")
-        if info.st_size > 65536:
+        if info.st_size > limit:
             raise ValueError("Configuration file too large")
         with os.fdopen(fd, "r", closefd=False) as stream:
             return stream.read()
@@ -337,7 +343,7 @@ def reconcile(config, api):
     from execution import cleanup
     state = Path(config['state_dir'])
     for journal in state.glob('*/pending-completion.json'):
-        saved = json.loads(private_file(journal))
+        saved = json.loads(private_file(journal, JOURNAL_LIMIT))
         run = api.call('/runs/' + saved['run_id'])
         step = next(s for s in run['steps'] if s['id'] == saved['step_id'])
         if step['status'] == 'running' and step['attempt'] == saved['attempt']:
