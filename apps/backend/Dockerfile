@@ -37,16 +37,22 @@ ARG OPENSHELL_VERSION=v0.1.2
 # separate checksums asset, whose CDN path can fail independently.
 ARG OPENSHELL_SHA256_AARCH64=9880c5776688231d5242deb046cdee361734f94901b9123949a0baf29fdadd9e
 ARG OPENSHELL_SHA256_X86_64=7eb6917285331a09e3300266a0558616481a5e9927cae2612ea07c4045b6dd6f
+# Release asset ids for the same files. The API asset endpoint keeps working
+# when github.com/<owner>/<repo>/releases/download answers 504 (seen 2026-11-08).
+ARG OPENSHELL_ASSET_AARCH64=594438335
+ARG OPENSHELL_ASSET_X86_64=594438336
 
 # Client only. The OpenShell gateway is a separate service with its own
 # sandbox runtime; the backend image must never need a Docker socket.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
-    case "$arch" in amd64) os_arch=x86_64; digest="${OPENSHELL_SHA256_X86_64}";; arm64) os_arch=aarch64; digest="${OPENSHELL_SHA256_AARCH64}";; *) exit 1;; esac; \
+    case "$arch" in amd64) os_arch=x86_64; digest="${OPENSHELL_SHA256_X86_64}"; asset_id="${OPENSHELL_ASSET_X86_64}";; arm64) os_arch=aarch64; digest="${OPENSHELL_SHA256_AARCH64}"; asset_id="${OPENSHELL_ASSET_AARCH64}";; *) exit 1;; esac; \
     asset="openshell-${os_arch}-unknown-linux-musl.tar.gz"; \
     base="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar; \
-    curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 "${base}/${asset}" -o "/tmp/${asset}"; \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -H "Accept: application/octet-stream" \
+        "https://api.github.com/repos/NVIDIA/OpenShell/releases/assets/${asset_id}" -o "/tmp/${asset}" \
+      || curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 "${base}/${asset}" -o "/tmp/${asset}"; \
     echo "${digest}  /tmp/${asset}" | sha256sum -c -; \
     tar -xzf "/tmp/${asset}" -C /usr/local/bin openshell; \
     openshell --version; \
@@ -88,14 +94,23 @@ RUN apt-get update \
 # security-scan agents. Default true keeps every other target unchanged.
 ARG SEMGREP_VERSION=1.176.0
 ARG OSV_SCANNER_VERSION=2.5.1
+# Release asset ids + digests (GitHub release API) for osv-scanner v2.5.1.
+ARG OSV_SCANNER_ASSET_AMD64=517615411
+ARG OSV_SCANNER_ASSET_ARM64=517615386
+ARG OSV_SCANNER_SHA256_AMD64=f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be
+ARG OSV_SCANNER_SHA256_ARM64=3d0f5aa5a6baa8eb32bcef247388e149ef6030a6634ccae6fa0d62681fb27a6d
 ARG INSTALL_SCANNERS=true
 RUN if [ "$INSTALL_SCANNERS" = "true" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends python3 python3-pip \
       && pip3 install --no-cache-dir --break-system-packages "semgrep==${SEMGREP_VERSION}" \
       && ARCH="$(dpkg --print-architecture)" \
-      && curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -o /usr/local/bin/osv-scanner \
-           "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${ARCH}" \
+      && case "$ARCH" in amd64) ASSET="$OSV_SCANNER_ASSET_AMD64"; DIGEST="$OSV_SCANNER_SHA256_AMD64";; arm64) ASSET="$OSV_SCANNER_ASSET_ARM64"; DIGEST="$OSV_SCANNER_SHA256_ARM64";; *) exit 1;; esac \
+      && { curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -H "Accept: application/octet-stream" -o /usr/local/bin/osv-scanner \
+             "https://api.github.com/repos/google/osv-scanner/releases/assets/${ASSET}" \
+           || curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -o /usr/local/bin/osv-scanner \
+             "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${ARCH}"; } \
+      && echo "${DIGEST}  /usr/local/bin/osv-scanner" | sha256sum -c - \
       && chmod +x /usr/local/bin/osv-scanner \
       && semgrep --version \
       && osv-scanner --version \
@@ -114,13 +129,22 @@ RUN if [ "$INSTALL_SCANNERS" = "true" ]; then \
 # deployment that does not run the security_dast agent (u2s, whose 8 GB disk is
 # already tight) skips it entirely. Default true keeps oracle/main unchanged.
 ARG NUCLEI_VERSION=3.11.1
+# Release asset ids + digests (GitHub release API) for nuclei v3.11.1.
+ARG NUCLEI_ASSET_AMD64=506379676
+ARG NUCLEI_ASSET_ARM64=506379678
+ARG NUCLEI_SHA256_AMD64=ea63d4ae232808cd7c6bc00d0142428e231fab59dae01042246097d195835ab6
+ARG NUCLEI_SHA256_ARM64=8044e3d9768ba0a744b2872c1a87e813006f013da97ca9f50f7661a4203bec07
 ARG INSTALL_NUCLEI=true
 RUN if [ "$INSTALL_NUCLEI" = "true" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends unzip \
       && ARCH="$(dpkg --print-architecture)" \
-      && curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -o /tmp/nuclei.zip \
-           "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${ARCH}.zip" \
+      && case "$ARCH" in amd64) ASSET="$NUCLEI_ASSET_AMD64"; DIGEST="$NUCLEI_SHA256_AMD64";; arm64) ASSET="$NUCLEI_ASSET_ARM64"; DIGEST="$NUCLEI_SHA256_ARM64";; *) exit 1;; esac \
+      && { curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -H "Accept: application/octet-stream" -o /tmp/nuclei.zip \
+             "https://api.github.com/repos/projectdiscovery/nuclei/releases/assets/${ASSET}" \
+           || curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -o /tmp/nuclei.zip \
+             "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${ARCH}.zip"; } \
+      && echo "${DIGEST}  /tmp/nuclei.zip" | sha256sum -c - \
       && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin \
       && chmod +x /usr/local/bin/nuclei \
       && rm -f /tmp/nuclei.zip \
