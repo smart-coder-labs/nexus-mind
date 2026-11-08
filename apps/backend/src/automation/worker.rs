@@ -2785,9 +2785,13 @@ async fn publish_template_output_verified(
                 .pointer("/trigger/head_sha")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            let delivery_key = format!(
-                "review:{}:{repository}:{number}:{head}",
-                claim.run.definition_id
+            let delivery_key = review_delivery_key(
+                &claim.run.definition_id,
+                repository,
+                number,
+                head,
+                &claim.run.id,
+                claim.run.trigger_origin.as_ref(),
             );
             let delivery = {
                 let db = store.conn();
@@ -7762,6 +7766,25 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
     };
 }
 
+/// One review per agent, PR and head commit, so retries and repeated automatic
+/// events never post twice. An explicit "request review" is someone asking for a
+/// fresh review of the same commit (for example after the harness changed), so
+/// it is keyed per run; retries of that run stay idempotent.
+fn review_delivery_key(
+    definition: &str,
+    repository: &str,
+    number: i64,
+    head: &str,
+    run: &str,
+    origin: Option<&serde_json::Value>,
+) -> String {
+    let base = format!("review:{definition}:{repository}:{number}:{head}");
+    if origin.is_some_and(|o| o["explicit_review_request"] == true) {
+        format!("{base}:request:{run}")
+    } else {
+        base
+    }
+}
 fn github_review_trigger(kind:&str,origin:Option<&serde_json::Value>)->bool {
     kind=="github_webhook" || (kind=="reconcile" && origin.is_some_and(|o|o["kind"]=="github_reconciliation"))
 }
@@ -8631,6 +8654,16 @@ mod tests {
         assert_eq!(nexus_failure_code(b"Claude login is not ready in OpenShell"), "nexus_auth_required");
         assert_eq!(nexus_failure_code(b"OpenShell gateway is unavailable"), "nexus_gateway_unavailable");
         assert_eq!(nexus_failure_code(b"worker changes were not safely synchronized"), "nexus_sync_failed");
+    }
+    #[test]
+    fn explicit_review_requests_get_a_fresh_review_of_the_same_head() {
+        let auto = json!({"kind":"github_webhook","explicit_review_request":false});
+        let explicit = json!({"kind":"github_webhook","explicit_review_request":true});
+        let key = |run: &str, origin: Option<&serde_json::Value>| review_delivery_key("def", "acme/api", 7, "abc", run, origin);
+        assert_eq!(key("r1", Some(&auto)), key("r2", Some(&auto)));
+        assert_eq!(key("r1", None), "review:def:acme/api:7:abc");
+        assert_ne!(key("r1", Some(&explicit)), key("r2", Some(&explicit)));
+        assert_eq!(key("r1", Some(&explicit)), key("r1", Some(&explicit)));
     }
     #[test]
     fn reviewer_harness_gets_runtime_adapter_and_context_clause() {
