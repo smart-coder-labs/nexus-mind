@@ -4172,8 +4172,14 @@ async fn resolve_issue_worktree(
                 None => select_run_model(&store, &claim, &runtime_config).model,
             }
         };
+        claude.arg("-p");
+        if sandboxed {
+            claude.arg(&prompt);
+        } else {
+            claude.stdin(std::process::Stdio::piped());
+        }
         claude.args([
-            "-p", &prompt, "--output-format", "stream-json", "--verbose",
+            "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns_str, "--permission-mode", "acceptEdits",
             "--allowedTools",
             "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
@@ -4280,7 +4286,7 @@ async fn resolve_issue_worktree(
         Box::pin(async {
             Ok(run_claude_capturing_transcript(
                 &mut claude,
-                (nexus_selected || pi_selected).then_some(prompt.as_str()),
+                Some(prompt.as_str()),
                 &store,
                 &claim.org_id,
                 &claim.run.id,
@@ -5539,8 +5545,16 @@ async fn execute_claim(
     } else {
         restrict_claude_environment(&mut claude);
         ignore_repository_settings(&mut claude);
+        // Local runs feed the prompt on stdin: a harness-sized prompt exceeds
+        // Linux's 128 KiB per-argument limit (E2BIG) and the spawn fails.
+        claude.arg("-p");
+        if sandboxed {
+            claude.arg(&prompt);
+        } else {
+            claude.stdin(std::process::Stdio::piped());
+        }
         claude.args([
-            "-p", &prompt, "--output-format", "stream-json", "--verbose",
+            "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns, "--permission-mode", permission_mode,
             "--allowedTools", allowed_tools,
         ]);
@@ -5650,7 +5664,7 @@ async fn execute_claim(
         Box::pin(async {
             Ok(run_claude_capturing_transcript(
                 &mut claude,
-                (nexus_selected || pi_selected).then_some(prompt.as_str()),
+                Some(prompt.as_str()),
                 store,
                 &claim.org_id,
                 &claim.run.id,

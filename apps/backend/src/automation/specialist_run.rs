@@ -109,8 +109,15 @@ pub(crate) async fn run_step(
     super::worker::ignore_repository_settings(&mut command);
     let turns = max_turns.to_string();
     let (mode, tools) = if writes { ("acceptEdits", WRITE_TOOLS) } else { ("plan", "Read,Grep,Glob") };
+    // Local steps feed the prompt on stdin (Linux caps one argument at 128 KiB).
+    command.arg("-p");
+    if env.sandboxed {
+        command.arg(prompt);
+    } else {
+        command.stdin(std::process::Stdio::piped());
+    }
     command.args([
-        "-p", prompt, "--output-format", "stream-json", "--verbose", "--max-turns", &turns,
+        "--output-format", "stream-json", "--verbose", "--max-turns", &turns,
         "--permission-mode", mode, "--allowedTools", tools, "--model", model,
     ]);
     command.current_dir(env.workdir).kill_on_drop(true);
@@ -157,7 +164,7 @@ pub(crate) async fn run_step(
             wall_time,
             super::worker::run_claude_capturing_transcript(
                 &mut command,
-                None,
+                Some(prompt),
                 env.store,
                 env.org_id,
                 env.run_id,
