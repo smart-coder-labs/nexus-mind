@@ -103,6 +103,9 @@ class ModelFailureTests(unittest.TestCase):
         self.assertEqual(model_failure(self.transcript('error','context window exceeded'))[0],'agent_model_error')
         self.assertIsNone(model_failure(self.transcript('stop')))
         self.assertIsNone(model_failure('not json'))
+    def test_exhausted_budget_is_not_infrastructure(self):
+        from container_entry import model_failure
+        self.assertEqual(model_failure(self.transcript('error','Codex error: Model request budget exceeded for this step'))[0],'model_budget_exceeded')
 
 
 
