@@ -2775,11 +2775,8 @@ async fn publish_template_output_verified(
                 .get("summary")
                 .and_then(|v| v.as_str())
                 .unwrap_or("NexusMind autonomous review completed.");
-            let body = format!(
-                "{}\n\nNexusMind run: `{}`",
-                summary.chars().take(20_000).collect::<String>(),
-                claim.run.id
-            );
+            let (inline, rest) = review_inline_comments(&findings);
+            let body = review_body(summary, &rest, &claim.run.id);
             let head = claim
                 .config
                 .pointer("/trigger/head_sha")
@@ -2833,15 +2830,37 @@ async fn publish_template_output_verified(
                 return Ok(json!({"github_review":existing,"reconciled":true}));
             }
             require_publish_authority(store, claim)?;
-            let review = match super::connectors::publish_pr_review(
+            let commit = (head != "unknown").then_some(head);
+            let mut published = super::connectors::publish_pr_review(
                 &token,
                 repository,
                 number,
                 &body,
                 request_changes,
+                commit,
+                &inline,
             )
-            .await
+            .await;
+            // GitHub rejects the whole review (422) when any inline anchor is not
+            // part of the diff. Nothing was created, so post once more with every
+            // finding in the body rather than losing the review.
+            if !inline.is_empty()
+                && matches!(&published, Err(error) if error.to_string().starts_with("github_api_422"))
             {
+                tracing::warn!(run_id = %claim.run.id, "inline review anchors rejected; posting findings in the body");
+                let body = review_body(summary, &findings, &claim.run.id);
+                published = super::connectors::publish_pr_review(
+                    &token,
+                    repository,
+                    number,
+                    &body,
+                    request_changes,
+                    commit,
+                    &[],
+                )
+                .await;
+            }
+            let review = match published {
                 Ok(value) => value,
                 Err(error) => {
                     let db = store.conn();
@@ -3471,7 +3490,7 @@ fn harness_runtime_adapter(template_key: &str, config: &serde_json::Value) -> &'
     if !server_github {
         return "";
     }
-    " RUNTIME ADAPTER for harness steps written for a local terminal: you run inside NexusMind, not on a developer machine. GitHub authentication, account selection (including bot accounts), git remotes, reading or resolving existing review threads, and posting comments or reviews are performed by the NexusMind server from your final output. Skip every harness step about `gh auth status`, `gh auth login`, switching accounts, adding remotes, fetching review threads or posting; they are already satisfied and must never block the task. Where the harness fetches a file with `gh api repos/<owner>/<repo>/contents/<path>` or from a local fallback path, read `../context/<repo>/<path>` instead when that repository was cloned there. If a referenced document is unavailable, continue with what is available and say which document was missing in your summary instead of stopping. Your output contract above always wins over any output format the harness describes."
+    " RUNTIME ADAPTER for harness steps written for a local terminal: you run inside NexusMind, not on a developer machine. GitHub authentication, account selection (including bot accounts), git remotes, reading or resolving existing review threads, and posting comments or reviews are performed by the NexusMind server from your final output. Skip every harness step about `gh auth status`, `gh auth login`, switching accounts, adding remotes, fetching review threads or posting; they are already satisfied and must never block the task. Where the harness fetches a file with `gh api repos/<owner>/<repo>/contents/<path>` or from a local fallback path, read `../context/<repo>/<path>` instead when that repository was cloned there. If a referenced document is unavailable, continue with what is available and say which document was missing in your summary instead of stopping. Your JSON output contract above always wins, so express the harness's publishing format THROUGH it: when the harness defines the review body (header, verdict, counts), write exactly that Markdown as `summary`; when it requires inline comments, give each such finding its `path`, its `line` in the new file and, in `comment`, the harness comment text verbatim with its template and footer. Map harness severities as CRITICAL -> critical (blocks: posted as REQUEST_CHANGES), WARNING -> medium and SUGGESTION -> low. NexusMind never posts APPROVE; a review with no blocking findings is posted as COMMENT, so state the harness verdict in `summary` instead."
 }
 
 pub(crate) fn fixed_prompt(
@@ -3568,7 +3587,7 @@ pub(crate) fn fixed_prompt(
             format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{subagent_clause}{progress_clause}{custom_clause}{issue_contract}")
         }
         "github_pr_reviewer" => format!(
-            "Review the pinned pull request in the configuration: `pull_request_diff` is the unified diff, and you may also read the checked-out repository (your working directory) for surrounding context.{} Report ONLY what matters: real bugs, correctness/security risks, and changes that should block or clearly improve the PR. SKIP style nitpicks, trivial preferences, restating the diff, and praise. Be terse and high-signal — a reviewer's time is scarce. Never approve, merge, push, or publish.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<a SHORT review, 1-4 lines: the overall verdict plus the few points that matter; this exact text is posted as the PR review>\",\"findings\":[{{\"title\":\"<short non-empty title>\",\"severity\":\"<one of: info, low, medium, high, critical>\",\"summary\":\"<ONE concise sentence: what is wrong, where (file:line), and the fix — do not restate the diff>\"}}]}}. HARD OUTPUT RULES: (1) top-level `summary` is REQUIRED, non-empty, and concise (no walls of text); (2) every finding MUST have a non-empty `title`; (3) `severity` MUST be EXACTLY one of info, low, medium, high, or critical — never any other word (no \"warning\", \"nit\", \"major\", \"minor\", \"suggestion\"); (4) use high or critical ONLY for issues that must block the PR; (5) if the PR has no issues that matter, return an EMPTY `findings` array (never invent findings, never pad with nitpicks) with a one-line `summary` that says it looks good; (6) prefer a few high-signal findings over many minor ones; return at most 100.",
+            "Review the pinned pull request in the configuration: `pull_request_diff` is the unified diff, and you may also read the checked-out repository (your working directory) for surrounding context.{} Report ONLY what matters: real bugs, correctness/security risks, and changes that should block or clearly improve the PR. SKIP style nitpicks, trivial preferences, restating the diff, and praise. Be terse and high-signal — a reviewer's time is scarce. Never approve, merge, push, or publish.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<a SHORT review, 1-4 lines: the overall verdict plus the few points that matter; this exact text is posted as the PR review>\",\"findings\":[{{\"title\":\"<short non-empty title>\",\"severity\":\"<one of: info, low, medium, high, critical>\",\"summary\":\"<ONE concise sentence: what is wrong, where (file:line), and the fix — do not restate the diff>\",\"path\":\"<optional: repo-relative file the finding is anchored to>\",\"line\":<optional: line number in the NEW version of that file, inside a changed hunk of the diff>,\"comment\":\"<optional: full Markdown body of the inline review comment>\"}}]}}. Findings that carry `path` and `line` are posted as separate, resolvable inline comments on that line (body = `comment`, or title + summary when `comment` is empty); the rest are listed in the review body. HARD OUTPUT RULES: (1) top-level `summary` is REQUIRED, non-empty, and concise (no walls of text); (2) every finding MUST have a non-empty `title`; (3) `severity` MUST be EXACTLY one of info, low, medium, high, or critical — never any other word (no \"warning\", \"nit\", \"major\", \"minor\", \"suggestion\"); (4) use high or critical ONLY for issues that must block the PR; (5) if the PR has no issues that matter, return an EMPTY `findings` array (never invent findings, never pad with nitpicks) with a one-line `summary` that says it looks good; (6) prefer a few high-signal findings over many minor ones; return at most 100.",
             reviewer_context_clause(config)
         ),
         "lead_generation" => {
@@ -7766,6 +7785,80 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
     };
 }
 
+/// Split reviewer findings into GitHub inline review comments (those anchored to
+/// a safe repo-relative `path` and a positive new-file `line`) and the rest,
+/// which are listed in the review body. At most 50 inline comments are posted.
+fn review_inline_comments(
+    findings: &[serde_json::Value],
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    const MAX_INLINE: usize = 50;
+    const MAX_COMMENT: usize = 8_000;
+    let (mut inline, mut rest) = (Vec::new(), Vec::new());
+    for finding in findings {
+        let path = finding.get("path").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+        let line = finding.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+        let safe_path = !path.is_empty()
+            && path.len() <= 1024
+            && !path.starts_with('/')
+            && !path.contains('\\')
+            && path.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
+        if !safe_path || line <= 0 || line > 10_000_000 || inline.len() >= MAX_INLINE {
+            rest.push(finding.clone());
+            continue;
+        }
+        let text = |key: &str| finding.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let comment = text("comment");
+        let body = if comment.is_empty() {
+            let (title, summary) = (text("title"), text("summary"));
+            let severity = text("severity");
+            if summary.is_empty() {
+                format!("**[{severity}] {title}**")
+            } else {
+                format!("**[{severity}] {title}**\n\n{summary}")
+            }
+        } else {
+            comment
+        };
+        let body: String = body.chars().take(MAX_COMMENT).collect();
+        inline.push(json!({"path": path, "line": line, "side": "RIGHT", "body": body}));
+    }
+    (inline, rest)
+}
+
+/// The posted PR review: the agent's short verdict followed by every finding
+/// (severity, title, detail), so the review carries the actual issues and not
+/// only their one-line summary. Bounded well under GitHub's 65536-char body limit.
+fn review_body(summary: &str, findings: &[serde_json::Value], run: &str) -> String {
+    const LIMIT: usize = 60_000;
+    let mut body: String = summary.trim().chars().take(20_000).collect();
+    let mut listed = 0;
+    for finding in findings {
+        let text = |key: &str| finding.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let (title, severity, detail) = (text("title"), text("severity"), text("summary"));
+        if title.is_empty() && detail.is_empty() {
+            continue;
+        }
+        let severity = if severity.is_empty() { "info".to_string() } else { severity };
+        let item = if detail.is_empty() {
+            format!("\n- **[{severity}] {title}**")
+        } else if title.is_empty() {
+            format!("\n- **[{severity}]** {detail}")
+        } else {
+            format!("\n- **[{severity}] {title}** — {detail}")
+        };
+        if listed == 0 {
+            body.push_str("\n\n**Findings**\n");
+        }
+        if body.chars().count() + item.chars().count() > LIMIT {
+            body.push_str(&format!("\n- …and {} more", findings.len() - listed));
+            break;
+        }
+        body.push_str(&item);
+        listed += 1;
+    }
+    format!("{body}\n\nNexusMind run: `{run}`")
+}
+
 /// One review per agent, PR and head commit, so retries and repeated automatic
 /// events never post twice. An explicit "request review" is someone asking for a
 /// fresh review of the same commit (for example after the harness changed), so
@@ -8654,6 +8747,43 @@ mod tests {
         assert_eq!(nexus_failure_code(b"Claude login is not ready in OpenShell"), "nexus_auth_required");
         assert_eq!(nexus_failure_code(b"OpenShell gateway is unavailable"), "nexus_gateway_unavailable");
         assert_eq!(nexus_failure_code(b"worker changes were not safely synchronized"), "nexus_sync_failed");
+    }
+    #[test]
+    fn anchored_findings_become_inline_comments() {
+        let findings = vec![
+            json!({"title":"Raw color","severity":"critical","summary":"x","path":"app/a.tsx","line":12,"comment":"❌ **Design system violation**\n\n---\n*🤖 Automatic review by kasymir-code-review*"}),
+            json!({"title":"Ticks","severity":"medium","summary":"rounds ticks","path":"lib/trend-axis.ts","line":86}),
+            json!({"title":"Escape","severity":"low","summary":"s","path":"../etc/passwd","line":1}),
+            json!({"title":"Absolute","severity":"low","summary":"s","path":"/abs.ts","line":1}),
+            json!({"title":"No line","severity":"low","summary":"s","path":"a.ts"}),
+            json!({"title":"Zero","severity":"low","summary":"s","path":"a.ts","line":0}),
+        ];
+        let (inline, rest) = review_inline_comments(&findings);
+        assert_eq!(inline.len(), 2);
+        assert_eq!(inline[0], json!({"path":"app/a.tsx","line":12,"side":"RIGHT","body":"❌ **Design system violation**\n\n---\n*🤖 Automatic review by kasymir-code-review*"}));
+        assert_eq!(inline[1]["body"], "**[medium] Ticks**\n\nrounds ticks");
+        let titles: Vec<_> = rest.iter().map(|f| f["title"].as_str().unwrap()).collect();
+        assert_eq!(titles, ["Escape", "Absolute", "No line", "Zero"]);
+        let many: Vec<_> = (0..60).map(|i| json!({"title":"t","severity":"low","summary":"s","path":"a.ts","line":i + 1})).collect();
+        let (inline, rest) = review_inline_comments(&many);
+        assert_eq!((inline.len(), rest.len()), (50, 10));
+    }
+    #[test]
+    fn review_body_lists_every_finding() {
+        let findings = vec![
+            json!({"title":"Preserve fractional ticks","severity":"medium","summary":"lib/trend-axis.ts:86 rounds ticks; keep precision."}),
+            json!({"title":"","severity":"","summary":""}),
+            json!({"title":"Null guard","severity":"high","summary":""}),
+        ];
+        let body = review_body("One issue.", &findings, "run-1");
+        assert!(body.starts_with("One issue.\n\n**Findings**\n"));
+        assert!(body.contains("- **[medium] Preserve fractional ticks** — lib/trend-axis.ts:86 rounds ticks; keep precision."));
+        assert!(body.contains("- **[high] Null guard**"));
+        assert!(body.ends_with("NexusMind run: `run-1`"));
+        assert_eq!(review_body("Looks good.", &[], "r"), "Looks good.\n\nNexusMind run: `r`");
+        let many: Vec<_> = (0..100).map(|i| json!({"title":format!("t{i}"),"severity":"low","summary":"x".repeat(2000)})).collect();
+        let long = review_body("s", &many, "r");
+        assert!(long.chars().count() < 65_536 && long.contains("more"));
     }
     #[test]
     fn explicit_review_requests_get_a_fresh_review_of_the_same_head() {
