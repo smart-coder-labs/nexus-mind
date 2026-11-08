@@ -1413,6 +1413,89 @@ fn target_environment(
 /// files) via `gh`, so the agent can scope what it verifies to what each target
 /// actually touched. Best-effort per target: a target that cannot be fetched is
 /// recorded with an `error` field rather than aborting the whole run.
+/// How a Judge verifies its targets: `live` drives the deployed app, `code`
+/// reviews the diffs and repositories, `both` does the two. `auto` (the default)
+/// uses the live app when this run has one (an `app_base_url` or an enabled web
+/// target with a URL) and the code otherwise.
+fn judge_mode(config: &serde_json::Value) -> &'static str {
+    let url = |value: &serde_json::Value| value.as_str().is_some_and(|url| url.trim().starts_with("http"));
+    let live_available = url(&config["app_base_url"])
+        || config["targets"].as_array().is_some_and(|targets| {
+            targets.iter().any(|target| {
+                target["kind"] == "web_application"
+                    && target["enabled"] != false
+                    && (url(&target["config"]["url"]) || url(&target["url"]))
+            })
+        });
+    match config.get("judge_mode").and_then(|v| v.as_str()).unwrap_or("auto") {
+        "live" => "live",
+        "code" => "code",
+        "both" => "both",
+        _ if live_available => "live",
+        _ => "code",
+    }
+}
+
+/// Code-mode context for a Judge: clone each target repository read-only under
+/// `context_dir/<repo-name>` and save each PR's unified diff under
+/// `context_dir/judge-diffs`, recording both paths (relative to the agent's
+/// working directory) on the target so the agent can Read them.
+async fn prepare_judge_code_context(
+    targets: &mut [serde_json::Value],
+    token: Option<&str>,
+    context_dir: &Path,
+) -> anyhow::Result<()> {
+    const MAX_DIFF_CHARS: usize = 200_000;
+    let mut repositories: Vec<String> = Vec::new();
+    for target in targets.iter() {
+        if let Some(repository) = target["repository"].as_str() {
+            if !repositories.iter().any(|known| known == repository) {
+                repositories.push(repository.to_string());
+            }
+        }
+    }
+    clone_repositories(&repositories, token, context_dir).await;
+    let diffs = context_dir.join("judge-diffs");
+    tokio::fs::create_dir_all(&diffs).await?;
+    for target in targets.iter_mut() {
+        if target.get("error").is_some() {
+            continue;
+        }
+        let Some(repository) = target["repository"].as_str().map(str::to_string) else { continue };
+        let name = super::r2::safe_key(repository.rsplit('/').next().unwrap_or(&repository));
+        if context_dir.join(&name).is_dir() {
+            target["repository_dir"] = json!(format!("../context/{name}"));
+        }
+        let Some(number) = target["number"].as_u64() else { continue };
+        if target["type"] != "pr" {
+            continue;
+        }
+        let mut command = Command::new("gh");
+        restrict_claude_environment(&mut command);
+        if let Some(token) = token {
+            command.env("GH_TOKEN", token);
+        }
+        command
+            .args(["pr", "diff", &number.to_string(), "--repo", &repository])
+            .kill_on_drop(true);
+        match timeout(Duration::from_secs(30), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
+                let diff = String::from_utf8_lossy(&output.stdout);
+                let truncated = diff.chars().count() > MAX_DIFF_CHARS;
+                let body: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+                let file = format!("{}-{number}.diff", super::r2::safe_key(&repository.replace('/', "-")));
+                tokio::fs::write(diffs.join(&file), body).await?;
+                target["diff_file"] = json!(format!("../context/judge-diffs/{file}"));
+                if truncated {
+                    target["diff_truncated"] = json!(true);
+                }
+            }
+            _ => target["diff_error"] = json!("gh_pr_diff_failed"),
+        }
+    }
+    Ok(())
+}
+
 async fn resolve_judge_targets(
     targets: &[serde_json::Value],
     token: Option<&str>,
@@ -2047,12 +2130,20 @@ async fn clone_context_repos(
     token: Option<&str>,
     base_dir: &Path,
 ) -> Vec<String> {
+    let repositories: Vec<String> = claim
+        .config
+        .get("context_repos")
+        .and_then(|v| v.as_array())
+        .map(|entries| entries.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    clone_repositories(&repositories, token, base_dir).await
+}
+
+/// Shallow, read-only clones of up to 10 repositories into `base_dir/<repo-name>`.
+async fn clone_repositories(repositories: &[String], token: Option<&str>, base_dir: &Path) -> Vec<String> {
     let mut cloned = Vec::new();
-    let Some(entries) = claim.config.get("context_repos").and_then(|v| v.as_array()) else {
-        return cloned;
-    };
-    for entry in entries.iter().take(10) {
-        let Some(repository) = entry.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+    for entry in repositories.iter().take(10) {
+        let Some(repository) = Some(entry.trim()).filter(|s| !s.is_empty()) else {
             continue;
         };
         if super::connectors::validate_repository(repository).is_err() {
@@ -3551,9 +3642,18 @@ pub(crate) fn fixed_prompt(
             // The browser starts from a fresh, in-memory profile each run, so any
             // stale content is the app's own service worker / CDN, not the agent.
             let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
-            format!(
+            let code_review = "For each PR target the worker saved its unified diff at the path in its `diff_file` field (relative to your working directory; `diff_truncated` marks a cut diff, `diff_error` a diff that could not be fetched) and cloned its repository read-only at `repository_dir` (for a merged PR that default branch already contains the change). For each target: read its title, body and changed files, derive the concrete claim, then read the diff and the surrounding code to verify that the change implements that claim correctly and completely; check edge cases, error paths, regressions in callers, and whether tests cover the change. For an issue target, find the code that should resolve it and judge whether it does. Support every finding with file:line evidence from the diff or the repository; never guess, and never report something you did not read. Do NOT modify anything.";
+            match config["judge_mode_effective"].as_str().unwrap_or("live") {
+                "code" => format!(
+                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, by reviewing their CODE; no live application is used in this run. {code_review} You have ONLY Read/Grep/Glob plus Task for parallel subagents (useful for independent, blind reviews of the same change); Bash, shell commands, browsers and WebFetch are unavailable, so never attempt them. Code review has no screenshots: set each finding's \"screenshot\" to an empty string.{turn_budget}{slack_clause}{custom_clause}{judge_contract}"
+                ),
+                "both" => format!(
+                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, in TWO ways, and you must complete both. (1) LIVE: verify each claim against the target application (use `app_base_url` when present, otherwise the configured target's url) through the server-configured `playwright` MCP browser tools, checking ONLY that claim plus an immediate regression check of the adjacent flow, with a screenshot (short unique .png filename in the finding's \"screenshot\" field) for every live finding. (2) CODE: {code_review} Put `[live]` or `[code]` right after the target reference in every finding title. An unreachable or login-blocked app stops only the live part: report it as one `[live]` finding and still complete the code review. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob and Task; Bash, shell commands and WebFetch are unavailable, so never attempt them. Code findings have no screenshot: use an empty string.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
+                ),
+                _ => format!(
                 "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's url). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
-            )
+                ),
+            }
         }
         "github_issue_resolver" => {
             let has_context = config
@@ -5247,8 +5347,19 @@ async fn execute_claim(
                 json!({"code":"judge_targets_unavailable"}),
             );
         }
+        let mode = judge_mode(&runtime_config);
+        let mut resolved = resolved;
+        if matches!(mode, "code" | "both") {
+            let context_dir = sandbox.path().join("context");
+            if let Err(error) = prepare_judge_code_context(&mut resolved, token.as_deref(), &context_dir).await {
+                let _ = tokio::fs::remove_dir_all(&workdir).await;
+                return ("blocked_runtime".into(), json!({"code":"judge_code_context_failed","detail":error.to_string()}));
+            }
+            context_dir_arg = context_dir.to_str().map(str::to_string);
+        }
         if let Some(object) = runtime_config.as_object_mut() {
             object.insert("judge_targets_resolved".into(), json!(resolved));
+            object.insert("judge_mode_effective".into(), json!(mode));
         }
     }
     if claim.template_key == "qa" {
@@ -5450,6 +5561,9 @@ async fn execute_claim(
                 "acceptEdits",
                 "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
             )
+        }
+        ("judge", _) if runtime_config["judge_mode_effective"] == "code" => {
+            ("default", "Read,Grep,Glob,Skill,Task")
         }
         ("qa" | "judge", true) => (
             "default",
@@ -8798,6 +8912,32 @@ mod tests {
         let many: Vec<_> = (0..100).map(|i| json!({"title":format!("t{i}"),"severity":"low","summary":"x".repeat(2000)})).collect();
         let long = review_body("s", &many, "r");
         assert!(long.chars().count() < 65_536 && long.contains("more"));
+    }
+    #[test]
+    fn judge_mode_uses_the_code_without_a_live_target() {
+        assert_eq!(judge_mode(&json!({})), "code");
+        assert_eq!(judge_mode(&json!({"app_base_url":"https://pr-1.example.com"})), "live");
+        let web = |enabled: bool| json!({"targets":[{"kind":"web_application","enabled":enabled,"config":{"url":"https://app.example.com"}}]});
+        assert_eq!(judge_mode(&web(true)), "live");
+        assert_eq!(judge_mode(&web(false)), "code");
+        assert_eq!(judge_mode(&json!({"judge_mode":"both"})), "both");
+        assert_eq!(judge_mode(&json!({"judge_mode":"live"})), "live");
+        assert_eq!(judge_mode(&json!({"judge_mode":"code","app_base_url":"https://x.example.com"})), "code");
+    }
+    #[test]
+    fn judge_prompt_follows_the_effective_mode() {
+        let base = json!({"repositories":["acme/api"],"judge_targets_resolved":[]});
+        let mut code = base.clone();
+        code["judge_mode_effective"] = json!("code");
+        let prompt = fixed_prompt("judge", &code, 50).unwrap();
+        assert!(prompt.contains("by reviewing their CODE") && prompt.contains("diff_file"));
+        assert!(!prompt.contains("mcp__playwright__*") && !prompt.contains("AUTHENTICATION:"));
+        let mut both = base.clone();
+        both["judge_mode_effective"] = json!("both");
+        let prompt = fixed_prompt("judge", &both, 50).unwrap();
+        assert!(prompt.contains("in TWO ways") && prompt.contains("diff_file") && prompt.contains("mcp__playwright__*") && prompt.contains("[code]"));
+        let prompt = fixed_prompt("judge", &base, 50).unwrap();
+        assert!(prompt.contains("LIVE target application") && !prompt.contains("diff_file"));
     }
     #[test]
     fn explicit_review_requests_get_a_fresh_review_of_the_same_head() {
