@@ -75,7 +75,11 @@ def model_failure(raw):
     if not messages or messages[-1].get('stopReason')!='error':
         return None
     detail=str(messages[-1].get('errorMessage') or 'model error')[:300]
-    code='model_unavailable' if any(m in detail.lower() for m in MODEL_UNAVAILABLE_MARKERS) else 'agent_model_error'
+    lower=detail.lower()
+    # Checked first: an exhausted per-step budget is the agent's own usage, not
+    # an unavailable model, so recovery may still re-plan the work.
+    if 'budget exceeded' in lower:return 'model_budget_exceeded',detail
+    code='model_unavailable' if any(m in lower for m in MODEL_UNAVAILABLE_MARKERS) else 'agent_model_error'
     return code,detail
 
 

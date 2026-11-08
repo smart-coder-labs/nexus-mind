@@ -58,6 +58,47 @@ class ModelRelayTests(unittest.TestCase):
             backend.shutdown()
             backend.server_close()
 
+    def relay_once(self, status, body):
+        class Backend(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body)
+
+        backend = http.server.HTTPServer(('127.0.0.1', 0), Backend)
+        threading.Thread(target=backend.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                local = model_relay.serve_local(root)
+                api = API('http://127.0.0.1:' + str(backend.server_port), 'host-only-runner-credential')
+                job = {'run_id': 'run', 'step': {'id': 'implement'}, 'lease_token': 'host-only-fence'}
+                try:
+                    with model_relay.Relay(root, api, job):
+                        call = urllib.request.Request('http://127.0.0.1:' + str(local.server_port) + '/codex/responses', data=json.dumps({'model': 'gpt-fixture', 'stream': True, 'input': []}).encode())
+                        with urllib.request.urlopen(call, timeout=10) as response:
+                            return response.read()
+                finally:
+                    local.shutdown()
+                    local.server_close()
+        finally:
+            backend.shutdown()
+            backend.server_close()
+
+    def test_backend_budget_rejection_is_named(self):
+        out = self.relay_once(422, json.dumps({'code': 'model_request_budget_exceeded', 'error': 'secret upstream detail'}).encode())
+        self.assertEqual(out, model_relay.BUDGET_ERROR)
+        self.assertNotIn(b'secret upstream detail', out)
+
+    def test_other_backend_rejections_stay_generic(self):
+        out = self.relay_once(422, json.dumps({'code': 'backend_model_upstream_rejected', 'error': 'secret upstream detail'}).encode())
+        self.assertEqual(out, model_relay.ERROR)
+
     @unittest.skipUnless(os.environ.get('FACTORY_PI_BIN') or os.environ.get('FACTORY_MANAGED_IMAGE'), 'Requires the pinned Pi CLI or SDK image; no live model is used')
     def test_real_pi_cli_completes_through_offline_ipc_with_a_fixture_model(self):
         item = {'id': 'msg_fixture', 'type': 'message', 'role': 'assistant', 'status': 'completed', 'content': [{'type': 'output_text', 'text': '{"success":true}', 'annotations': []}]}

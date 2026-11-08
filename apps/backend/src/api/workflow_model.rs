@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 type Error = (StatusCode, Json<ApiError>);
-const MAX_REQUESTS: u32 = 32;
+const MAX_REQUESTS: u32 = 96;
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
 static STREAMS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 

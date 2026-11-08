@@ -9,13 +9,28 @@ import socket
 import socketserver
 import subprocess
 import threading
+import urllib.error
 import urllib.request
 
 MAX_REQUEST = 2 * 1024 * 1024
 MAX_RESPONSE = 32 * 1024 * 1024
-MAX_REQUESTS = 32
+MAX_REQUESTS = 96
 PI_SETTINGS = {'transport': 'sse', 'retry': {'enabled': False}, 'cacheWarming': 'off', 'enableInstallTelemetry': False}
 ERROR = b'event: error\ndata: {"type":"error","error":{"type":"model_relay_failed","message":"Model relay unavailable; inspect execution readiness"}}\n\n'
+BUDGET_ERROR = b'event: error\ndata: {"type":"error","error":{"type":"model_request_budget_exceeded","message":"Model request budget exceeded for this step"}}\n\n'
+
+
+class BudgetExceeded(Exception):
+    pass
+
+
+def backend_code(error):
+    """Only a fixed, known backend code is ever read from an upstream error."""
+    try:
+        code = json.loads(error.read(4096) or b'{}').get('code')
+    except (ValueError, OSError, AttributeError):
+        return None
+    return code if code == 'model_request_budget_exceeded' else None
 
 
 def request_body(handler):
@@ -81,18 +96,24 @@ class Relay:
                     body = json.loads(request_body(self))
                     handled += 1
                     if handled > MAX_REQUESTS:
-                        raise ValueError('Model request budget exceeded')
+                        raise BudgetExceeded()
                     payload = json.dumps({'lease_token': job['lease_token'], 'request': body}).encode()
                     url = api.base + '/v1/factory/runner/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/model'
                     call = urllib.request.Request(url, data=payload, headers={'Authorization': 'Bearer ' + api.token, 'Content-Type': 'application/json'})
-                    with api.opener.open(call, timeout=60) as response:
+                    try:
+                        response = api.opener.open(call, timeout=60)
+                    except urllib.error.HTTPError as error:
+                        if backend_code(error) == 'model_request_budget_exceeded':
+                            raise BudgetExceeded() from None
+                        raise
+                    with response:
                         headers(self);started = True
                         forward(response, self, stop)
-                except Exception:
+                except Exception as error:
                     # Never reflect upstream headers, errors or credentials.
                     if not started:
                         headers(self)
-                    self.wfile.write(ERROR)
+                    self.wfile.write(BUDGET_ERROR if isinstance(error, BudgetExceeded) else ERROR)
 
         with unix_address(Path(root) / 'model.sock') as address:
             self.server = socketserver.UnixStreamServer(address, Handler)
