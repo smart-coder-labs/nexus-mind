@@ -603,9 +603,12 @@ async fn resolver_verification(
         if !current.status.success() || String::from_utf8_lossy(&current.stdout).trim()!=head || !clean.status.success() || !clean.stdout.is_empty(){anyhow::bail!("verification_tree_changed")}
         let canonical=receipts.iter().map(|r|crate::factory::verification::VerificationReceipt{argv:serde_json::from_value(r["argv"].clone()).unwrap_or_default(),exit_code:r["exit_code"].as_i64().map(|n|n as i32),duration_ms:r["duration_ms"].as_u64().unwrap_or(0)}).collect::<Vec<_>>();
         let report=crate::factory::verification::build_report(&claim.run.id,&head,&canonical,&[],&[])?;
+        // A check that already fails on the base commit is not this change's fault.
+        let preexisting=if report.passed {Vec::new()} else {baseline_failures(workdir,&baseline,&plan,&commands,&receipts).await};
+        let report=crate::factory::verification::waive_preexisting(report,&preexisting)?;
         {let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
             crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
-            queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable}))?;}
+            queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable,"preexisting":preexisting,"output":receipts.iter().filter(|r|r["exit_code"]!=json!(0)).map(|r|json!({"argv":r["argv"],"exit_code":r["exit_code"],"stdout":r["stdout"],"stderr":r["stderr"]})).collect::<Vec<_>>()}))?;}
         if !report.passed{anyhow::bail!("resolver_verification_failed")}
         require_publish_authority(store,claim)?;
         return Ok(crate::factory::resolver_checks::annotate_receipts(receipts.into_iter().map(|mut r|{r["head_sha"]=json!(head);r}).collect(),&plan,&head));
@@ -840,6 +843,64 @@ fn restrict_test_environment(
     for (key, value) in environment {
         command.env(key, value);
     }
+}
+
+/// Re-run the head's failing verification commands on the base commit, in a
+/// detached worktree, after the plan's install commands. Returns the argv of
+/// every command that fails there too (pre-existing). The trailing integrity
+/// check is never re-run or waived. Any setup problem returns nothing, so the
+/// head's failures keep blocking.
+async fn baseline_failures(
+    workdir: &Path,
+    baseline: &str,
+    plan: &crate::factory::resolver_checks::Plan,
+    commands: &[Vec<String>],
+    receipts: &[serde_json::Value],
+) -> Vec<Vec<String>> {
+    let checks = &commands[..commands.len().saturating_sub(1)];
+    let failing: Vec<&Vec<String>> = checks
+        .iter()
+        .zip(receipts)
+        .filter(|(_, receipt)| receipt["exit_code"] != json!(0))
+        .map(|(argv, _)| argv)
+        .collect();
+    let role_commands: Vec<&Vec<String>> = plan.roles.values().flatten().collect();
+    // Waiving needs real evidence on the head: if no test/build/lint/typecheck
+    // command passed, the only "pass" left would be the integrity check.
+    let role_passed = checks
+        .iter()
+        .zip(receipts)
+        .any(|(argv, receipt)| role_commands.contains(&argv) && receipt["exit_code"] == json!(0));
+    if failing.is_empty() || !role_passed {
+        return Vec::new();
+    }
+    let Ok(scratch) = tempfile::tempdir() else { return Vec::new() };
+    let base = scratch.path().join("base");
+    let Some(base_str) = base.to_str() else { return Vec::new() };
+    let mut add = Command::new("git");
+    add.current_dir(workdir).args(["worktree", "add", "--detach", base_str, baseline]);
+    if command_ok(add).await.is_err() {
+        return Vec::new();
+    }
+    let rerun: Vec<Vec<String>> = checks
+        .iter()
+        .filter(|argv| !role_commands.contains(argv) || failing.contains(argv))
+        .cloned()
+        .collect();
+    let base_receipts = run_allowlisted_commands(&base, &rerun).await.unwrap_or_default();
+    let mut remove = Command::new("git");
+    remove.current_dir(workdir).args(["worktree", "remove", "--force", base_str]);
+    let _ = command_ok(remove).await;
+    failing
+        .into_iter()
+        .filter(|argv| {
+            rerun
+                .iter()
+                .zip(&base_receipts)
+                .any(|(command, receipt)| command == *argv && receipt["exit_code"] != json!(0))
+        })
+        .cloned()
+        .collect()
 }
 
 async fn run_allowlisted_commands(
