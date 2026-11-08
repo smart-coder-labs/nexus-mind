@@ -191,3 +191,36 @@ class LogEventTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CompletionJournalTests(unittest.TestCase):
+    def test_large_journal_is_replayed(self):
+        import json, os, tempfile
+        from pathlib import Path
+        import runner
+        with tempfile.TemporaryDirectory() as state:
+            heads = {'repo-%02d' % i: 'a' * 40 for i in range(49)}
+            body = {'lease_token': 't', 'success': False, 'evidence': [{'check': 'build', 'status': 'not_applicable', 'commits': heads} for _ in range(100)],
+                    'outcome': {'input_revision': 1, 'heads': heads, 'output': {}, 'cost_usd': 0}}
+            journal = Path(state) / 'run' / 'pending-completion.json'
+            journal.parent.mkdir()
+            fd = os.open(journal, os.O_WRONLY | os.O_CREAT, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                json.dump({'run_id': 'run', 'step_id': 'verify', 'attempt': 1, 'body': body}, stream)
+            self.assertGreater(journal.stat().st_size, runner.CONFIG_LIMIT)
+            api = unittest.mock.Mock()
+            api.call.side_effect = lambda path, data=None: {'steps': [{'id': 'verify', 'status': 'running', 'attempt': 1}], 'execution': {'heads': heads}} if path == '/runs/run' else {}
+            runner.reconcile({'state_dir': state}, api)
+            api.call.assert_any_call('/runs/run/steps/verify/complete', body)
+            self.assertFalse(journal.exists())
+
+    def test_config_limit_still_applies(self):
+        import os, tempfile
+        import runner
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'config.json')
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                stream.write('x' * (runner.CONFIG_LIMIT + 1))
+            with self.assertRaises(ValueError):
+                runner.private_file(path)

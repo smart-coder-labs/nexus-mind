@@ -196,7 +196,7 @@ def skip_evidence(api,job,name,payload):
 def suite(config,job,profile,roots,api,git,private_file):
     from execution import isolated_adapter, node_bootstrap_image
     from delivery import validate_services
-    evidence=[];start=time.monotonic();success=True
+    evidence=[];failed=[];start=time.monotonic();success=True
     required=set(job['step'].get('options',{}).get('required_checks',[]))
     if {'tests','build'}.issubset(required):
         changed=[r['path'] for r in job['snapshot']['workspace']['repositories'] if job['execution']['heads'][r['path']]!=r['head_sha']]
@@ -237,8 +237,19 @@ def suite(config,job,profile,roots,api,git,private_file):
             evidence.append({'check':role,'status':'not_applicable','commits':job['execution']['heads'],'artifact_digest':digest})
             continue
         for item in items:item['check']=role
+        failed+=[{'check':role,'cwd':check['cwd']} for item in items if item.get('status')=='fail']
         evidence.extend(items);success=success and passed
         if adapter.get('network')=='services':validate_services(config,job)
     required=set(job['step'].get('options',{}).get('required_checks',[]))
     if not required.issubset({e.get('check') for e in evidence}):success=False
-    return success,evidence,{'input_revision':job['execution']['revision'],'heads':job['execution']['heads'],'output':{'checks':evidence},'cost_usd':0}
+    return success,evidence,{'input_revision':job['execution']['revision'],'heads':job['execution']['heads'],'output':suite_output(evidence,failed),'cost_usd':0}
+
+MAX_FAILED_REPORTED=50
+
+def suite_output(evidence,failed):
+    """Bounded step output. Full per-check evidence travels in `evidence`;
+    copying it here (each item carries every repository head) exceeds the
+    backend's 16 KiB output limit on large workspaces."""
+    counts={}
+    for item in evidence:counts[item.get('status','unknown')]=counts.get(item.get('status','unknown'),0)+1
+    return {'checks':counts,'failed':failed[:MAX_FAILED_REPORTED],'failed_total':len(failed)}
