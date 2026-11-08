@@ -119,6 +119,27 @@ class ValidationPlanSuiteTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(calls,[('tests-0','api')])
         self.assertEqual(sorted(e['status'] for e in evidence),['not_applicable','not_applicable','pass'])
+    def test_output_stays_bounded_with_many_skipped_checks(self):
+        import runtime_settings as rs
+        heads={'repo-%02d'%i:'a'*40 for i in range(60)}
+        evidence=[{'check':'build','status':'not_applicable','commits':heads,'artifact_digest':'d'*64} for _ in range(200)]
+        evidence.append({'check':'tests','status':'fail','commits':heads})
+        out=rs.suite_output(evidence,[{'check':'tests','cwd':'api'}]*80)
+        self.assertLess(len(json.dumps(out)),16384)
+        self.assertEqual(out['checks'],{'not_applicable':200,'fail':1})
+        self.assertEqual(out['failed_total'],80);self.assertEqual(len(out['failed']),50)
+    def test_failed_checks_are_named_in_output(self):
+        decisions=[{'check':{'name':'tests','cwd':'api'},'run':True},{'check':{'name':'tests','cwd':'web'},'run':False},{'check':{'name':'build','cwd':'web'},'run':False}]
+        import runtime_settings as rs
+        api=Mock()
+        api.call.side_effect=lambda path,data=None:{'decisions':decisions} if path.endswith('/validation-plan') else {'digest':'d'*64}
+        def adapter(config,child,adapter,roots,named,git,private_file):
+            return False,[{'check':adapter['checks'][0]['name'],'status':'fail'}],{}
+        with patch('execution.isolated_adapter',side_effect=adapter),patch.object(rs,'repository_facts',return_value=[]):
+            success,_,outcome=rs.suite({'state_dir':'/tmp'},self.job(),self.profile(),[],api,Mock(),Mock())
+        self.assertFalse(success)
+        self.assertEqual(outcome['output']['failed'],[{'check':'tests','cwd':'api'}])
+        self.assertEqual(outcome['output']['checks'],{'not_applicable':2,'fail':1})
     def test_older_backend_runs_every_check(self):
         (_,evidence,_),calls=self.run_suite(None)
         self.assertEqual(len(calls),3)
