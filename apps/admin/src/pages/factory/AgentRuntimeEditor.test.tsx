@@ -91,3 +91,24 @@ it('does not turn a foreign-target executable into a portable Markdown harness',
   expect(screen.getByRole('button', { name: 'Approve selected files for this runtime' })).toBeDisabled()
   expect(api.approveHarnessInstall).not.toHaveBeenCalled()
 })
+
+it('re-approves assigned harnesses when the executor changes', async () => {
+  api.listHarnesses.mockResolvedValue([{ id: 'h1', name: 'Rust review', status: 'published', latest_version: { version: '1.0.0' } }])
+  const initial = { harnesses: [{ id: 'h1', version: '1.0.0', manifest_hash: 'sha256:pinned', components: ['rust/SKILL.md'] }] }
+  const wrap = (executor: string) => <QueryClientProvider client={client}><Switchable executor={executor} initial={initial} /></QueryClientProvider>
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const { rerender } = render(wrap('claude'))
+  expect(await screen.findByText(/Rust review · 1.0.0/)).toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  rerender(wrap('pi'))
+  expect(screen.getByRole('alert')).toHaveTextContent('approved for pi before saving')
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Approve assigned harnesses for pi' }))
+  await waitFor(() => expect(api.approveHarnessInstall).toHaveBeenCalledWith('h1', '1.0.0', expect.objectContaining({ target_tool: 'pi', target_scope: 'agent-runtime', manifest_hash: 'sha256:pinned' })))
+  expect(await screen.findByText('Approved 1 assigned harness for pi.')).toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+function Switchable({ executor, initial }: { executor: string; initial: AgentRuntimeConfig }) {
+  const [value, setValue] = useState(initial)
+  return <AgentRuntimeEditor value={value} executor={executor} onChange={setValue} />
+}
