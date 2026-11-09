@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createClient } from '../../api/client'
 import { Button } from '../../components/ui/Button'
@@ -57,6 +57,26 @@ export function AgentRuntimeEditor({ value, executor, onChange, onValidityChange
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [kind, setKind] = useState<AgentRuntimeComponent['kind']>('mcp')
+  // Approvals are per executor (and per user): a harness approved when it was
+  // added does not cover another executor chosen later, and the save fails with
+  // approval_required. Track which executor the assigned harnesses were approved for.
+  const savedExecutor = useRef(executor)
+  const [approvedFor, setApprovedFor] = useState<string | null>(null)
+  const [approveNote, setApproveNote] = useState('')
+  const assigned = value.harnesses ?? []
+  const needsReapproval = assigned.length > 0 && executor !== savedExecutor.current && approvedFor !== executor
+  const harnessName = (id: string) => harnesses.data?.find(h => h.id === id)?.name ?? id
+  const approveAssigned = async () => {
+    setBusy(true); setError(''); setApproveNote('')
+    try {
+      for (const h of assigned) {
+        await client.approveHarnessInstall(h.id, h.version, { target_tool: executor, target_scope: 'agent-runtime', manifest_hash: h.manifest_hash, metadata: { warning_acknowledged: value.acknowledge_executable === true } })
+      }
+      setApprovedFor(executor)
+      setApproveNote(`Approved ${assigned.length} assigned harness${assigned.length === 1 ? '' : 'es'} for ${executor}.`)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Approval failed') }
+    finally { setBusy(false) }
+  }
   const [id, setId] = useState('')
   const supported = runtimeKinds[executor] ?? []
   const incompatible = (value.components ?? []).filter(c => c.enabled !== false && !supported.includes(c.kind))
@@ -99,7 +119,12 @@ export function AgentRuntimeEditor({ value, executor, onChange, onValidityChange
         finally { setBusy(false) }
       }}>Approve selected files for this runtime</Button>
     </div>}
-    {value.harnesses?.map(h => <div key={h.id} className="flex items-center justify-between gap-2 text-xs"><span>{h.id} · {h.version} · {h.components.join(', ')}</span><Button size="sm" variant="ghost" onClick={() => update({ harnesses: value.harnesses?.filter(v => v.id !== h.id) })}>Remove harness</Button></div>)}
+    {needsReapproval && <p role="alert" className="text-xs">The executor changed to {executor}. Assigned harnesses must be approved for {executor} before saving.</p>}
+    {assigned.length > 0 && <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" variant={needsReapproval ? "primary" : "ghost"} disabled={busy} onClick={approveAssigned}>Approve assigned harnesses for {executor}</Button>
+      {approveNote && <span className="text-xs text-text-tertiary">{approveNote}</span>}
+    </div>}
+    {value.harnesses?.map(h => <div key={h.id} className="flex items-center justify-between gap-2 text-xs"><span>{harnessName(h.id)} · {h.version} · {h.components.join(', ')}</span><Button size="sm" variant="ghost" onClick={() => update({ harnesses: value.harnesses?.filter(v => v.id !== h.id) })}>Remove harness</Button></div>)}
     <div className="flex flex-wrap items-end gap-2">
       <label className="text-xs">Component ID<Input value={id} onChange={e => setId(e.target.value)} placeholder="backend-review" /></label>
       <label className="text-xs">Component type<select className={control} value={supported.includes(kind) ? kind : supported[0]} onChange={e => setKind(e.target.value as AgentRuntimeComponent['kind'])}>{supported.map(k => <option key={k}>{k}</option>)}</select></label>
