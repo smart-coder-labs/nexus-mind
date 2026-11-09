@@ -653,10 +653,16 @@ async fn resolver_verification(
     let canonical=runs.iter().map(|r|r.receipt()).collect::<Vec<_>>();
     if canonical.len()!=commands.len(){anyhow::bail!("verification_evidence_missing")}
     let report=crate::factory::verification::build_report(&claim.run.id,&head,&canonical,&[],&[])?;
+    // A check that already fails on the base commit is not this change's fault.
+    let preexisting=if report.passed {Vec::new()} else {
+        let passed=runs.iter().map(|r|r.exit_code==Some(0)).collect::<Vec<_>>();
+        sandboxed_baseline_failures(&run,&baseline,&plan,&commands,&passed).await
+    };
+    let report=crate::factory::verification::waive_preexisting(report,&preexisting)?;
     {
         let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
         crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
-        queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable,"output":runs.iter().map(|r|json!({"argv":r.argv,"exit_code":r.exit_code,"stdout":sanitize_output(&r.stdout,4000),"stderr":sanitize_output(&r.stderr,4000)})).collect::<Vec<_>>()}))?;
+        queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable,"preexisting":preexisting,"output":runs.iter().map(|r|json!({"argv":r.argv,"exit_code":r.exit_code,"stdout":sanitize_output(&r.stdout,4000),"stderr":sanitize_output(&r.stderr,4000)})).collect::<Vec<_>>()}))?;
     }
     if !report.passed{anyhow::bail!("resolver_verification_failed")}
     let current=Command::new("git").current_dir(workdir).args(["rev-parse","HEAD"]).output().await?;
@@ -850,6 +856,80 @@ fn restrict_test_environment(
 /// every command that fails there too (pre-existing). The trailing integrity
 /// check is never re-run or waived. Any setup problem returns nothing, so the
 /// head's failures keep blocking.
+/// The head failures worth retrying on the base commit, and what to rerun there
+/// (every non-role command, i.e. installs, plus the failing ones). `None` when
+/// nothing may be waived: no failure, or no test/build/lint/typecheck command
+/// passed on the head (the only "pass" left would be the integrity check). The
+/// last command is that integrity check and is never waived.
+fn baseline_rerun(
+    plan: &crate::factory::resolver_checks::Plan,
+    commands: &[Vec<String>],
+    passed: &[bool],
+) -> Option<(Vec<Vec<String>>, Vec<Vec<String>>)> {
+    let checks = &commands[..commands.len().saturating_sub(1)];
+    let failing: Vec<Vec<String>> = checks
+        .iter()
+        .zip(passed)
+        .filter(|(_, ok)| !**ok)
+        .map(|(argv, _)| argv.clone())
+        .collect();
+    let role_commands: Vec<&Vec<String>> = plan.roles.values().flatten().collect();
+    let role_passed = checks
+        .iter()
+        .zip(passed)
+        .any(|(argv, ok)| *ok && role_commands.contains(&argv));
+    if failing.is_empty() || !role_passed {
+        return None;
+    }
+    let rerun = checks
+        .iter()
+        .filter(|argv| !role_commands.contains(argv) || failing.contains(argv))
+        .cloned()
+        .collect();
+    Some((failing, rerun))
+}
+
+/// The head failures that fail on the base too (`base_passed` pairs with `rerun`;
+/// a missing result never waives).
+fn still_failing(
+    failing: Vec<Vec<String>>,
+    rerun: &[Vec<String>],
+    base_passed: &[bool],
+) -> Vec<Vec<String>> {
+    failing
+        .into_iter()
+        .filter(|argv| {
+            rerun
+                .iter()
+                .zip(base_passed)
+                .any(|(command, ok)| command == argv && !ok)
+        })
+        .collect()
+}
+
+/// A detached worktree of `baseline` in a scratch directory (kept alive by the
+/// returned guard); [`remove_worktree`] unregisters it.
+async fn base_worktree(workdir: &Path, baseline: &str) -> Option<(tempfile::TempDir, std::path::PathBuf)> {
+    let scratch = tempfile::tempdir().ok()?;
+    let base = scratch.path().join("base");
+    let mut add = Command::new("git");
+    add.current_dir(workdir)
+        .args(["worktree", "add", "--detach"])
+        .arg(&base)
+        .arg(baseline);
+    command_ok(add).await.ok()?;
+    Some((scratch, base))
+}
+
+async fn remove_worktree(workdir: &Path, base: &Path) {
+    let mut remove = Command::new("git");
+    remove
+        .current_dir(workdir)
+        .args(["worktree", "remove", "--force"])
+        .arg(base);
+    let _ = command_ok(remove).await;
+}
+
 async fn baseline_failures(
     workdir: &Path,
     baseline: &str,
@@ -857,50 +937,74 @@ async fn baseline_failures(
     commands: &[Vec<String>],
     receipts: &[serde_json::Value],
 ) -> Vec<Vec<String>> {
-    let checks = &commands[..commands.len().saturating_sub(1)];
-    let failing: Vec<&Vec<String>> = checks
-        .iter()
-        .zip(receipts)
-        .filter(|(_, receipt)| receipt["exit_code"] != json!(0))
-        .map(|(argv, _)| argv)
-        .collect();
-    let role_commands: Vec<&Vec<String>> = plan.roles.values().flatten().collect();
-    // Waiving needs real evidence on the head: if no test/build/lint/typecheck
-    // command passed, the only "pass" left would be the integrity check.
-    let role_passed = checks
-        .iter()
-        .zip(receipts)
-        .any(|(argv, receipt)| role_commands.contains(&argv) && receipt["exit_code"] == json!(0));
-    if failing.is_empty() || !role_passed {
+    let passed: Vec<bool> = receipts.iter().map(|r| r["exit_code"] == json!(0)).collect();
+    let Some((failing, rerun)) = baseline_rerun(plan, commands, &passed) else {
         return Vec::new();
-    }
-    let Ok(scratch) = tempfile::tempdir() else { return Vec::new() };
-    let base = scratch.path().join("base");
-    let Some(base_str) = base.to_str() else { return Vec::new() };
-    let mut add = Command::new("git");
-    add.current_dir(workdir).args(["worktree", "add", "--detach", base_str, baseline]);
-    if command_ok(add).await.is_err() {
+    };
+    let Some((_scratch, base)) = base_worktree(workdir, baseline).await else {
         return Vec::new();
-    }
-    let rerun: Vec<Vec<String>> = checks
-        .iter()
-        .filter(|argv| !role_commands.contains(argv) || failing.contains(argv))
-        .cloned()
-        .collect();
+    };
     let base_receipts = run_allowlisted_commands(&base, &rerun).await.unwrap_or_default();
-    let mut remove = Command::new("git");
-    remove.current_dir(workdir).args(["worktree", "remove", "--force", base_str]);
-    let _ = command_ok(remove).await;
-    failing
-        .into_iter()
-        .filter(|argv| {
-            rerun
-                .iter()
-                .zip(&base_receipts)
-                .any(|(command, receipt)| command == *argv && receipt["exit_code"] != json!(0))
-        })
-        .cloned()
-        .collect()
+    remove_worktree(workdir, &base).await;
+    let base_passed: Vec<bool> = base_receipts.iter().map(|r| r["exit_code"] == json!(0)).collect();
+    still_failing(failing, &rerun, &base_passed)
+}
+
+/// [`baseline_failures`] for a sandboxed verification: the base reruns in its own
+/// commands pod, with the same registry-only identity as the head's.
+async fn sandboxed_baseline_failures(
+    run: &super::sandboxed::SandboxedRun<'_>,
+    baseline: &str,
+    plan: &crate::factory::resolver_checks::Plan,
+    commands: &[Vec<String>],
+    passed: &[bool],
+) -> Vec<Vec<String>> {
+    let Some((failing, rerun)) = baseline_rerun(plan, commands, passed) else {
+        return Vec::new();
+    };
+    let Some((_scratch, base)) = base_worktree(run.workdir, baseline).await else {
+        return Vec::new();
+    };
+    let unused_receipts = std::sync::Mutex::new(Vec::new());
+    let base_run = super::sandboxed::SandboxedRun {
+        store: run.store,
+        org_id: run.org_id,
+        run_id: run.run_id,
+        attempt_id: run.attempt_id,
+        retry: run.retry,
+        workdir: &base,
+        secret_values: run.secret_values,
+        seq_base: run.seq_base,
+        wall_time: run.wall_time,
+        verification: &[],
+        receipts: &unused_receipts,
+        qa: None,
+        slot: run.slot,
+        writes: None,
+    };
+    let runs = super::sandboxed::run_commands_sandboxed(
+        &base_run,
+        &super::sandboxed::CommandsSpec {
+            commands: &rerun,
+            extra_env: &[("CI".into(), "true".into())],
+            timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
+            reproduce_failures: false,
+            hosts: &[],
+            label: "vb",
+            max_stdout: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
+            files: Vec::new(),
+            proxy_file: None,
+        },
+    )
+    .await;
+    remove_worktree(run.workdir, &base).await;
+    match runs {
+        Ok(runs) if runs.len() == rerun.len() => {
+            let base_passed: Vec<bool> = runs.iter().map(|r| r.exit_code == Some(0)).collect();
+            still_failing(failing, &rerun, &base_passed)
+        }
+        _ => Vec::new(),
+    }
 }
 
 async fn run_allowlisted_commands(
@@ -8811,6 +8915,27 @@ mod tests {
         assert_ne!(denied.source, VerdictSource::Human);
     }
     use super::*;
+
+    #[test]
+    fn baseline_rerun_needs_a_passing_role_and_keeps_installs() {
+        let argv=|s:&str|s.split(' ').map(String::from).collect::<Vec<_>>();
+        let plan=crate::factory::resolver_checks::Plan{
+            commands:Vec::new(),
+            roles:[("test".to_string(),vec![argv("npm test")]),("build".to_string(),vec![argv("npm run build")])].into_iter().collect(),
+            not_applicable:Default::default(),
+        };
+        let commands=vec![argv("npm ci"),argv("npm test"),argv("npm run build"),argv("python3 integrity")];
+        // Only the integrity check passed: nothing to waive.
+        assert!(baseline_rerun(&plan,&commands,&[false,false,false,true]).is_none());
+        // The integrity check is never a candidate.
+        assert!(baseline_rerun(&plan,&commands,&[true,true,true,false]).is_none());
+        let (failing,rerun)=baseline_rerun(&plan,&commands,&[true,false,true,true]).unwrap();
+        assert_eq!(failing,vec![argv("npm test")]);
+        assert_eq!(rerun,vec![argv("npm ci"),argv("npm test")]);
+        assert_eq!(still_failing(failing.clone(),&rerun,&[true,false]),failing);
+        assert!(still_failing(failing.clone(),&rerun,&[true,true]).is_empty());
+        assert!(still_failing(failing,&rerun,&[]).is_empty());
+    }
 
     #[tokio::test]
     async fn resolver_verification_executes_tests_and_build_and_persists_exact_head() {

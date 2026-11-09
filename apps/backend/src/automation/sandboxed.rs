@@ -321,16 +321,22 @@ async fn run_commands(
             github_packages_npmrc(&all, &registry).into_bytes(),
         ));
         for (relative, scopes) in &found {
-            let lockfile = run.workdir.join(relative).join("package-lock.json");
-            if let Some(proxied) = std::fs::read_to_string(&lockfile)
-                .ok()
-                .and_then(|raw| proxied_lockfile(&raw, &registry))
-            {
-                let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
-                    .join(relative)
-                    .join("package-lock.json");
-                job.files
-                    .push((target.to_string_lossy().into_owned(), proxied.into_bytes()));
+            let rewrites: [(&str, fn(&str, &str) -> Option<String>); 2] = [
+                ("package-lock.json", proxied_lockfile),
+                ("pnpm-lock.yaml", proxied_pnpm_lockfile),
+            ];
+            for (name, rewrite) in rewrites {
+                let lockfile = run.workdir.join(relative).join(name);
+                if let Some(proxied) = std::fs::read_to_string(&lockfile)
+                    .ok()
+                    .and_then(|raw| rewrite(&raw, &registry))
+                {
+                    let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
+                        .join(relative)
+                        .join(name);
+                    job.files
+                        .push((target.to_string_lossy().into_owned(), proxied.into_bytes()));
+                }
             }
             let existing = std::fs::read_to_string(run.workdir.join(relative).join(".npmrc")).ok();
             let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
@@ -436,17 +442,21 @@ fn workspace_npm_scopes(
         depth: usize,
         found: &mut Vec<(std::path::PathBuf, std::collections::BTreeSet<String>)>,
     ) {
+        let mut scopes = std::collections::BTreeSet::new();
         if let Ok(raw) = std::fs::read_to_string(dir.join("package-lock.json")) {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let scopes = github_packages_scopes(&value);
-                if !scopes.is_empty() {
-                    let relative = dir
-                        .strip_prefix(root)
-                        .unwrap_or(Path::new(""))
-                        .to_path_buf();
-                    found.push((relative, scopes));
-                }
+                scopes.extend(github_packages_scopes(&value));
             }
+        }
+        if let Ok(raw) = std::fs::read_to_string(dir.join("pnpm-lock.yaml")) {
+            scopes.extend(pnpm_github_packages_scopes(&raw));
+        }
+        if !scopes.is_empty() {
+            let relative = dir
+                .strip_prefix(root)
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            found.push((relative, scopes));
         }
         if depth == 0 {
             return;
@@ -517,6 +527,32 @@ pub(crate) fn proxied_lockfile(raw: &str, registry_url: &str) -> Option<String> 
     const FROM: &str = "\"resolved\": \"https://npm.pkg.github.com/";
     raw.contains(FROM)
         .then(|| raw.replace(FROM, &format!("\"resolved\": \"{registry_url}")))
+}
+
+/// The GitHub Packages scopes a `pnpm-lock.yaml` downloads from: its
+/// `tarball: https://npm.pkg.github.com/download/@scope/...` resolutions.
+pub(crate) fn pnpm_github_packages_scopes(raw: &str) -> std::collections::BTreeSet<String> {
+    const FROM: &str = "tarball: https://npm.pkg.github.com/";
+    raw.match_indices(FROM)
+        .filter_map(|(at, _)| {
+            let rest = &raw[at + FROM.len()..];
+            let rest = rest.strip_prefix("download/").unwrap_or(rest);
+            let scope = rest.strip_prefix('@')?.split(['/', '%']).next()?;
+            let valid = !scope.is_empty()
+                && scope
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            valid.then(|| format!("@{}", scope.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
+/// [`proxied_lockfile`] for pnpm: the `tarball:` resolutions point at the proxy
+/// route; integrity hashes stay as they are.
+pub(crate) fn proxied_pnpm_lockfile(raw: &str, registry_url: &str) -> Option<String> {
+    const FROM: &str = "tarball: https://npm.pkg.github.com/";
+    raw.contains(FROM)
+        .then(|| raw.replace(FROM, &format!("tarball: {registry_url}")))
 }
 
 /// A scanner's report from a commands pod, or why there is none. The worker only
@@ -758,6 +794,18 @@ pub(crate) async fn gc_task_pods() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pnpm_lockfile_private_tarballs_go_through_the_proxy() {
+        let raw = "lockfileVersion: '9.0'\npackages:\n  '@kasymir/ui-commons@0.2.11':\n    resolution: {integrity: sha512-x==, tarball: https://npm.pkg.github.com/download/@kasymir/ui-commons/0.2.11/53f2}\n  'react@19.0.0':\n    resolution: {integrity: sha512-y==}\n";
+        let scopes = pnpm_github_packages_scopes(raw);
+        assert_eq!(scopes.into_iter().collect::<Vec<_>>(), vec!["@kasymir".to_string()]);
+        let proxied = proxied_pnpm_lockfile(raw, "http://proxy/r/T/ghpkg/").unwrap();
+        assert!(proxied.contains("tarball: http://proxy/r/T/ghpkg/download/@kasymir/ui-commons/0.2.11/53f2}"));
+        assert!(proxied.contains("integrity: sha512-x=="));
+        assert!(proxied_pnpm_lockfile("lockfileVersion: '9.0'\n", "http://proxy/r/T/ghpkg/").is_none());
+        assert!(pnpm_github_packages_scopes("tarball: https://npm.pkg.github.com/download/@ba d/x").is_empty());
+    }
 
     #[test]
     fn the_prompt_moves_to_stdin_and_claude_resolves_from_path() {
