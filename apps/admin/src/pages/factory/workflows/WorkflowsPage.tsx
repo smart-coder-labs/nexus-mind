@@ -1028,17 +1028,27 @@ export default function WorkflowsPage({
                     {i.kind} · {i.enabled ? 'Activa' : 'Desactivada'} ·{' '}
                     {i.last_error ?? 'Sin errores de consulta'}
                   </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy || !writable}
-                    onClick={() => {
-                      if (window.confirm('¿Quitar esta entrada?'))
-                        void perform(() => client.deleteWorkflowIntake(i.id))
-                    }}
-                  >
-                    Quitar entrada
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busy || !writable}
+                      onClick={() => void perform(() => client.updateWorkflowIntake(i.id, !i.enabled))}
+                    >
+                      {i.enabled ? 'Pausar' : 'Activar'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy || !writable}
+                      onClick={() => {
+                        if (window.confirm('¿Quitar esta entrada?'))
+                          void perform(() => client.deleteWorkflowIntake(i.id))
+                      }}
+                    >
+                      Quitar entrada
+                    </Button>
+                  </div>
                 </li>
               ))}
           </ul>
@@ -1106,8 +1116,9 @@ export default function WorkflowsPage({
                   kind: intakeKind,
                   connector_id: intakeConnector,
                   config,
+                  enabled: false,
                 })
-                setNotice('Entrada conectada. Su primer inicio puede requerir aprobación.')
+                setNotice('Entrada creada pausada. Actívala solo después de validar el workflow y sus permisos.')
               })
             }
           >

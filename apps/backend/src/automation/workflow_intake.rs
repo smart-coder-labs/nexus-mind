@@ -20,6 +20,8 @@ pub struct Source {
     pub kind: String,
     pub connector_id: String,
     pub config: Value,
+    #[serde(default)]
+    pub enabled: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,11 +62,11 @@ fn github_target(config: &Value, workspace: &Value) -> Result<String> {
     }
     Ok(repository)
 }
-fn github_tasks(issues: &[Value], config: &Value) -> Result<Vec<(String, Value)>> {
+fn github_tasks(issues: &[Value], config: &Value, base_ref: &str) -> Result<Vec<(String, Value)>> {
     let settings = github_config(config)?;
     let target = IntakeTarget {
         repository: settings.repository,
-        base_ref: "main".into(),
+        base_ref: base_ref.into(),
         privacy_class: PrivacyClass::Internal,
     };
     let mut tasks = Vec::new();
@@ -125,6 +127,13 @@ fn connector(
     kind: &str,
     config: &Value,
 ) -> Result<String> {
+    if kind == "github" && id == "server_gh_cli" {
+        if !crate::factory::workflow_publication::backend_account_enabled(org) {
+            bail!("backend_github_not_authorized")
+        }
+        github_config(config)?;
+        return Ok(id.to_string());
+    }
     let (connector, secret) =
         crate::db::queries::get_autonomous_agent_connector_secret(c, org, id)?
             .ok_or_else(|| anyhow::anyhow!("connector_unavailable"))?;
@@ -183,9 +192,16 @@ pub fn create(c: &rusqlite::Connection, org: &str, user: &str, b: &Source) -> Re
         github_target(&b.config, &workflows::workspace_by_id(c, org, &workspace)?)?;
     }
     let id = uuid::Uuid::new_v4().to_string();
-    c.execute("INSERT INTO factory_workflow_intakes(id,org_id,definition_id,kind,connector_id,config_json,created_by) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![id,org,b.definition_id,b.kind,b.connector_id,b.config.to_string(),user])?;
-    Ok(json!({"id":id}))
+    c.execute("INSERT INTO factory_workflow_intakes(id,org_id,definition_id,kind,connector_id,config_json,created_by,enabled) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![id,org,b.definition_id,b.kind,b.connector_id,b.config.to_string(),user,b.enabled])?;
+    Ok(json!({"id":id,"enabled":b.enabled}))
 }
+pub fn set_enabled(c: &rusqlite::Connection, org: &str, id: &str, enabled: bool) -> Result<()> {
+    if c.execute("UPDATE factory_workflow_intakes SET enabled=?3,next_poll=0 WHERE id=?1 AND org_id=?2",params![id,org,enabled])? != 1 {
+        bail!("not_found")
+    }
+    Ok(())
+}
+
 pub fn list(c: &rusqlite::Connection, org: &str) -> Result<Vec<Value>> {
     let mut s=c.prepare("SELECT id,definition_id,kind,connector_id,config_json,enabled,next_poll,last_error FROM factory_workflow_intakes WHERE org_id=?1 ORDER BY id")?;
     let rows=s.query_map([org],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,bool>(5)?,r.get::<_,i64>(6)?,r.get::<_,Option<String>>(7)?)))?.map(|r|{let(id,definition,kind,connector,config,enabled,next,error)=r?;Ok(json!({"id":id,"definition_id":definition,"kind":kind,"connector_id":connector,"config":serde_json::from_str::<Value>(&config)?,"enabled":enabled,"next_poll":next,"last_error":error}))}).collect();
@@ -289,6 +305,8 @@ pub async fn poll(store: &SqliteStore, org: &str, runner: Option<&str>) -> Resul
                 "linear_upstream_rejected",
                 "linear_graphql_failed",
                 "intake_timeout",
+                "backend_github_not_authorized",
+                "source_branch_not_confirmed",
                 "github_issue_limit_exceeded",
                 "github_intake_repository_not_in_workspace",
             ]
@@ -315,7 +333,7 @@ async fn poll_one(
     connector_id: &str,
     config: &Value,
 ) -> Result<u32> {
-    let (token, workspace) = {
+    let (credential, workspace) = {
         let h = store.conn();
         let c = h
             .lock()
@@ -334,6 +352,11 @@ async fn poll_one(
             workflows::workspace_by_id(&c, org, &id)?,
         )
     };
+    let token = if credential == "server_gh_cli" {
+        crate::automation::worker::server_github_token().await?
+    } else {
+        credential.clone()
+    };
     let mut tasks = Vec::new();
     if kind == "linear" {
         for issue in crate::factory::linear::assigned_issues(
@@ -347,13 +370,14 @@ async fn poll_one(
         }
     } else if kind == "github" {
         let repository = github_target(config, &workspace)?;
+        let base_ref=workspace["repositories"].as_array().and_then(|items|items.iter().find(|r|r["remote"].as_str().and_then(|s|crate::factory::workflow_publication::github_repository(s).ok()).is_some_and(|s|s.eq_ignore_ascii_case(&repository)))).and_then(|r|r["branch"].as_str()).ok_or_else(||anyhow::anyhow!("source_branch_not_confirmed"))?;
         let issues = crate::automation::connectors::list_labeled_github_issues_bounded(
             &token,
             &repository,
             intake::INTAKE_LABEL,
         )
         .await?;
-        tasks = github_tasks(&issues, config)?;
+        tasks = github_tasks(&issues, config, base_ref)?;
     } else {
         let remote = workspace["repositories"]
             .as_array()
@@ -381,7 +405,7 @@ async fn poll_one(
     let c = h
         .lock()
         .map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
-    if connector(&c, org, connector_id, kind, config)? != token {
+    if connector(&c, org, connector_id, kind, config)? != credential {
         bail!("connector_changed")
     }
     if kind == "github" {
@@ -441,16 +465,29 @@ mod github_tests {
         json!({"number":42,"state":"open","title":"Fix button","body":"Reproduce this bug","author_association":"OWNER","html_url":"https://github.com/acme/web/issues/42","labels":[{"name":"factory"},{"name":"BUG"}]})
     }
     #[test]
+    fn github_sources_default_to_paused_and_can_be_toggled_per_tenant() {
+        let source: Source=serde_json::from_value(json!({"definition_id":"d","kind":"github","connector_id":"server_gh_cli","config":{"repository":"kasymir/repo","labels":["factory"]}})).unwrap();
+        assert!(!source.enabled);
+        let c=rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE factory_workflow_intakes(id TEXT,org_id TEXT,enabled INTEGER,next_poll INTEGER);INSERT INTO factory_workflow_intakes VALUES('source','org',0,123)").unwrap();
+        set_enabled(&c,"org","source",true).unwrap();
+        assert_eq!(c.query_row("SELECT enabled FROM factory_workflow_intakes",[],|r|r.get::<_,bool>(0)).unwrap(),true);
+        assert_eq!(c.query_row("SELECT next_poll FROM factory_workflow_intakes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert!(set_enabled(&c,"other","source",true).is_err());
+    }
+
+    #[test]
     fn assigned_issues_require_an_explicit_opt_in_to_avoid_competing_with_resolvers() {
         let mut assigned = issue();
         assigned["assignees"] = json!([{"login":"another-person"}]);
-        assert!(github_tasks(&[assigned.clone()], &config())
+        assert!(github_tasks(&[assigned.clone()], &config(), "main")
             .unwrap()
             .is_empty());
         assert_eq!(
             github_tasks(
                 &[assigned],
-                &json!({"repository":"acme/web","labels":["bug"],"include_assigned":true})
+                &json!({"repository":"acme/web","labels":["bug"],"include_assigned":true}),
+                "main"
             )
             .unwrap()
             .len(),
@@ -479,15 +516,17 @@ mod github_tests {
     #[test]
     fn github_issues_require_factory_and_all_filters_and_never_include_prs_or_closed_work() {
         let original = issue();
-        let tasks = github_tasks(&[original.clone()], &config()).unwrap();
+        let tasks = github_tasks(&[original.clone()], &config(), "main").unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].0, "github:acme/web#42");
         assert_eq!(tasks[0].1["origin_trust"], "untrusted");
+        assert_eq!(tasks[0].1["repository"]["base_ref"], "main");
         assert_eq!(
             tasks[0].0,
             github_tasks(
                 &[original.clone()],
-                &json!({"repository":"acme/WEB","labels":[]})
+                &json!({"repository":"acme/WEB","labels":[]}),
+                "main"
             )
             .unwrap()[0]
                 .0
@@ -502,13 +541,14 @@ mod github_tests {
                 _ => json!(""),
             };
             assert!(
-                github_tasks(&[candidate], &config()).unwrap().is_empty(),
+                github_tasks(&[candidate], &config(), "main").unwrap().is_empty(),
                 "{field}"
             );
         }
         assert!(github_tasks(
             &[original],
-            &json!({"repository":"acme/web","labels":["security"]})
+            &json!({"repository":"acme/web","labels":["security"]}),
+            "main"
         )
         .unwrap()
         .is_empty());

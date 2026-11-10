@@ -43,6 +43,21 @@ pub async fn create_intake(
             .map_err(fail)?,
     ))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchIntake { enabled: bool }
+pub async fn update_intake(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    AppJson(body): AppJson<PatchIntake>,
+) -> Response {
+    let h=store.conn();let c=h.lock().map_err(|_|locked())?;
+    require_explicit_permission(&c,&auth,None,"factory_policy:write")?;
+    crate::automation::workflow_intake::set_enabled(&c,&auth.org_id,&id,body.enabled).map_err(fail)?;
+    Ok(Json(json!({"id":id,"enabled":body.enabled})))
+}
+
 pub async fn delete_intake(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

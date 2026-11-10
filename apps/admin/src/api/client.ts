@@ -1711,10 +1711,17 @@ export class NexusMindClient {
     kind: string
     connector_id: string
     config: unknown
-  }): Promise<{ id: string }> {
+    enabled?: boolean
+  }): Promise<{ id: string; enabled: boolean }> {
     return this.request('/v1/factory/workflow-intakes', {
       method: 'POST',
       body: JSON.stringify(data),
+    })
+  }
+  updateWorkflowIntake(id: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
+    return this.request(`/v1/factory/workflow-intakes/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
     })
   }
   deleteWorkflowIntake(id: string): Promise<void> {

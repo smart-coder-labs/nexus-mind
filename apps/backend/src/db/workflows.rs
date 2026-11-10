@@ -237,6 +237,43 @@ pub fn list_definitions(conn: &Connection, org: &str) -> Result<Vec<Value>> {
     })
     .collect()
 }
+fn scope_github_issue_run(d: &mut Definition, workspace: &mut Value, task: &Value) -> Result<()> {
+    if task.pointer("/source/kind").and_then(Value::as_str) != Some("github_issue") {
+        return Ok(());
+    }
+    let remote = task.pointer("/repository/remote").and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("github_issue_repository_missing"))?;
+    crate::automation::connectors::validate_repository(remote)?;
+    let repositories: Vec<Repository> = serde_json::from_value(workspace["repositories"].clone())?;
+    let selected = repositories.into_iter().find(|r| {
+        crate::factory::workflow_publication::github_repository(&r.remote)
+            .is_ok_and(|candidate| candidate.eq_ignore_ascii_case(remote))
+    }).ok_or_else(|| anyhow::anyhow!("github_issue_repository_not_in_workspace"))?;
+    let path = selected.path.clone();
+    for step in &mut d.steps {
+        step.write_repositories.retain(|repository| repository == &path);
+    }
+    d.validate(std::slice::from_ref(&selected)).map_err(anyhow::Error::msg)?;
+    for key in ["repositories", "discovered"] {
+        if let Some(items) = workspace[key].as_array_mut() {
+            items.retain(|item| item["path"] == path);
+        }
+    }
+    if let Some(config) = workspace["runtime"]["config"].as_object_mut() {
+        for key in ["checks", "services", "environment_entrypoints"] {
+            if let Some(items) = config.get_mut(key).and_then(Value::as_array_mut) {
+                items.retain(|item| {
+                    let value = item.as_str().or_else(|| item.get("cwd").and_then(Value::as_str));
+                    value.is_some_and(|value| {
+                        value == path || value.starts_with(&format!("{path}/"))
+                    })
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn start_run(conn: &Connection, org: &str, definition: &str, source_key: &str, task: &Value) -> Result<Value> {
     start_with_sources(conn, org, definition, source_key, task, true)
 }
@@ -275,6 +312,7 @@ fn start_with_sources(
         w["repositories"].clone(),
     )?)
     .map_err(anyhow::Error::msg)?;
+    scope_github_issue_run(&mut d, &mut w, task)?;
     crate::automation::agent_runtime_workflows::verify(&tx, org, &creator, &d)?;
     let active_runner: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM factory_runners WHERE id=?1 AND org_id=?2 AND revoked=0)",
@@ -1244,4 +1282,38 @@ pub fn control_run(
     )?;
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod github_issue_scope_tests {
+    use super::*;
+
+    #[test]
+    fn github_issue_snapshot_limits_writes_sources_and_checks_to_one_repo() {
+        let mut definition: Definition = serde_json::from_value(json!({
+            "name":"Kasymir","workspace_id":"workspace","max_cost_usd":20,
+            "steps":[
+                {"id":"implement","name":"Implement","kind":"agent","adapter":"implement","write_repositories":["kasymir-app-ui","kasymir-api"],"depends_on":[],"max_attempts":1,"timeout_seconds":900,"options":{}},
+                {"id":"review","name":"Review","kind":"review","adapter":"review","write_repositories":[],"depends_on":["implement"],"max_attempts":1,"timeout_seconds":900,"options":{}}
+            ],"repair_step":"implement"
+        })).unwrap();
+        let mut workspace=json!({
+            "repositories":[
+                {"path":"kasymir-app-ui","remote":"https://github.com/kasymir/kasymir-app-ui.git","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","writable":true},
+                {"path":"kasymir-api","remote":"https://github.com/kasymir/kasymir-api.git","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","writable":true}],
+            "discovered":[
+                {"path":"kasymir-app-ui","remote":"https://github.com/kasymir/kasymir-app-ui.git","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","writable":false},
+                {"path":"kasymir-api","remote":"https://github.com/kasymir/kasymir-api.git","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","writable":false}],
+            "runtime":{"config":{"checks":[{"name":"tests","cwd":"kasymir-app-ui/apps/web"},{"name":"tests","cwd":"kasymir-api/apps/api"}],"services":[],"environment_entrypoints":["kasymir-app-ui/package.json","kasymir-api/compose.yaml"]}}
+        });
+        let task=json!({"source":{"kind":"github_issue"},"repository":{"remote":"kasymir/kasymir-app-ui"}});
+        scope_github_issue_run(&mut definition,&mut workspace,&task).unwrap();
+        assert_eq!(definition.steps[0].write_repositories,["kasymir-app-ui"]);
+        assert_eq!(workspace["repositories"].as_array().unwrap().len(),1);
+        assert_eq!(workspace["discovered"].as_array().unwrap().len(),1);
+        assert_eq!(workspace["runtime"]["config"]["checks"][0]["cwd"],"kasymir-app-ui/apps/web");
+        assert_eq!(workspace["runtime"]["config"]["environment_entrypoints"][0],"kasymir-app-ui/package.json");
+        let absent=json!({"source":{"kind":"github_issue"},"repository":{"remote":"kasymir/new-repo"}});
+        assert_eq!(scope_github_issue_run(&mut definition,&mut workspace,&absent).unwrap_err().to_string(),"github_issue_repository_not_in_workspace");
+    }
 }
