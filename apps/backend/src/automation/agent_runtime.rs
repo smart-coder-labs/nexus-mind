@@ -350,6 +350,49 @@ pub fn portable_markdown(manifest: &Value) -> bool {
     })
 }
 
+/// Run evidence for the harnesses a run carried: the pinned references from the
+/// saved configuration and the components resolved from them at save time, with
+/// a hash per injected file. Never the file contents.
+pub fn harness_evidence(config: &Value) -> Value {
+    use sha2::{Digest, Sha256};
+    let assigned = config["runtime"]["harnesses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|h| {
+            json!({"id":h["id"],"version":h["version"],"manifest_hash":h["manifest_hash"],"components":h["components"]})
+        })
+        .collect::<Vec<_>>();
+    let injected = config["runtime_resolved"]["components"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["enabled"] != false && c["id"].as_str().is_some_and(is_harness_component_id))
+        .map(|c| {
+            let files = c["files"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(path, content)| {
+                    let digest = Sha256::digest(content.as_str().unwrap_or_default().as_bytes());
+                    json!({"path":path,"sha256":hex::encode(digest)})
+                })
+                .collect::<Vec<_>>();
+            json!({"id":c["id"],"kind":c["kind"],"files":files})
+        })
+        .collect::<Vec<_>>();
+    json!({"assigned":assigned,"injected":injected})
+}
+
+/// `prepare_config` names harness components `h<harness>-<component>`.
+fn is_harness_component_id(id: &str) -> bool {
+    id.strip_prefix('h')
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(a, b)| {
+            !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_digit())
+        })
+}
+
 pub fn markdown_guidance(config: &Value) -> Value {
     json!(config["runtime_resolved"]["components"]
         .as_array()

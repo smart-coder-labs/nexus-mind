@@ -1,5 +1,5 @@
 use crate::{
-    automation::agent_runtime::{plan, prepare_config, RuntimeConfig},
+    automation::agent_runtime::{harness_evidence, plan, prepare_config, RuntimeConfig},
     db::{connection, migrations, queries, workflows},
     factory::workflows::{Definition, Repository},
 };
@@ -43,6 +43,16 @@ fn catalog_resources_require_scope_approval_hash_target_and_visibility() {
         content
     );
     assert!(!resolved["runtime_resolved"].to_string().contains("forged"));
+    let evidence = harness_evidence(&resolved);
+    assert_eq!(evidence["assigned"][0]["id"], json!(harness.id));
+    assert_eq!(evidence["assigned"][0]["manifest_hash"], json!(version.manifest_hash));
+    assert_eq!(evidence["injected"][0]["files"][0]["path"], "rust/SKILL.md");
+    assert_eq!(
+        evidence["injected"][0]["files"][0]["sha256"],
+        hex::encode(Sha256::digest(content.as_bytes()))
+    );
+    assert!(!evidence.to_string().contains("Review ownership"));
+    assert_eq!(harness_evidence(&config)["injected"], json!([]));
     let runtime: RuntimeConfig =
         serde_json::from_value(resolved["runtime_resolved"].clone()).unwrap();
     let pi = plan(
