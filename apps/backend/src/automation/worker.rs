@@ -3808,12 +3808,15 @@ pub(crate) fn fixed_prompt(
             // stale content is the app's own service worker / CDN, not the agent.
             let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
             let code_review = "For each PR target the worker saved its unified diff at the path in its `diff_file` field (relative to your working directory; `diff_truncated` marks a cut diff, `diff_error` a diff that could not be fetched) and cloned its repository read-only at `repository_dir` (for a merged PR that default branch already contains the change). For each target: read its title, body and changed files, derive the concrete claim, then read the diff and the surrounding code to verify that the change implements that claim correctly and completely; check edge cases, error paths, regressions in callers, and whether tests cover the change. For an issue target, find the code that should resolve it and judge whether it does. Support every finding with file:line evidence from the diff or the repository; never guess, and never report something you did not read. Do NOT modify anything.";
+            // judgment-day style harnesses ask for blind, parallel judges; the code
+            // judge treated that as a suggestion and reviewed alone.
+            let blind_clause = " If the assigned harness guidance asks for independent, blind or parallel judges, that is required, not optional: launch each judge as its own Task subagent with the same target, diff path and checklist but without the other judges' output, wait for all of them, then reconcile their findings (keep what a judge supports with file:line evidence, drop what none can support) and say in the summary how many independent judges ran.";
             match config["judge_mode_effective"].as_str().unwrap_or("live") {
                 "code" => format!(
-                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, by reviewing their CODE; no live application is used in this run. {code_review} You have ONLY Read/Grep/Glob plus Task for parallel subagents (useful for independent, blind reviews of the same change); Bash, shell commands, browsers and WebFetch are unavailable, so never attempt them. Code review has no screenshots: set each finding's \"screenshot\" to an empty string.{turn_budget}{slack_clause}{custom_clause}{judge_contract}"
+                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, by reviewing their CODE; no live application is used in this run. {code_review}{blind_clause} You have ONLY Read/Grep/Glob plus Task for parallel subagents (useful for independent, blind reviews of the same change); Bash, shell commands, browsers and WebFetch are unavailable, so never attempt them. Code review has no screenshots: set each finding's \"screenshot\" to an empty string.{turn_budget}{slack_clause}{custom_clause}{judge_contract}"
                 ),
                 "both" => format!(
-                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, in TWO ways, and you must complete both. (1) LIVE: verify each claim against the target application (use `app_base_url` when present, otherwise the configured target's url) through the server-configured `playwright` MCP browser tools, checking ONLY that claim plus an immediate regression check of the adjacent flow, with a screenshot (short unique .png filename in the finding's \"screenshot\" field) for every live finding. (2) CODE: {code_review} Put `[live]` or `[code]` right after the target reference in every finding title. An unreachable or login-blocked app stops only the live part: report it as one `[live]` finding and still complete the code review. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob and Task; Bash, shell commands and WebFetch are unavailable, so never attempt them. Code findings have no screenshot: use an empty string.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
+                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, in TWO ways, and you must complete both. (1) LIVE: verify each claim against the target application (use `app_base_url` when present, otherwise the configured target's url) through the server-configured `playwright` MCP browser tools, checking ONLY that claim plus an immediate regression check of the adjacent flow, with a screenshot (short unique .png filename in the finding's \"screenshot\" field) for every live finding. (2) CODE: {code_review}{blind_clause} Put `[live]` or `[code]` right after the target reference in every finding title. An unreachable or login-blocked app stops only the live part: report it as one `[live]` finding and still complete the code review. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob and Task; Bash, shell commands and WebFetch are unavailable, so never attempt them. Code findings have no screenshot: use an empty string.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
                 ),
                 _ => format!(
                 "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's url). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
@@ -3976,6 +3979,7 @@ fn context_manifest(
             "sdd":references("context_sdd_ids","sdd"),
             "memory":references("context_memory_ids","memory")
         },
+        "harnesses":super::agent_runtime::harness_evidence(config),
         "budget":claim.run.budget
     })
 }
@@ -8127,17 +8131,32 @@ fn review_body(summary: &str, findings: &[serde_json::Value], run: &str) -> Stri
     let mut listed = 0;
     for finding in findings {
         let text = |key: &str| finding.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-        let (title, severity, detail) = (text("title"), text("severity"), text("summary"));
+        let (title, severity) = (text("title"), text("severity"));
+        // Harness review formats often put the explanation in `comment` (the
+        // inline body) and leave `summary` empty; keep it in the review body so a
+        // finding that is not posted inline (or a 422 fallback) still carries it.
+        let detail = match text("summary") {
+            summary if summary.is_empty() => text("comment"),
+            summary => summary,
+        };
+        let detail = detail.chars().take(4_000).collect::<String>();
         if title.is_empty() && detail.is_empty() {
             continue;
         }
         let severity = if severity.is_empty() { "info".to_string() } else { severity };
+        let path = text("path");
+        let line = finding.get("line").and_then(|v| v.as_i64()).filter(|line| *line > 0);
+        let location = match (path.is_empty(), line) {
+            (true, _) => String::new(),
+            (false, Some(line)) => format!(" (`{path}:{line}`)"),
+            (false, None) => format!(" (`{path}`)"),
+        };
         let item = if detail.is_empty() {
-            format!("\n- **[{severity}] {title}**")
+            format!("\n- **[{severity}] {title}**{location}")
         } else if title.is_empty() {
-            format!("\n- **[{severity}]** {detail}")
+            format!("\n- **[{severity}]**{location} {detail}")
         } else {
-            format!("\n- **[{severity}] {title}** — {detail}")
+            format!("\n- **[{severity}] {title}**{location} — {detail}")
         };
         if listed == 0 {
             body.push_str("\n\n**Findings**\n");
@@ -9095,6 +9114,12 @@ mod tests {
         assert!(body.contains("- **[high] Null guard**"));
         assert!(body.ends_with("NexusMind run: `run-1`"));
         assert_eq!(review_body("Looks good.", &[], "r"), "Looks good.\n\nNexusMind run: `r`");
+        let commented = review_body(
+            "s",
+            &[json!({"title":"Missing guard","severity":"high","summary":"","comment":"Guard `user` before reading `id`.","path":"app/page.tsx","line":12})],
+            "r",
+        );
+        assert!(commented.contains("- **[high] Missing guard** (`app/page.tsx:12`) — Guard `user` before reading `id`."));
         let many: Vec<_> = (0..100).map(|i| json!({"title":format!("t{i}"),"severity":"low","summary":"x".repeat(2000)})).collect();
         let long = review_body("s", &many, "r");
         assert!(long.chars().count() < 65_536 && long.contains("more"));
@@ -9117,13 +9142,16 @@ mod tests {
         code["judge_mode_effective"] = json!("code");
         let prompt = fixed_prompt("judge", &code, 50).unwrap();
         assert!(prompt.contains("by reviewing their CODE") && prompt.contains("diff_file"));
+        assert!(prompt.contains("blind or parallel judges, that is required"));
         assert!(!prompt.contains("mcp__playwright__*") && !prompt.contains("AUTHENTICATION:"));
         let mut both = base.clone();
         both["judge_mode_effective"] = json!("both");
         let prompt = fixed_prompt("judge", &both, 50).unwrap();
         assert!(prompt.contains("in TWO ways") && prompt.contains("diff_file") && prompt.contains("mcp__playwright__*") && prompt.contains("[code]"));
+        assert!(prompt.contains("independent judges ran"));
         let prompt = fixed_prompt("judge", &base, 50).unwrap();
         assert!(prompt.contains("LIVE target application") && !prompt.contains("diff_file"));
+        assert!(!prompt.contains("independent judges ran"));
     }
     #[test]
     fn explicit_review_requests_get_a_fresh_review_of_the_same_head() {
