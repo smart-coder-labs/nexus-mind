@@ -861,11 +861,14 @@ fn restrict_test_environment(
 /// nothing may be waived: no failure, or no test/build/lint/typecheck command
 /// passed on the head (the only "pass" left would be the integrity check). The
 /// last command is that integrity check and is never waived.
+/// Argv lists of verification commands.
+type CommandList = Vec<Vec<String>>;
+
 fn baseline_rerun(
     plan: &crate::factory::resolver_checks::Plan,
     commands: &[Vec<String>],
     passed: &[bool],
-) -> Option<(Vec<Vec<String>>, Vec<Vec<String>>)> {
+) -> Option<(CommandList, CommandList)> {
     let checks = &commands[..commands.len().saturating_sub(1)];
     let failing: Vec<Vec<String>> = checks
         .iter()
@@ -2177,11 +2180,35 @@ pub(crate) fn authenticated_git(token: &str) -> Command {
     command
 }
 
+async fn verified_review_base(pull: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    let branch=pull.pointer("/base/ref").and_then(|v|v.as_str()).filter(|v|!v.is_empty() && v.len()<=1024 && !v.starts_with('-') && !v.contains("@{"))
+        .ok_or_else(||anyhow::anyhow!("invalid_pull_request_base"))?;
+    let sha=pull.pointer("/base/sha").and_then(|v|v.as_str()).filter(|v|crate::factory::workflows::valid_sha(v))
+        .ok_or_else(||anyhow::anyhow!("invalid_pull_request_base"))?;
+    let mut check=Command::new("git");
+    check.current_dir(std::env::temp_dir()).args(["check-ref-format","--branch",branch]);
+    command_ok_as(check,"invalid_pull_request_base").await?;
+    Ok(json!({"ref":branch,"sha":sha}))
+}
+fn ensure_review_base_unchanged(base:&serde_json::Value,pull:&serde_json::Value)->anyhow::Result<()> {
+    if base["ref"].as_str().is_none() || base["sha"].as_str().is_none()
+        || pull.pointer("/base/ref")!=Some(&base["ref"]) || pull.pointer("/base/sha")!=Some(&base["sha"]) {
+        anyhow::bail!("review_base_changed");
+    }
+    Ok(())
+}
+fn repository_clone_branch<'a>(template:&str,config:&'a serde_json::Value,review_base:Option<&'a serde_json::Value>)->anyhow::Result<Option<&'a str>> {
+    match template {
+        "github_pr_reviewer"=>Ok(Some(review_base.and_then(|b|b["ref"].as_str()).ok_or_else(||anyhow::anyhow!("review_base_missing"))?)),
+        "github_issue_resolver"=>Ok(Some(config["base_branch"].as_str().unwrap_or("main"))),
+        _=>Ok(None),
+    }
+}
 async fn prepare_repository(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
     workdir: &Path,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<(Option<String>, Option<serde_json::Value>)> {
     let Some(repository) = claim
         .config
         .get("repository")
@@ -2193,10 +2220,22 @@ async fn prepare_repository(
                 .and_then(|v| v.as_str())
         })
     else {
-        return Ok(None);
+        return Ok((None,None));
     };
     super::connectors::validate_repository(repository)?;
     let token = github_access(store, claim).await?;
+    let review_base = if claim.template_key == "github_pr_reviewer" {
+        let number=claim.config.pointer("/trigger/number").and_then(|v|v.as_i64()).filter(|n|*n>0)
+            .ok_or_else(||anyhow::anyhow!("pull_request_number_missing"))?;
+        let token=token.as_deref().ok_or_else(||anyhow::anyhow!("github_connector_required"))?;
+        let pull=super::connectors::get_github_pull(token,repository,number).await?;
+        Some(verified_review_base(&pull).await?)
+    } else { None };
+    if let Some(base)=&review_base {
+        let db=store.conn();
+        let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+        queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"review.base_selected",&json!({"repository":repository,"base":base}))?;
+    }
     let mut clone = if let Some(ref token) = token {
         authenticated_git(token)
     } else {
@@ -2207,19 +2246,8 @@ async fn prepare_repository(
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("invalid_workspace"))?;
     let mut clone_args = vec!["clone", "--depth", "50"];
-    if matches!(
-        claim.template_key.as_str(),
-        "github_issue_resolver" | "github_pr_reviewer"
-    ) {
-        clone_args.extend([
-            "--branch",
-            claim
-                .config
-                .get("base_branch")
-                .and_then(|v| v.as_str())
-                .unwrap_or("main"),
-            "--single-branch",
-        ]);
+    if let Some(branch)=repository_clone_branch(&claim.template_key,&claim.config,review_base.as_ref())? {
+        clone_args.extend(["--branch",branch,"--single-branch"]);
     }
     clone_args.extend(["--", url.as_str(), destination]);
     clone.args(clone_args);
@@ -2279,7 +2307,7 @@ async fn prepare_repository(
             }
         }
     }
-    Ok(token)
+    Ok((token,review_base))
 }
 
 /// Clone the additional read-only context repositories declared in the agent
@@ -2355,7 +2383,7 @@ async fn clone_repositories(repositories: &[String], token: Option<&str>, base_d
 /// HEAD` in the workdir, i.e. the fetched `pull/N/head`), so it always matches the
 /// code the agent reads — and it works whether or not the trigger carried a
 /// `head_sha` (manual runs do not). `base` mirrors the previous local behavior:
-/// the configured `base_branch`, defaulting to `main`.
+/// the base commit resolved from the PR before cloning, never a global main/develop guess.
 async fn bounded_review_diff(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
@@ -2367,10 +2395,10 @@ async fn bounded_review_diff(
         .or_else(|| config.get("repository"))
         .and_then(|value| value.as_str())
         .ok_or_else(|| anyhow::anyhow!("review_diff_unavailable"))?;
-    let base = config
-        .get("base_branch")
-        .and_then(|value| value.as_str())
-        .unwrap_or("main");
+    let base = config.pointer("/review_base/sha")
+        .and_then(|value|value.as_str())
+        .filter(|sha|crate::factory::workflows::valid_sha(sha))
+        .ok_or_else(||anyhow::anyhow!("review_base_missing"))?;
     let head = Command::new("git")
         .current_dir(workdir)
         .args(["rev-parse", "HEAD"])
@@ -2990,13 +3018,14 @@ async fn publish_template_output_verified(
                 .pointer("/trigger/number")
                 .and_then(|v| v.as_i64())
                 .ok_or_else(|| anyhow::anyhow!("pull_request_number_missing"))?;
+            let current=super::connectors::get_github_pull(&token,repository,number).await?;
+            let base=result.pointer("/context_manifest/review_base").ok_or_else(||anyhow::anyhow!("review_base_missing"))?;
+            ensure_review_base_unchanged(base,&current)?;
             if let Some(expected) = claim
                 .config
                 .pointer("/trigger/head_sha")
                 .and_then(|v| v.as_str())
             {
-                let current =
-                    super::connectors::get_github_pull(&token, repository, number).await?;
                 if current.pointer("/head/sha").and_then(|v| v.as_str()) != Some(expected) {
                     anyhow::bail!("stale_pull_request_head")
                 }
@@ -3012,9 +3041,9 @@ async fn publish_template_output_verified(
             }
             if github_review_trigger(&claim.run.trigger_kind,claim.run.trigger_origin.as_ref()) {
                 let actor=github_identity_for_token(&token).await?;
-                let pull=super::connectors::get_github_pull(&token,repository,number).await?;
+                let pull=&current;
                 let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
-                if pull["state"]!="open" || (!crate::db::github_review_hooks::explicitly_requested(&pull,&actor) && !crate::db::github_review_hooks::subscribed(&conn,&claim.org_id,repository,number,&actor)?){anyhow::bail!("review_request_removed_before_publish")}
+                if pull["state"]!="open" || (!crate::db::github_review_hooks::explicitly_requested(pull,&actor) && !crate::db::github_review_hooks::subscribed(&conn,&claim.org_id,repository,number,&actor)?){anyhow::bail!("review_request_removed_before_publish")}
             }
             let findings = structured
                 .get("findings")
@@ -3980,7 +4009,8 @@ fn context_manifest(
             "memory":references("context_memory_ids","memory")
         },
         "harnesses":super::agent_runtime::harness_evidence(config),
-        "budget":claim.run.budget
+        "budget":claim.run.budget,
+        "review_base":config.get("review_base")
     })
 }
 
@@ -4824,7 +4854,7 @@ async fn execute_resolver_fanout(
     };
     let base = sandbox.path().join("repository");
     let repo_token = match prepare_repository(store, claim, &base).await {
-        Ok(token) => token,
+        Ok((token,_)) => token,
         Err(error) => {
             let _ = tokio::fs::remove_dir_all(&base).await;
             return ("blocked_runtime".into(), json!({"code":error.to_string()}));
@@ -5359,10 +5389,13 @@ async fn execute_claim(
     };
     let workdir: PathBuf = sandbox.path().join("repository");
     let repo_token = match prepare_repository(store, claim, &workdir).await {
-        Ok(token) => token,
+        Ok((token,base)) => {
+            if let Some(base)=base { runtime_config["review_base"]=base; }
+            token
+        },
         Err(error) => {
             let _ = tokio::fs::remove_dir_all(&workdir).await;
-            return ("blocked_runtime".into(), json!({"code":error.to_string()}));
+            return ("blocked_runtime".into(), failure_payload(&error));
         }
     };
     if tokio::fs::create_dir_all(&workdir).await.is_err()
@@ -8867,6 +8900,49 @@ mod tests {
         assert_eq!(hold_untrusted_origin(deny.clone(), true), deny);
     }
 
+    #[tokio::test]
+    async fn reviewer_clone_uses_the_pr_base_not_a_global_main_setting() {
+        let config=json!({"base_branch":"main"});
+        for branch in ["develop","master","main","release/v2"] {
+            let base=verified_review_base(&json!({"base":{"ref":branch,"sha":"a".repeat(40)}})).await.unwrap();
+            assert_eq!(repository_clone_branch("github_pr_reviewer",&config,Some(&base)).unwrap(),Some(branch));
+        }
+        assert!(repository_clone_branch("github_pr_reviewer",&config,None).is_err());
+        assert_eq!(repository_clone_branch("github_issue_resolver",&config,None).unwrap(),Some("main"));
+        assert_eq!(repository_clone_branch("qa",&config,None).unwrap(),None);
+        for branch in ["--upload-pack=bad","bad..branch","@{-1}","bad\nbranch"] {
+            assert!(verified_review_base(&json!({"base":{"ref":branch,"sha":"a".repeat(40)}})).await.is_err());
+        }
+        assert!(verified_review_base(&json!({"base":{"ref":"develop","sha":"invalid"}})).await.is_err());
+        assert!(verified_review_base(&json!({})).await.is_err());
+    }
+    #[tokio::test]
+    async fn reviewer_checkout_succeeds_on_a_develop_only_repository() {
+        let temp=tempfile::tempdir().unwrap();
+        let source=temp.path().join("source");let checkout=temp.path().join("checkout");
+        std::fs::create_dir(&source).unwrap();
+        for args in [&["init","-q","--initial-branch=develop"][..],&["-c","user.name=Test","-c","user.email=test@example.com","commit","--allow-empty","-qm","base"][..]] {
+            assert!(Command::new("git").current_dir(&source).args(args).status().await.unwrap().success());
+        }
+        let sha=Command::new("git").current_dir(&source).args(["rev-parse","HEAD"]).output().await.unwrap();
+        let sha=String::from_utf8(sha.stdout).unwrap().trim().to_string();
+        let base=verified_review_base(&json!({"base":{"ref":"develop","sha":sha}})).await.unwrap();
+        let config=json!({"base_branch":"main"});
+        let branch=repository_clone_branch("github_pr_reviewer",&config,Some(&base)).unwrap().unwrap();
+        let cloned=Command::new("git").args(["clone","--depth","50","--branch",branch,"--single-branch","--"]).arg(&source).arg(&checkout).output().await.unwrap();
+        assert!(cloned.status.success(),"{}",String::from_utf8_lossy(&cloned.stderr));
+        let head=Command::new("git").current_dir(&checkout).args(["rev-parse","HEAD"]).output().await.unwrap();
+        assert_eq!(String::from_utf8(head.stdout).unwrap().trim(),base["sha"].as_str().unwrap());
+    }
+    #[test]
+    fn review_base_retarget_or_advance_blocks_publication() {
+        let base=json!({"ref":"develop","sha":"a".repeat(40)});
+        let mut pull=json!({"base":base});
+        assert!(ensure_review_base_unchanged(&base,&pull).is_ok());
+        pull["base"]["ref"]=json!("master");assert!(ensure_review_base_unchanged(&base,&pull).is_err());
+        pull["base"]=base.clone();pull["base"]["sha"]=json!("b".repeat(40));assert!(ensure_review_base_unchanged(&base,&pull).is_err());
+        assert!(ensure_review_base_unchanged(&json!({}),&pull).is_err());
+    }
     #[test]
     fn resolver_branches_name_their_issue() {
         assert_eq!(resolver_branch_issue("nexusmind/run-0123456789ab-42"), Some(42));

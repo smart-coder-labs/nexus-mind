@@ -21,6 +21,9 @@ use crate::factory::{
 };
 use crate::store::sqlite::SqliteStore;
 
+/// Rewrites a lockfile for the registry proxy; None when nothing changes.
+type LockfileRewrite = fn(&str, &str) -> Option<String>;
+
 /// WIP checkpoint interval, as on the local path.
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(180);
 
@@ -321,7 +324,7 @@ async fn run_commands(
             github_packages_npmrc(&all, &registry).into_bytes(),
         ));
         for (relative, scopes) in &found {
-            let rewrites: [(&str, fn(&str, &str) -> Option<String>); 2] = [
+            let rewrites: [(&str, LockfileRewrite); 2] = [
                 ("package-lock.json", proxied_lockfile),
                 ("pnpm-lock.yaml", proxied_pnpm_lockfile),
             ];
