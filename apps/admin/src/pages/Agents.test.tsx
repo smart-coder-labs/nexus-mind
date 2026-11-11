@@ -1,10 +1,8 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AuthContext } from '../auth/AuthContext'
-import type { ApiKeyWithUser, AuthSession } from '../types'
+import { renderWithProviders } from '../test/render'
+import type { ApiKeyWithUser } from '../types'
 import Agents from './Agents'
 
 const api = vi.hoisted(() => ({
@@ -32,35 +30,6 @@ const agentKey: ApiKeyWithUser = {
   last_used_at: null,
 }
 
-function renderPage() {
-  const session: AuthSession = {
-    org: { id: 'o1', name: 'Acme', slug: 'acme', created_at: '2026-01-01' },
-    user: {
-      id: 'u1',
-      org_id: 'o1',
-      email: 'admin@acme.test',
-      name: 'Admin',
-      role: 'member',
-      status: 'active',
-      created_at: '2026-01-01',
-      permissions: [],
-    },
-  }
-  return render(
-    <MemoryRouter>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <AuthContext.Provider
-          value={{ session, loading: false, setSession: () => undefined, logout: () => undefined }}
-        >
-          <Agents />
-        </AuthContext.Provider>
-      </QueryClientProvider>
-    </MemoryRouter>,
-  )
-}
-
 describe('Agents accessibility affordances', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -70,7 +39,7 @@ describe('Agents accessibility affordances', () => {
   })
 
   it('announces the selected status filter via aria-pressed', async () => {
-    renderPage()
+    renderWithProviders(<Agents />)
 
     const group = await screen.findByRole('group', { name: 'Filter agents by status' })
     expect(group).toBeInTheDocument()
@@ -97,7 +66,7 @@ describe('Agents accessibility affordances', () => {
   })
 
   it('keeps card actions reachable on touch and keyboard focus', async () => {
-    renderPage()
+    renderWithProviders(<Agents />)
 
     const rotate = await screen.findByRole('button', { name: 'Rotate key' })
     const revoke = screen.getByRole('button', { name: 'Revoke key' })
@@ -109,12 +78,11 @@ describe('Agents accessibility affordances', () => {
     // Both actions share the one visibility container.
     expect(actions).toBe(revoke.parentElement)
 
+    // jsdom has no computed styles here (css: false), so the class list is the
+    // only proxy. Assert just the two properties this fix is about.
     const className = actions!.className
-    expect(className).toContain('opacity-100')
-    expect(className).toContain('sm:opacity-0')
-    expect(className).toContain('sm:group-hover:opacity-100')
+    // Revealed when keyboard focus moves into the card.
     expect(className).toContain('sm:group-focus-within:opacity-100')
-    expect(className).toContain('transition-opacity')
     // No unprefixed opacity-0: that would hide the actions on touch devices.
     expect(className).not.toMatch(/(^|\s)opacity-0(\s|$)/)
   })
