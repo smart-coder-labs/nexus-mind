@@ -36,6 +36,15 @@ A GitHub webhook still belongs to one repository, but one reviewer covers the wh
 
 ## Routing
 
+Reviewer checkouts resolve the base ref and commit from the actual PR before cloning;
+they do not assume every repository has `main` or share a project-wide `base_branch`.
+For example, a payment-service PR targeting `develop` clones `develop`. Its diff
+compares the pinned base SHA to the checked-out head, and publication is refused if
+the base ref/commit changed during review (`review_base_changed`). The non-secret
+`review.base_selected` event records the choice. Clone errors retain their sanitized
+Git detail instead of only reporting generic runtime unavailability. Resolver
+`base_branch` behavior is unchanged. No global branch configuration change is needed.
+
 - `opened`, `reopened`, `ready_for_review`, `review_requested`: enqueue only when the CLI account is a requested reviewer (or an active previously requested subscription exists).
 - `synchronize`: review the new head for an active subscription, even if GitHub cleared the pending-reviewer list after a completed review.
 - `review_request_removed` for the CLI account or `closed`: detach/cancel outstanding automatic review work. If GitHub emits removal after a completed review, that removal is respected; request the account again to reattach.
