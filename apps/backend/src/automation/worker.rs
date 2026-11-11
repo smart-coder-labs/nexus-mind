@@ -1005,13 +1005,14 @@ fn restrict_test_environment(
 /// nothing may be waived: no failure, or no test/build/lint/typecheck command
 /// passed on the head (the only "pass" left would be the integrity check). The
 /// last command is that integrity check and is never waived.
-type BaselineRerun = (Vec<Vec<String>>, Vec<Vec<String>>);
+/// Argv lists of verification commands.
+type CommandList = Vec<Vec<String>>;
 
 fn baseline_rerun(
     plan: &crate::factory::resolver_checks::Plan,
     commands: &[Vec<String>],
     passed: &[bool],
-) -> Option<BaselineRerun> {
+) -> Option<(CommandList, CommandList)> {
     let checks = &commands[..commands.len().saturating_sub(1)];
     let failing: Vec<Vec<String>> = checks
         .iter()
@@ -1887,6 +1888,59 @@ async fn resolve_judge_targets(
     resolved
 }
 
+/// Phrases that only describe the QA environment failing to reach or render the
+/// app (sandbox browser, egress proxy, login), never a behavior of the app itself.
+const ENVIRONMENT_BLOCK_MARKERS: [&str; 19] = [
+    "net::err_",
+    "err_tunnel_connection_failed",
+    "err_proxy_",
+    "egress denied",
+    "target crashed",
+    "page crashed",
+    "browser crashed",
+    "browser has been closed",
+    "navigation timeout",
+    "navigation attempt",
+    "page.goto",
+    "could not be reached",
+    "cannot be reached",
+    "never rendered",
+    "could not be accessed",
+    "access-blocking",
+    "blocked by login",
+    "login gate",
+    "target_credentials",
+];
+
+/// A finding that reports the QA run being blocked (unreachable app, browser or
+/// proxy failure, login wall) rather than a product defect. It stays visible in
+/// NexusMind but must never be filed as an issue against the app.
+fn is_environment_block_finding(finding: &serde_json::Value) -> bool {
+    if matches!(
+        finding.get("type").and_then(|v| v.as_str()),
+        Some("environment" | "infrastructure" | "access")
+    ) {
+        return true;
+    }
+    let mut text = String::new();
+    for field in ["title", "summary", "actual", "expected"] {
+        if let Some(value) = finding.get(field).and_then(|v| v.as_str()) {
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    for field in ["evidence", "steps"] {
+        for value in finding.get(field).and_then(|v| v.as_array()).into_iter().flatten() {
+            if let Some(value) = value.as_str() {
+                text.push_str(value);
+                text.push('\n');
+            }
+        }
+    }
+    let text = text.to_lowercase();
+    ENVIRONMENT_BLOCK_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
 /// Post the judge's verdict as a GitHub comment on each target, when the agent is
 /// configured with `publish: "comment"`. One `github_issue_comment` delivery per
 /// target (the issue-comment API serves PRs too), matched to the finding that
@@ -2113,6 +2167,9 @@ async fn publish_judge_comments(
         //    back to an independent issue referencing the target.
         if !verified && issue_enabled {
             for finding in &bug_findings {
+                if is_environment_block_finding(finding) {
+                    continue;
+                }
                 let fingerprint = finding
                     .get("fingerprint")
                     .and_then(|v| v.as_str())
@@ -2356,6 +2413,7 @@ pub(crate) fn authenticated_git(token: &str) -> Command {
     command
 }
 
+
 async fn authorize_project_qa_repository(
     store: &SqliteStore, claim: &queries::ClaimedAutonomousRun, repository: Option<&str>, token: &str,
 ) -> anyhow::Result<()> {
@@ -2410,11 +2468,38 @@ pub(crate) async fn validate_project_qa_repository(
     Ok(())
 }
 
+
+
+async fn verified_review_base(pull: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    let branch=pull.pointer("/base/ref").and_then(|v|v.as_str()).filter(|v|!v.is_empty() && v.len()<=1024 && !v.starts_with('-') && !v.contains("@{"))
+        .ok_or_else(||anyhow::anyhow!("invalid_pull_request_base"))?;
+    let sha=pull.pointer("/base/sha").and_then(|v|v.as_str()).filter(|v|crate::factory::workflows::valid_sha(v))
+        .ok_or_else(||anyhow::anyhow!("invalid_pull_request_base"))?;
+    let mut check=Command::new("git");
+    check.current_dir(std::env::temp_dir()).args(["check-ref-format","--branch",branch]);
+    command_ok_as(check,"invalid_pull_request_base").await?;
+    Ok(json!({"ref":branch,"sha":sha}))
+}
+fn ensure_review_base_unchanged(base:&serde_json::Value,pull:&serde_json::Value)->anyhow::Result<()> {
+    if base["ref"].as_str().is_none() || base["sha"].as_str().is_none()
+        || pull.pointer("/base/ref")!=Some(&base["ref"]) || pull.pointer("/base/sha")!=Some(&base["sha"]) {
+        anyhow::bail!("review_base_changed");
+    }
+    Ok(())
+}
+fn repository_clone_branch<'a>(template:&str,config:&'a serde_json::Value,review_base:Option<&'a serde_json::Value>)->anyhow::Result<Option<&'a str>> {
+    match template {
+        "github_pr_reviewer"=>Ok(Some(review_base.and_then(|b|b["ref"].as_str()).ok_or_else(||anyhow::anyhow!("review_base_missing"))?)),
+        "github_issue_resolver"=>Ok(Some(config["base_branch"].as_str().unwrap_or("main"))),
+        _=>Ok(None),
+    }
+}
+
 async fn prepare_repository(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
     workdir: &Path,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<(Option<String>, Option<serde_json::Value>)> {
     let Some(repository) = claim
         .config
         .get("repository")
@@ -2426,13 +2511,25 @@ async fn prepare_repository(
                 .and_then(|v| v.as_str())
         })
     else {
-        return Ok(None);
+        return Ok((None,None));
     };
     super::connectors::validate_repository(repository)?;
     let token = github_access(store, claim).await?;
     if claim.template_key == "qa" && claim.config.get("project_id").is_some() {
         let token = token.as_deref().ok_or_else(|| anyhow::anyhow!("github_capability_unknown"))?;
         authorize_project_qa_repository(store, claim, Some(repository), token).await?;
+    }
+    let review_base = if claim.template_key == "github_pr_reviewer" {
+        let number=claim.config.pointer("/trigger/number").and_then(|v|v.as_i64()).filter(|n|*n>0)
+            .ok_or_else(||anyhow::anyhow!("pull_request_number_missing"))?;
+        let token=token.as_deref().ok_or_else(||anyhow::anyhow!("github_connector_required"))?;
+        let pull=super::connectors::get_github_pull(token,repository,number).await?;
+        Some(verified_review_base(&pull).await?)
+    } else { None };
+    if let Some(base)=&review_base {
+        let db=store.conn();
+        let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
+        queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"review.base_selected",&json!({"repository":repository,"base":base}))?;
     }
     let mut clone = if let Some(ref token) = token {
         authenticated_git(token)
@@ -2444,19 +2541,8 @@ async fn prepare_repository(
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("invalid_workspace"))?;
     let mut clone_args = vec!["clone", "--depth", "50"];
-    if matches!(
-        claim.template_key.as_str(),
-        "github_issue_resolver" | "github_pr_reviewer"
-    ) {
-        clone_args.extend([
-            "--branch",
-            claim
-                .config
-                .get("base_branch")
-                .and_then(|v| v.as_str())
-                .unwrap_or("main"),
-            "--single-branch",
-        ]);
+    if let Some(branch)=repository_clone_branch(&claim.template_key,&claim.config,review_base.as_ref())? {
+        clone_args.extend(["--branch",branch,"--single-branch"]);
     }
     clone_args.extend(["--", url.as_str(), destination]);
     clone.args(clone_args);
@@ -2516,7 +2602,7 @@ async fn prepare_repository(
             }
         }
     }
-    Ok(token)
+    Ok((token,review_base))
 }
 
 /// Clone the additional read-only context repositories declared in the agent
@@ -2595,7 +2681,7 @@ async fn clone_repositories(repositories: &[String], token: Option<&str>, base_d
 /// HEAD` in the workdir, i.e. the fetched `pull/N/head`), so it always matches the
 /// code the agent reads — and it works whether or not the trigger carried a
 /// `head_sha` (manual runs do not). `base` mirrors the previous local behavior:
-/// the configured `base_branch`, defaulting to `main`.
+/// the base commit resolved from the PR before cloning, never a global main/develop guess.
 async fn bounded_review_diff(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
@@ -2607,10 +2693,10 @@ async fn bounded_review_diff(
         .or_else(|| config.get("repository"))
         .and_then(|value| value.as_str())
         .ok_or_else(|| anyhow::anyhow!("review_diff_unavailable"))?;
-    let base = config
-        .get("base_branch")
-        .and_then(|value| value.as_str())
-        .unwrap_or("main");
+    let base = config.pointer("/review_base/sha")
+        .and_then(|value|value.as_str())
+        .filter(|sha|crate::factory::workflows::valid_sha(sha))
+        .ok_or_else(||anyhow::anyhow!("review_base_missing"))?;
     let head = Command::new("git")
         .current_dir(workdir)
         .args(["rev-parse", "HEAD"])
@@ -3230,13 +3316,14 @@ async fn publish_template_output_verified(
                 .pointer("/trigger/number")
                 .and_then(|v| v.as_i64())
                 .ok_or_else(|| anyhow::anyhow!("pull_request_number_missing"))?;
+            let current=super::connectors::get_github_pull(&token,repository,number).await?;
+            let base=result.pointer("/context_manifest/review_base").ok_or_else(||anyhow::anyhow!("review_base_missing"))?;
+            ensure_review_base_unchanged(base,&current)?;
             if let Some(expected) = claim
                 .config
                 .pointer("/trigger/head_sha")
                 .and_then(|v| v.as_str())
             {
-                let current =
-                    super::connectors::get_github_pull(&token, repository, number).await?;
                 if current.pointer("/head/sha").and_then(|v| v.as_str()) != Some(expected) {
                     anyhow::bail!("stale_pull_request_head")
                 }
@@ -3252,9 +3339,9 @@ async fn publish_template_output_verified(
             }
             if github_review_trigger(&claim.run.trigger_kind,claim.run.trigger_origin.as_ref()) {
                 let actor=github_identity_for_token(&token).await?;
-                let pull=super::connectors::get_github_pull(&token,repository,number).await?;
+                let pull=&current;
                 let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
-                if pull["state"]!="open" || (!crate::db::github_review_hooks::explicitly_requested(&pull,&actor) && !crate::db::github_review_hooks::subscribed(&conn,&claim.org_id,repository,number,&actor)?){anyhow::bail!("review_request_removed_before_publish")}
+                if pull["state"]!="open" || (!crate::db::github_review_hooks::explicitly_requested(pull,&actor) && !crate::db::github_review_hooks::subscribed(&conn,&claim.org_id,repository,number,&actor)?){anyhow::bail!("review_request_removed_before_publish")}
             }
             let findings = structured
                 .get("findings")
@@ -4043,7 +4130,7 @@ pub(crate) fn fixed_prompt(
     // Authentication is mandatory before any inspection, and inferring behavior from
     // source bundles instead of the rendered UI is forbidden — that fallback produced
     // false findings when the agent hit a login gate with no session.
-    let login_clause = " AUTHENTICATION: if the target requires a login, the configuration `target_credentials` holds the credentials (typically USERNAME and PASSWORD). Your FIRST action MUST be to open the app and log in with them (the login page is the app URL, or the target config's `login_url` if present), and you must keep a valid logged-in session for every check. If `target_credentials` is missing, or you cannot reach the real logged-in UI, STOP, record a `blocked` scenario with the access impediment, and return an empty `findings` array. Access or infrastructure blocks are not product bugs. You must NEVER work around a login gate by reading JavaScript/CSS bundles, chunks, network payloads or source code, and you must NEVER infer, guess or report behavior from code: ONLY observations made against the rendered, logged-in UI are valid findings.";
+let login_clause = " AUTHENTICATION: if the target requires a login, the configuration `target_credentials` holds the credentials (typically USERNAME and PASSWORD). Your FIRST action MUST be to open the app and log in with them (the login page is the app URL, or the target config's `login_url` if present), and you must keep a valid logged-in session for every check. If `target_credentials` is missing, or you cannot reach the real logged-in UI, STOP, describe the access impediment in your `summary`, record a `blocked` scenario, and return an empty `findings` array. Access or infrastructure blocks are not product bugs: navigation timeouts, a page that never loads or renders, browser or screenshot tool failures, net::ERR_* / proxy errors and login walls are problems of YOUR test environment, so NEVER report them as bug findings (findings become issues filed against the app). You must NEVER work around a login gate by reading JavaScript/CSS bundles, chunks, network payloads or source code, and you must NEVER infer, guess or report behavior from code: ONLY observations made against the rendered, logged-in UI are valid findings.";
     let objective = match template {
         "qa" if qa_agent_driven => format!(
             "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively. For each finding you report, capture a screenshot with the Playwright browser screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field so it can be attached as evidence.{login_clause}{turn_budget}{slack_clause}{qa_coverage_clause}{qa_contract}"
@@ -4232,7 +4319,8 @@ fn context_manifest(
             "memory":references("context_memory_ids","memory")
         },
         "harnesses":super::agent_runtime::harness_evidence(config),
-        "budget":claim.run.budget
+        "budget":claim.run.budget,
+        "review_base":config.get("review_base")
     })
 }
 
@@ -5081,7 +5169,7 @@ async fn execute_resolver_fanout(
     };
     let base = sandbox.path().join("repository");
     let repo_token = match prepare_repository(store, claim, &base).await {
-        Ok(token) => token,
+        Ok((token,_)) => token,
         Err(error) => {
             let _ = tokio::fs::remove_dir_all(&base).await;
             return ("blocked_runtime".into(), json!({"code":error.to_string()}));
@@ -5630,10 +5718,13 @@ async fn execute_claim(
         qa_project_token=Some(token);
     }
     let repo_token = match prepare_repository(store, claim, &workdir).await {
-        Ok(token) => token.or(qa_project_token),
+        Ok((token,base)) => {
+            if let Some(base)=base { runtime_config["review_base"]=base; }
+            token.or(qa_project_token)
+        },
         Err(error) => {
             let _ = tokio::fs::remove_dir_all(&workdir).await;
-            return ("blocked_runtime".into(), json!({"code":error.to_string()}));
+            return ("blocked_runtime".into(), failure_payload(&error));
         }
     };
     if tokio::fs::create_dir_all(&workdir).await.is_err()
@@ -8180,11 +8271,14 @@ async fn deliver_findings(
                     if claim.template_key == "judge" {
                         continue;
                     }
+                    if is_environment_block_finding(value) {
+                        tracing::info!(run_id = %claim.run.id, finding_id = %finding.id, "qa: environment block kept out of the issue tracker");
+                        continue;
+                    }
                     let repository = if project_scoped_qa {
                         proposed_repository
                     } else { claim.config.get("repository").and_then(|v|v.as_str()) };
                     let Some(repository) = repository.filter(|repo| super::connectors::validate_repository(repo).is_ok()) else { continue; };
-                    // Validate the current grant before creating or pinning durable delivery state.
                     let early_token=match server_gh_token().await {Ok(token)=>token,Err(_)=>continue};
                     if project_scoped_qa {
                         let Some(project)=claim.config.get("project_id").and_then(|value|value.as_str()) else {continue};
@@ -9166,6 +9260,7 @@ async fn maybe_trigger_next_agent(
 #[cfg(test)]
 mod tests {
     #[test]
+
     fn related_qa_issue_body_links_only_delivered_issues_from_other_repositories() {
         let conn=rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE autonomous_agent_deliveries(org_id TEXT,finding_id TEXT,channel TEXT,status TEXT,destination_repository TEXT,external_url TEXT,created_at TEXT); INSERT INTO autonomous_agent_deliveries VALUES('o','f','github_issue','delivered','acme/api','https://github.com/acme/api/issues/4','1'),('o','f','github_issue','delivered','acme/web','https://github.com/acme/web/issues/5','2'),('o','f','github_issue','failed','acme/worker','https://github.com/acme/worker/issues/6','3');").unwrap();
@@ -9241,6 +9336,27 @@ mod tests {
         let extra=br#"{"type":"assistant","message":{"content":[{"type":"text","text":"{\"type\":\"nexusmind_qa_progress_checkpoint\",\"inventory\":[],\"plan\":[],\"unexpected\":true}"}]}}"#;
         assert!(super::qa_progress_checkpoint_from_stream_line(extra).is_empty());
     }
+
+    #[test]
+    fn environment_blocks_are_never_filed_as_app_issues() {
+        use serde_json::json;
+        assert!(super::is_environment_block_finding(&json!({
+            "title": "[App] Target application unreachable",
+            "summary": "The target application could not be reached — every navigation attempt timed out after 60 seconds, and the page never rendered."
+        })));
+        assert!(super::is_environment_block_finding(&json!({
+            "title": "[Login] Cannot open login",
+            "evidence": ["page.goto: net::ERR_TUNNEL_CONNECTION_FAILED"]
+        })));
+        assert!(super::is_environment_block_finding(&json!({"title": "[App] Blocked", "type": "infrastructure"})));
+        assert!(!super::is_environment_block_finding(&json!({
+            "title": "[Users] Archive user is a no-op — no status sent",
+            "type": "functional",
+            "expected": "User status becomes archived",
+            "actual": "Status stays active after the request times out"
+        })));
+    }
+
     #[test]
     fn agent_model_source_requires_explicit_consent_and_never_reactivates_legacy_agents() {
         for engine in ["claude","codex"] {
@@ -9456,6 +9572,49 @@ mod tests {
         assert_eq!(hold_untrusted_origin(deny.clone(), true), deny);
     }
 
+    #[tokio::test]
+    async fn reviewer_clone_uses_the_pr_base_not_a_global_main_setting() {
+        let config=json!({"base_branch":"main"});
+        for branch in ["develop","master","main","release/v2"] {
+            let base=verified_review_base(&json!({"base":{"ref":branch,"sha":"a".repeat(40)}})).await.unwrap();
+            assert_eq!(repository_clone_branch("github_pr_reviewer",&config,Some(&base)).unwrap(),Some(branch));
+        }
+        assert!(repository_clone_branch("github_pr_reviewer",&config,None).is_err());
+        assert_eq!(repository_clone_branch("github_issue_resolver",&config,None).unwrap(),Some("main"));
+        assert_eq!(repository_clone_branch("qa",&config,None).unwrap(),None);
+        for branch in ["--upload-pack=bad","bad..branch","@{-1}","bad\nbranch"] {
+            assert!(verified_review_base(&json!({"base":{"ref":branch,"sha":"a".repeat(40)}})).await.is_err());
+        }
+        assert!(verified_review_base(&json!({"base":{"ref":"develop","sha":"invalid"}})).await.is_err());
+        assert!(verified_review_base(&json!({})).await.is_err());
+    }
+    #[tokio::test]
+    async fn reviewer_checkout_succeeds_on_a_develop_only_repository() {
+        let temp=tempfile::tempdir().unwrap();
+        let source=temp.path().join("source");let checkout=temp.path().join("checkout");
+        std::fs::create_dir(&source).unwrap();
+        for args in [&["init","-q","--initial-branch=develop"][..],&["-c","user.name=Test","-c","user.email=test@example.com","commit","--allow-empty","-qm","base"][..]] {
+            assert!(Command::new("git").current_dir(&source).args(args).status().await.unwrap().success());
+        }
+        let sha=Command::new("git").current_dir(&source).args(["rev-parse","HEAD"]).output().await.unwrap();
+        let sha=String::from_utf8(sha.stdout).unwrap().trim().to_string();
+        let base=verified_review_base(&json!({"base":{"ref":"develop","sha":sha}})).await.unwrap();
+        let config=json!({"base_branch":"main"});
+        let branch=repository_clone_branch("github_pr_reviewer",&config,Some(&base)).unwrap().unwrap();
+        let cloned=Command::new("git").args(["clone","--depth","50","--branch",branch,"--single-branch","--"]).arg(&source).arg(&checkout).output().await.unwrap();
+        assert!(cloned.status.success(),"{}",String::from_utf8_lossy(&cloned.stderr));
+        let head=Command::new("git").current_dir(&checkout).args(["rev-parse","HEAD"]).output().await.unwrap();
+        assert_eq!(String::from_utf8(head.stdout).unwrap().trim(),base["sha"].as_str().unwrap());
+    }
+    #[test]
+    fn review_base_retarget_or_advance_blocks_publication() {
+        let base=json!({"ref":"develop","sha":"a".repeat(40)});
+        let mut pull=json!({"base":base});
+        assert!(ensure_review_base_unchanged(&base,&pull).is_ok());
+        pull["base"]["ref"]=json!("master");assert!(ensure_review_base_unchanged(&base,&pull).is_err());
+        pull["base"]=base.clone();pull["base"]["sha"]=json!("b".repeat(40));assert!(ensure_review_base_unchanged(&base,&pull).is_err());
+        assert!(ensure_review_base_unchanged(&json!({}),&pull).is_err());
+    }
     #[test]
     fn resolver_branches_name_their_issue() {
         assert_eq!(resolver_branch_issue("nexusmind/run-0123456789ab-42"), Some(42));
