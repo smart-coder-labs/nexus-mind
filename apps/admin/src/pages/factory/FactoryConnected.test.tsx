@@ -154,6 +154,7 @@ describe('connected Factory operation', () => {
         kind: 'github',
         connector_id: 'connector',
         config: { repository: 'acme/web', labels: ['bug', 'frontend'] },
+        enabled: false,
       }),
     )
     expect(screen.getByText(/Solo issues abiertos con label factory/)).toBeInTheDocument()
