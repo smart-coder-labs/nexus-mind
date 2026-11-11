@@ -57,6 +57,14 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
   const [showArchivedRuns, setShowArchivedRuns] = useState(false)
   const [confirmArchiveAll, setConfirmArchiveAll] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [historyAgentId, setHistoryAgentId] = useState('')
+  const [historyProjectId,setHistoryProjectId]=useState<string|undefined>()
+  const [historyApplication,setHistoryApplication]=useState('')
+  const [historyEnvironment,setHistoryEnvironment]=useState('')
+  const [historyCursor, setHistoryCursor] = useState<string | undefined>()
+  const [historyPlanCursor,setHistoryPlanCursor]=useState<string|undefined>()
+  const [historyCheckpointCursor,setHistoryCheckpointCursor]=useState<string|undefined>()
+  const [historyInventoryCursor,setHistoryInventoryCursor]=useState<string|undefined>()
   const preselect =
     (location.state as { runId?: string } | null)?.runId ??
     new URLSearchParams(location.search).get('agent_run') ??
@@ -66,6 +74,11 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
     queryKey: ['autonomous-agents'],
     queryFn: () => client.listAutonomousAgents(),
   })
+  const historyAgent = useQuery({ queryKey: ['autonomous-agent', historyAgentId], queryFn: () => client.getAutonomousAgent(historyAgentId), enabled: Boolean(historyAgentId) })
+  const retainedProjectId = historyAgent.data?.revision.config.project_id
+  const projects=useQuery({queryKey:['projects'],queryFn:()=>client.listProjects()})
+  const coverageProjectId=historyProjectId ?? (typeof retainedProjectId==='string'?retainedProjectId:'')
+  const retainedCoverage = useQuery({ queryKey: ['autonomous-qa-history', historyAgentId, coverageProjectId,historyApplication,historyEnvironment,historyCursor,historyPlanCursor,historyCheckpointCursor,historyInventoryCursor], queryFn: () => client.listAutonomousAgentQACoverage(historyAgentId, {projectId: coverageProjectId || undefined,application:historyApplication.trim()||undefined,environment:historyEnvironment.trim()||undefined,cursor:historyCursor,planCursor:historyPlanCursor,checkpointCursor:historyCheckpointCursor,inventoryCursor:historyInventoryCursor,limit:50}), enabled: Boolean(historyAgentId && historyAgent.isSuccess) })
   // Poll while the selected run is still active so the run list, timeline, and
   // conversation update live. Reads the freshest run status from the cache to
   // avoid ordering issues with the runs query below.
@@ -98,6 +111,7 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
     queryFn: () => client.listRunVerificationReports(selectedRun!.id),
     enabled: Boolean(selectedRun),
   })
+  const qaCoverage = useQuery({ queryKey: ['autonomous-run-qa-coverage', selectedRun?.id], queryFn: () => client.listAutonomousRunQACoverage(selectedRun!.id), enabled: Boolean(selectedRun && agents.data?.find(agent => agent.id === selectedRun.definition_id)?.template_key === 'qa') })
   const transcript = useQuery({
     queryKey: ['autonomous-run-transcript', selectedRun?.id],
     // Incremental: only fetch turns after the last one we already hold, then
@@ -124,12 +138,13 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
       void transcript.refetch()
       void events.refetch()
       void verification.refetch()
+      void qaCoverage.refetch()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLiveStatus, selectedRun?.id])
   // Arriving from "Resolve with agent" (or any link carrying a run id): open it.
   useEffect(() => {
-    if (preselect && openedLink.current !== preselect) {
+    if (preselect && !historyAgentId && openedLink.current !== preselect) {
       const found = runs.data?.find((r) => r.id === preselect) ?? linkedRun.data
       if (found) {
         setSelectedRun(found)
@@ -137,7 +152,7 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
         openedLink.current = preselect
       }
     }
-  }, [preselect, runs.data, linkedRun.data])
+  }, [preselect, runs.data, linkedRun.data, historyAgentId])
 
   const onError = (fallback: string) => (value: unknown) =>
     setActionError(errorMessage(value, fallback))
@@ -216,6 +231,23 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
           subtitle="Selecciona una ejecución para consultar logs, verificaciones y entregas."
         />
       )}
+
+      <label className="flex items-center gap-2 text-sm text-text-secondary">Retained QA history
+        <select className="rounded-md border border-border-primary bg-surface-primary px-2 py-1" value={historyAgentId} onChange={event => { setHistoryAgentId(event.target.value); setHistoryProjectId(undefined);setHistoryApplication('');setHistoryEnvironment('');setSelectedRun(null);setHistoryCursor(undefined);setHistoryPlanCursor(undefined);setHistoryCheckpointCursor(undefined);setHistoryInventoryCursor(undefined) }}>
+          <option value="">Choose agent</option>
+          {allAgents.filter(agent => agent.template_key === 'qa').map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+      </label>
+      {historyAgentId && <label className="flex items-center gap-2 text-sm text-text-secondary">Project
+        <select className="rounded-md border border-border-primary bg-surface-primary px-2 py-1" value={coverageProjectId} onChange={event=>{setHistoryProjectId(event.target.value);setSelectedRun(null);setHistoryCursor(undefined);setHistoryPlanCursor(undefined);setHistoryCheckpointCursor(undefined);setHistoryInventoryCursor(undefined)}}>
+          <option value="">Unscoped only</option>
+          {(projects.data??[]).map(project=><option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+      </label>}
+      {historyAgentId && <div className="flex flex-wrap items-center gap-3 text-sm text-text-secondary">
+        <label>Application <input aria-label="QA application" className="ml-2 rounded-md border border-border-primary bg-surface-primary px-2 py-1" value={historyApplication} onChange={event=>{setHistoryApplication(event.target.value);setSelectedRun(null);setHistoryCursor(undefined);setHistoryPlanCursor(undefined);setHistoryCheckpointCursor(undefined);setHistoryInventoryCursor(undefined)}} /></label>
+        <label>Environment <input aria-label="QA environment" className="ml-2 rounded-md border border-border-primary bg-surface-primary px-2 py-1" value={historyEnvironment} onChange={event=>{setHistoryEnvironment(event.target.value);setSelectedRun(null);setHistoryCursor(undefined);setHistoryPlanCursor(undefined);setHistoryCheckpointCursor(undefined);setHistoryInventoryCursor(undefined)}} /></label>
+      </div>}
 
       <div
         className="flex flex-wrap items-center gap-2"
@@ -300,7 +332,7 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
                         <button
                           type="button"
                           aria-current={selected ? 'true' : undefined}
-                          onClick={() => setSelectedRun(run)}
+                          onClick={() => { setHistoryAgentId(''); setSelectedRun(run) }}
                           className={`flex w-full flex-col gap-1.5 px-4 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-ring ${selected ? 'bg-foreground/[0.06] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-foreground/[0.03]'}`}
                         >
                           <span className="flex w-full flex-wrap items-start justify-between gap-2">
@@ -386,6 +418,9 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
                 events={events.data ?? []}
                 transcript={transcript.data ?? []}
                 verificationReports={verification.data?.reports ?? []}
+              qaCoverage={qaCoverage.data?.scenarios ?? []}
+              qaPlans={qaCoverage.data?.plans ?? []}
+              qaCoverageError={qaCoverage.isError}
                 agentName={runAgent?.name}
                 templateKey={runAgent?.template_key}
                 onOpenFindings={() => navigate('/factory/findings')}
@@ -403,6 +438,30 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
                 }
               />
             </>
+          ) : historyAgentId ? (
+            <section aria-label="Retained QA history" className="space-y-4">
+              <h2 className="text-lg font-semibold text-text-primary">Retained QA history</h2>
+              {historyAgent.isLoading && <p role="status" className="text-sm text-text-secondary">Loading agent history…</p>}
+              {historyAgent.isError && <InlineError message="Could not load the selected agent." onRetry={() => void historyAgent.refetch()} />}
+              {retainedCoverage.isLoading && historyAgent.isSuccess && <p role="status" className="text-sm text-text-secondary">Loading retained coverage…</p>}
+              {retainedCoverage.isError && <InlineError message="Could not load retained QA history." onRetry={() => void retainedCoverage.refetch()} />}
+              {retainedCoverage.data && <>
+                <p className="text-sm text-text-secondary">{retainedCoverage.data.scenarios.length} finalized outcomes · {retainedCoverage.data.checkpoints.length} checkpoint-only outcomes</p>
+                <h3 className="font-medium text-text-primary">Known scenario inventory</h3>
+                <ul className="text-sm text-text-secondary">{retainedCoverage.data.inventory_summary.map(row=><li key={`${row.application}:${row.environment}`}>{row.application} · {row.environment}: {row.total} scenarios · {row.never_tested} never tested · {row.passed} passed · {row.failed} failed · {row.blocked} blocked · {row.blocker_changed} changed blockers</li>)}</ul>
+                <ul className="divide-y divide-border-secondary">{retainedCoverage.data.inventory.map((row,index)=><li key={`${row.module}:${row.key}:${index}`} className="py-2 text-sm"><strong>{row.last_status ?? 'never tested'}</strong> · {row.description}<span className="ml-2 text-xs text-text-tertiary">{row.module} · {row.application} · {row.environment} · last tested {row.last_tested_at ?? 'never'}{row.blocker_changed ? ' · blocker changed' : ''}</span></li>)}</ul>
+                {retainedCoverage.data.next_inventory_cursor && <Button size="sm" variant="secondary" onClick={() => setHistoryInventoryCursor(retainedCoverage.data!.next_inventory_cursor!)}>Next inventory page</Button>}
+                <h3 className="font-medium text-text-primary">Plan vs executed</h3>
+                <ul className="space-y-2">{retainedCoverage.data.plans.map((plan, index) => <li key={`${plan.run_id}:${plan.attempt_id}:${plan.key}:${index}`} className="rounded-md border border-border-primary p-3 text-sm"><strong>{plan.status}</strong> · {plan.description}<p className="text-xs text-text-tertiary">{plan.reason} · attempt {plan.attempt_id.slice(0,8)}</p></li>)}</ul>
+                {retainedCoverage.data.next_plan_cursor && <Button size="sm" variant="secondary" onClick={() => setHistoryPlanCursor(retainedCoverage.data!.next_plan_cursor!)}>Next plan page</Button>}
+                <h3 className="font-medium text-text-primary">Finalized outcomes</h3>
+                <ul className="divide-y divide-border-secondary">{retainedCoverage.data.scenarios.map((row, index) => <li key={`${row.run_id}:${row.attempt_id}:${row.key}:${index}`} className="py-2 text-sm"><strong>{row.status}</strong> · {row.description}<span className="ml-2 text-xs text-text-tertiary">{row.application} · {row.environment} · attempt {row.attempt_id?.slice(0,8)} · {fmtTime(row.tested_at)}</span></li>)}</ul>
+                {retainedCoverage.data.next_cursor && <Button size="sm" variant="secondary" onClick={() => setHistoryCursor(retainedCoverage.data!.next_cursor!)}>Next outcomes page</Button>}
+                <h3 className="font-medium text-text-primary">Checkpoint-only outcomes</h3>
+                <ul className="divide-y divide-border-secondary">{retainedCoverage.data.checkpoints.map((row, index) => <li key={`${row.run_id}:${row.attempt_id}:${row.key}:${index}`} className="py-2 text-sm"><strong>{row.status}</strong> · {row.description}<span className="ml-2 text-xs text-text-tertiary">{row.application} · {row.environment} · attempt {row.attempt_id?.slice(0,8)} · {fmtTime(row.tested_at)}</span></li>)}</ul>
+                {retainedCoverage.data.next_checkpoint_cursor && <Button size="sm" variant="secondary" onClick={() => setHistoryCheckpointCursor(retainedCoverage.data!.next_checkpoint_cursor!)}>Next checkpoint page</Button>}
+              </>}
+            </section>
           ) : (
             <EmptyState
               title="Select a run"

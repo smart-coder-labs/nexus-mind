@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 98;
+pub const LATEST_USER_VERSION: i32 = 110;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -110,9 +110,50 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     crate::db::github_review_hooks::migrate(conn)?;
     crate::db::workflow_runtime::migrate(conn)?;
     crate::db::workspace_secrets::migrate(conn)?;
+    crate::db::qa_coverage::migrate(conn)?;
+    run_v109(conn)?;
+    run_v110(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
+    Ok(())
+}
+
+/// Migration v109: retain the human who authorized each project-scoped run.
+pub fn run_v109(conn:&Connection)->Result<()> {
+    let version:i32=conn.query_row("PRAGMA user_version",[],|row|row.get(0))?;
+    if version>=109{return Ok(())}
+    let tx=conn.unchecked_transaction()?;
+    let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('autonomous_agent_runs') WHERE name='requested_by')",[],|row|row.get(0))?;
+    if !exists {tx.execute_batch("ALTER TABLE autonomous_agent_runs ADD COLUMN requested_by TEXT;")?;}
+    tx.execute("UPDATE autonomous_agent_runs SET requested_by=(SELECT definition.created_by FROM autonomous_agent_definitions definition WHERE definition.id=autonomous_agent_runs.definition_id) WHERE requested_by IS NULL",[])?;
+    tx.execute_batch("PRAGMA user_version=109;")?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v110: durable cross-table order for original QA observations.
+pub fn run_v110(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 110 { return Ok(()); }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS qa_observation_order(id INTEGER PRIMARY KEY AUTOINCREMENT);")?;
+    for (table, column) in [("qa_scenario_checkpoints", "observation_order"), ("qa_scenario_results", "observation_order"), ("qa_scenario_inventory", "observation_order")] {
+        let has: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)", rusqlite::params![table, column], |row| row.get(0))?;
+        if !has { tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER;"))?; }
+    }
+    // Legacy timestamps have second precision; final events win timestamp ties.
+    let mut stmt = tx.prepare("SELECT id, source, tested_at FROM (SELECT id, 'checkpoint' AS source, tested_at FROM qa_scenario_checkpoints WHERE observation_order IS NULL UNION ALL SELECT id, 'result' AS source, tested_at FROM qa_scenario_results WHERE observation_order IS NULL) ORDER BY tested_at, CASE source WHEN 'result' THEN 1 ELSE 0 END, id")?;
+    let events = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    for (id, source) in events {
+        tx.execute("INSERT INTO qa_observation_order DEFAULT VALUES", [])?;
+        let order = tx.last_insert_rowid();
+        let table = if source == "result" { "qa_scenario_results" } else { "qa_scenario_checkpoints" };
+        tx.execute(&format!("UPDATE {table} SET observation_order=?1 WHERE id=?2"), rusqlite::params![order,id])?;
+    }
+    tx.execute_batch("PRAGMA user_version=110;")?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -4215,6 +4256,146 @@ mod tests {
             .unwrap()
     }
 
+
+    #[test]
+    fn qa_upgrade_from_real_main98_matches_fresh110_and_is_idempotent() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        // Exactly main d0014a2's published migration sequence, not just a fabricated user_version.
+        let main98: &[fn(&Connection) -> Result<()>] = &[
+            run_v1,
+            run_v2,
+            run_v3,
+            run_v4,
+            run_v5,
+            run_v6,
+            run_v7,
+            run_v8,
+            run_v9,
+            run_v10,
+            run_v11,
+            run_v12,
+            run_v13,
+            run_v14,
+            run_v15,
+            run_v16,
+            run_v17,
+            run_v18,
+            run_v19,
+            run_v20,
+            run_v21,
+            run_v22,
+            run_v23,
+            run_v24,
+            run_v25,
+            run_v26,
+            run_v27,
+            run_v28,
+            run_v29,
+            run_v30,
+            run_v31,
+            run_v32,
+            run_v33,
+            run_v34,
+            run_v35,
+            run_v36,
+            run_v37,
+            run_v38,
+            run_v39,
+            run_v40,
+            run_v41,
+            run_v42,
+            run_v43,
+            run_v44,
+            run_v45,
+            run_v46,
+            run_v47,
+            run_v48,
+            run_v49,
+            run_v50,
+            run_v51,
+            run_v52,
+            run_v53,
+            run_v54,
+            run_v55,
+            run_v56,
+            run_v57,
+            run_v58,
+            run_v59,
+            run_v60,
+            run_v61,
+            run_v62,
+            run_v63,
+            run_v64,
+            run_v65,
+            run_v66,
+            run_v67,
+            run_v68,
+            run_v69,
+            run_v70,
+            run_v73,
+            run_v74,
+            run_v75,
+            run_v76,
+            run_v77,
+            run_v78,
+            run_v79,
+            run_v80,
+            run_v81,
+            run_v82,
+            run_v83,
+            run_v84,
+            run_v85,
+            run_v86,
+            run_v87,
+            run_v88,
+            run_v89,
+            run_v90,
+            run_v91,
+            run_v92,
+            crate::db::workflows::migrate,
+            crate::db::workflow_execution::migrate,
+            crate::db::github_review_hooks::migrate,
+            crate::db::workflow_runtime::migrate,
+            crate::db::workspace_secrets::migrate,
+        ];
+        for migrate in main98 { migrate(&conn).unwrap(); }
+        assert_eq!(get_user_version(&conn), 98);
+        assert!(!conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='qa_scenario_results')", [], |r| r.get::<_,bool>(0)).unwrap());
+        let factory_schema = |c: &Connection| -> String {
+            c.query_row("SELECT group_concat(type||'|'||name||'|'||COALESCE(sql,''),';') FROM (SELECT type,name,sql FROM sqlite_master WHERE name LIKE 'factory_%' ORDER BY type,name)", [], |r| r.get(0)).unwrap()
+        };
+        let factory_before = factory_schema(&conn);
+        let (org,user,_) = crate::db::queries::bootstrap(&conn,"QA","qa","qa@example.invalid","QA").unwrap();
+        let request = serde_json::from_value::<crate::models::types::CreateAutonomousAgentRequest>(serde_json::json!({"name":"QA","template_key":"qa","config":{"outputs":["nexusmind"]},"budgets":{}})).unwrap();
+        let detail = crate::db::queries::create_autonomous_agent_definition(&conn,&org.id,&user.id,&request).unwrap();
+        conn.execute("INSERT INTO automation_runs(id,org_id,created_by,profile_version_ref,policy_generation) VALUES('auto',?1,?2,'qa-v1',1)",rusqlite::params![org.id,user.id]).unwrap();
+        conn.execute("INSERT INTO autonomous_agent_runs(id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,budget_json) VALUES('before-upgrade',?1,?2,?3,'auto','manual','fixture','{}')",rusqlite::params![org.id,detail.definition.id,detail.revision.id]).unwrap();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn),110);
+        assert_eq!(factory_schema(&conn),factory_before,"published factory schema must not change");
+        assert_eq!(conn.query_row("SELECT requested_by FROM autonomous_agent_runs WHERE id='before-upgrade'",[],|r|r.get::<_,String>(0)).unwrap(),user.id);
+        for table in ["qa_scenario_results","qa_repository_grants","qa_repository_snapshots","qa_scenario_checkpoints","qa_scenario_inventory","qa_batch_plans","qa_observation_order"] {
+            assert!(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",[table],|r|r.get::<_,bool>(0)).unwrap(),"missing {table}");
+        }
+        for (table,column) in [("autonomous_agent_deliveries","destination_repository"),("autonomous_agent_deliveries","claim_token"),("autonomous_agent_deliveries","claim_expires_at"),("autonomous_agent_runs","requested_by"),("autonomous_agent_events","redaction_verified"),("autonomous_agent_findings","redaction_verified"),("autonomous_agent_run_transcript","redaction_verified"),("qa_scenario_results","attempt_id"),("qa_scenario_results","observation_order"),("qa_scenario_checkpoints","observation_order"),("qa_scenario_inventory","observation_order")] {
+            assert!(conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",[table,column],|r|r.get::<_,bool>(0)).unwrap(),"missing {table}.{column}");
+        }
+        let schema = |c: &Connection| -> String { c.query_row("SELECT group_concat(type||'|'||name||'|'||COALESCE(sql,''),';') FROM (SELECT type,name,sql FROM sqlite_master ORDER BY type,name)",[],|r|r.get(0)).unwrap() };
+        let fresh = crate::db::connection::connect(":memory:").unwrap();
+        run_all(&fresh).unwrap();
+        assert_eq!(schema(&conn),schema(&fresh));
+        let cfg=serde_json::json!({"application":"web","environment":"staging"});
+        let outcome=serde_json::json!({"findings":[],"scenarios":[{"key":"login","description":"Login","status":"passed","evidence":["dashboard"]}]});
+        crate::db::qa_coverage::persist_result(&conn,&org.id,&detail.definition.id,"before-upgrade","attempt",&cfg,&outcome,&[]).unwrap();
+        let before:String=conn.query_row("SELECT id||'|'||tested_at||'|'||observation_order FROM qa_scenario_results",[],|r|r.get(0)).unwrap();
+        let sequence:i64=conn.query_row("SELECT count(*) FROM qa_observation_order",[],|r|r.get(0)).unwrap();
+        run_all(&conn).unwrap();
+        assert_eq!(schema(&conn),schema(&fresh));
+        assert_eq!(factory_schema(&conn),factory_before);
+        assert_eq!(conn.query_row("SELECT id||'|'||tested_at||'|'||observation_order FROM qa_scenario_results",[],|r|r.get::<_,String>(0)).unwrap(),before);
+        assert_eq!(conn.query_row("SELECT count(*) FROM qa_observation_order",[],|r|r.get::<_,i64>(0)).unwrap(),sequence);
+        assert_eq!(get_user_version(&conn),110);
+    }
     #[test]
     fn creates_all_tables() {
         let conn = in_memory_db();

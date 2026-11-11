@@ -104,6 +104,7 @@ export default function FindingsPage({
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [actionError, setActionError] = useState('')
+  const [issueRepository,setIssueRepository]=useState('')
   const [confirmArchiveAll, setConfirmArchiveAll] = useState(false)
   // "Resolve with agent": hand a single finding (and its linked GitHub issue, if
   // one was filed) to a chosen issue-resolver so it fixes ONLY that one thing.
@@ -189,21 +190,12 @@ export default function FindingsPage({
     onSuccess: () => invalidate('autonomous-findings'),
     onError: onError('Could not archive the findings.'),
   })
-  // "Create issue" for a finding the agent did not file. Retries with an explicit
-  // repository when the agent has none configured (the prompt is required input).
+  // Project-scoped repository choices are fetched from the run's live authorization snapshot.
   const createFindingIssue = useMutation({
     mutationFn: (vars: { findingId: string; repository?: string }) =>
       client.createFindingIssue(vars.findingId, vars.repository),
     onSuccess: () => invalidate('autonomous-findings', 'autonomous-deliveries'),
-    onError: (err: unknown, vars) => {
-      const code = (err as { code?: string })?.code
-      if (code === 'repository_required' && !vars.repository) {
-        const repository = window.prompt('Repository for this issue (owner/repo):')?.trim()
-        if (repository) createFindingIssue.mutate({ findingId: vars.findingId, repository })
-        return
-      }
-      setActionError(`Could not create the issue: ${errorMessage(err, 'unknown error')}.`)
-    },
+    onError: (err: unknown) => setActionError(`Could not create the issue: ${errorMessage(err, 'unknown error')}.`),
   })
   const resolveWithAgent = useMutation({
     mutationFn: (vars: {
@@ -271,11 +263,14 @@ export default function FindingsPage({
   ]
 
   const selected = visible.find((f) => f.id === selectedId) ?? visible[0]
+  const selectedTemplate=selected?templateOf(selected):''
+  const issueRepositories=useQuery({queryKey:['finding-issue-repositories',selected?.id],queryFn:()=>client.listFindingIssueRepositories(selected!.id),enabled:Boolean(selected && selectedTemplate==='qa' && can('autonomous_agent:run'))})
   useEffect(() => {
-    if (selected && selected.id !== selectedId) setSelectedId(selected.id)
+    if (selected && selected.id !== selectedId) { setSelectedId(selected.id); setIssueRepository('') }
   }, [selected, selectedId])
   const select = (id: string) => {
     setSelectedId(id)
+    setIssueRepository('')
     // Small screens stack the detail under the list: bring it into view.
     if (typeof window !== 'undefined' && window.innerWidth < 1024)
       requestAnimationFrame(() =>
@@ -657,7 +652,11 @@ export default function FindingsPage({
                     resolveWithAgent.reset()
                     setResolveWith(target)
                   }}
-                  onCreateIssue={(id) => createFindingIssue.mutate({ findingId: id })}
+                  issueRepositories={issueRepositories.data ?? []}
+                  issueRepositoriesLoading={issueRepositories.isPending}
+                  issueRepository={issueRepository}
+                  onIssueRepositoryChange={setIssueRepository}
+                  onCreateIssue={(id) => createFindingIssue.mutate({ findingId: id, repository:issueRepository||undefined })}
                   creatingIssue={createFindingIssue.isPending}
                   onMarkResolved={(id) => resolveFinding.mutate(id)}
                   onArchive={(id) => archiveFinding.mutate(id)}

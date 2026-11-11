@@ -860,6 +860,7 @@ pub(crate) async fn run_checks(
         verification: &[],
         receipts: &receipts,
         qa: None,
+        qa_checkpoint: None,
         slot: &slot,
         writes: None,
     };

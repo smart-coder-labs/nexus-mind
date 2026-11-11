@@ -133,6 +133,7 @@ import type {
   AutonomousAgentEvent,
   StoredVerificationReport,
   AutonomousAgentTarget,
+  QaProjectRepositories,
   AutonomousAgentOrgSettings,
   AutonomousAgentMetrics,
   FactoryActionPolicy,
@@ -1513,6 +1514,7 @@ export class NexusMindClient {
     )
   }
 
+  listQaProjectRepositories(projectId:string): Promise<QaProjectRepositories> { return this.request(`/v1/projects/${encodeURIComponent(projectId)}/qa-repositories`) }
   listAutonomousAgentTemplates(): Promise<AutonomousAgentTemplate[]> {
     return this.request('/v1/autonomous-agents/templates')
   }
@@ -1580,6 +1582,7 @@ export class NexusMindClient {
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
   }
+  listFindingIssueRepositories(id:string):Promise<string[]> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/issue-repositories`) }
   createFindingIssue(id: string, repository?: string): Promise<Record<string, unknown>> {
     return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/github-issue`, {
       method: 'POST',
@@ -1636,6 +1639,8 @@ export class NexusMindClient {
   getAutonomousAgentRun(id: string): Promise<AutonomousAgentRun> {
     return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}`)
   }
+  listAutonomousAgentQACoverage(id:string, options: {projectId?:string; application?:string; environment?:string; cursor?:string; planCursor?:string; checkpointCursor?:string; inventoryCursor?:string; limit?:number} = {}): Promise<import('../types').QACoveragePage> { const query = new URLSearchParams(); if (options.projectId) query.set('project_id', options.projectId); if (options.application) query.set('application', options.application); if (options.environment) query.set('environment', options.environment); if (options.cursor) query.set('cursor', options.cursor); if (options.planCursor) query.set('plan_cursor', options.planCursor); if (options.checkpointCursor) query.set('checkpoint_cursor', options.checkpointCursor); if (options.inventoryCursor) query.set('inventory_cursor', options.inventoryCursor); if (options.limit) query.set('limit', String(options.limit)); return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/qa-coverage${query.size ? `?${query}` : ''}`) }
+  listAutonomousRunQACoverage(id:string): Promise<{scenarios: import('../types').QAScenarioResult[];plans:import('../types').QABatchPlan[]}> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/qa-coverage`) }
   getAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> {
     return this.request('/v1/autonomous-agents/runtime')
   }

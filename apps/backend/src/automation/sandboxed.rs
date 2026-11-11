@@ -51,6 +51,7 @@ pub(crate) struct SandboxedRun<'a> {
     pub receipts: &'a std::sync::Mutex<Vec<crate::factory::verification::VerificationReceipt>>,
     /// Browser-driven templates (QA, judge): target hosts and where screenshots go.
     pub qa: Option<QaSandbox<'a>>,
+    pub qa_checkpoint: Option<&'a super::worker::QaCheckpointContext>,
     /// The pod slot within the run (`main`, or `issue-<n>` in a resolver fanout).
     pub slot: &'a str,
     /// Code-writing templates: every diff of the agent's work, periodic and
@@ -621,6 +622,11 @@ pub(crate) async fn run_claude_sandboxed(
     };
     let run_token = prepared.token(run.org_id, &token_run_id, agent_life, hosts)?;
     // Everything a transcript or error could echo that is still live: redact it.
+    if let Some(context)=run.qa_checkpoint {
+        if let Ok(mut discovered)=context.sandbox_secrets.lock() {
+            if !discovered.contains(&run_token) { discovered.push(run_token.clone()); }
+        }
+    }
     let secrets: Vec<String> = run
         .secret_values
         .iter()
@@ -722,6 +728,7 @@ pub(crate) async fn run_claude_sandboxed(
                 org_id,
                 run_id,
                 secrets_ref,
+                run.qa_checkpoint,
                 &mut sequence,
                 line,
             )
@@ -765,10 +772,17 @@ pub(crate) async fn run_claude_sandboxed(
             *slot = runs.iter().map(|run| run.receipt()).collect();
         }
     }
+    let redact_output = |bytes: Vec<u8>| {
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        for secret in secrets.iter().filter(|value| !value.is_empty()) {
+            text = text.replace(secret, "[REDACTED]");
+        }
+        text.into_bytes()
+    };
     Ok(std::process::Output {
         status: exit_status(output.exit_code),
-        stdout: output.stdout,
-        stderr: output.stderr,
+        stdout: redact_output(output.stdout),
+        stderr: redact_output(output.stderr),
     })
 }
 

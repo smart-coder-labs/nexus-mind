@@ -700,6 +700,18 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(autonomous_agents::list_targets).post(autonomous_agents::put_target),
         )
         .route(
+            "/v1/autonomous-agents/:id/qa-coverage",
+            get(autonomous_agents::list_agent_qa_coverage),
+        )
+        .route(
+            "/v1/projects/:project_id/qa-repositories",
+            get(autonomous_agents::list_qa_repository_grants).post(autonomous_agents::put_qa_repository_grant),
+        )
+        .route(
+            "/v1/projects/:project_id/qa-repositories/:repository",
+            axum::routing::delete(autonomous_agents::delete_qa_repository_grant),
+        )
+        .route(
             "/v1/autonomous-agent-runs",
             get(autonomous_agents::list_runs),
         )
@@ -710,6 +722,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/autonomous-agent-runs/:id/verification-reports",
             get(autonomous_agents::list_run_verification_reports),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id/qa-coverage",
+            get(autonomous_agents::list_run_qa_coverage),
         )
         .route(
             "/v1/autonomous-agent-runs/:id/cancel",
@@ -750,6 +766,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/autonomous-agent-findings/:id",
             patch(autonomous_agents::patch_finding),
+        )
+        .route(
+            "/v1/autonomous-agent-findings/:id/issue-repositories",
+            get(autonomous_agents::list_finding_issue_repositories),
         )
         .route(
             "/v1/autonomous-agent-findings/:id/github-issue",
