@@ -322,7 +322,8 @@ async fn run_commands(
             github_packages_npmrc(&all, &registry).into_bytes(),
         ));
         for (relative, scopes) in &found {
-            let rewrites: [(&str, fn(&str, &str) -> Option<String>); 2] = [
+            type LockfileRewrite = (&'static str, fn(&str, &str) -> Option<String>);
+            let rewrites: [LockfileRewrite; 2] = [
                 ("package-lock.json", proxied_lockfile),
                 ("pnpm-lock.yaml", proxied_pnpm_lockfile),
             ];

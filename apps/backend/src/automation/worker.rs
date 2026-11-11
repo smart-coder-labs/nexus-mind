@@ -338,6 +338,8 @@ fn parse_agent_events(
 /// stderr is drained concurrently so the pipe never blocks the child. The raw
 /// stdout buffer is bounded to the same ceiling as the post-exit parser so a
 /// runaway run can't OOM the worker.
+// ponytail: preserve explicit streaming/audit context rather than add a one-use options struct.
+#[allow(clippy::too_many_arguments, reason = "streaming transcript persistence needs this explicit invocation context")]
 pub(crate) async fn run_claude_capturing_transcript(
     command: &mut Command,
     prompt_stdin: Option<&str>,
@@ -1003,11 +1005,13 @@ fn restrict_test_environment(
 /// nothing may be waived: no failure, or no test/build/lint/typecheck command
 /// passed on the head (the only "pass" left would be the integrity check). The
 /// last command is that integrity check and is never waived.
+type BaselineRerun = (Vec<Vec<String>>, Vec<Vec<String>>);
+
 fn baseline_rerun(
     plan: &crate::factory::resolver_checks::Plan,
     commands: &[Vec<String>],
     passed: &[bool],
-) -> Option<(Vec<Vec<String>>, Vec<Vec<String>>)> {
+) -> Option<BaselineRerun> {
     let checks = &commands[..commands.len().saturating_sub(1)];
     let failing: Vec<Vec<String>> = checks
         .iter()
@@ -2272,15 +2276,19 @@ pub(crate) async fn server_gh_token() -> anyhow::Result<String> {
 fn renew_github_issue_claim(store:&SqliteStore,org_id:&str,delivery_id:&str,claim_token:&str)->anyhow::Result<bool>{
     let db=store.conn();
     let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
-    Ok(queries::renew_github_issue_delivery_claim(&conn,org_id,delivery_id,claim_token)?)
+    queries::renew_github_issue_delivery_claim(&conn,org_id,delivery_id,claim_token)
 }
 
+// ponytail: keep this one-use adapter's claim and GitHub request inputs explicit.
+#[allow(clippy::too_many_arguments, reason = "the claim check and GitHub request have distinct explicit inputs")]
 async fn post_github_issue_with_claim_at(store:&SqliteStore,org:&str,delivery_id:&str,claim_token:&str,base_url:&str,token:&str,repository:&str,title:&str,body:&str,labels:&[String])->anyhow::Result<serde_json::Value>{
     super::connectors::ensure_github_issue_labels(token,repository,labels).await?;
     if !renew_github_issue_claim(store,org,delivery_id,claim_token)?{anyhow::bail!("delivery_claim_lost")}
-    Ok(super::connectors::post_github_issue_once_at(base_url,token,repository,title,body,labels).await?)
+    super::connectors::post_github_issue_once_at(base_url,token,repository,title,body,labels).await
 }
 
+// ponytail: keep the request's delivery-claim context explicit in this adapter.
+#[allow(clippy::too_many_arguments, reason = "the caller passes the claim and issue payload without a shared request type")]
 async fn post_github_issue_with_claim(store:&SqliteStore,org:&str,delivery_id:&str,claim_token:&str,token:&str,repository:&str,title:&str,body:&str,labels:&[String])->anyhow::Result<serde_json::Value>{
     post_github_issue_with_claim_at(store,org,delivery_id,claim_token,"https://api.github.com",token,repository,title,body,labels).await
 }
@@ -2377,6 +2385,8 @@ async fn authorize_project_qa_repository(
     Ok(())
 }
 
+// ponytail: keep project, pinned run revision, requested repository, and capability explicit.
+#[allow(clippy::too_many_arguments, reason = "validation binds these separate trust-boundary inputs")]
 pub(crate) async fn validate_project_qa_repository(
     store: &SqliteStore, org: &str, project: &str, run: &str, revision: &str,
     repository: &str, token: &str, publish: bool,
@@ -7604,6 +7614,8 @@ fn qa_issue_candidate_repositories(store:&SqliteStore,org:&str,run:&str,config:&
     Ok(candidates)
 }
 
+// ponytail: preserve explicit pinned-run and candidate-selection inputs at this trust boundary.
+#[allow(clippy::too_many_arguments, reason = "candidate lookup binds run identity, configuration, selected repository, and marker")]
 async fn find_issue_across_qa_candidates(store:&SqliteStore,org:&str,run:&str,revision:&str,config:&serde_json::Value,selected:&str,token:&str,marker:&str)->anyhow::Result<(Option<serde_json::Value>,Vec<(String,serde_json::Value)>)> {
     let mut candidates=qa_issue_candidate_repositories(store,org,run,config,selected)?;
     if let Some(project)=config.get("project_id").and_then(serde_json::Value::as_str){
@@ -8469,7 +8481,7 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                             .unwrap_or_default();
                         let (body, labels) =
                             qa_issue_markup(&item.finding, &item.finding.run_id, &evidence_md);
-                        let body=append_related_qa_issue_links(store,&item.org_id,&item.finding.id,&repository,body)?;
+                        let body=append_related_qa_issue_links(store,&item.org_id,&item.finding.id,repository,body)?;
                         let response = if let Some(number) = item
                             .delivery
                             .external_id

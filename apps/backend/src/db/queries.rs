@@ -17617,6 +17617,8 @@ pub fn enqueue_autonomous_agent_run(
     enqueue_autonomous_agent_run_as(conn,org_id,definition_id,trigger_kind,occurrence_key,scheduled_for,input,None)
 }
 
+// ponytail: keep trigger identity, scheduling, input, and requester explicit for the enqueue transaction.
+#[allow(clippy::too_many_arguments, reason = "the transaction consumes separately optional scheduling, input, and requester values")]
 pub fn enqueue_autonomous_agent_run_as(
     conn:&Connection,org_id:&str,definition_id:&str,trigger_kind:&str,occurrence_key:&str,scheduled_for:Option<&str>,input:Option<&serde_json::Value>,requested_by:Option<&str>,
 )->Result<Option<AutonomousAgentRun>>{

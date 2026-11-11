@@ -217,6 +217,8 @@ pub fn list_repository_grants(conn: &Connection, org: &str, project: &str) -> Re
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+// ponytail: grant authorization fields stay explicit at this database boundary.
+#[allow(clippy::too_many_arguments, reason = "grant persistence uses separately validated scope, capability, identity, and actor inputs")]
 pub fn set_repository_grant(conn: &Connection, org: &str, project: &str, repository: &str, can_read: bool, can_publish: bool, identity: &str, actor: &str) -> Result<()> {
     if !linked_repositories(conn,org,project)?.iter().any(|linked|linked==repository) { bail!("repository_not_linked_to_project") }
     if !can_read && can_publish { bail!("publish_requires_read") }
@@ -305,12 +307,14 @@ pub fn context_for_scope(conn: &Connection, org: &str, agent: &str, config: &Val
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     };
     // ponytail: cap critical reservation at 20%; the progressive remainder retains discovery capacity.
-    let reserved = (budget + 4) / 5;
+    let reserved = budget.div_ceil(5);
     let mut selected = select(true, reserved)?;
     selected.extend(select(false, budget - selected.len() as u32)?);
     Ok(selected)
 }
 
+// ponytail: do not bundle the separately validated progress payloads into a one-use context type.
+#[allow(clippy::too_many_arguments, reason = "progress persistence requires scope, two payloads, and redaction secrets")]
 pub fn persist_progress(conn:&Connection,org:&str,agent:&str,run:&str,attempt:&str,config:&Value,inventory:&[Value],plan:&[Value],secrets:&[String])->Result<()> {
     if inventory.len()>200||plan.len()>50{bail!("qa_progress_too_large")}
     let (project,application,environment)=scope(config);
@@ -522,6 +526,8 @@ fn next_observation_order(conn: &Connection) -> Result<i64> {
 }
 
 /// Persist one streamed scenario and its inventory/plan effects atomically.
+// ponytail: retain explicit scope, scenario, and secret-redaction inputs for the atomic write.
+#[allow(clippy::too_many_arguments, reason = "checkpoint persistence binds run scope and redaction secrets")]
 pub fn persist_checkpoint(conn: &Connection, org: &str, agent: &str, run: &str, attempt: &str, config: &Value, scenario: &Value, secrets: &[String]) -> Result<bool> {
     let single = json!({"scenarios":[scenario],"findings":[]});
     validate_result(&single)?;
@@ -558,6 +564,8 @@ pub fn persist_checkpoint(conn: &Connection, org: &str, agent: &str, run: &str, 
 }
 
 /// Persist only validated, executed outcomes atomically. Repeated finalization is idempotent.
+// ponytail: retain explicit scope, result payload, and secret-redaction inputs for the atomic write.
+#[allow(clippy::too_many_arguments, reason = "result persistence binds run scope and redaction secrets")]
 pub fn persist_result(conn: &Connection, org: &str, agent: &str, run: &str, attempt: &str, config: &Value, result: &Value, secrets: &[String]) -> Result<usize> {
     validate_result(result)?;
     let scenarios = result.get("scenarios").and_then(Value::as_array).expect("validated scenarios");
@@ -645,6 +653,8 @@ pub fn finalize_attempt_plan(conn:&Connection,org:&str,run:&str,attempt:&str)->R
     Ok(conn.execute("UPDATE qa_batch_plans SET status='not_run' WHERE org_id=?1 AND run_id=?2 AND attempt_id=?3 AND status='pending'",params![org,run,attempt])?)
 }
 
+// ponytail: keep pagination and optional QA scope filters explicit at this query boundary.
+#[allow(clippy::too_many_arguments, reason = "the query accepts independent scope filters and pagination inputs")]
 pub fn list_checkpoints_for_agent_page(conn:&Connection,org:&str,agent:&str,project:Option<&str>,application:Option<&str>,environment:Option<&str>,cursor:Option<&str>,limit:u32)->Result<(Vec<Value>,Option<String>)>{
     let cursor=cursor.map(|value|value.parse::<i64>().map_err(|_|anyhow::anyhow!("invalid_qa_cursor"))).transpose()?;
     let mut stmt=conn.prepare("SELECT id,project_id,application,environment,run_id,attempt_id,scenario_key,description,status,evidence_json,tested_at FROM qa_scenario_checkpoints checkpoint WHERE org_id=?1 AND agent_id=?2 AND redaction_verified=1 AND ((?3 IS NULL AND project_id IS NULL) OR project_id=?3) AND (?4 IS NULL OR application=?4) AND (?5 IS NULL OR environment=?5) AND (?6 IS NULL OR id<?6) AND NOT EXISTS(SELECT 1 FROM qa_scenario_results result WHERE result.org_id=checkpoint.org_id AND result.run_id=checkpoint.run_id AND result.attempt_id=checkpoint.attempt_id AND result.scenario_key=checkpoint.scenario_key AND result.redaction_verified=1) ORDER BY id DESC LIMIT ?7")?;
@@ -663,6 +673,8 @@ pub fn inventory_summary_for_agent_scope(conn:&Connection,org:&str,agent:&str,pr
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+// ponytail: keep pagination and optional QA scope filters explicit at this query boundary.
+#[allow(clippy::too_many_arguments, reason = "the query accepts independent scope filters and pagination inputs")]
 pub fn list_inventory_for_agent_page(conn:&Connection,org:&str,agent:&str,project:Option<&str>,application:Option<&str>,environment:Option<&str>,cursor:Option<&str>,limit:u32)->Result<(Vec<Value>,Option<String>)>{
     let cursor=cursor.map(|value|value.parse::<i64>().map_err(|_|anyhow::anyhow!("invalid_qa_cursor"))).transpose()?;
     let mut stmt=conn.prepare("SELECT id,project_id,application,environment,module_key,scenario_key,description,critical,last_status,last_tested_at,blocker_fingerprint,last_blocker_fingerprint FROM qa_scenario_inventory WHERE org_id=?1 AND agent_id=?2 AND ((?3 IS NULL AND project_id IS NULL) OR project_id=?3) AND (?4 IS NULL OR application=?4) AND (?5 IS NULL OR environment=?5) AND (?6 IS NULL OR id>?6) ORDER BY id LIMIT ?7")?;
@@ -672,6 +684,8 @@ pub fn list_inventory_for_agent_page(conn:&Connection,org:&str,agent:&str,projec
     Ok((rows.into_iter().map(|(_,row)|row).collect(),next))
 }
 
+// ponytail: keep pagination and optional QA scope filters explicit at this query boundary.
+#[allow(clippy::too_many_arguments, reason = "the query accepts independent scope filters and pagination inputs")]
 pub fn list_plans_for_agent_page(conn:&Connection,org:&str,agent:&str,project:Option<&str>,application:Option<&str>,environment:Option<&str>,cursor:Option<&str>,limit:u32)->Result<(Vec<Value>,Option<String>)>{
     let cursor=cursor.map(|value|value.parse::<i64>().map_err(|_|anyhow::anyhow!("invalid_qa_cursor"))).transpose()?;
     let mut stmt=conn.prepare("SELECT id,run_id,attempt_id,scenario_key,description,reason,status,planned_at FROM qa_batch_plans WHERE org_id=?1 AND agent_id=?2 AND ((?3 IS NULL AND project_id IS NULL) OR project_id=?3) AND (?4 IS NULL OR application=?4) AND (?5 IS NULL OR environment=?5) AND (?6 IS NULL OR id<?6) ORDER BY id DESC LIMIT ?7")?;
@@ -713,6 +727,8 @@ pub fn list_for_run(conn: &Connection, org: &str, run: &str) -> Result<Vec<Value
     Ok(results)
 }
 
+// ponytail: keep pagination and optional QA scope filters explicit at this query boundary.
+#[allow(clippy::too_many_arguments, reason = "the query accepts independent scope filters and pagination inputs")]
 pub fn list_for_agent_page(conn: &Connection, org: &str, agent: &str, project: Option<&str>, application: Option<&str>, environment: Option<&str>, cursor: Option<&str>, limit: u32) -> Result<(Vec<Value>, Option<String>)> {
     let parsed = cursor.map(|value| value.rsplit_once(':').ok_or_else(|| anyhow::anyhow!("invalid_qa_cursor"))).transpose()?;
     let (cursor_time, cursor_id) = match parsed {
