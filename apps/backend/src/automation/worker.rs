@@ -861,11 +861,14 @@ fn restrict_test_environment(
 /// nothing may be waived: no failure, or no test/build/lint/typecheck command
 /// passed on the head (the only "pass" left would be the integrity check). The
 /// last command is that integrity check and is never waived.
+/// Argv lists of verification commands.
+type CommandList = Vec<Vec<String>>;
+
 fn baseline_rerun(
     plan: &crate::factory::resolver_checks::Plan,
     commands: &[Vec<String>],
     passed: &[bool],
-) -> Option<(Vec<Vec<String>>, Vec<Vec<String>>)> {
+) -> Option<(CommandList, CommandList)> {
     let checks = &commands[..commands.len().saturating_sub(1)];
     let failing: Vec<Vec<String>> = checks
         .iter()
