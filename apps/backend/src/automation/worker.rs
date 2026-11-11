@@ -1739,6 +1739,59 @@ async fn resolve_judge_targets(
     resolved
 }
 
+/// Phrases that only describe the QA environment failing to reach or render the
+/// app (sandbox browser, egress proxy, login), never a behavior of the app itself.
+const ENVIRONMENT_BLOCK_MARKERS: [&str; 19] = [
+    "net::err_",
+    "err_tunnel_connection_failed",
+    "err_proxy_",
+    "egress denied",
+    "target crashed",
+    "page crashed",
+    "browser crashed",
+    "browser has been closed",
+    "navigation timeout",
+    "navigation attempt",
+    "page.goto",
+    "could not be reached",
+    "cannot be reached",
+    "never rendered",
+    "could not be accessed",
+    "access-blocking",
+    "blocked by login",
+    "login gate",
+    "target_credentials",
+];
+
+/// A finding that reports the QA run being blocked (unreachable app, browser or
+/// proxy failure, login wall) rather than a product defect. It stays visible in
+/// NexusMind but must never be filed as an issue against the app.
+fn is_environment_block_finding(finding: &serde_json::Value) -> bool {
+    if matches!(
+        finding.get("type").and_then(|v| v.as_str()),
+        Some("environment" | "infrastructure" | "access")
+    ) {
+        return true;
+    }
+    let mut text = String::new();
+    for field in ["title", "summary", "actual", "expected"] {
+        if let Some(value) = finding.get(field).and_then(|v| v.as_str()) {
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    for field in ["evidence", "steps"] {
+        for value in finding.get(field).and_then(|v| v.as_array()).into_iter().flatten() {
+            if let Some(value) = value.as_str() {
+                text.push_str(value);
+                text.push('\n');
+            }
+        }
+    }
+    let text = text.to_lowercase();
+    ENVIRONMENT_BLOCK_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
 /// Post the judge's verdict as a GitHub comment on each target, when the agent is
 /// configured with `publish: "comment"`. One `github_issue_comment` delivery per
 /// target (the issue-comment API serves PRs too), matched to the finding that
@@ -1965,6 +2018,9 @@ async fn publish_judge_comments(
         //    back to an independent issue referencing the target.
         if !verified && issue_enabled {
             for finding in &bug_findings {
+                if is_environment_block_finding(finding) {
+                    continue;
+                }
                 let fingerprint = finding
                     .get("fingerprint")
                     .and_then(|v| v.as_str())
@@ -3791,7 +3847,7 @@ pub(crate) fn fixed_prompt(
     // Authentication is mandatory before any inspection, and inferring behavior from
     // source bundles instead of the rendered UI is forbidden — that fallback produced
     // false findings when the agent hit a login gate with no session.
-    let login_clause = " AUTHENTICATION: if the target requires a login, the configuration `target_credentials` holds the credentials (typically USERNAME and PASSWORD). Your FIRST action MUST be to open the app and log in with them (the login page is the app URL, or the target config's `login_url` if present), and you must keep a valid logged-in session for every check. If `target_credentials` is missing, or you cannot reach the real logged-in UI, STOP and report exactly ONE finding stating the app could not be accessed (blocked by login). You must NEVER work around a login gate by reading JavaScript/CSS bundles, chunks, network payloads or source code, and you must NEVER infer, guess or report behavior from code: ONLY observations made against the rendered, logged-in UI are valid findings.";
+    let login_clause = " AUTHENTICATION: if the target requires a login, the configuration `target_credentials` holds the credentials (typically USERNAME and PASSWORD). Your FIRST action MUST be to open the app and log in with them (the login page is the app URL, or the target config's `login_url` if present), and you must keep a valid logged-in session for every check. If `target_credentials` is missing, or you cannot reach the real logged-in UI, STOP and describe the access impediment in your `summary`. Access or infrastructure blocks are not product bugs: navigation timeouts, a page that never loads or renders, browser or screenshot tool failures, net::ERR_* / proxy errors and login walls are problems of YOUR test environment, so NEVER report them as bug findings (findings become issues filed against the app). You must NEVER work around a login gate by reading JavaScript/CSS bundles, chunks, network payloads or source code, and you must NEVER infer, guess or report behavior from code: ONLY observations made against the rendered, logged-in UI are valid findings.";
     let objective = match template {
         "qa" if qa_agent_driven => format!(
             "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively. For each finding you report, capture a screenshot with the Playwright browser screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field so it can be attached as evidence.{login_clause}{turn_budget}{slack_clause}{qa_contract}"
@@ -7731,6 +7787,10 @@ async fn deliver_findings(
                     if claim.template_key == "judge" {
                         continue;
                     }
+                    if is_environment_block_finding(value) {
+                        tracing::info!(run_id = %claim.run.id, finding_id = %finding.id, "qa: environment block kept out of the issue tracker");
+                        continue;
+                    }
                     let Some(repository) = claim.config.get("repository").and_then(|v| v.as_str())
                     else {
                         continue;
@@ -8689,6 +8749,26 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn environment_blocks_are_never_filed_as_app_issues() {
+        use serde_json::json;
+        assert!(super::is_environment_block_finding(&json!({
+            "title": "[App] Target application unreachable",
+            "summary": "The target application could not be reached — every navigation attempt timed out after 60 seconds, and the page never rendered."
+        })));
+        assert!(super::is_environment_block_finding(&json!({
+            "title": "[Login] Cannot open login",
+            "evidence": ["page.goto: net::ERR_TUNNEL_CONNECTION_FAILED"]
+        })));
+        assert!(super::is_environment_block_finding(&json!({"title": "[App] Blocked", "type": "infrastructure"})));
+        assert!(!super::is_environment_block_finding(&json!({
+            "title": "[Users] Archive user is a no-op — no status sent",
+            "type": "functional",
+            "expected": "User status becomes archived",
+            "actual": "Status stays active after the request times out"
+        })));
+    }
+
     #[test]
     fn agent_model_source_requires_explicit_consent_and_never_reactivates_legacy_agents() {
         for engine in ["claude","codex"] {
