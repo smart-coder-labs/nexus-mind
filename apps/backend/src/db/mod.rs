@@ -16,3 +16,5 @@ pub mod migrations;
 pub mod migration_queries;
 pub mod queries;
 pub mod usage_queries;
+
+pub mod qa_coverage;

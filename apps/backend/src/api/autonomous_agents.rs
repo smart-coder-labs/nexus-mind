@@ -5,6 +5,7 @@ use axum::{
     Extension, Json,
 };
 use serde::Deserialize;
+use rusqlite::OptionalExtension;
 use std::sync::Arc;
 
 use crate::{
@@ -143,6 +144,45 @@ fn not_found() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+fn require_project_id_permission(conn:&rusqlite::Connection,auth:&AuthContext,project_id:&str,permission:&str)->ApiResult<()> {
+    let project_name:Option<String>=conn.query_row("SELECT name FROM projects WHERE org_id=?1 AND id=?2",rusqlite::params![auth.org_id,project_id],|row|row.get(0)).optional().map_err(|error|store_error(error.into()))?;
+    require_explicit_permission(conn,auth,Some(&project_name.ok_or_else(not_found)?),permission)
+}
+
+fn require_definition_project_permission(conn:&rusqlite::Connection,auth:&AuthContext,definition_id:&str,permission:&str)->ApiResult<()> {
+    let project_id:Option<String>=conn.query_row("SELECT json_extract(revision.config_json,'$.project_id') FROM autonomous_agent_definitions definition JOIN autonomous_agent_revisions revision ON revision.definition_id=definition.id AND revision.revision=definition.current_revision WHERE definition.org_id=?1 AND definition.id=?2",rusqlite::params![auth.org_id,definition_id],|row|row.get(0)).optional().map_err(|error|store_error(error.into()))?.flatten();
+    if let Some(project_id)=project_id{require_project_id_permission(conn,auth,&project_id,permission)?;}
+    Ok(())
+}
+
+fn require_run_project_permission(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    run_id: &str,
+    permission: &str,
+) -> ApiResult<()> {
+    let project_id: Option<String> = conn.query_row(
+        "SELECT json_extract(revision.config_json,'$.project_id') FROM autonomous_agent_runs run JOIN autonomous_agent_revisions revision ON revision.id=run.revision_id WHERE run.org_id=?1 AND run.id=?2",
+        rusqlite::params![auth.org_id,run_id], |row|row.get(0),
+    ).optional().map_err(|error|store_error(error.into()))?.flatten();
+    if let Some(project_id)=project_id { require_project_id_permission(conn,auth,&project_id,permission)?; }
+    Ok(())
+}
+
+fn require_finding_project_permission(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    finding_id: &str,
+    permission: &str,
+) -> ApiResult<()> {
+    let run_id: Option<String> = conn.query_row(
+        "SELECT run_id FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2 AND redaction_verified=1",
+        rusqlite::params![auth.org_id,finding_id], |row|row.get(0),
+    ).optional().map_err(|error|store_error(error.into()))?;
+    let run_id=run_id.ok_or_else(not_found)?;
+    require_run_project_permission(conn,auth,&run_id,permission)
+}
+
 pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
     vec![
         AutonomousAgentTemplate {
@@ -176,7 +216,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "delivery:write".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 2, "max_cost_usd": 10, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo"},"github_publication_connector_id":{"type":"string","description":"Optional shared Workflow GitHub publisher; never changes the gh reviewer identity"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"project_id":{"type":"project_id","description":"Optional organization-scoped project for coverage history"},"repository":{"type":"owner/repo"},"github_publication_connector_id":{"type":"string","description":"Optional shared Workflow GitHub publisher; never changes the gh reviewer identity"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
             workflow: vec![
                 "checkout".into(),
                 "health_check".into(),
@@ -347,9 +387,8 @@ pub async fn list_definitions(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
-    Ok(Json(
-        queries::list_autonomous_agent_definitions(&conn, &auth.org_id).map_err(store_error)?,
-    ))
+    let definitions=queries::list_autonomous_agent_definitions(&conn,&auth.org_id).map_err(store_error)?;
+    Ok(Json(definitions.into_iter().filter(|definition|require_definition_project_permission(&conn,&auth,&definition.id,"autonomous_agent:read").is_ok()).collect()))
 }
 
 pub async fn get_definition(
@@ -360,6 +399,7 @@ pub async fn get_definition(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_definition_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
     Ok(Json(
         queries::get_autonomous_agent_detail(&conn, &auth.org_id, &id)
             .map_err(store_error)?
@@ -375,6 +415,7 @@ pub async fn create_definition(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:create")?;
+    if let Some(project_id)=req.config.get("project_id").and_then(serde_json::Value::as_str){require_project_id_permission(&conn,&auth,project_id,"autonomous_agent:create")?;}
     let value =
         queries::create_autonomous_agent_definition(&conn, &auth.org_id, &auth.user_id, &req)
             .map_err(store_error)?;
@@ -390,6 +431,8 @@ pub async fn update_definition(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    require_definition_project_permission(&conn,&auth,&id,"autonomous_agent:update")?;
+    if let Some(project_id)=req.config.as_ref().and_then(|config|config.get("project_id")).and_then(serde_json::Value::as_str){require_project_id_permission(&conn,&auth,project_id,"autonomous_agent:update")?;}
     Ok(Json(
         queries::update_autonomous_agent_definition(&conn, &auth.org_id, &auth.user_id, &id, &req)
             .map_err(store_error)?
@@ -405,6 +448,7 @@ pub async fn validate_definition(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:enable")?;
+    require_definition_project_permission(&conn,&auth,&id,"autonomous_agent:enable")?;
     Ok(Json(
         queries::validate_autonomous_agent_definition(&conn, &auth.org_id, &auth.user_id, &id)
             .map_err(store_error)?
@@ -420,6 +464,7 @@ async fn set_status(
 ) -> ApiResult<Json<AutonomousAgentDetail>> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
+    let permission=if status=="archived"{"autonomous_agent:update"}else{"autonomous_agent:enable"};
     require_explicit_permission(
         &conn,
         &auth,
@@ -430,6 +475,7 @@ async fn set_status(
             "autonomous_agent:enable"
         },
     )?;
+    require_definition_project_permission(&conn,&auth,&id,permission)?;
     Ok(Json(
         queries::set_autonomous_agent_status(&conn, &auth.org_id, &id, status)
             .map_err(store_error)?
@@ -572,6 +618,7 @@ pub async fn get_schedule(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_definition_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
     Ok(Json(
         queries::get_autonomous_agent_schedule(&conn, &auth.org_id, &id)
             .map_err(store_error)?
@@ -588,6 +635,7 @@ pub async fn put_schedule(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    require_definition_project_permission(&conn,&auth,&id,"autonomous_agent:update")?;
     Ok(Json(
         queries::put_autonomous_agent_schedule(&conn, &auth.org_id, &id, &req)
             .map_err(store_error)?
@@ -643,6 +691,13 @@ pub async fn run_now(
     let definition = queries::get_autonomous_agent_definition(&conn, &auth.org_id, &id)
         .map_err(store_error)?
         .ok_or_else(not_found)?;
+    if let Some(revision)=queries::get_autonomous_agent_revision(&conn,&id,definition.current_revision).map_err(store_error)? {
+        if let Some(project_id)=revision.config.get("project_id").and_then(|value|value.as_str()) {
+            let project_name: Option<String>=conn.query_row("SELECT name FROM projects WHERE org_id=?1 AND id=?2",rusqlite::params![auth.org_id,project_id],|row|row.get(0)).optional().map_err(|error|store_error(error.into()))?;
+            let project_name=project_name.ok_or_else(not_found)?;
+            require_explicit_permission(&conn,&auth,Some(&project_name),"autonomous_agent:run")?;
+        }
+    }
     // The Judge template picks its PR/issue targets at run time (not at creation),
     // scoped to the repositories configured on the agent. Other templates ignore
     // run inputs and behave exactly as before.
@@ -772,7 +827,7 @@ pub async fn run_now(
         None
     };
     let occurrence = format!("manual:{}", uuid::Uuid::new_v4());
-    let run = queries::enqueue_autonomous_agent_run(
+    let run = queries::enqueue_autonomous_agent_run_as(
         &conn,
         &auth.org_id,
         &id,
@@ -780,6 +835,7 @@ pub async fn run_now(
         &occurrence,
         None,
         input.as_ref(),
+        Some(&auth.user_id),
     )
     .map_err(store_error)?
     .ok_or_else(not_found)?;
@@ -835,6 +891,7 @@ pub async fn continue_run(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+    require_run_project_permission(&conn,&auth,&run_id,"autonomous_agent:run")?;
     let prev = queries::get_autonomous_agent_run(&conn, &auth.org_id, &run_id)
         .map_err(store_error)?
         .ok_or_else(not_found)?;
@@ -850,7 +907,7 @@ pub async fn continue_run(
     }
     let occurrence = format!("continue:{run_id}:{}", uuid::Uuid::new_v4());
     let input = serde_json::json!({ "continue_from_run_id": run_id });
-    let run = queries::enqueue_autonomous_agent_run(
+    let run = queries::enqueue_autonomous_agent_run_as(
         &conn,
         &auth.org_id,
         &prev.definition_id,
@@ -858,6 +915,7 @@ pub async fn continue_run(
         &occurrence,
         None,
         Some(&input),
+        Some(&auth.user_id),
     )
     .map_err(store_error)?
     .ok_or_else(not_found)?;
@@ -877,10 +935,8 @@ pub async fn list_runs(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
-    Ok(Json(
-        queries::list_autonomous_agent_runs(&conn, &auth.org_id, filters.definition_id.as_deref())
-            .map_err(store_error)?,
-    ))
+    let runs=queries::list_autonomous_agent_runs(&conn,&auth.org_id,filters.definition_id.as_deref()).map_err(store_error)?;
+    Ok(Json(runs.into_iter().filter(|run|require_run_project_permission(&conn,&auth,&run.id,"autonomous_agent:read").is_ok()).collect()))
 }
 
 pub async fn get_run(
@@ -891,11 +947,117 @@ pub async fn get_run(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
     Ok(Json(
         queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
             .map_err(store_error)?
             .ok_or_else(not_found)?,
     ))
+}
+
+#[derive(Deserialize, Default)]
+pub struct QACoverageQuery {
+    pub project_id: Option<String>,
+    pub application: Option<String>,
+    pub environment: Option<String>,
+    pub cursor: Option<String>,
+    pub plan_cursor: Option<String>,
+    pub checkpoint_cursor: Option<String>,
+    pub inventory_cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// Retained outcomes are readable without the source run, but always within authorized scope.
+#[derive(Deserialize)]
+pub struct PutQaRepositoryGrant {
+    repository: String,
+    can_read: bool,
+    can_publish: bool,
+}
+
+fn require_org_admin(auth: &AuthContext) -> ApiResult<()> {
+    if auth.role.is_admin() { Ok(()) } else { Err(error(StatusCode::FORBIDDEN, "org_admin_required", "Only an organization admin may manage QA repository grants.")) }
+}
+
+pub async fn list_qa_repository_grants(
+    State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Path(project_id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn(); let conn = db.lock().map_err(|_| lock_error())?;
+    require_project_id_permission(&conn,&auth,&project_id,"autonomous_agent:read")?;
+    let candidates = crate::db::qa_coverage::linked_repositories(&conn,&auth.org_id,&project_id).map_err(store_error)?;
+    let grants = crate::db::qa_coverage::list_repository_grants(&conn,&auth.org_id,&project_id).map_err(store_error)?;
+    let grants=grants.into_iter().map(|grant|serde_json::json!({"repository":grant.repository,"can_read":grant.can_read,"can_publish":grant.can_publish})).collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({"candidates":candidates,"grants":grants})))
+}
+
+pub async fn put_qa_repository_grant(
+    State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Path(project_id): Path<String>, AppJson(req): AppJson<PutQaRepositoryGrant>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_org_admin(&auth)?;
+    crate::automation::connectors::validate_repository(&req.repository).map_err(|_| error(StatusCode::BAD_REQUEST,"invalid_repository","Use owner/repository format."))?;
+    if !req.can_read || (req.can_publish && !req.can_read) { return Err(error(StatusCode::BAD_REQUEST,"invalid_capability","Publishing requires explicit read access.")); }
+    let token = crate::automation::worker::server_github_token().await.map_err(|_| error(StatusCode::CONFLICT,"github_capability_unknown","GitHub capability could not be verified; no grant was saved."))?;
+    let access = crate::automation::connectors::get_github_repository(&token,&req.repository).await.map_err(|_| error(StatusCode::CONFLICT,"github_capability_unknown","GitHub repository access could not be verified; no grant was saved."))?;
+    let permissions = access.get("permissions").and_then(serde_json::Value::as_object);
+    let can_read = permissions.and_then(|p|p.get("pull")).and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let can_publish = permissions.is_some_and(|p| ["push","maintain","admin"].iter().any(|k|p.get(*k).and_then(serde_json::Value::as_bool)==Some(true)));
+    if !can_read || !req.can_read || (req.can_publish && !can_publish) { return Err(error(StatusCode::FORBIDDEN,"github_capability_insufficient","The current GitHub credential does not have the requested repository capability.")); }
+    let identity = crate::automation::worker::server_github_identity().await.map_err(|_| error(StatusCode::CONFLICT,"github_capability_unknown","GitHub credential identity could not be verified."))?;
+    let db=store.conn(); let conn=db.lock().map_err(|_|lock_error())?;
+    let project: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM projects WHERE org_id=?1 AND id=?2)", [&auth.org_id,&project_id], |r|r.get(0)).map_err(|error| store_error(error.into()))?;
+    if !project { return Err(not_found()); }
+    crate::db::qa_coverage::set_repository_grant(&conn,&auth.org_id,&project_id,&req.repository,req.can_read,req.can_publish,&identity,&auth.user_id).map_err(store_error)?;
+    Ok(Json(serde_json::json!({"repository":req.repository,"can_read":req.can_read,"can_publish":req.can_publish,"credential_identity":identity})))
+}
+
+pub async fn delete_qa_repository_grant(
+    State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Path((project_id, repository)): Path<(String,String)>,
+) -> ApiResult<StatusCode> {
+    require_org_admin(&auth)?;
+    let db=store.conn(); let conn=db.lock().map_err(|_|lock_error())?;
+    let project: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM projects WHERE org_id=?1 AND id=?2)", [&auth.org_id,&project_id], |r|r.get(0)).map_err(|error| store_error(error.into()))?;
+    if !project { return Err(not_found()); }
+    crate::db::qa_coverage::revoke_repository_grant(&conn,&auth.org_id,&project_id,&repository).map_err(store_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_agent_qa_coverage(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Query(query): Query<QACoverageQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    if let Some(project_id) = query.project_id.as_deref() {
+        let project_name: Option<String> = conn.query_row("SELECT name FROM projects WHERE org_id=?1 AND id=?2", [&auth.org_id, project_id], |row| row.get(0)).optional().map_err(|error| store_error(error.into()))?;
+        let project_name = project_name.ok_or_else(not_found)?;
+        require_explicit_permission(&conn, &auth, Some(&project_name), "autonomous_agent:read")?;
+    }
+    let (scenarios, next_cursor) = crate::db::qa_coverage::list_for_agent_page(&conn, &auth.org_id, &id, query.project_id.as_deref(), query.application.as_deref(), query.environment.as_deref(), query.cursor.as_deref(), query.limit.unwrap_or(50)).map_err(store_error)?;
+    let (plans,next_plan_cursor)=crate::db::qa_coverage::list_plans_for_agent_page(&conn,&auth.org_id,&id,query.project_id.as_deref(),query.application.as_deref(),query.environment.as_deref(),query.plan_cursor.as_deref(),query.limit.unwrap_or(50)).map_err(store_error)?;
+    let (inventory,next_inventory_cursor)=crate::db::qa_coverage::list_inventory_for_agent_page(&conn,&auth.org_id,&id,query.project_id.as_deref(),query.application.as_deref(),query.environment.as_deref(),query.inventory_cursor.as_deref(),query.limit.unwrap_or(50)).map_err(store_error)?;
+    let inventory_summary=crate::db::qa_coverage::inventory_summary_for_agent_scope(&conn,&auth.org_id,&id,query.project_id.as_deref(),query.application.as_deref(),query.environment.as_deref()).map_err(store_error)?;
+    let (checkpoints,next_checkpoint_cursor)=crate::db::qa_coverage::list_checkpoints_for_agent_page(&conn,&auth.org_id,&id,query.project_id.as_deref(),query.application.as_deref(),query.environment.as_deref(),query.checkpoint_cursor.as_deref(),query.limit.unwrap_or(50)).map_err(store_error)?;
+    Ok(Json(serde_json::json!({"scenarios":scenarios,"checkpoints":checkpoints,"plans":plans,"inventory":inventory,"inventory_summary":inventory_summary,"next_cursor":next_cursor,"next_plan_cursor":next_plan_cursor,"next_checkpoint_cursor":next_checkpoint_cursor,"next_inventory_cursor":next_inventory_cursor})))
+}
+
+/// Durable QA scenario outcomes for a run.
+pub async fn list_run_qa_coverage(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
+    queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
+        .map_err(store_error)?.ok_or_else(not_found)?;
+    let scenarios = crate::db::qa_coverage::list_for_run(&conn, &auth.org_id, &id).map_err(store_error)?;
+    let plans=crate::db::qa_coverage::list_plans_for_run(&conn,&auth.org_id,&id).map_err(store_error)?;
+    Ok(Json(serde_json::json!({"scenarios": scenarios,"plans":plans})))
 }
 
 /// The verification reports of a run (F1 gate), newest first.
@@ -907,6 +1069,7 @@ pub async fn list_run_verification_reports(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
     // 404 for a run of another org, as get_run does.
     queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
         .map_err(store_error)?
@@ -924,6 +1087,7 @@ pub async fn cancel_run(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:cancel")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:cancel")?;
     Ok(Json(
         queries::cancel_autonomous_agent_run(&conn, &auth.org_id, &id)
             .map_err(store_error)?
@@ -939,6 +1103,7 @@ pub async fn archive_run(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:update")?;
     Ok(Json(
         queries::set_autonomous_agent_run_archived(&conn, &auth.org_id, &id, true)
             .map_err(store_error)?
@@ -954,6 +1119,7 @@ pub async fn unarchive_run(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:update")?;
     Ok(Json(
         queries::set_autonomous_agent_run_archived(&conn, &auth.org_id, &id, false)
             .map_err(store_error)?
@@ -968,8 +1134,11 @@ pub async fn archive_all_runs(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
-    let archived = queries::archive_all_finished_autonomous_agent_runs(&conn, &auth.org_id)
-        .map_err(store_error)?;
+    let mut archived=0usize;
+    for run in queries::list_autonomous_agent_runs(&conn,&auth.org_id,None).map_err(store_error)? {
+        if require_run_project_permission(&conn,&auth,&run.id,"autonomous_agent:update").is_ok()
+            && queries::set_autonomous_agent_run_archived(&conn,&auth.org_id,&run.id,true).map_err(store_error)?.is_some(){archived+=1;}
+    }
     Ok(Json(serde_json::json!({ "archived": archived })))
 }
 
@@ -981,6 +1150,7 @@ pub async fn list_run_events(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
     if queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
         .map_err(store_error)?
         .is_none()
@@ -1012,6 +1182,7 @@ pub async fn list_run_transcript(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_run_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
     if queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
         .map_err(store_error)?
         .is_none()
@@ -1038,9 +1209,32 @@ pub async fn list_findings(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
-    Ok(Json(
-        queries::list_autonomous_agent_findings(&conn, &auth.org_id).map_err(store_error)?,
-    ))
+    let findings=queries::list_autonomous_agent_findings(&conn,&auth.org_id).map_err(store_error)?;
+    Ok(Json(findings.into_iter().filter(|finding|require_run_project_permission(&conn,&auth,&finding.run_id,"autonomous_agent:read").is_ok()).collect()))
+}
+
+pub async fn list_finding_issue_repositories(
+    State(store):State<SqliteStore>,Extension(auth):Extension<AuthContext>,Path(id):Path<String>,
+)->ApiResult<Json<Vec<String>>>{
+    let (run_id,revision_id,config)= {
+        let db=store.conn();let conn=db.lock().map_err(|_|lock_error())?;
+        require_explicit_permission(&conn,&auth,None,"autonomous_agent:run")?;
+        require_finding_project_permission(&conn,&auth,&id,"autonomous_agent:run")?;
+        let finding=queries::get_autonomous_agent_finding(&conn,&auth.org_id,&id).map_err(store_error)?.ok_or_else(not_found)?;
+        let run_id=finding.run_id.clone();
+        let origin:Option<(String,String)>=conn.query_row("SELECT revision.id,revision.config_json FROM autonomous_agent_runs run JOIN autonomous_agent_revisions revision ON revision.id=run.revision_id WHERE run.org_id=?1 AND run.id=?2",rusqlite::params![auth.org_id,run_id],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|error|store_error(error.into()))?;
+        let (revision,raw_config)=origin.ok_or_else(not_found)?;
+        let config:serde_json::Value=serde_json::from_str(&raw_config).map_err(|error|store_error(error.into()))?;
+        (run_id,revision,config)
+    };
+    let Some(project)=config.get("project_id").and_then(|value|value.as_str()) else {return Ok(Json(Vec::new()))};
+    let grants={let db=store.conn();let conn=db.lock().map_err(|_|lock_error())?;crate::db::qa_coverage::snapshot_repositories(&conn,&auth.org_id,project,&run_id,true).map_err(store_error)?};
+    let token=crate::automation::worker::server_gh_token().await.map_err(|_|error(StatusCode::SERVICE_UNAVAILABLE,"github_unavailable","Could not verify repository access."))?;
+    let mut authorized=Vec::new();
+    for grant in grants {
+        if crate::automation::worker::validate_project_qa_repository(&store,&auth.org_id,project,&run_id,&revision_id,&grant.repository,&token,true).await.is_ok(){authorized.push(grant.repository);}
+    }
+    Ok(Json(authorized))
 }
 
 pub async fn patch_finding(
@@ -1052,6 +1246,7 @@ pub async fn patch_finding(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    require_finding_project_permission(&conn,&auth,&id,"autonomous_agent:update")?;
     Ok(Json(
         queries::patch_autonomous_agent_finding(&conn, &auth.org_id, &id, &req.status)
             .map_err(store_error)?
@@ -1078,6 +1273,7 @@ pub async fn create_finding_issue(
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_error())?;
         require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+        require_finding_project_permission(&conn,&auth,&id,"autonomous_agent:run")?;
     }
     let repository = body.and_then(|Json(value)| value.repository);
     let issue =
@@ -1087,6 +1283,8 @@ pub async fn create_finding_issue(
                 let message = err.to_string();
                 if message.contains("finding_not_found") {
                     not_found()
+                } else if message.contains("project_repository_authorization_missing") || message.contains("project_repository_snapshot_required") || message.contains("repository_must_match_finding_origin") {
+                    error(StatusCode::CONFLICT, "project_repository_authorization_missing", "This project-scoped finding has no authorized repository snapshot; manual publication is disabled.")
                 } else if message.contains("repository_required") {
                     error(
                         StatusCode::BAD_REQUEST,
@@ -1107,6 +1305,9 @@ pub async fn archive_all_findings(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    for finding in queries::list_autonomous_agent_findings(&conn,&auth.org_id).map_err(store_error)? {
+        require_run_project_permission(&conn,&auth,&finding.run_id,"autonomous_agent:update")?;
+    }
     let archived =
         queries::archive_all_autonomous_agent_findings(&conn, &auth.org_id).map_err(store_error)?;
     Ok(Json(serde_json::json!({ "archived": archived })))
@@ -1488,9 +1689,8 @@ pub async fn list_deliveries(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
-    Ok(Json(
-        queries::list_autonomous_agent_deliveries(&conn, &auth.org_id).map_err(store_error)?,
-    ))
+    let deliveries=queries::list_autonomous_agent_deliveries(&conn,&auth.org_id).map_err(store_error)?;
+    Ok(Json(deliveries.into_iter().filter(|delivery|require_run_project_permission(&conn,&auth,&delivery.run_id,"autonomous_agent:read").is_ok()).collect()))
 }
 
 pub async fn retry_delivery(
@@ -1501,6 +1701,9 @@ pub async fn retry_delivery(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+    let run_id: Option<String>=conn.query_row("SELECT run_id FROM autonomous_agent_deliveries WHERE org_id=?1 AND id=?2",rusqlite::params![auth.org_id,id],|row|row.get(0)).optional().map_err(|error|store_error(error.into()))?;
+    let run_id=run_id.ok_or_else(not_found)?;
+    require_run_project_permission(&conn,&auth,&run_id,"autonomous_agent:run")?;
     Ok(Json(
         queries::retry_autonomous_agent_delivery(&conn, &auth.org_id, &id)
             .map_err(store_error)?
@@ -1516,6 +1719,7 @@ pub async fn list_targets(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    require_definition_project_permission(&conn,&auth,&id,"autonomous_agent:read")?;
     if queries::get_autonomous_agent_definition(&conn, &auth.org_id, &id)
         .map_err(store_error)?
         .is_none()
@@ -1536,6 +1740,7 @@ pub async fn put_target(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    require_definition_project_permission(&conn,&auth,&id,"autonomous_agent:update")?;
     let value = queries::put_autonomous_agent_target(&conn, &auth.org_id, &id, &req)
         .map_err(store_error)?
         .ok_or_else(not_found)?;
@@ -1593,6 +1798,128 @@ mod tests {
         let (org, user, _) =
             queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         (conn, org.id, user.id)
+    }
+
+    #[tokio::test]
+    async fn transcript_redaction_collision_is_not_persisted_or_returned_over_http() {
+        use axum::{body::Body,http::{Request,StatusCode},routing::get,Extension,Router};
+        use tower::ServiceExt;
+
+        let (conn, org_id, user_id) = fixture();
+        let project = queries::create_project(&conn, &org_id, "Transcript project", None, None).unwrap();
+        let mut req = request();
+        req.config["project_id"] = serde_json::json!(project.id);
+        let agent = queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &req).unwrap();
+        queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &agent.definition.id).unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &agent.definition.id, "enabled").unwrap();
+        let run = queries::enqueue_autonomous_agent_run(&conn, &org_id, &agent.definition.id, "manual", "transcript-redaction", None, None).unwrap().unwrap();
+        conn.execute("INSERT INTO project_members(id,project_id,user_id,role,created_at) VALUES('transcript-member',?1,?2,'admin',datetime('now'))", rusqlite::params![project.id, user_id]).unwrap();
+        let auth = AuthContext { org_id: org_id.clone(), user_id, role: crate::models::types::UserRole::Standard(crate::models::types::Role::Admin) };
+        let store = crate::store::sqlite::SqliteStore::new(conn);
+        let canary = "pod-only-canary-1028";
+        let line = br#"[{"[REDACTED]":"prior","\u0070od-only-canary-1028":"collision"},"pod-only-canary-1028"]"#;
+        let mut sequence = 0;
+        crate::automation::worker::record_transcript_line(&store, &org_id, &run.id, &[canary.to_string()], None, &mut sequence, line);
+
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let (verified, persisted): (i64, String) = conn.query_row(
+            "SELECT redaction_verified,payload_json FROM autonomous_agent_run_transcript WHERE run_id=?1",
+            [&run.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(verified, 1);
+        assert!(!persisted.contains(canary));
+        assert!(persisted.contains("transcript event omitted"));
+        drop(conn);
+
+        let app = Router::new().route("/runs/:id/transcript", get(list_run_transcript)).with_state(store);
+        let response = app.layer(Extension(auth)).oneshot(Request::builder().uri(format!("/runs/{}/transcript", run.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body.contains(canary));
+        assert!(body.contains("transcript event omitted"));
+    }
+
+    #[test]
+    fn project_run_and_finding_permissions_resolve_from_origin_ids() {
+        let (conn,org_id,user_id)=fixture();
+        let project=queries::create_project(&conn,&org_id,"Restricted project",None,None).unwrap();
+        let mut req=request();
+        req.config["project_id"]=serde_json::json!(project.id);
+        let agent=queries::create_autonomous_agent_definition(&conn,&org_id,&user_id,&req).unwrap();
+        queries::validate_autonomous_agent_definition(&conn,&org_id,&user_id,&agent.definition.id).unwrap();
+        queries::set_autonomous_agent_status(&conn,&org_id,&agent.definition.id,"enabled").unwrap();
+        let run=queries::enqueue_autonomous_agent_run_as(&conn,&org_id,&agent.definition.id,"manual","project-auth",None,None,Some(&user_id)).unwrap().unwrap();
+        let requested_by:String=conn.query_row("SELECT requested_by FROM autonomous_agent_runs WHERE id=?1",[&run.id],|row|row.get(0)).unwrap();
+        assert_eq!(requested_by,user_id);
+        let finding=queries::upsert_redacted_autonomous_agent_finding(&conn,&org_id,&agent.definition.id,&run.id,"api-bug","API bug","low","Observed issue",&serde_json::json!({})).unwrap();
+        let outsider=AuthContext{org_id:org_id.clone(),user_id:"outsider-user".into(),role:crate::models::types::UserRole::Standard(crate::models::types::Role::Member)};
+        assert!(require_run_project_permission(&conn,&outsider,&run.id,"autonomous_agent:run").is_err());
+        assert!(require_finding_project_permission(&conn,&outsider,&finding.id,"autonomous_agent:run").is_err());
+        assert!(require_definition_project_permission(&conn,&outsider,&agent.definition.id,"autonomous_agent:read").is_err());
+        assert!(require_definition_project_permission(&conn,&outsider,&agent.definition.id,"autonomous_agent:update").is_err());
+        conn.execute("INSERT INTO project_members(id,project_id,user_id,role,created_at) VALUES('grant-owner',?1,?2,'admin',datetime('now'))",rusqlite::params![project.id,user_id]).unwrap();
+        let owner=AuthContext{org_id:org_id.clone(),user_id,role:crate::models::types::UserRole::Standard(crate::models::types::Role::Admin)};
+        assert!(require_run_project_permission(&conn,&owner,&run.id,"autonomous_agent:run").is_ok());
+        assert!(require_finding_project_permission(&conn,&owner,&finding.id,"autonomous_agent:run").is_ok());
+        assert!(require_definition_project_permission(&conn,&owner,&agent.definition.id,"autonomous_agent:read").is_ok());
+        assert!(require_definition_project_permission(&conn,&owner,&agent.definition.id,"autonomous_agent:update").is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_http_read_allows_project_member_and_denies_outsider() {
+        use axum::{body::Body,http::{Request,StatusCode},routing::get,Extension,Router};
+        use tower::ServiceExt;
+        let (conn,org_id,user_id)=fixture();
+        let project=queries::create_project(&conn,&org_id,"HTTP restricted project",None,None).unwrap();
+        let mut req=request();req.config["project_id"]=serde_json::json!(project.id);
+        let agent=queries::create_autonomous_agent_definition(&conn,&org_id,&user_id,&req).unwrap();
+        queries::validate_autonomous_agent_definition(&conn,&org_id,&user_id,&agent.definition.id).unwrap();
+        queries::set_autonomous_agent_status(&conn,&org_id,&agent.definition.id,"enabled").unwrap();
+        let run=queries::enqueue_autonomous_agent_run(&conn,&org_id,&agent.definition.id,"manual","http-project-auth",None,None).unwrap().unwrap();
+        queries::upsert_redacted_autonomous_agent_finding(&conn,&org_id,&agent.definition.id,&run.id,"api-bug","API bug","low","Observed issue",&serde_json::json!({})).unwrap();
+        conn.execute("INSERT INTO project_members(id,project_id,user_id,role,created_at) VALUES('http-member',?1,?2,'admin',datetime('now'))",rusqlite::params![project.id,user_id]).unwrap();
+        let member=AuthContext{org_id:org_id.clone(),user_id,role:crate::models::types::UserRole::Standard(crate::models::types::Role::Admin)};
+        let outsider=AuthContext{org_id:org_id.clone(),user_id:"http-outsider".into(),role:crate::models::types::UserRole::Standard(crate::models::types::Role::Admin)};
+        conn.execute("UPDATE autonomous_agent_runs SET status='succeeded' WHERE id=?1",[&run.id]).unwrap();
+        let secret="pod-only-canary-1028";
+        let checkpoint=serde_json::json!({"key":"nested-secret","description":"Nested secret probe","status":"failed","evidence":[r#"{"echo":"\u0070od-only-canary-1028"}"#]});
+        crate::db::qa_coverage::persist_checkpoint(&conn,&org_id,&agent.definition.id,&run.id,"attempt-secret",&req.config,&checkpoint,&[secret.to_string()]).unwrap();
+        let store=crate::store::sqlite::SqliteStore::new(conn);
+        let app=Router::new().route("/runs/:id",get(get_run)).route("/runs/:id/qa-coverage",get(list_run_qa_coverage)).route("/agents/:id",get(get_definition)).route("/agents/:id/targets",get(list_targets).put(put_target)).route("/agents/:id/qa-coverage",get(list_agent_qa_coverage)).route("/projects/:project_id/qa-repositories",get(list_qa_repository_grants)).route("/archive-all",axum::routing::post(archive_all_runs)).with_state(store.clone());
+        let response=app.clone().layer(Extension(member.clone())).oneshot(Request::builder().uri(format!("/runs/{}",run.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let response=app.clone().layer(Extension(member.clone())).oneshot(Request::builder().uri(format!("/runs/{}/qa-coverage",run.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let payload=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();
+        let payload=String::from_utf8(payload.to_vec()).unwrap();
+        assert!(!payload.contains(secret));
+        assert!(payload.contains("[REDACTED]"));
+        let response=app.clone().layer(Extension(member.clone())).oneshot(Request::builder().uri(format!("/agents/{}",agent.definition.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let response=app.clone().layer(Extension(member.clone())).oneshot(Request::builder().uri(format!("/agents/{}/targets",agent.definition.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let response=app.clone().layer(Extension(member.clone())).oneshot(Request::builder().uri(format!("/projects/{}/qa-repositories",project.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let response=app.clone().layer(Extension(member)).oneshot(Request::builder().uri(format!("/agents/{}/qa-coverage?project_id={}",agent.definition.id,project.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let payload=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();
+        assert!(serde_json::from_slice::<serde_json::Value>(&payload).unwrap()["inventory_summary"].is_array());
+        let response=app.clone().layer(Extension(outsider.clone())).oneshot(Request::builder().uri(format!("/runs/{}",run.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        let response=app.clone().layer(Extension(outsider.clone())).oneshot(Request::builder().uri(format!("/agents/{}",agent.definition.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        let response=app.clone().layer(Extension(outsider.clone())).oneshot(Request::builder().uri(format!("/agents/{}/targets",agent.definition.id)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        let response=app.clone().layer(Extension(outsider.clone())).oneshot(Request::builder().method("PUT").uri(format!("/agents/{}/targets",agent.definition.id)).header("content-type","application/json").body(Body::from(r#"{"kind":"web_application","name":"unauthorized","config":{"url":"https://example.test"}}"#)).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        let response=app.layer(Extension(outsider)).oneshot(Request::builder().method("POST").uri("/archive-all").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let db=store.conn();let conn=db.lock().unwrap();
+        let archived=queries::get_autonomous_agent_run(&conn,&org_id,&run.id).unwrap().unwrap().archived_at;
+        assert!(archived.is_none());
     }
 
     fn request() -> CreateAutonomousAgentRequest {
@@ -1755,6 +2082,28 @@ mod tests {
     /// The whole safety of auto-publish rests on exactly one caller being allowed
     /// to send. Creating the delivery row is NOT that guarantee — every concurrent
     /// caller reads the same `pending` — so the claim is tested directly.
+    #[test]
+    fn github_issue_delivery_claim_is_exclusive_reclaimable_and_cleared_on_completion() {
+        let (conn,org_id,user_id)=fixture();
+        let agent=queries::create_autonomous_agent_definition(&conn,&org_id,&user_id,&request()).unwrap();
+        queries::validate_autonomous_agent_definition(&conn,&org_id,&user_id,&agent.definition.id).unwrap();
+        queries::set_autonomous_agent_status(&conn,&org_id,&agent.definition.id,"enabled").unwrap();
+        let run=queries::enqueue_autonomous_agent_run(&conn,&org_id,&agent.definition.id,"manual","github-claim",None,None).unwrap().unwrap();
+        let finding=queries::upsert_redacted_autonomous_agent_finding(&conn,&org_id,&agent.definition.id,&run.id,"api-bug","API bug","low","Observed issue",&serde_json::json!({})).unwrap();
+        let delivery=queries::create_autonomous_agent_delivery(&conn,&org_id,&run.id,Some(&finding.id),"github_issue","fingerprint:github_issue:acme/api").unwrap();
+        let stale=queries::claim_github_issue_delivery(&conn,&org_id,&delivery.id).unwrap().unwrap();
+        assert!(queries::claim_github_issue_delivery(&conn,&org_id,&delivery.id).unwrap().is_none());
+        assert!(queries::next_pending_autonomous_delivery(&conn).unwrap().is_none());
+        conn.execute("UPDATE autonomous_agent_deliveries SET claim_expires_at=datetime('now','-1 second') WHERE id=?1",[&delivery.id]).unwrap();
+        assert!(queries::next_pending_autonomous_delivery(&conn).unwrap().is_some());
+        let current=queries::claim_github_issue_delivery(&conn,&org_id,&delivery.id).unwrap().unwrap();
+        assert!(!queries::renew_github_issue_delivery_claim(&conn,&org_id,&delivery.id,&stale).unwrap());
+        assert!(!queries::complete_github_issue_delivery(&conn,&org_id,&delivery.id,&stale,Some("old"),None).unwrap());
+        assert!(queries::renew_github_issue_delivery_claim(&conn,&org_id,&delivery.id,&current).unwrap());
+        assert!(queries::complete_github_issue_delivery(&conn,&org_id,&delivery.id,&current,Some("42"),Some("https://github.com/acme/api/issues/42")).unwrap());
+        assert!(queries::claim_github_issue_delivery(&conn,&org_id,&delivery.id).unwrap().is_none());
+    }
+
     #[test]
     fn only_one_caller_can_claim_a_linkedin_delivery() {
         let (conn, org_id, _user_id) = fixture();
@@ -2547,6 +2896,7 @@ mod tests {
         let first = queries::claim_next_autonomous_agent_run(&conn, "worker-a", 60)
             .unwrap()
             .unwrap();
+        crate::db::qa_coverage::persist_batch_plan(&conn,&org_id,&created.definition.id,&first.run.id,&first.attempt_id,&first.config,&[serde_json::json!({"key":"login-auth","description":"check login","reason":"pending when worker dies"})]).unwrap();
         conn.execute(
             "UPDATE autonomous_agent_leases SET expires_at='2000-01-01 00:00:00' WHERE run_id=?1",
             [&first.run.id],
@@ -2557,6 +2907,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.run.id, second.run.id);
         assert_ne!(first.claim_token, second.claim_token);
+        assert_eq!(conn.query_row("SELECT status FROM qa_batch_plans WHERE run_id=?1 AND attempt_id=?2",rusqlite::params![first.run.id,first.attempt_id],|row|row.get::<_,String>(0)).unwrap(),"not_run");
     }
 
     #[test]
@@ -2749,6 +3100,31 @@ mod tests {
     }
 
     #[test]
+    fn finding_reads_mutations_and_retries_quarantine_legacy_rows() {
+        let (conn, org_id, user_id) = fixture();
+        let created = queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &request()).unwrap();
+        queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &created.definition.id).unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &created.definition.id, "enabled").unwrap();
+        let run = queries::enqueue_autonomous_agent_run(&conn, &org_id, &created.definition.id, "manual", "redaction", None, None).unwrap().unwrap();
+        let legacy = queries::upsert_autonomous_agent_finding(&conn, &org_id, &created.definition.id, &run.id, "legacy", "Canary", "high", "ROTATED_CANARY", &serde_json::json!({"evidence":"ROTATED_CANARY"})).unwrap();
+        assert!(queries::get_autonomous_agent_finding(&conn, &org_id, &legacy.id).unwrap().is_none());
+        assert!(queries::patch_autonomous_agent_finding(&conn, &org_id, &legacy.id, "resolved").unwrap().is_none());
+        conn.execute("INSERT INTO autonomous_agent_deliveries(id,org_id,run_id,finding_id,channel,status,idempotency_key) VALUES('legacy-delivery',?1,?2,?3,'github_issue','failed','legacy-key')", rusqlite::params![org_id,run.id,legacy.id]).unwrap();
+        assert!(queries::retry_autonomous_agent_delivery(&conn, &org_id, "legacy-delivery").unwrap().is_none());
+        let delivery_status: String = conn.query_row("SELECT status FROM autonomous_agent_deliveries WHERE id='legacy-delivery'", [], |row| row.get(0)).unwrap();
+        assert_eq!(delivery_status, "failed");
+        assert!(queries::list_autonomous_agent_findings(&conn, &org_id).unwrap().is_empty());
+        let safe = queries::upsert_redacted_autonomous_agent_finding(&conn, &org_id, &created.definition.id, &run.id, "safe", "Safe", "low", "[REDACTED]", &serde_json::json!({"evidence":"[REDACTED]"})).unwrap();
+        assert!(queries::get_autonomous_agent_finding(&conn, &org_id, &safe.id).unwrap().is_some());
+        assert_eq!(queries::list_autonomous_agent_findings(&conn, &org_id).unwrap().len(), 1);
+        queries::append_autonomous_agent_event(&conn, &org_id, &run.id, "legacy", &serde_json::json!({"canary":"ROTATED_CANARY"})).unwrap();
+        queries::append_redacted_autonomous_agent_event(&conn, &org_id, &run.id, "run.started", &serde_json::json!({"worker":"local"})).unwrap();
+        let events = queries::list_autonomous_agent_events(&conn, &org_id, &run.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "run.started");
+    }
+
+    #[test]
     fn retention_removes_old_terminal_runs_and_resolved_findings() {
         let (conn, org_id, user_id) = fixture();
         let created =
@@ -2774,7 +3150,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let finding = queries::upsert_autonomous_agent_finding(
+        let finding = queries::upsert_redacted_autonomous_agent_finding(
             &conn,
             &org_id,
             &created.definition.id,

@@ -111,6 +111,7 @@ interface FormState {
   testAdapter: 'playwright' | 'allowlisted_command'
   testCommand: string
   qaInstructions: string
+  qaProjectId: string
   customInstructions: string
   // lead generation
   product: string
@@ -200,6 +201,7 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     testAdapter: 'playwright',
     testCommand: '',
     qaInstructions: '',
+    qaProjectId: '',
     customInstructions: '',
     product: '',
     icp: '',
@@ -338,6 +340,7 @@ export function buildConfig(state: FormState): Record<string, unknown> {
     if (state.outputSlack) outputs.push('slack')
     if (state.outputGithubIssue) outputs.push('github_issue')
     config = { outputs, test_adapter: state.testAdapter }
+    if (state.qaProjectId) config.project_id = state.qaProjectId
     if (state.testAdapter === 'allowlisted_command') {
       // Deterministic mode: the worker runs this argv as a subprocess.
       config.test_commands = [csvArgv(state.testCommand)]
@@ -347,6 +350,7 @@ export function buildConfig(state: FormState): Record<string, unknown> {
       config.qa_instructions = state.qaInstructions.trim()
     }
     if (state.repository.trim()) config.repository = state.repository.trim()
+    if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (state.assignIssuesToSelf) config.assign_issues_to_self = true
   } else if (state.template === 'github_issue_resolver') {
     config = { github_auth: 'server_gh_cli', base_branch: state.baseBranch.trim() || 'main' }
@@ -529,6 +533,7 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
       config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
     testCommand: firstCommand,
     qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
+    qaProjectId: typeof config.project_id === 'string' ? config.project_id : '',
     customInstructions:
       typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
     product: typeof config.product === 'string' ? config.product : '',
@@ -610,6 +615,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
   })
 
   const [state, setState] = useState<FormState>(() => defaultState(templates[0]?.key ?? 'qa'))
+  const projects = useQuery({ queryKey: ['wizard-projects'], queryFn: () => client.listProjects(), enabled: open && state.template === 'qa' })
   const [stepIndex, setStepIndex] = useState(0)
   const [error, setError] = useState('')
 
@@ -823,6 +829,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
             set={set}
             template={state.template}
             extraError={Boolean(extraError)}
+            projects={projects.data ?? []}
             config={buildConfig(state)}
           />
         )}
@@ -906,7 +913,7 @@ function validateStep(id: StepId, state: FormState): boolean {
       )
         return false
       if (state.template === 'qa')
-        return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
+        return state.testAdapter === 'playwright' || (csvArgv(state.testCommand).length > 0 && Boolean(state.repository.trim()))
       if (state.template === 'lead_generation')
         return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
@@ -1149,14 +1156,18 @@ function StepConfig({
   template,
   extraError,
   config,
+  projects,
 }: {
   state: FormState
   set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
   template: AutonomousAgentTemplateKey
   extraError: boolean
   config: Record<string, unknown>
+  projects: Project[]
 }) {
   const client = useMemo(() => createClient(), [])
+  const qaRepositoriesQuery = useQuery({ queryKey:['wizard-qa-repositories',state.qaProjectId],queryFn:()=>client.listQaProjectRepositories(state.qaProjectId),enabled:template==='qa'&&Boolean(state.qaProjectId) })
+  const eligibleQaRepositories = [...new Set((qaRepositoriesQuery.data?.grants ?? []).filter(grant=>grant.can_read&&qaRepositoriesQuery.data?.candidates.includes(grant.repository)).map(grant=>grant.repository))].sort()
   const judgesQuery = useQuery({
     queryKey: ['wizard-agents'],
     queryFn: () => client.listAutonomousAgents(),
@@ -1336,17 +1347,26 @@ function StepConfig({
               />
             </Field>
           )}
-          <Field
-            label="Repository to check out (owner/repo)"
-            hint="Optional. Needed if the agent should inspect or run the codebase; the target URL is enough for pure browser QA."
-          >
-            <Input
-              inputSize="sm"
-              value={state.repository}
-              onChange={(event) => set('repository', event.target.value)}
-              placeholder="acme/web"
-            />
+          <Field label="Project" hint="Optional project scope for coverage history. The web application target above remains the URL the agent tests.">
+            <NativeSelect value={state.qaProjectId} onChange={value => set('qaProjectId', value)}>
+              <option value="">Select a project…</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </NativeSelect>
           </Field>
+          {state.testAdapter === 'allowlisted_command' ? (
+            <Field label="Repository to check out" hint="Choose a repository explicitly granted to this project; the command runs in this checkout.">
+              <NativeSelect value={state.repository} onChange={value=>set('repository',value)}><option value="">Select an eligible repository…</option>{eligibleQaRepositories.map(repository=><option key={repository} value={repository}>{repository}</option>)}</NativeSelect>
+            </Field>
+          ) : (
+            <Field label="Repository to check out (owner/repo)" hint="Optional primary repository. The target URL is enough for pure browser QA.">
+              <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
+            </Field>
+          )}
+          {state.qaProjectId && <fieldset className="block">
+            <legend className="text-xs font-medium text-text-secondary">Authorized context repositories</legend>
+            <p className="mt-1 text-[11px] text-text-tertiary">Select project-linked repositories granted read access. They are cloned read-only for diagnosis.</p>
+            {eligibleQaRepositories.length ? <div className="mt-2 space-y-1">{eligibleQaRepositories.map(repository=>{const selected=csv(state.contextRepos).includes(repository);return <label key={repository} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selected} onChange={event=>{const next=new Set(csv(state.contextRepos));event.target.checked?next.add(repository):next.delete(repository);set('contextRepos',[...next].join(', '))}} />{repository}</label>})}</div> : <p className="mt-2 text-xs text-text-tertiary">No project-linked repositories have an active read grant.</p>}
+          </fieldset>}
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">

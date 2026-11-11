@@ -38,7 +38,7 @@ fn evidence(fingerprint: &str, location: &str) -> serde_json::Value {
 
 impl Fixture {
     fn detect(&self, run: usize, fingerprint: &str, title: &str, location: &str) -> AutonomousAgentFinding {
-        upsert_autonomous_agent_finding(&self.conn, &self.org, &self.definition, &self.runs[run], fingerprint, title, "high", "Latest evidence", &evidence(fingerprint, location)).unwrap()
+        upsert_redacted_autonomous_agent_finding(&self.conn, &self.org, &self.definition, &self.runs[run], fingerprint, title, "high", "Latest evidence", &evidence(fingerprint, location)).unwrap()
     }
 }
 
@@ -78,7 +78,7 @@ fn does_not_merge_other_locations_modules_or_different_symptoms() {
     assert_ne!(f.detect(1, "another-symptom", "[Providers] Import button is disabled", LOCATION).id, first.id);
     let mut other_module = evidence("other-module", LOCATION);
     other_module["module"] = serde_json::json!("Products");
-    let other = upsert_autonomous_agent_finding(&f.conn, &f.org, &f.definition, &f.runs[1], "other-module", TITLE, "high", "Different module", &other_module).unwrap();
+    let other = upsert_redacted_autonomous_agent_finding(&f.conn, &f.org, &f.definition, &f.runs[1], "other-module", TITLE, "high", "Different module", &other_module).unwrap();
     assert_ne!(other.id, first.id);
 }
 
@@ -132,7 +132,7 @@ fn concurrent_connections_cannot_insert_two_open_rows_for_the_same_qa_defect() {
             let conn = connect(path.to_str().unwrap()).unwrap();
             conn.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
             barrier.wait();
-            upsert_autonomous_agent_finding(&conn, &org, &definition, &run, fp, TITLE, "high", "Evidence", &evidence(fp, LOCATION)).unwrap().id
+            upsert_redacted_autonomous_agent_finding(&conn, &org, &definition, &run, fp, TITLE, "high", "Evidence", &evidence(fp, LOCATION)).unwrap().id
         })
     }).collect();
     let ids: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();

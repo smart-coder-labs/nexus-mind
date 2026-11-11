@@ -228,6 +228,7 @@ async fn replay(
             verification: &[],
             receipts: &unused_receipts,
             qa: None,
+            qa_checkpoint: None,
             slot: "main",
             writes: None,
         };
