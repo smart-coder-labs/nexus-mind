@@ -141,7 +141,7 @@ describe('connected Factory operation', () => {
     const user = userEvent.setup()
     await user.selectOptions(await screen.findByLabelText('Workflow destino'), 'd')
     await user.selectOptions(screen.getByLabelText('Aplicación'), 'github')
-    await user.selectOptions(screen.getByLabelText('Repositorio de GitHub'), 'acme/web')
+    await user.click(screen.getByRole('checkbox', { name: 'acme/web' }))
     await user.selectOptions(screen.getByLabelText('Conector dedicado'), 'connector')
     await user.type(
       screen.getByLabelText('Labels adicionales (separadas por coma)'),
@@ -153,7 +153,8 @@ describe('connected Factory operation', () => {
         definition_id: 'd',
         kind: 'github',
         connector_id: 'connector',
-        config: { repository: 'acme/web', labels: ['bug', 'frontend'] },
+        config: { repositories: ['acme/web'], labels: ['bug', 'frontend'] },
+        enabled: false,
       }),
     )
     expect(screen.getByText(/Solo issues abiertos con label factory/)).toBeInTheDocument()

@@ -11,6 +11,7 @@ use crate::{
 use anyhow::{bail, Result};
 use rusqlite::params;
 use serde::Deserialize;
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 #[derive(Deserialize)]
@@ -20,21 +21,79 @@ pub struct Source {
     pub kind: String,
     pub connector_id: String,
     pub config: Value,
+    #[serde(default)]
+    pub enabled: bool,
+}
+/// Which repositories one GitHub intake reads. `Selected` is an explicit list (the
+/// legacy single `repository` maps to it); `Workspace` and `Organization` are
+/// resolved against the confirmed workspace on every poll, so repositories added
+/// later are picked up without editing the intake.
+#[derive(Deserialize, Default, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+enum GithubScope {
+    #[default]
+    Selected,
+    Workspace,
+    Organization,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GithubConfig {
-    repository: String,
+    #[serde(default)]
+    scope: GithubScope,
+    #[serde(default)]
+    repository: Option<String>,
+    #[serde(default)]
+    repositories: Vec<String>,
+    #[serde(default)]
+    organization: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
     #[serde(default)]
     include_assigned: bool,
 }
+const MAX_GITHUB_INTAKE_REPOSITORIES: usize = 100;
 fn github_config(config: &Value) -> Result<GithubConfig> {
     let mut value: GithubConfig = serde_json::from_value(config.clone())
         .map_err(|_| anyhow::anyhow!("invalid_github_intake_config"))?;
-    crate::automation::connectors::validate_repository(&value.repository)?;
-    value.repository = value.repository.to_ascii_lowercase();
+    if let Some(repository) = value.repository.take() {
+        if !value.repositories.is_empty() || value.scope != GithubScope::Selected {
+            bail!("invalid_github_intake_config")
+        }
+        value.repositories.push(repository);
+    }
+    match value.scope {
+        GithubScope::Selected => {
+            if value.repositories.is_empty()
+                || value.repositories.len() > MAX_GITHUB_INTAKE_REPOSITORIES
+                || value.organization.is_some()
+            {
+                bail!("invalid_github_intake_config")
+            }
+        }
+        GithubScope::Workspace => {
+            if !value.repositories.is_empty() || value.organization.is_some() {
+                bail!("invalid_github_intake_config")
+            }
+        }
+        GithubScope::Organization => {
+            let owner = value.organization.as_deref().unwrap_or_default();
+            if !value.repositories.is_empty()
+                || owner.is_empty()
+                || owner.len() > 39
+                || !owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
+                bail!("invalid_github_intake_config")
+            }
+            value.organization = Some(owner.to_ascii_lowercase());
+        }
+    }
+    for repository in &mut value.repositories {
+        crate::automation::connectors::validate_repository(repository)?;
+        *repository = repository.to_ascii_lowercase();
+    }
+    value.repositories.sort();
+    value.repositories.dedup();
     if value.labels.len() > 20
         || value
             .labels
@@ -45,26 +104,75 @@ fn github_config(config: &Value) -> Result<GithubConfig> {
     }
     Ok(value)
 }
-fn github_target(config: &Value, workspace: &Value) -> Result<String> {
-    let repository = github_config(config)?.repository;
-    let permitted = workspace["repositories"].as_array().is_some_and(|repos| {
-        repos.iter().any(|r| {
-            r["remote"]
-                .as_str()
-                .and_then(|s| crate::factory::workflow_publication::github_repository(s).ok())
-                .is_some_and(|s| s.eq_ignore_ascii_case(&repository))
+/// The repositories (lowercase `owner/name`) and confirmed branches this intake reads
+/// right now. Every target must be a confirmed workspace repository.
+fn github_targets(config: &Value, workspace: &Value) -> Result<Vec<(String, String)>> {
+    let settings = github_config(config)?;
+    let confirmed: Vec<(String, Option<String>)> = workspace["repositories"]
+        .as_array()
+        .map(|repos| {
+            repos
+                .iter()
+                .filter_map(|r| {
+                    let name = crate::factory::workflow_publication::github_repository(
+                        r["remote"].as_str()?,
+                    )
+                    .ok()?
+                    .to_ascii_lowercase();
+                    Some((name, r["branch"].as_str().map(str::to_string)))
+                })
+                .collect()
         })
-    });
-    if !permitted {
+        .unwrap_or_default();
+    let selected: Vec<&(String, Option<String>)> = match settings.scope {
+        GithubScope::Selected => settings
+            .repositories
+            .iter()
+            .map(|wanted| {
+                confirmed
+                    .iter()
+                    .find(|(name, _)| name == wanted)
+                    .ok_or_else(|| anyhow::anyhow!("github_intake_repository_not_in_workspace"))
+            })
+            .collect::<Result<_>>()?,
+        GithubScope::Workspace => confirmed.iter().collect(),
+        GithubScope::Organization => {
+            let owner = settings.organization.unwrap_or_default();
+            confirmed
+                .iter()
+                .filter(|(name, _)| name.split('/').next() == Some(owner.as_str()))
+                .collect()
+        }
+    };
+    if selected.is_empty() {
         bail!("github_intake_repository_not_in_workspace")
     }
-    Ok(repository)
+    if selected.len() > MAX_GITHUB_INTAKE_REPOSITORIES {
+        bail!("github_issue_limit_exceeded")
+    }
+    let mut targets: Vec<(String, String)> = selected
+        .into_iter()
+        .map(|(name, branch)| {
+            branch
+                .clone()
+                .map(|branch| (name.clone(), branch))
+                .ok_or_else(|| anyhow::anyhow!("source_branch_not_confirmed"))
+        })
+        .collect::<Result<_>>()?;
+    targets.sort();
+    targets.dedup();
+    Ok(targets)
 }
-fn github_tasks(issues: &[Value], config: &Value) -> Result<Vec<(String, Value)>> {
+fn github_tasks(
+    issues: &[Value],
+    config: &Value,
+    repository: &str,
+    base_ref: &str,
+) -> Result<Vec<(String, Value)>> {
     let settings = github_config(config)?;
     let target = IntakeTarget {
-        repository: settings.repository,
-        base_ref: "main".into(),
+        repository: repository.to_ascii_lowercase(),
+        base_ref: base_ref.into(),
         privacy_class: PrivacyClass::Internal,
     };
     let mut tasks = Vec::new();
@@ -125,6 +233,13 @@ fn connector(
     kind: &str,
     config: &Value,
 ) -> Result<String> {
+    if kind == "github" && id == "server_gh_cli" {
+        if !crate::factory::workflow_publication::backend_account_enabled(org) {
+            bail!("backend_github_not_authorized")
+        }
+        github_config(config)?;
+        return Ok(id.to_string());
+    }
     let (connector, secret) =
         crate::db::queries::get_autonomous_agent_connector_secret(c, org, id)?
             .ok_or_else(|| anyhow::anyhow!("connector_unavailable"))?;
@@ -140,16 +255,21 @@ fn connector(
         bail!("connector_intake_scope")
     }
     if kind == "github" {
-        let repository = github_config(config)?.repository;
-        if !connector.metadata["repositories"]
-            .as_array()
-            .is_some_and(|repos| {
-                repos.iter().any(|r| {
-                    r.as_str()
-                        .is_some_and(|s| s.eq_ignore_ascii_case(&repository))
+        // A dedicated connector is repository-scoped: it may only serve an explicit
+        // list inside its allowlist. Workspace/organization scopes need the backend
+        // account, whose reach is bounded by the confirmed workspace instead.
+        let settings = github_config(config)?;
+        let allowed = |repository: &String| {
+            connector.metadata["repositories"]
+                .as_array()
+                .is_some_and(|repos| {
+                    repos.iter().any(|r| {
+                        r.as_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(repository))
+                    })
                 })
-            })
-        {
+        };
+        if settings.scope != GithubScope::Selected || !settings.repositories.iter().all(allowed) {
             bail!("connector_intake_scope")
         }
     }
@@ -180,12 +300,19 @@ pub fn create(c: &rusqlite::Connection, org: &str, user: &str, b: &Source) -> Re
             params![b.definition_id, org],
             |r| r.get(0),
         )?;
-        github_target(&b.config, &workflows::workspace_by_id(c, org, &workspace)?)?;
+        github_targets(&b.config, &workflows::workspace_by_id(c, org, &workspace)?)?;
     }
     let id = uuid::Uuid::new_v4().to_string();
-    c.execute("INSERT INTO factory_workflow_intakes(id,org_id,definition_id,kind,connector_id,config_json,created_by) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![id,org,b.definition_id,b.kind,b.connector_id,b.config.to_string(),user])?;
-    Ok(json!({"id":id}))
+    c.execute("INSERT INTO factory_workflow_intakes(id,org_id,definition_id,kind,connector_id,config_json,created_by,enabled) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![id,org,b.definition_id,b.kind,b.connector_id,b.config.to_string(),user,b.enabled])?;
+    Ok(json!({"id":id,"enabled":b.enabled}))
 }
+pub fn set_enabled(c: &rusqlite::Connection, org: &str, id: &str, enabled: bool) -> Result<()> {
+    if c.execute("UPDATE factory_workflow_intakes SET enabled=?3,next_poll=0 WHERE id=?1 AND org_id=?2",params![id,org,enabled])? != 1 {
+        bail!("not_found")
+    }
+    Ok(())
+}
+
 pub fn list(c: &rusqlite::Connection, org: &str) -> Result<Vec<Value>> {
     let mut s=c.prepare("SELECT id,definition_id,kind,connector_id,config_json,enabled,next_poll,last_error FROM factory_workflow_intakes WHERE org_id=?1 ORDER BY id")?;
     let rows=s.query_map([org],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,bool>(5)?,r.get::<_,i64>(6)?,r.get::<_,Option<String>>(7)?)))?.map(|r|{let(id,definition,kind,connector,config,enabled,next,error)=r?;Ok(json!({"id":id,"definition_id":definition,"kind":kind,"connector_id":connector,"config":serde_json::from_str::<Value>(&config)?,"enabled":enabled,"next_poll":next,"last_error":error}))}).collect();
@@ -289,6 +416,8 @@ pub async fn poll(store: &SqliteStore, org: &str, runner: Option<&str>) -> Resul
                 "linear_upstream_rejected",
                 "linear_graphql_failed",
                 "intake_timeout",
+                "backend_github_not_authorized",
+                "source_branch_not_confirmed",
                 "github_issue_limit_exceeded",
                 "github_intake_repository_not_in_workspace",
             ]
@@ -315,7 +444,7 @@ async fn poll_one(
     connector_id: &str,
     config: &Value,
 ) -> Result<u32> {
-    let (token, workspace) = {
+    let (credential, workspace) = {
         let h = store.conn();
         let c = h
             .lock()
@@ -334,6 +463,11 @@ async fn poll_one(
             workflows::workspace_by_id(&c, org, &id)?,
         )
     };
+    let token = if credential == "server_gh_cli" {
+        crate::automation::worker::server_github_token().await?
+    } else {
+        credential.clone()
+    };
     let mut tasks = Vec::new();
     if kind == "linear" {
         for issue in crate::factory::linear::assigned_issues(
@@ -346,14 +480,29 @@ async fn poll_one(
             tasks.push((issue.source_key(), issue.task()));
         }
     } else if kind == "github" {
-        let repository = github_target(config, &workspace)?;
-        let issues = crate::automation::connectors::list_labeled_github_issues_bounded(
-            &token,
-            &repository,
-            intake::INTAKE_LABEL,
-        )
-        .await?;
-        tasks = github_tasks(&issues, config)?;
+        // Read the repositories concurrently (bounded) so a workspace- or
+        // organization-wide intake fits the poll timeout.
+        let targets = github_targets(config, &workspace)?;
+        let listed: Vec<Result<(String, String, Vec<Value>)>> =
+            futures_util::stream::iter(targets.into_iter().map(|(repository, base_ref)| {
+                let token = token.clone();
+                async move {
+                    let issues = crate::automation::connectors::list_labeled_github_issues_bounded(
+                        &token,
+                        &repository,
+                        intake::INTAKE_LABEL,
+                    )
+                    .await?;
+                    Ok((repository, base_ref, issues))
+                }
+            }))
+            .buffered(8)
+            .collect()
+            .await;
+        for result in listed {
+            let (repository, base_ref, issues) = result?;
+            tasks.extend(github_tasks(&issues, config, &repository, &base_ref)?);
+        }
     } else {
         let remote = workspace["repositories"]
             .as_array()
@@ -381,11 +530,11 @@ async fn poll_one(
     let c = h
         .lock()
         .map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
-    if connector(&c, org, connector_id, kind, config)? != token {
+    if connector(&c, org, connector_id, kind, config)? != credential {
         bail!("connector_changed")
     }
     if kind == "github" {
-        github_target(
+        github_targets(
             config,
             &workflows::workspace_by_id(
                 &c,
@@ -441,16 +590,30 @@ mod github_tests {
         json!({"number":42,"state":"open","title":"Fix button","body":"Reproduce this bug","author_association":"OWNER","html_url":"https://github.com/acme/web/issues/42","labels":[{"name":"factory"},{"name":"BUG"}]})
     }
     #[test]
+    fn github_sources_default_to_paused_and_can_be_toggled_per_tenant() {
+        let source: Source=serde_json::from_value(json!({"definition_id":"d","kind":"github","connector_id":"server_gh_cli","config":{"repository":"kasymir/repo","labels":["factory"]}})).unwrap();
+        assert!(!source.enabled);
+        let c=rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE factory_workflow_intakes(id TEXT,org_id TEXT,enabled INTEGER,next_poll INTEGER);INSERT INTO factory_workflow_intakes VALUES('source','org',0,123)").unwrap();
+        set_enabled(&c,"org","source",true).unwrap();
+        assert_eq!(c.query_row("SELECT enabled FROM factory_workflow_intakes",[],|r|r.get::<_,bool>(0)).unwrap(),true);
+        assert_eq!(c.query_row("SELECT next_poll FROM factory_workflow_intakes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert!(set_enabled(&c,"other","source",true).is_err());
+    }
+
+    #[test]
     fn assigned_issues_require_an_explicit_opt_in_to_avoid_competing_with_resolvers() {
         let mut assigned = issue();
         assigned["assignees"] = json!([{"login":"another-person"}]);
-        assert!(github_tasks(&[assigned.clone()], &config())
+        assert!(github_tasks(&[assigned.clone()], &config(), "acme/web", "main")
             .unwrap()
             .is_empty());
         assert_eq!(
             github_tasks(
                 &[assigned],
-                &json!({"repository":"acme/web","labels":["bug"],"include_assigned":true})
+                &json!({"repository":"acme/web","labels":["bug"],"include_assigned":true}),
+                "acme/web",
+                "main"
             )
             .unwrap()
             .len(),
@@ -468,26 +631,106 @@ mod github_tests {
         ] {
             assert!(validate("github", &bad).is_err());
         }
-        let workspace = json!({"repositories":[{"remote":"git@github.com:ACME/Web.git"}]});
-        assert_eq!(github_target(&config(), &workspace).unwrap(), "acme/web");
-        assert!(github_target(
+        let workspace =
+            json!({"repositories":[{"remote":"git@github.com:ACME/Web.git","branch":"master"}]});
+        assert_eq!(
+            github_targets(&config(), &workspace).unwrap(),
+            [("acme/web".to_string(), "master".to_string())]
+        );
+        assert!(github_targets(
             &config(),
-            &json!({"repositories":[{"remote":"https://github.com/other/web.git"}]})
+            &json!({"repositories":[{"remote":"https://github.com/other/web.git","branch":"main"}]})
         )
         .is_err());
+        assert_eq!(
+            github_targets(
+                &config(),
+                &json!({"repositories":[{"remote":"https://github.com/acme/web.git"}]})
+            )
+            .unwrap_err()
+            .to_string(),
+            "source_branch_not_confirmed"
+        );
+    }
+    fn workspace() -> Value {
+        json!({"repositories":[
+            {"remote":"https://github.com/acme/web.git","branch":"main"},
+            {"remote":"https://github.com/acme/api.git","branch":"develop"},
+            {"remote":"https://github.com/other/tools.git","branch":"master"},
+            {"remote":"/local/only","branch":"main"}
+        ]})
+    }
+    #[test]
+    fn one_intake_can_read_selected_repositories_the_workspace_or_an_organization() {
+        let names = |config: Value| {
+            github_targets(&config, &workspace())
+                .unwrap()
+                .into_iter()
+                .map(|(name, branch)| format!("{name}@{branch}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(json!({"repositories":["Acme/API","acme/web","acme/web"]})),
+            ["acme/api@develop", "acme/web@main"]
+        );
+        assert_eq!(
+            names(json!({"scope":"workspace"})),
+            ["acme/api@develop", "acme/web@main", "other/tools@master"]
+        );
+        assert_eq!(
+            names(json!({"scope":"organization","organization":"ACME"})),
+            ["acme/api@develop", "acme/web@main"]
+        );
+        // A selected repository outside the workspace, or an organization with no
+        // confirmed repositories, fails instead of silently reading nothing.
+        for config in [
+            json!({"repositories":["acme/web","acme/missing"]}),
+            json!({"scope":"organization","organization":"nobody"}),
+        ] {
+            assert_eq!(
+                github_targets(&config, &workspace()).unwrap_err().to_string(),
+                "github_intake_repository_not_in_workspace"
+            );
+        }
+        for bad in [
+            json!({"repositories":[]}),
+            json!({"repository":"acme/web","repositories":["acme/api"]}),
+            json!({"scope":"workspace","repositories":["acme/web"]}),
+            json!({"scope":"organization"}),
+            json!({"scope":"organization","organization":"acme/web"}),
+            json!({"scope":"organization","organization":"acme","repositories":["acme/web"]}),
+            json!({"scope":"everything"}),
+        ] {
+            assert!(validate("github", &bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn tasks_target_the_repository_the_issue_came_from() {
+        let mut api_issue = issue();
+        api_issue["html_url"] = json!("https://github.com/acme/api/issues/42");
+        let config = json!({"scope":"organization","organization":"acme"});
+        let web = github_tasks(&[issue()], &config, "acme/web", "main").unwrap();
+        let api = github_tasks(&[api_issue], &config, "acme/api", "develop").unwrap();
+        assert_eq!(web[0].0, "github:acme/web#42");
+        assert_eq!(api[0].0, "github:acme/api#42");
+        assert_eq!(api[0].1["repository"]["remote"], "acme/api");
+        assert_eq!(api[0].1["repository"]["base_ref"], "develop");
     }
     #[test]
     fn github_issues_require_factory_and_all_filters_and_never_include_prs_or_closed_work() {
         let original = issue();
-        let tasks = github_tasks(&[original.clone()], &config()).unwrap();
+        let tasks = github_tasks(&[original.clone()], &config(), "acme/web", "main").unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].0, "github:acme/web#42");
         assert_eq!(tasks[0].1["origin_trust"], "untrusted");
+        assert_eq!(tasks[0].1["repository"]["base_ref"], "main");
         assert_eq!(
             tasks[0].0,
             github_tasks(
                 &[original.clone()],
-                &json!({"repository":"acme/WEB","labels":[]})
+                &json!({"repository":"acme/WEB","labels":[]}),
+                "acme/web",
+                "main"
             )
             .unwrap()[0]
                 .0
@@ -502,13 +745,15 @@ mod github_tests {
                 _ => json!(""),
             };
             assert!(
-                github_tasks(&[candidate], &config()).unwrap().is_empty(),
+                github_tasks(&[candidate], &config(), "acme/web", "main").unwrap().is_empty(),
                 "{field}"
             );
         }
         assert!(github_tasks(
             &[original],
-            &json!({"repository":"acme/web","labels":["security"]})
+            &json!({"repository":"acme/web","labels":["security"]}),
+            "acme/web",
+            "main"
         )
         .unwrap()
         .is_empty());

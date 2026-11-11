@@ -229,7 +229,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/factory/workflow-runs/:id/approve", post(workflow_execution::approve))
         .route("/v1/factory/workflow-artifacts/:id", get(workflow_execution::get_artifact))
         .route("/v1/factory/workflow-intakes", post(workflow_execution::create_intake))
-        .route("/v1/factory/workflow-intakes/:id", delete(workflow_execution::delete_intake))
+        .route("/v1/factory/workflow-intakes/:id", delete(workflow_execution::delete_intake).patch(workflow_execution::update_intake))
         .route("/v1/factory/workflow-intakes/poll", post(workflow_execution::poll_intakes))
         .route("/v1/factory/digest", get(factory::human_digest))
         .route("/v1/factory/economics", get(factory::economics))
