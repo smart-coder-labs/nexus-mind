@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   confirmFactoryWorkspace: vi.fn(),
   registerFactoryRunner: vi.fn(),
   saveWorkflowRuntime: vi.fn(),
+  createWorkflowIntake: vi.fn(),
 }))
 const auth = vi.hoisted(() => ({ permissions: [] as string[] }))
 vi.mock('../../../api/client', () => ({ createClient: () => api }))
@@ -136,6 +137,48 @@ describe('guided workspace workflows', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Crear workflow completo' }))
     expect(screen.getByText('test-bot', { exact: true })).toBeInTheDocument()
   })
+  it('connects a paused GitHub issues intake with the backend account', async () => {
+    const confirmed = {
+      ...workspace,
+      confirmed_revision: 1,
+      repositories: [
+        {
+          path: 'api',
+          remote: 'https://github.com/acme/api.git',
+          head_sha: 'a'.repeat(40),
+          writable: true,
+        },
+      ],
+    }
+    api.getWorkflowCatalog.mockResolvedValue({
+      runners: [],
+      workspaces: [confirmed],
+      definitions: [{ id: 'd', definition }],
+      runs: [],
+      intakes: [],
+    })
+    api.createWorkflowIntake.mockResolvedValue({ id: 'i', enabled: false })
+    show(write, '/factory/workflows?tab=sources')
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Workflow destino' }), 'd')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Aplicación' }), 'github')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Repositorio de GitHub' }), 'acme/api')
+    const connector = screen.getByRole('combobox', { name: 'Conector dedicado' })
+    await waitFor(() =>
+      expect(within(connector).getByRole('option', { name: /Cuenta autenticada del backend · test-bot/ })).toBeInTheDocument(),
+    )
+    await userEvent.selectOptions(connector, 'server_gh_cli')
+    await userEvent.click(screen.getByRole('button', { name: 'Conectar entrada' }))
+    await waitFor(() =>
+      expect(api.createWorkflowIntake).toHaveBeenCalledWith({
+        definition_id: 'd',
+        kind: 'github',
+        connector_id: 'server_gh_cli',
+        config: { repository: 'acme/api', labels: [] },
+        enabled: false,
+      }),
+    )
+  })
+
   it('opens the workflow editor from the runs tab and explains blockers', async () => {
     const confirmed = {
       ...workspace,

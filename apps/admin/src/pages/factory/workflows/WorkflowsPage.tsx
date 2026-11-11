@@ -103,8 +103,11 @@ export default function WorkflowsPage({
   const publicationIdentity = useQuery({
     queryKey: ['workflow-publication-identity'],
     queryFn: () => client.getWorkflowPublicationIdentity(),
-    // Also on runs: "Nuevo workflow" there needs to know the publisher is ready.
-    enabled: readable && (tab === 'runs' || (tab === 'settings' && section === 'delivery')),
+    // Also on runs: "Nuevo workflow" there needs to know the publisher is ready;
+    // and on sources, where the backend account can read GitHub issues.
+    enabled:
+      readable &&
+      (tab === 'runs' || tab === 'sources' || (tab === 'settings' && section === 'delivery')),
     retry: false,
   })
   const backendPublisherReady =
@@ -1168,6 +1171,11 @@ export default function WorkflowsPage({
                   onChange={(e) => setIntakeConnector(e.target.value)}
                 >
                   <option value="">Seleccionar conector cifrado</option>
+                  {intakeKind === 'github' && backendPublisherReady && (
+                    <option value="server_gh_cli">
+                      Cuenta autenticada del backend · {publicationIdentity.data?.login}
+                    </option>
+                  )}
                   {intakeConnectors.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -1210,7 +1218,8 @@ export default function WorkflowsPage({
                     Solo issues abiertos con label factory y todas las labels adicionales. Por
                     defecto, sin asignar para no tomar trabajo de otra persona o duplicar un
                     resolver. Los PRs se excluyen y cada issue entra una sola vez en este workspace.
-                    El conector requiere github:read y el repositorio en su allowlist.
+                    Un conector dedicado requiere github:read y el repositorio en su allowlist; la
+                    cuenta del backend solo lee repositorios confirmados en este workspace.
                   </p>
                 </>
               )}
@@ -1303,7 +1312,7 @@ export default function WorkflowsPage({
                 </>
               )}
             </div>
-            {!intakeConnectors.length && (
+            {!intakeConnectors.length && !(intakeKind === 'github' && backendPublisherReady) && (
               <p className="text-sm text-muted-foreground">
                 No hay conectores dedicados disponibles para esta fuente. Sus claves se configuran
                 cifradas; no las pegues en la descripción de la tarea.
