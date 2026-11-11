@@ -14,7 +14,14 @@ import { RepoSecrets } from './RepoSecrets'
 import { ExecutionDetail } from './ExecutionDetail'
 import { WorkflowEditor } from './WorkflowEditor'
 import { blockerLabel, emptyRuntime } from './runtime'
-import { deliveryWorkflow, preparationWorkflow, type WorkflowDefinition, type WorkflowEventQuery } from './types'
+import {
+  deliveryWorkflow,
+  describeGithubIntake,
+  preparationWorkflow,
+  type GithubScope,
+  type WorkflowDefinition,
+  type WorkflowEventQuery,
+} from './types'
 
 const select =
   'h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring'
@@ -83,7 +90,9 @@ export default function WorkflowsPage({
   const [sentryUrl, setSentryUrl] = useState('https://sentry.io')
   const [sentryOrg, setSentryOrg] = useState('')
   const [sentryProject, setSentryProject] = useState('')
-  const [githubRepository, setGithubRepository] = useState('')
+  const [githubScope, setGithubScope] = useState<GithubScope>('selected')
+  const [githubSelected, setGithubSelected] = useState<string[]>([])
+  const [githubOrganization, setGithubOrganization] = useState('')
   const [githubLabels, setGithubLabels] = useState('')
   const [githubIncludeAssigned, setGithubIncludeAssigned] = useState(false)
   const [connectorForm, setConnectorForm] = useState<'publication' | 'intake' | null>(null)
@@ -164,6 +173,16 @@ export default function WorkflowsPage({
       }),
     ),
   ].sort()
+  const githubOwners = [...new Set(githubRepositories.map((r) => r.split('/')[0]))].sort()
+  // Dedicated connectors are repository-scoped, so they only serve an explicit list;
+  // workspace- and organization-wide intakes read through the backend account.
+  const githubBackendIntake = intakeKind === 'github' && backendPublisherReady
+  const githubTargetsChosen =
+    githubScope === 'workspace' ||
+    (githubScope === 'organization' && githubOwners.includes(githubOrganization)) ||
+    (githubScope === 'selected' &&
+      githubSelected.length > 0 &&
+      githubSelected.every((r) => githubRepositories.includes(r)))
   const intakeConnectors =
     connectors.data?.filter(
       (c) =>
@@ -171,7 +190,10 @@ export default function WorkflowsPage({
         c.health !== 'revoked' &&
         ((c.metadata.purpose === 'factory_workflow_intake' &&
           c.metadata.source_kind === intakeKind) ||
-          (intakeKind === 'linear' && c.metadata.purpose === 'factory_workflow_linear')),
+          (intakeKind === 'linear' && c.metadata.purpose === 'factory_workflow_linear')) &&
+        (intakeKind !== 'github' ||
+          (githubScope === 'selected' &&
+            githubSelected.every((r) => (c.metadata.repositories as unknown[] | undefined)?.includes(r)))),
     ) ?? []
   const preparationOnly =
     selectedDefinition?.definition.steps.every((s) => s.kind === 'prepare') ?? false
@@ -284,7 +306,8 @@ export default function WorkflowsPage({
   }, [openedArtifact])
   useEffect(() => {
     setDefinitionId('')
-    setGithubRepository('')
+    setGithubSelected([])
+    setGithubOrganization('')
     setConnectorForm(null)
     setIntakeConnector('')
     setEditor('')
@@ -1028,7 +1051,9 @@ export default function WorkflowsPage({
                   className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
                 >
                   <span>
-                    {i.kind} · {i.enabled ? 'Activa' : 'Desactivada'} ·{' '}
+                    {i.kind}
+                    {i.kind === 'github' ? ` · ${describeGithubIntake(i.config)}` : ''} ·{' '}
+                    {i.enabled ? 'Activa' : 'Desactivada'} ·{' '}
                     {i.last_error ?? 'Sin errores de consulta'}
                   </span>
                   <div className="flex gap-2">
@@ -1062,7 +1087,9 @@ export default function WorkflowsPage({
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={intakeKind === 'github' && !githubRepository}
+                  disabled={
+                    intakeKind === 'github' && (githubScope !== 'selected' || !githubSelected.length)
+                  }
                   onClick={() => setConnectorForm('intake')}
                 >
                   Nuevo conector de entrada
@@ -1070,9 +1097,9 @@ export default function WorkflowsPage({
               )}
             {connectorForm === 'intake' && (
               <WorkflowConnectorForm
-                key={intakeKind + githubRepository}
+                key={intakeKind + githubSelected.join(',')}
                 kind={intakeKind}
-                repositories={intakeKind === 'github' ? [githubRepository] : []}
+                repositories={intakeKind === 'github' ? githubSelected : []}
                 baseUrl={sentryUrl}
                 onCancel={() => setConnectorForm(null)}
                 onCreated={async (id) => {
@@ -1091,7 +1118,11 @@ export default function WorkflowsPage({
                 const config =
                   intakeKind === 'github'
                     ? {
-                        repository: githubRepository,
+                        ...(githubScope === 'selected'
+                          ? { repositories: githubSelected }
+                          : githubScope === 'workspace'
+                            ? { scope: 'workspace' }
+                            : { scope: 'organization', organization: githubOrganization }),
                         ...(githubIncludeAssigned ? { include_assigned: true } : {}),
                         labels: githubLabels
                           .split(',')
@@ -1171,7 +1202,7 @@ export default function WorkflowsPage({
                   onChange={(e) => setIntakeConnector(e.target.value)}
                 >
                   <option value="">Seleccionar conector cifrado</option>
-                  {intakeKind === 'github' && backendPublisherReady && (
+                  {githubBackendIntake && (
                     <option value="server_gh_cli">
                       Cuenta autenticada del backend · {publicationIdentity.data?.login}
                     </option>
@@ -1186,25 +1217,92 @@ export default function WorkflowsPage({
               {intakeKind === 'github' && (
                 <>
                   <label className="space-y-1.5 text-sm">
-                    Repositorio de GitHub
+                    Repositorios
                     <select
                       className={select}
-                      required
-                      value={githubRepository}
+                      value={githubScope}
                       disabled={!writable || busy}
                       onChange={(e) => {
-                        setGithubRepository(e.target.value)
+                        setGithubScope(e.target.value as GithubScope)
                         setIntakeConnector('')
+                        setConnectorForm(null)
                       }}
                     >
-                      <option value="">Seleccionar repositorio autorizado</option>
-                      {githubRepositories.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
+                      <option value="selected">Repositorios seleccionados</option>
+                      <option value="workspace">Todos los repositorios del workspace</option>
+                      <option value="organization">Toda una organización de GitHub</option>
                     </select>
                   </label>
+                  {githubScope === 'organization' && (
+                    <label className="space-y-1.5 text-sm">
+                      Organización de GitHub
+                      <select
+                        className={select}
+                        required
+                        value={githubOrganization}
+                        disabled={!writable || busy}
+                        onChange={(e) => setGithubOrganization(e.target.value)}
+                      >
+                        <option value="">Seleccionar organización</option>
+                        {githubOwners.map((o) => (
+                          <option key={o} value={o}>
+                            {o} · {githubRepositories.filter((r) => r.startsWith(`${o}/`)).length}{' '}
+                            repositorios
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {githubScope === 'selected' && (
+                    <fieldset className="space-y-2 text-sm sm:col-span-2">
+                      <legend className="flex w-full items-center justify-between gap-2">
+                        <span>
+                          Repositorios de GitHub · {githubSelected.length} de{' '}
+                          {githubRepositories.length}
+                        </span>
+                        <span className="flex gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={!writable || busy}
+                            onClick={() => setGithubSelected(githubRepositories)}
+                          >
+                            Todos
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={!writable || busy}
+                            onClick={() => setGithubSelected([])}
+                          >
+                            Ninguno
+                          </Button>
+                        </span>
+                      </legend>
+                      <div className="grid max-h-56 gap-1 overflow-y-auto rounded-lg border border-border p-2 sm:grid-cols-2">
+                        {githubRepositories.map((r) => (
+                          <label key={r} className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={githubSelected.includes(r)}
+                              disabled={!writable || busy}
+                              onChange={(e) => {
+                                setGithubSelected((current) =>
+                                  e.target.checked
+                                    ? [...current, r].sort()
+                                    : current.filter((x) => x !== r),
+                                )
+                                setIntakeConnector('')
+                              }}
+                            />
+                            {r}
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                  )}
                   <label className="space-y-1.5 text-sm">
                     Labels adicionales (separadas por coma)
                     <Input
@@ -1215,7 +1313,8 @@ export default function WorkflowsPage({
                     />
                   </label>
                   <p className="text-sm text-muted-foreground sm:col-span-2">
-                    Solo issues abiertos con label factory y todas las labels adicionales. Por
+                    Solo issues abiertos con label factory y todas las labels adicionales. Todo el
+                    workspace u organización incluye los repositorios que se confirmen después. Por
                     defecto, sin asignar para no tomar trabajo de otra persona o duplicar un
                     resolver. Los PRs se excluyen y cada issue entra una sola vez en este workspace.
                     Un conector dedicado requiere github:read y el repositorio en su allowlist; la
@@ -1312,7 +1411,7 @@ export default function WorkflowsPage({
                 </>
               )}
             </div>
-            {!intakeConnectors.length && !(intakeKind === 'github' && backendPublisherReady) && (
+            {!intakeConnectors.length && !githubBackendIntake && (
               <p className="text-sm text-muted-foreground">
                 No hay conectores dedicados disponibles para esta fuente. Sus claves se configuran
                 cifradas; no las pegues en la descripción de la tarea.
@@ -1326,7 +1425,7 @@ export default function WorkflowsPage({
                   !writable ||
                   !definitionId ||
                   !intakeConnector ||
-                  (intakeKind === 'github' && !githubRepositories.includes(githubRepository))
+                  (intakeKind === 'github' && !githubTargetsChosen)
                 }
               >
                 Conectar entrada

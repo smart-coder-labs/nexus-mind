@@ -125,6 +125,21 @@ export type WorkflowIntake = {
   next_poll: number
   last_error: string | null
 }
+export type GithubScope = 'selected' | 'workspace' | 'organization'
+/** One-line summary of which repositories a GitHub intake reads. */
+export function describeGithubIntake(config: unknown): string {
+  const c = (config ?? {}) as {
+    scope?: GithubScope
+    organization?: string
+    repository?: string
+    repositories?: string[]
+  }
+  if (c.scope === 'workspace') return 'todo el workspace'
+  if (c.scope === 'organization') return `organización ${c.organization ?? ''}`
+  const repos = c.repositories ?? (c.repository ? [c.repository] : [])
+  return repos.length === 1 ? repos[0] : `${repos.length} repositorios`
+}
+
 export type WorkflowPending = {
   id: string
   source_key: string
