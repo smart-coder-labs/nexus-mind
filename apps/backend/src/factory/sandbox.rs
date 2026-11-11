@@ -353,11 +353,16 @@ pub fn playwright_mcp(proxy_token: &str) -> (String, Vec<u8>) {
         ]
     }}});
     // Playwright answers the proxy's 407 challenge with these credentials.
-    let file = json!({"browser": {"launchOptions": {"proxy": {
-        "server": format!("http://{PROXY_AUTHORITY}"),
-        "username": "run",
-        "password": proxy_token
-    }}}});
+    // Chromium keeps renderer memory in /dev/shm; the container default (64 MB)
+    // hangs SPAs until navigation times out, so it writes to /tmp instead.
+    let file = json!({"browser": {"launchOptions": {
+        "args": ["--disable-dev-shm-usage"],
+        "proxy": {
+            "server": format!("http://{PROXY_AUTHORITY}"),
+            "username": "run",
+            "password": proxy_token
+        }
+    }}});
     (mcp.to_string(), file.to_string().into_bytes())
 }
 
@@ -503,13 +508,16 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
                 "volumeMounts": [
                     {"name": "workspace", "mountPath": WORKSPACE},
                     {"name": "home", "mountPath": "/home/task"},
-                    {"name": "tmp", "mountPath": "/tmp"}
+                    {"name": "tmp", "mountPath": "/tmp"},
+                    {"name": "shm", "mountPath": "/dev/shm"}
                 ]
             }],
             "volumes": [
                 {"name": "workspace", "emptyDir": {"sizeLimit": "6Gi"}},
                 {"name": "home", "emptyDir": {"sizeLimit": "1Gi"}},
-                {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}}
+                {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}},
+                // Browser shared memory (QA/judge Chromium); counts toward the memory limit.
+                {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"}}
             ]
         }
     })
@@ -770,6 +778,27 @@ mod tests {
         assert_eq!(proxy["server"], format!("http://{PROXY_AUTHORITY}"));
         assert_eq!(proxy["username"], "run");
         assert_eq!(proxy["password"], "v3.org.run.1.aG9zdA.sig");
+        assert_eq!(
+            file["browser"]["launchOptions"]["args"],
+            json!(["--disable-dev-shm-usage"])
+        );
+    }
+
+    #[test]
+    fn the_browser_gets_memory_backed_shared_memory() {
+        let pod = task_pod_manifest(&request());
+        let shm = pod["spec"]["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|volume| volume["name"] == "shm")
+            .expect("shm volume");
+        assert_eq!(shm["emptyDir"]["medium"], "Memory");
+        assert!(pod["spec"]["containers"][0]["volumeMounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mount| mount["name"] == "shm" && mount["mountPath"] == "/dev/shm"));
     }
 
     #[test]
