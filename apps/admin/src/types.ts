@@ -1503,7 +1503,7 @@ export type FactoryAction =
   | 'fix' | 'publish' | 'open_pr' | 'reply' | 'close'
   | 'approve' | 'merge' | 'deploy' | 'notify' | 'recover'
 
-export type FactoryPolicyMode = 'never' | 'manual' | 'criteria' | 'after_fix' | 'after_merge'
+export type FactoryPolicyMode = 'never' | 'manual' | 'criteria' | 'after_fix' | 'after_merge' | 'always'
 
 export type FactoryTaskClass =
   | 'docs' | 'tests' | 'ui' | 'backend' | 'bugfix'

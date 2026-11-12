@@ -1236,6 +1236,35 @@ mod tests {
     }
 
     #[test]
+    fn the_dangerous_always_mode_is_stored_after_migrating_existing_policies() {
+        let (conn, org, user) = setup();
+        let (manual, _) = upsert_factory_policy(
+            &conn,
+            &org,
+            &user,
+            &policy(Action::Merge, PolicyMode::Manual, 1),
+        )
+        .unwrap();
+        let (always, _) = upsert_factory_policy(
+            &conn,
+            &org,
+            &user,
+            &policy(Action::Fix, PolicyMode::Always, 1),
+        )
+        .unwrap();
+        assert_eq!(always.policy.mode, PolicyMode::Always);
+        let stored: String = conn
+            .query_row(
+                "SELECT mode FROM factory_action_policies WHERE id=?1",
+                [&always.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "always");
+        assert!(list_factory_policies(&conn, &org).unwrap().contains(&manual));
+    }
+
+    #[test]
     fn stale_or_skipped_versions_conflict() {
         let (conn, org, user) = setup();
         upsert_factory_policy(

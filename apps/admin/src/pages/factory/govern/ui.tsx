@@ -141,6 +141,7 @@ export function RadioCard({
   description,
   icon,
   disabled,
+  tone,
 }: {
   name: string
   value: string
@@ -150,12 +151,19 @@ export function RadioCard({
   description?: string
   icon?: ReactNode
   disabled?: boolean
+  tone?: 'danger'
 }) {
   return (
     <label
       className={cn(
         'flex gap-3 rounded-md border px-3.5 py-3 transition-apple',
-        checked ? 'border-accent-blue/60 bg-action-primary-tint' : 'border-border-primary hover:bg-foreground/[0.03]',
+        checked
+          ? tone === 'danger'
+            ? 'border-status-error/60 bg-status-error/[0.08]'
+            : 'border-accent-blue/60 bg-action-primary-tint'
+          : tone === 'danger'
+            ? 'border-status-error/30 hover:bg-status-error/[0.05]'
+            : 'border-border-primary hover:bg-foreground/[0.03]',
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
       )}
     >

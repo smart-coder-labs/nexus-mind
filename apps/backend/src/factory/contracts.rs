@@ -507,6 +507,9 @@ pub enum PolicyMode {
     Criteria,
     AfterFix,
     AfterMerge,
+    /// Dangerous: allowed without a person or the decision model. Deterministic
+    /// floors (risky paths, sensitive tasks) still hold it.
+    Always,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

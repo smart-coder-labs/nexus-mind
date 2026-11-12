@@ -357,7 +357,7 @@ function Ladder({
   gatedDetail?: string
 }) {
   return (
-    <ol aria-label="Who decides" className="m-0 grid max-w-xl list-none grid-cols-4 gap-1 p-0">
+    <ol aria-label="Who decides" className="m-0 grid max-w-xl list-none grid-cols-5 gap-1 p-0">
       {RUNGS.map(({ rung, label }) => {
         const active = rung === current
         return (
@@ -368,7 +368,11 @@ function Ladder({
               'flex h-8 min-w-0 items-center justify-center rounded-md border px-1.5 text-[12px]',
               active &&
                 !implicit &&
+                rung !== 'always' &&
                 'border-accent-blue/60 bg-action-primary-tint font-medium text-text-primary',
+              active &&
+                rung === 'always' &&
+                'border-status-error/60 bg-status-error/[0.08] font-medium text-status-error',
               active &&
                 implicit &&
                 'border-dashed border-border-primary font-medium text-text-secondary',

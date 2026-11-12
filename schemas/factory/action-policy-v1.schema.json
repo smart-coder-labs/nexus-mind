@@ -9,7 +9,7 @@
   "properties": {
     "schema_version": { "const": 1 },
     "action": { "enum": ["fix", "publish", "open_pr", "reply", "close", "approve", "merge", "deploy", "notify", "recover"] },
-    "mode": { "enum": ["never", "manual", "criteria", "after_fix", "after_merge"] },
+    "mode": { "enum": ["never", "manual", "criteria", "after_fix", "after_merge", "always"] },
     "scope": {
       "type": "object", "additionalProperties": false,
       "properties": {

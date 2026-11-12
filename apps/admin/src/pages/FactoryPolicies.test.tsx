@@ -122,6 +122,25 @@ describe('FactoryPolicies', () => {
     })
   })
 
+  it('saves the dangerous always mode only after an explicit acknowledgement', async () => {
+    api.putFactoryPolicy.mockResolvedValue({ ...docsMerge, mode: 'always', version: 1 })
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a policy for fix' }))
+    await userEvent.click(screen.getByRole('radio', { name: /always \(dangerous\)/i }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Agents will fix without asking anyone.')
+    const save = screen.getByRole('button', { name: 'Save as v1' })
+    expect(save).toBeDisabled()
+    await userEvent.click(screen.getByRole('checkbox', { name: /no person or decision model reviews/i }))
+    expect(save).toBeEnabled()
+    // Changing the mode away and back asks again.
+    await userEvent.click(screen.getByRole('radio', { name: /a person decides/i }))
+    await userEvent.click(screen.getByRole('radio', { name: /always \(dangerous\)/i }))
+    expect(save).toBeDisabled()
+    await userEvent.click(screen.getByRole('checkbox', { name: /no person or decision model reviews/i }))
+    await userEvent.click(save)
+    expect(api.putFactoryPolicy).toHaveBeenCalledWith(expect.objectContaining({ action: 'fix', mode: 'always', version: 1 }))
+  })
+
   it('edits an existing policy at the next version', async () => {
     api.listFactoryPolicies.mockResolvedValue([docsMerge])
     api.putFactoryPolicy.mockResolvedValue({ ...docsMerge, mode: 'manual', version: 4 })
