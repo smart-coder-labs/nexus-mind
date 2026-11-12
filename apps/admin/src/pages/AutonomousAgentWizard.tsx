@@ -110,6 +110,7 @@ interface FormState {
   onSuccessTriggerDelaySeconds: string
   testAdapter: 'playwright' | 'allowlisted_command'
   qaLevel: 'basic' | 'standard' | 'deep'
+  skipPreviouslyPassed: boolean
   testCommand: string
   qaInstructions: string
   qaProjectId: string
@@ -201,6 +202,7 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     onSuccessTriggerDelaySeconds: '',
     testAdapter: 'playwright',
     qaLevel: 'standard',
+    skipPreviouslyPassed: false,
     testCommand: '',
     qaInstructions: '',
     qaProjectId: '',
@@ -341,7 +343,7 @@ export function buildConfig(state: FormState): Record<string, unknown> {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
     if (state.outputGithubIssue) outputs.push('github_issue')
-    config = { outputs, test_adapter: state.testAdapter, qa_level: state.qaLevel }
+    config = { outputs, test_adapter: state.testAdapter, qa_level: state.qaLevel, qa_skip_passed: state.skipPreviouslyPassed }
     if (state.qaProjectId) config.project_id = state.qaProjectId
     if (state.testAdapter === 'allowlisted_command') {
       // Deterministic mode: the worker runs this argv as a subprocess.
@@ -534,6 +536,7 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     testAdapter:
       config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
     qaLevel: config.qa_level === 'basic' || config.qa_level === 'deep' ? config.qa_level : 'standard',
+    skipPreviouslyPassed: config.qa_skip_passed === true,
     testCommand: firstCommand,
     qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
     qaProjectId: typeof config.project_id === 'string' ? config.project_id : '',
@@ -1332,6 +1335,9 @@ function StepConfig({
                 <option value="standard">Standard — key flows and regressions (250 turns)</option>
                 <option value="deep">Deep — edge cases and cross-flow checks (400 turns)</option>
               </NativeSelect>
+            </Field>
+            <Field label="Skip previously passed scenarios" hint="When enabled, avoid repeating non-critical scenarios already passed for this app and environment. Critical checks still run.">
+              <input type="checkbox" checked={state.skipPreviouslyPassed} onChange={event => set('skipPreviouslyPassed', event.target.checked)} />
             </Field>
             <Field
               label="What should the agent test? (optional)"
