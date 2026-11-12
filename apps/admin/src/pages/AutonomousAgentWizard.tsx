@@ -65,6 +65,7 @@ interface FormState {
   onSuccessTriggerAgentId: string
   onSuccessTriggerDelaySeconds: string
   testAdapter: 'playwright' | 'allowlisted_command'
+  qaLevel: 'basic' | 'standard' | 'deep'
   testCommand: string
   qaInstructions: string
   customInstructions: string
@@ -142,6 +143,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     onSuccessTriggerAgentId: '',
     onSuccessTriggerDelaySeconds: '',
     testAdapter: 'playwright',
+    qaLevel: 'standard',
     testCommand: '',
     qaInstructions: '',
     customInstructions: '',
@@ -204,7 +206,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
     if (state.outputGithubIssue) outputs.push('github_issue')
-    config = { outputs, test_adapter: state.testAdapter }
+    config = { outputs, test_adapter: state.testAdapter, qa_level: state.qaLevel }
     if (state.testAdapter === 'allowlisted_command') {
       // Deterministic mode: the worker runs this argv as a subprocess.
       config.test_commands = [csvArgv(state.testCommand)]
@@ -332,6 +334,7 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
     testAdapter: config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
+    qaLevel: config.qa_level === 'basic' || config.qa_level === 'deep' ? config.qa_level : 'standard',
     testCommand: firstCommand,
     qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
     customInstructions: typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
@@ -730,6 +733,13 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </NativeSelect>
           </Field>
           {state.testAdapter === 'playwright' ? (
+            <Field label="QA depth" hint="Deeper levels spend more browser turns covering broader flows and edge cases.">
+              <NativeSelect value={state.qaLevel} onChange={value => set('qaLevel', value as FormState['qaLevel'])}>
+                <option value="basic">Basic — smoke checks (120 turns)</option>
+                <option value="standard">Standard — key flows and regressions (250 turns)</option>
+                <option value="deep">Deep — edge cases and cross-flow checks (400 turns)</option>
+              </NativeSelect>
+            </Field>
             <Field label="What should the agent test? (optional)" hint="Claude drives the browser against the target and reports findings. Leave notes on flows or checks to prioritise; blank means general exploratory QA.">
               <Textarea className="text-sm" rows={3} value={state.qaInstructions} onChange={event => set('qaInstructions', event.target.value)} placeholder="e.g. Sign in, add an item to the cart, and verify checkout totals." />
             </Field>
