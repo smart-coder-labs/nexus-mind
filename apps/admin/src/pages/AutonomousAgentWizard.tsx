@@ -1325,6 +1325,7 @@ function StepConfig({
             </NativeSelect>
           </Field>
           {state.testAdapter === 'playwright' ? (
+            <>
             <Field label="QA depth" hint="Deeper levels spend more browser turns covering broader flows and edge cases.">
               <NativeSelect value={state.qaLevel} onChange={value => set('qaLevel', value as FormState['qaLevel'])}>
                 <option value="basic">Basic — smoke checks (120 turns)</option>
@@ -1344,6 +1345,7 @@ function StepConfig({
                 placeholder="e.g. Sign in, add an item to the cart, and verify checkout totals."
               />
             </Field>
+            </>
           ) : (
             <Field
               label="Test command"
