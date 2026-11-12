@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 
 pub const MAX_CONTENT: usize = 64 * 1024;
 pub const KINDS: [&str; 2] = ["env", "npmrc"];
+/// Workspace default: applies to every repository without its own entry of that kind.
+pub const ALL_REPOSITORIES: &str = "*";
 
 pub fn migrate(c: &Connection) -> Result<()> {
     if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? >= 98 {
@@ -175,7 +177,7 @@ pub fn list(c: &Connection, org: &str, workspace: &str) -> Result<Value> {
 }
 
 pub fn save(c: &Connection, org: &str, user: &str, workspace: &str, repository: &str, kind: &str, content: &str) -> Result<Value> {
-    if !workspace_repositories(c, org, workspace)?.iter().any(|r| r == repository) {
+    if repository != ALL_REPOSITORIES && !workspace_repositories(c, org, workspace)?.iter().any(|r| r == repository) {
         bail!("repo_secret_repository_invalid")
     }
     let summary = match kind {
@@ -207,6 +209,23 @@ pub fn delete(c: &Connection, org: &str, workspace: &str, repository: &str, kind
     list(c, org, workspace)
 }
 
+/// (repository, kind, source, ciphertext) for each pinned repository: its own
+/// entry of a kind wins over the workspace default (`*`).
+fn resolve<'a>(rows: &'a [(String, String, String)], pinned: &[&'a str]) -> Vec<(&'a str, &'static str, &'a str, &'a str)> {
+    let mut resolved = Vec::new();
+    for &repository in pinned {
+        for kind in KINDS {
+            let found = [repository, ALL_REPOSITORIES]
+                .into_iter()
+                .find_map(|source| rows.iter().find(|r| r.0 == source && r.1 == kind));
+            if let Some((source, _, ciphertext)) = found {
+                resolved.push((repository, kind, source.as_str(), ciphertext.as_str()));
+            }
+        }
+    }
+    resolved
+}
+
 /// Plaintext secrets for the repositories pinned in a run, gated by the step lease.
 pub fn for_runner(c: &Connection, org: &str, runner: &str, run: &str, step: &str, lease_token: &str, now: i64) -> Result<Value> {
     super::workflow_execution::lease(c, org, runner, run, step, lease_token, now)?;
@@ -232,18 +251,15 @@ pub fn for_runner(c: &Connection, org: &str, runner: &str, run: &str, step: &str
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut repositories = serde_json::Map::new();
     let mut provided = Vec::new();
-    for (repository, kind, ciphertext) in rows {
-        if !pinned.contains(&repository.as_str()) {
-            continue;
-        }
-        let plaintext = crate::crypto::decrypt(&ciphertext).ok_or_else(|| anyhow::anyhow!("repo_secret_unavailable"))?;
+    for (repository, kind, source, ciphertext) in resolve(&rows, &pinned) {
+        let plaintext = crate::crypto::decrypt(ciphertext).ok_or_else(|| anyhow::anyhow!("repo_secret_unavailable"))?;
         repositories
-            .entry(repository.clone())
+            .entry(repository.to_string())
             .or_insert_with(|| json!({}))
             .as_object_mut()
             .expect("object")
-            .insert(kind.clone(), Value::String(plaintext));
-        provided.push(json!({"repository": repository, "kind": kind}));
+            .insert(kind.to_string(), Value::String(plaintext));
+        provided.push(json!({"repository": repository, "kind": kind, "source": source}));
     }
     if !provided.is_empty() {
         // Audit which secrets reached the runner, never their values.
@@ -255,6 +271,22 @@ pub fn for_runner(c: &Connection, org: &str, runner: &str, run: &str, step: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_default_applies_unless_the_repository_has_its_own() {
+        let row = |r: &str, k: &str, c: &str| (r.to_string(), k.to_string(), c.to_string());
+        let rows = vec![row("*", "npmrc", "all-npm"), row("*", "env", "all-env"), row("web", "npmrc", "web-npm"), row("old", "env", "gone")];
+        let resolved = resolve(&rows, &["api", "web"]);
+        assert_eq!(
+            resolved,
+            vec![
+                ("api", "env", "*", "all-env"),
+                ("api", "npmrc", "*", "all-npm"),
+                ("web", "env", "*", "all-env"),
+                ("web", "npmrc", "web", "web-npm"),
+            ]
+        );
+    }
 
     #[test]
     fn env_requires_literal_assignments() {
