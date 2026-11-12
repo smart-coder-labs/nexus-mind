@@ -777,6 +777,12 @@ async fn repo_secrets_are_write_only_encrypted_and_lease_gated() {
 
     let (status, _) = request(&app, "PUT", &secrets, Some(&cookie), None, Some(json!({"repository":"api","kind":"npmrc","content":npmrc}))).await;
     assert_eq!(status, StatusCode::OK);
+    // `*` is the workspace default for every repository.
+    let (status, listed) = request(&app, "PUT", &secrets, Some(&cookie), None, Some(json!({"repository":"*","kind":"npmrc","content":npmrc}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listed["secrets"].as_array().unwrap().iter().any(|s| s["repository"] == "*"));
+    let (status, _) = request(&app, "DELETE", &format!("{secrets}?repository=*&kind=npmrc"), Some(&cookie), None, None).await;
+    assert_eq!(status, StatusCode::OK);
     let (status, listed) = request(&app, "PUT", &secrets, Some(&cookie), None, Some(json!({"repository":"api","kind":"env","content":"DB_PASSWORD=supersecret\nPORT=3000"}))).await;
     assert_eq!(status, StatusCode::OK);
     // Write-only: names and hosts are visible, values never are.

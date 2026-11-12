@@ -5,6 +5,8 @@ import { Input } from '../../../components/ui/Input'
 import { InlineError, errorMessage, useFactory } from '../shared/ui'
 
 export type RepoSecretKind = 'env' | 'npmrc'
+/** Repository value for a secret that applies to every repository without its own. */
+export const ALL_REPOSITORIES = '*'
 export interface RepoSecretSummary {
   repository: string
   kind: RepoSecretKind
@@ -45,6 +47,9 @@ export function RepoSecrets({ workspaceId, repositories, disabled }: { workspace
   const [busy, setBusy] = useState(false)
 
   const current = (kind: RepoSecretKind) => list.data?.secrets.find((s) => s.repository === repository && s.kind === kind)
+  // The workspace default the runner uses when this repository has no entry of its own.
+  const inherited = (kind: RepoSecretKind) =>
+    repository === ALL_REPOSITORIES ? undefined : list.data?.secrets.find((s) => s.repository === ALL_REPOSITORIES && s.kind === kind)
   const act = async (work: () => Promise<RepoSecretList>, done: string) => {
     setBusy(true); setError(''); setNotice('')
     try {
@@ -86,14 +91,22 @@ export function RepoSecrets({ workspaceId, repositories, disabled }: { workspace
       <label className="block space-y-1.5 text-sm">
         Repositorio
         <select className={select} value={repository} onChange={(e) => setRepository(e.target.value)} aria-label="Repositorio">
+          <option value={ALL_REPOSITORIES}>Todos los repositorios</option>
           {repositories.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
+        {repository === ALL_REPOSITORIES && (
+          <span className="block text-xs text-muted-foreground">
+            Se aplica a todos los repositorios del workspace; un repositorio con su propio valor lo reemplaza.
+          </span>
+        )}
       </label>
 
       <section className="space-y-2" aria-label="Archivo .env">
         <h3 className="text-sm font-semibold">.env</h3>
         <p className="text-xs text-muted-foreground">
-          {envSaved ? `Guardado · ${envSaved.summary.keys?.join(', ') ?? ''} · ${envSaved.updated_at}` : 'Sin .env para este repositorio.'}
+          {envSaved
+            ? `Guardado · ${envSaved.summary.keys?.join(', ') ?? ''} · ${envSaved.updated_at}`
+            : inherited('env') ? 'Usa el .env de todos los repositorios.' : 'Sin .env para este repositorio.'}
         </p>
         <textarea className={field} rows={6} spellCheck={false} autoComplete="off" aria-label="Contenido .env"
           placeholder={'DATABASE_URL=postgres://...\nAPI_KEY=...'} value={env} disabled={locked} onChange={(e) => setEnv(e.target.value)} />
@@ -108,7 +121,9 @@ export function RepoSecrets({ workspaceId, repositories, disabled }: { workspace
         <p className="text-xs text-muted-foreground">
           {npmSaved
             ? `Guardado · registros: ${npmSaved.summary.registries?.join(', ') || '—'} · scopes: ${npmSaved.summary.scopes?.join(', ') || '—'} · ${npmSaved.updated_at}`
-            : 'Sin autenticación npm: solo se aceptan paquetes de registry.npmjs.org.'}
+            : inherited('npmrc')
+              ? 'Usa la autenticación npm de todos los repositorios.'
+              : 'Sin autenticación npm: solo se aceptan paquetes de registry.npmjs.org.'}
         </p>
         <div className="flex gap-4 text-sm" role="radiogroup" aria-label="Modo de autenticación npm">
           <label className="flex items-center gap-2"><input type="radio" checked={mode === 'token'} onChange={() => setMode('token')} />Token</label>

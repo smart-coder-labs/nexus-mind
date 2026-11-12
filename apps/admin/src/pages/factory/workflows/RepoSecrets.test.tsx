@@ -46,4 +46,22 @@ describe('RepoSecrets', () => {
       ),
     )
   })
+
+  it('saves a secret for all repositories and shows it as inherited', async () => {
+    client.listRepoSecrets.mockResolvedValue({
+      encryption_configured: true,
+      secrets: [{ repository: '*', kind: 'npmrc', summary: { registries: ['https://npm.pkg.github.com/'] }, updated_at: '2026-11-12 10:00:00' }],
+    })
+    client.saveRepoSecret.mockClear().mockResolvedValue({ encryption_configured: true, secrets: [] })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RepoSecrets workspaceId="w1" repositories={['api', 'web']} disabled={false} />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByText('Usa la autenticación npm de todos los repositorios.')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Repositorio'), { target: { value: '*' } })
+    fireEvent.change(screen.getByLabelText('Contenido .env'), { target: { value: 'A=1' } })
+    fireEvent.click(screen.getByText('Guardar .env'))
+    await waitFor(() => expect(client.saveRepoSecret).toHaveBeenCalledWith('w1', '*', 'env', 'A=1'))
+  })
 })
