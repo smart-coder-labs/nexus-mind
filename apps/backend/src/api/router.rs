@@ -10,9 +10,10 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
     admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
-    clients, code, context, conventions, docs, factory, github_auth, harnesses, health, internal, memory,
-    middleware as api_mw, migrations as migrations_api, policy, rate_limit, sdd, search, sessions,
-    tasks, usage, users, webhooks,
+    clients, code, context, conventions, docs, factory, factory_evals, factory_lookback,
+    factory_model_config, factory_trajectory, github_auth, harnesses, health, internal, memory,
+    middleware as api_mw, migrations as migrations_api, policy, sdd, search, sessions,
+    tasks, usage, users, webhooks, workflows, workflow_execution, github_review_hooks,
 };
 use crate::config::Config;
 use crate::email::EmailConfig;
@@ -71,8 +72,6 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             None
         }
     };
-
-    let rate_state = rate_limit::RateLimitState::new(store.conn());
 
     let protected = Router::new()
         .route("/v1/memory/store", post(memory::store))
@@ -205,10 +204,52 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(factory::list_policies).put(factory::put_policy),
         )
         .route("/v1/factory/policies/:id", delete(factory::delete_policy))
+        .route(
+            "/v1/factory/model-config",
+            get(factory_model_config::get).put(factory_model_config::put),
+        )
+        .route("/v1/factory/workflow-catalog", get(workflows::catalog))
+        .route("/v1/autonomous-agents/github/review-hooks", get(github_review_hooks::list).post(github_review_hooks::register))
+        .route("/v1/autonomous-agents/github/review-hooks/:id", delete(github_review_hooks::disconnect))
+        .route("/v1/factory/runners", post(workflows::register_runner))
+        .route("/v1/factory/runners/:id", delete(workflows::revoke_runner))
+        .route("/v1/factory/runners/:id/rotate", post(workflow_execution::rotate_runner))
+        .route("/v1/factory/workspaces", post(workflows::create_workspace))
+        .route("/v1/factory/workspaces/:id/confirm", post(workflows::confirm_workspace))
+        .route("/v1/factory/github/publication-identity",get(super::workflows::publication_identity))
+        .route("/v1/factory/workflow-agent-profiles/:id", get(super::workflow_runtime::agent_profile))
+        .route("/v1/factory/workspaces/:id/runtime", axum::routing::put(super::workflow_runtime::save))
+        .route("/v1/factory/workspaces/:id/repo-secrets", get(super::workspace_secrets::list).put(super::workspace_secrets::save).delete(super::workspace_secrets::delete))
+        .route("/v1/factory/workflows", post(workflows::create_definition))
+        .route("/v1/factory/workflows/:id/linear-next", post(workflows::linear_next))
+        .route("/v1/factory/workflow-runs", post(workflows::start_run))
+        .route("/v1/factory/workflow-runs/:id", get(workflows::get_run))
+        .route("/v1/factory/workflow-runs/:id/control", post(workflows::control_run))
+        .route("/v1/factory/workflow-runs/:id/events", get(workflow_execution::run_events))
+        .route("/v1/factory/workflow-runs/:id/approve", post(workflow_execution::approve))
+        .route("/v1/factory/workflow-artifacts/:id", get(workflow_execution::get_artifact))
+        .route("/v1/factory/workflow-intakes", post(workflow_execution::create_intake))
+        .route("/v1/factory/workflow-intakes/:id", delete(workflow_execution::delete_intake).patch(workflow_execution::update_intake))
+        .route("/v1/factory/workflow-intakes/poll", post(workflow_execution::poll_intakes))
         .route("/v1/factory/digest", get(factory::human_digest))
         .route("/v1/factory/economics", get(factory::economics))
         .route("/v1/factory/decisions", post(factory::record_human_decision))
         .route("/v1/factory/tasks", post(factory::submit_factory_task))
+        .route("/v1/factory/evaluations", get(factory_evals::list_runs).post(factory_evals::start_run))
+        .route("/v1/factory/evaluations/:id", get(factory_evals::get_run))
+        .route("/v1/factory/lookback", get(factory_lookback::recommendations))
+        .route(
+            "/v1/factory/trajectories",
+            get(factory_trajectory::list_feedback_queue),
+        )
+        .route(
+            "/v1/factory/trajectories/:run_id",
+            get(factory_trajectory::list_run_trajectory),
+        )
+        .route(
+            "/v1/factory/trajectories/:run_id/feedback",
+            post(factory_trajectory::record_human_feedback),
+        )
         .route(
             "/v1/factory/intake/sources",
             get(factory::list_intake_sources).post(factory::create_intake_source),
@@ -220,6 +261,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
                 .delete(factory::delete_intake_source),
         )
         .route("/v1/factory/intake/items", get(factory::list_intake_items))
+        .route("/v1/factory/intake/items/:task_id/start", post(factory::start_intake_item))
         .route("/v1/factory/intake/transcripts", post(factory::upload_transcript))
         .route("/v1/factory/watchdog", get(factory::get_watchdog).put(factory::put_watchdog))
         .route("/v1/factory/shadow/report", get(factory::shadow_report))
@@ -610,6 +652,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
                 .post(autonomous_agents::check_runtime_health),
         )
         .route(
+            "/v1/autonomous-agents/pi-runtime",
+            get(autonomous_agents::get_pi_runtime_health),
+        )
+        .route(
             "/v1/autonomous-agents/settings",
             get(autonomous_agents::get_org_settings).patch(autonomous_agents::patch_org_settings),
         )
@@ -654,6 +700,18 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(autonomous_agents::list_targets).post(autonomous_agents::put_target),
         )
         .route(
+            "/v1/autonomous-agents/:id/qa-coverage",
+            get(autonomous_agents::list_agent_qa_coverage),
+        )
+        .route(
+            "/v1/projects/:project_id/qa-repositories",
+            get(autonomous_agents::list_qa_repository_grants).post(autonomous_agents::put_qa_repository_grant),
+        )
+        .route(
+            "/v1/projects/:project_id/qa-repositories/:repository",
+            axum::routing::delete(autonomous_agents::delete_qa_repository_grant),
+        )
+        .route(
             "/v1/autonomous-agent-runs",
             get(autonomous_agents::list_runs),
         )
@@ -664,6 +722,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/autonomous-agent-runs/:id/verification-reports",
             get(autonomous_agents::list_run_verification_reports),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id/qa-coverage",
+            get(autonomous_agents::list_run_qa_coverage),
         )
         .route(
             "/v1/autonomous-agent-runs/:id/cancel",
@@ -704,6 +766,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/autonomous-agent-findings/:id",
             patch(autonomous_agents::patch_finding),
+        )
+        .route(
+            "/v1/autonomous-agent-findings/:id/issue-repositories",
+            get(autonomous_agents::list_finding_issue_repositories),
         )
         .route(
             "/v1/autonomous-agent-findings/:id/github-issue",
@@ -774,12 +840,6 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         // audit entry for every successful mutating request whose handler does
         // not already self-log (see middleware::AUDIT_SKIP_PATTERNS).
         .layer(middleware::from_fn_with_state(store.conn(), api_mw::audit))
-        // Rate limit runs after auth (inner layer = runs second at runtime).
-        // Auth is outermost (last `.layer()`) so it runs first.
-        .layer(middleware::from_fn_with_state(
-            rate_state,
-            rate_limit::rate_limit,
-        ))
         .layer(middleware::from_fn_with_state(store.conn(), api_mw::auth));
 
     let cors_origins = config.cors_origins.clone();
@@ -856,6 +916,25 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
 
     let router = Router::new()
         .route("/v1/health", get(health::handler))
+        .route("/v1/autonomous-agents/github/webhook/:connector", post(autonomous_webhooks::github_cli_webhook))
+        .route("/v1/factory/runner/workspaces", get(workflows::runner_workspaces))
+        .route("/v1/factory/runner/workspaces/:id/inventory", post(workflows::report_inventory))
+        .route("/v1/factory/runner/workspaces/:id/runtime-report", post(super::workflow_runtime::report))
+        .route("/v1/factory/runner/claim", post(workflows::claim))
+        .route("/v1/factory/runner/model-runtime", get(super::workflow_model::capabilities))
+        .route("/v1/factory/runner/runs/:run/steps/:step/model", post(super::workflow_model::invoke))
+        .route("/v1/factory/runner/runs/:run/steps/:step/validation-plan", post(super::workflow_validation::plan))
+        .route("/v1/factory/runner/runs/:run/steps/:step/repo-secrets", post(super::workspace_secrets::runner))
+        .route("/v1/factory/runner/runs/:run/steps/:step/sources/:index/info/refs", get(super::workflow_sources::advertise))
+        .route("/v1/factory/runner/runs/:run/steps/:step/sources/:index/git-upload-pack", post(super::workflow_sources::upload_pack))
+        .route("/v1/factory/runner/poll-intakes", post(workflow_execution::runner_poll_intakes))
+        .route("/v1/factory/runner/runs", get(workflow_execution::runner_runs))
+        .route("/v1/factory/runner/runs/:run", get(workflow_execution::runner_run))
+        .route("/v1/factory/runner/runs/:run/steps/:step/publish", post(workflow_execution::publish))
+        .route("/v1/factory/runner/runs/:run/steps/:step/artifacts", post(workflow_execution::put_artifact))
+        .route("/v1/factory/runner/runs/:run/steps/:step/events", post(workflow_execution::event))
+        .route("/v1/factory/runner/runs/:run/steps/:step/lease", post(workflow_execution::lease))
+        .route("/v1/factory/runner/runs/:run/steps/:step/complete", post(workflows::complete))
         .route("/v1/orgs", get(admin::list_orgs).post(admin::create_org))
         .route("/v1/orgs/:id/users", get(admin::list_org_users))
         .route("/v1/admin/auth/login", post(auth::login))
@@ -891,6 +970,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .layer(cors)
         .layer(CookieManagerLayer::new())
         .layer(middleware::from_fn(api_mw::accept_json))
+        .layer(middleware::from_fn_with_state(store.conn(), api_mw::runner_diagnostics))
         .layer(TraceLayer::new_for_http())
         .with_state(store.clone());
 

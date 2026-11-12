@@ -1,9 +1,20 @@
+pub mod workflows;
+pub mod workflow_execution;
+pub mod workflow_logs;
+pub mod workflow_runtime;
+pub mod workspace_secrets;
+pub mod github_review_hooks;
+pub mod autonomous_scope;
 pub mod connection;
 pub mod doc_queries;
 pub mod factory_intake;
 pub mod factory_ops;
 pub mod factory_queries;
+pub mod factory_model_config;
+pub mod factory_trajectory;
 pub mod migrations;
 pub mod migration_queries;
 pub mod queries;
 pub mod usage_queries;
+
+pub mod qa_coverage;

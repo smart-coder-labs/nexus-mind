@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::contracts::{CheckResult, CheckStatus, SchemaV1, VerificationReport};
 
 /// Programs a verification command may start with.
-const ALLOWED_PROGRAMS: &[&str] = &["npm", "npx", "pnpm", "yarn", "bun", "cargo"];
+const ALLOWED_PROGRAMS: &[&str] = &["npm", "npx", "pnpm", "yarn", "bun", "cargo", "python3", "python", "go", "flutter", "dart", "./gradlew", "gradle", "swift", "xcodebuild", "dotnet", "mvn", "./mvnw", "make"];
 const MAX_COMMANDS: usize = 8;
 /// Per-command limit inside the pod.
 pub const COMMAND_TIMEOUT_SECS: u64 = 300;
@@ -95,7 +95,7 @@ pub fn build_report(
             return CheckStatus::Error;
         }
         match run.get("conclusion").and_then(Value::as_str) {
-            Some("success" | "neutral" | "skipped") => CheckStatus::Pass,
+            Some("success") => CheckStatus::Pass,
             _ => CheckStatus::Fail,
         }
     };
@@ -157,6 +157,48 @@ pub fn build_report(
     Ok(report)
 }
 
+/// Waive command checks that fail on the base commit as well: they are
+/// pre-existing, not caused by the change. They are kept in the report as
+/// `Skip` with a `[preexisting]` suffix and stop blocking; a check that fails only
+/// on the head still blocks, and a report with no passing check still has no
+/// evidence.
+pub fn waive_preexisting(
+    mut report: VerificationReport,
+    preexisting: &[Vec<String>],
+) -> anyhow::Result<VerificationReport> {
+    use super::contracts::Contract;
+    if preexisting.is_empty() {
+        return Ok(report);
+    }
+    let names: Vec<String> = preexisting
+        .iter()
+        .map(|argv| truncate(format!("cmd:{}", argv.join(" "))))
+        .collect();
+    for check in report.checks.iter_mut() {
+        if matches!(check.status, CheckStatus::Fail | CheckStatus::Error) && names.contains(&check.name) {
+            check.status = CheckStatus::Skip;
+            check.name = truncate(format!("{} [preexisting]", check.name));
+        }
+    }
+    let mut blocking: Vec<String> = report
+        .checks
+        .iter()
+        .filter(|check| matches!(check.status, CheckStatus::Fail | CheckStatus::Error))
+        .map(|check| check.name.clone())
+        .collect();
+    if blocking.is_empty() && !report.checks.iter().any(|check| check.status == CheckStatus::Pass) {
+        blocking.push("no_verification_evidence".into());
+    }
+    report.passed = blocking.is_empty();
+    report.eligible_for_merge = report.passed;
+    report.human_approval_required = !report.passed;
+    report.blocking_failures = blocking;
+    report
+        .validate()
+        .map_err(|reason| anyhow::anyhow!("invalid_verification_report: {reason}"))?;
+    Ok(report)
+}
+
 /// Check names are capped at 255 characters by the contract.
 fn truncate(mut name: String) -> String {
     if name.len() > 255 {
@@ -173,6 +215,31 @@ fn truncate(mut name: String) -> String {
 mod tests {
     use super::*;
     use crate::factory::contracts::Contract;
+
+    #[test]
+    fn preexisting_failures_stop_blocking_but_new_ones_do_not() {
+        let receipt = |argv: &[&str], code: i32| VerificationReceipt {
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+            exit_code: Some(code),
+            duration_ms: 1,
+        };
+        let id = "00000000-0000-4000-8000-000000000001";
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        let receipts = [receipt(&["npm", "ci"], 0), receipt(&["npm", "run", "test"], 1), receipt(&["npm", "run", "lint"], 1)];
+        let report = build_report(id, head, &receipts, &[], &[]).unwrap();
+        assert!(!report.passed);
+        let lint = vec!["npm".to_string(), "run".into(), "lint".into()];
+        let partly = waive_preexisting(report.clone(), &[lint.clone()]).unwrap();
+        assert!(!partly.passed);
+        assert_eq!(partly.blocking_failures, vec!["cmd:npm run test".to_string()]);
+        assert!(partly.checks.iter().any(|c| c.name == "cmd:npm run lint [preexisting]" && c.status == CheckStatus::Skip));
+        let test = vec!["npm".to_string(), "run".into(), "test".into()];
+        assert!(waive_preexisting(report, &[lint.clone(), test.clone()]).unwrap().passed);
+        let nothing_passes = build_report(id, head, &[receipt(&["npm", "run", "lint"], 1)], &[], &[]).unwrap();
+        let waived = waive_preexisting(nothing_passes, &[lint]).unwrap();
+        assert!(!waived.passed);
+        assert_eq!(waived.blocking_failures, vec!["no_verification_evidence".to_string()]);
+    }
     use serde_json::json;
 
     const TASK: &str = "0f9b7c2e-1d2a-4c3b-9e8f-0123456789ab";
@@ -308,7 +375,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(report.passed);
+        assert!(!report.passed, "a skipped CI check is not evidence that it passed");
         assert_eq!(report.checks.len(), 2);
     }
 

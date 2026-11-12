@@ -180,6 +180,18 @@ pub fn resolve_isolation(
     executor: &str,
     default: Isolation,
 ) -> anyhow::Result<Isolation> {
+    // Pi uses the worker's persisted ChatGPT OAuth identity, never a task pod.
+    if executor == "pi" {
+        if !crate::automation::pi::TEMPLATES.contains(&template_key) {
+            anyhow::bail!("pi_unsupported_template")
+        }
+        return match config.get("isolation") {
+            None => Ok(Isolation::Local),
+            Some(Value::String(value)) if value == "local" => Ok(Isolation::Local),
+            Some(Value::String(value)) if value == "sandbox" => anyhow::bail!("pi_requires_local"),
+            _ => anyhow::bail!("invalid_isolation"),
+        };
+    }
     // Codex runs only in a task pod: its OpenAI key exists only in the proxy.
     if executor == "codex" {
         if !crate::automation::codex::CODEX_TEMPLATES.contains(&template_key) {
@@ -223,6 +235,15 @@ pub fn verification_env(registry_token: &str) -> Vec<(String, String)> {
         ("HOME", "/tmp".to_string()),
         ("TMPDIR", "/tmp".to_string()),
         ("CI", "1".to_string()),
+        ("RUSTUP_HOME", "/usr/local/rustup".to_string()),
+        ("CARGO_HOME", "/tmp/.cargo".to_string()),
+        // Rust integration checks run in 4 GiB verification pods. Keep one
+        // compiler job and disable test debug info to avoid link OOMs. The
+        // task launcher rebuilds the environment, so both settings belong here.
+        ("CARGO_BUILD_JOBS", "1".to_string()),
+        ("CARGO_PROFILE_TEST_DEBUG", "0".to_string()),
+        ("CARGO_PROFILE_DEV_DEBUG", "0".to_string()),
+        ("RUST_TEST_THREADS", "2".to_string()),
         (
             "HTTPS_PROXY",
             format!("http://run:{registry_token}@{PROXY_AUTHORITY}"),
@@ -332,11 +353,16 @@ pub fn playwright_mcp(proxy_token: &str) -> (String, Vec<u8>) {
         ]
     }}});
     // Playwright answers the proxy's 407 challenge with these credentials.
-    let file = json!({"browser": {"launchOptions": {"proxy": {
-        "server": format!("http://{PROXY_AUTHORITY}"),
-        "username": "run",
-        "password": proxy_token
-    }}}});
+    // Chromium keeps renderer memory in /dev/shm; the container default (64 MB)
+    // hangs SPAs until navigation times out, so it writes to /tmp instead.
+    let file = json!({"browser": {"launchOptions": {
+        "args": ["--disable-dev-shm-usage"],
+        "proxy": {
+            "server": format!("http://{PROXY_AUTHORITY}"),
+            "username": "run",
+            "password": proxy_token
+        }
+    }}});
     (mcp.to_string(), file.to_string().into_bytes())
 }
 
@@ -413,6 +439,13 @@ pub fn valid_artifact_name(name: &str) -> bool {
 }
 
 pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
+    let cpu_request = if request.profile == PodProfile::Commands {
+        // The production worker leaves a single 50m verification slot. Keep
+        // agent pods at their 100m reservation so this only unblocks F1 checks.
+        "50m"
+    } else {
+        "100m"
+    };
     let env = match request.profile {
         PodProfile::Agent => task_env(request),
         PodProfile::CodexAgent => codex_task_env(request),
@@ -469,19 +502,22 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
                     "capabilities": {"drop": ["ALL"]}
                 },
                 "resources": {
-                    "requests": {"cpu": "100m", "memory": "512Mi"},
+                    "requests": {"cpu": cpu_request, "memory": "512Mi"},
                     "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "8Gi"}
                 },
                 "volumeMounts": [
                     {"name": "workspace", "mountPath": WORKSPACE},
                     {"name": "home", "mountPath": "/home/task"},
-                    {"name": "tmp", "mountPath": "/tmp"}
+                    {"name": "tmp", "mountPath": "/tmp"},
+                    {"name": "shm", "mountPath": "/dev/shm"}
                 ]
             }],
             "volumes": [
                 {"name": "workspace", "emptyDir": {"sizeLimit": "6Gi"}},
                 {"name": "home", "emptyDir": {"sizeLimit": "1Gi"}},
-                {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}}
+                {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}},
+                // Browser shared memory (QA/judge Chromium); counts toward the memory limit.
+                {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"}}
             ]
         }
     })
@@ -598,6 +634,22 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_task_reserves_one_available_cpu_slot_and_can_burst() {
+        let mut command_request = request();
+        command_request.profile = PodProfile::Commands;
+        let pod = task_pod_manifest(&command_request);
+        let task = &pod["spec"]["containers"][0];
+        assert_eq!(task["resources"]["requests"]["cpu"], "50m");
+        assert_eq!(task["resources"]["limits"]["cpu"], "2");
+
+        let agent = task_pod_manifest(&request());
+        assert_eq!(
+            agent["spec"]["containers"][0]["resources"]["requests"]["cpu"],
+            "100m"
+        );
+    }
+
+    #[test]
     fn verification_gets_only_the_registry_token() {
         let env: std::collections::HashMap<String, String> =
             verification_env("v2.org-1.run-registry.1.sig")
@@ -615,6 +667,11 @@ mod tests {
             assert!(!env.contains_key(inherited), "{inherited}");
         }
         assert_eq!(env["HOME"], "/tmp");
+        assert_eq!(env["RUSTUP_HOME"], "/usr/local/rustup");
+        assert_eq!(env["CARGO_HOME"], "/tmp/.cargo");
+        assert_eq!(env["CARGO_BUILD_JOBS"], "1");
+        assert_eq!(env["CARGO_PROFILE_TEST_DEBUG"], "0");
+        assert_eq!(env["RUST_TEST_THREADS"], "2");
     }
 
     #[test]
@@ -721,6 +778,27 @@ mod tests {
         assert_eq!(proxy["server"], format!("http://{PROXY_AUTHORITY}"));
         assert_eq!(proxy["username"], "run");
         assert_eq!(proxy["password"], "v3.org.run.1.aG9zdA.sig");
+        assert_eq!(
+            file["browser"]["launchOptions"]["args"],
+            json!(["--disable-dev-shm-usage"])
+        );
+    }
+
+    #[test]
+    fn the_browser_gets_memory_backed_shared_memory() {
+        let pod = task_pod_manifest(&request());
+        let shm = pod["spec"]["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|volume| volume["name"] == "shm")
+            .expect("shm volume");
+        assert_eq!(shm["emptyDir"]["medium"], "Memory");
+        assert!(pod["spec"]["containers"][0]["volumeMounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mount| mount["name"] == "shm" && mount["mountPath"] == "/dev/shm"));
     }
 
     #[test]

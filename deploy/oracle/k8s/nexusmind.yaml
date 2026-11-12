@@ -72,12 +72,19 @@ spec:
             - secretRef:
                 name: nexusmind-env
           env:
+            - name: SENTRY_ENVIRONMENT
+              value: production
             - name: AUTONOMOUS_AGENTS_ENABLED
               value: "true"
             - name: CLAUDE_CODE_BIN
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME
               value: /claude-home
+            # Orgs where Jev decides which workflow checks run and which phase
+            # retries a failure (floors still apply; Jev errors run everything).
+            # Explicit opt-in, separate from shadow mode.
+            - name: FACTORY_JEV_DECISION_ORGS
+              value: bdf4b2aa-3f52-422e-8bee-a1babbb7d337
           volumeMounts:
             - name: data
               mountPath: /data
@@ -127,10 +134,20 @@ spec:
           env:
             - name: AUTONOMOUS_AGENTS_ENABLED
               value: "true"
+            # The Nexus executor's CLI requires an explicit registered gateway
+            # name. Keep this aligned with the production registration under
+            # /claude-home/.config/openshell; without it the worker silently
+            # targets no gateway even when the gateway is reachable.
+            - name: OPENSHELL_GATEWAY
+              value: production
             - name: CLAUDE_CODE_BIN
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME
               value: /claude-home
+            # Pi is installed in the PVC-backed npm prefix; ChatGPT OAuth lives
+            # in /claude-home/.pi/agent/auth.json and survives pod replacement.
+            - name: AUTONOMOUS_PI_BIN
+              value: /claude-home/.npm-global/bin/pi
             # The AI Content Manager generates post imagery by shelling out to the
             # Higgsfield CLI. That CLI keeps a browser-OAuth session in
             # $HOME/.config/higgsfield, so it is installed into the PVC (which HOME
@@ -153,6 +170,10 @@ spec:
             # FACTORY_ISOLATION_DEFAULT=sandbox is set (after the drill).
             - name: FACTORY_SANDBOX_IMAGE
               value: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+            # Verification commands get a separate image with Cargo; the
+            # serving backend and model-running task pods stay on the lean image.
+            - name: FACTORY_COMMANDS_IMAGE
+              value: ghcr.io/smart-coder-labs/nexusmind-factory-commands:main-arm64
             # Orgs whose PR metadata may go to the decision model (Jev, TypeSafe)
             # for F3 shadow decisions. SmartCoderLabs only, by owner decision
             # (ADR 7d6f870f); every other tenant needs its own opt-in.

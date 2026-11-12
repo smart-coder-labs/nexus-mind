@@ -1,0 +1,40 @@
+name: OpenShell gateway cluster preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openshell-gateway-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/ops/openshell-gateway'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe private k3s cluster
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          PREFLIGHT_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+          keyfile=$(mktemp)
+          known_hosts=$(mktemp)
+          trap 'rm -f "$keyfile" "$known_hosts"' EXIT
+          chmod 600 "$keyfile" "$known_hosts"
+          printf '%s\n' "$SSH_KEY" > "$keyfile"
+          ssh-keyscan -H "$SSH_HOST" > "$known_hosts" 2>/dev/null
+          SSHOPTS=(-i "$keyfile" -o UserKnownHostsFile="$known_hosts" -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+          scp "${SSHOPTS[@]}" scripts/factory/openshell_cluster_preflight.sh "$REMOTE:/tmp/openshell-cluster-preflight.sh"
+          ssh "${SSHOPTS[@]}" "$REMOTE" "sudo bash /tmp/openshell-cluster-preflight.sh '$PREFLIGHT_RUN_ID'"

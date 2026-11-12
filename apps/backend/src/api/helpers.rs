@@ -113,6 +113,10 @@ where
                     JsonRejection::MissingJsonContentType(_) => {
                         (StatusCode::UNSUPPORTED_MEDIA_TYPE, "invalid_content_type")
                     }
+                    // Body over the route's limit: say so, not "malformed JSON".
+                    _ if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+                        (StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")
+                    }
                     _ => (StatusCode::BAD_REQUEST, "invalid_json"),
                 };
                 Err((

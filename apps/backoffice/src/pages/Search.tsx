@@ -132,6 +132,7 @@ export default function Search() {
           autoFocus
           value={query}
           onChange={e => setQuery(e.target.value)}
+          aria-label="Search organizations and users"
           placeholder="Search organizations and users…"
           className="w-full rounded-lg border border-border-primary bg-surface-secondary text-sm text-text-primary pl-10 pr-16 py-2.5 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary transition-colors"
         />

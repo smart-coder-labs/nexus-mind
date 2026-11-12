@@ -11,6 +11,8 @@ name: Deploy U2S (self-host)
 #   U2S_GHCR_USERNAME   GitHub username that owns the read-only pull token
 #   U2S_GHCR_TOKEN      PAT with read:packages, for `docker login` on the box
 #   U2S_SUPERUSER_KEY   Backend SUPERUSER_KEY (auth for org creation + admin)
+# Optional Environment secret:
+#   U2S_SENTRY_DSN       Sentry DSN for the U2S backend
 on:
   workflow_dispatch:
     inputs:
@@ -102,6 +104,8 @@ jobs:
           push: true
           build-args: |
             VITE_ADMIN_PROFILE=only-context
+            VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN_ADMIN }}
+            VITE_SENTRY_ENVIRONMENT=production
           tags: ghcr.io/${{ steps.vars.outputs.owner_lc }}/nexusmind-admin:main
 
   deploy:
@@ -124,6 +128,7 @@ jobs:
           GHCR_USERNAME: ${{ secrets.U2S_GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.U2S_GHCR_TOKEN }}
           SUPERUSER_KEY: ${{ secrets.U2S_SUPERUSER_KEY }}
+          SENTRY_DSN: ${{ secrets.U2S_SENTRY_DSN }}
           GHCR_OWNER: ${{ needs.build-and-push.outputs.owner_lc }}
           ADMIN_EMAIL: ${{ github.event.inputs.admin_email }}
           ADMIN_NAME: ${{ github.event.inputs.admin_name }}
@@ -153,6 +158,7 @@ jobs:
           ssh $SSHOPTS "$REMOTE" "umask 077; cat > ~/u2s-deploy/.env" <<ENVEOF
           GHCR_OWNER="${GHCR_OWNER}"
           SUPERUSER_KEY="${SUPERUSER_KEY}"
+          SENTRY_DSN="${SENTRY_DSN}"
           U2S_ADMIN_EMAIL="${ADMIN_EMAIL}"
           U2S_ADMIN_NAME="${ADMIN_NAME}"
           ENVEOF

@@ -69,8 +69,14 @@ export interface AutonomousAgentDefinition { id:string; org_id:string; name:stri
 export interface AutonomousAgentRevision { id:string; definition_id:string; revision:number; config:Record<string,unknown>; config_hash:string; capabilities:string[]; budgets:Record<string,unknown>; policy_generation:number; validation_status:'pending'|'valid'|'invalid'; validation:Record<string,unknown>|null; validated_at:string|null; created_by:string; created_at:string }
 export interface AutonomousAgentDetail extends AutonomousAgentDefinition { revision: AutonomousAgentRevision }
 export interface AutonomousAgentSchedule { id:string; definition_id:string; kind:'manual'|'daily'|'interval'; expression:string|null; timezone:string; misfire_policy:'run_once'|'skip'; next_run_at:string|null; enabled:boolean; created_at:string; updated_at:string }
-export interface AutonomousAgentRun { id:string; definition_id:string; revision_id:string; trigger_kind:string; occurrence_key:string; scheduled_for:string|null; snapshot_sha:string|null; status:string; budget:Record<string,unknown>; started_at:string|null; finished_at:string|null; created_at:string; archived_at:string|null }
+export interface AutonomousAgentRun { trigger_origin?:{kind:string;delivery_id?:string;scan_id?:string;source_run_id?:string}|null; id:string; definition_id:string; revision_id:string; trigger_kind:string; occurrence_key:string; scheduled_for:string|null; snapshot_sha:string|null; status:string; budget:Record<string,unknown>; started_at:string|null; finished_at:string|null; created_at:string; archived_at:string|null }
+export interface QAScenarioResult { project_id:string|null; application:string; environment:string; run_id:string; attempt_id?:string; key:string; description:string; status:'passed'|'failed'|'blocked'; evidence:unknown; tested_at:string; checkpoint?:boolean }
+export interface QABatchPlan { run_id?:string;attempt_id:string;key:string;description:string;reason:string;status:string;planned_at:string }
+export interface QAScenarioInventory {project_id:string|null;application:string;environment:string;module:string;key:string;description:string;critical:boolean;last_status:'passed'|'failed'|'blocked'|null;last_tested_at:string|null;blocker_changed:boolean}
+export interface QAScenarioInventorySummary {application:string;environment:string;total:number;never_tested:number;passed:number;failed:number;blocked:number;blocker_changed:number}
+export interface QACoveragePage { scenarios: QAScenarioResult[]; checkpoints: QAScenarioResult[]; plans: QABatchPlan[]; inventory:QAScenarioInventory[]; inventory_summary:QAScenarioInventorySummary[]; next_cursor: string | null; next_checkpoint_cursor:string|null; next_plan_cursor:string|null; next_inventory_cursor:string|null }
 export interface AutonomousRuntimeHealth { status:'ready'|'degraded'|'reauth_required'|'unavailable'; reason_code:string|null; claude_version:string|null; checked_at:string|null; last_success_at:string|null; last_failure_at:string|null }
+export interface PiRuntimeHealth { status:'ready'|'blocked'|'unavailable'; reason_code:string|null }
 export interface AutonomousAgentConnector { id:string; kind:'github_app'|'slack'|'target_secret'; name:string; metadata:Record<string,unknown>; scopes:string[]; health:string; revocation_generation:number; secret_configured:boolean; created_at:string; updated_at:string }
 export interface AutonomousAgentFinding { id:string;definition_id:string;run_id:string;fingerprint:string;title:string;severity:string;status:string;summary:string;evidence:Record<string,unknown>;occurrence_count:number;created_at:string;updated_at:string }
 export interface AutonomousAgentDelivery { id:string;run_id:string;finding_id:string|null;channel:string;status:string;external_id:string|null;external_url:string|null;attempts:number;last_error_code:string|null;created_at:string;updated_at:string }
@@ -80,6 +86,8 @@ export interface VerificationCheck { name:string;status:'PASS'|'FAIL'|'SKIP'|'ER
 export interface VerificationReport { schema_version:number;task_id:string;head_sha:string;passed:boolean;checks:VerificationCheck[];blocking_failures:string[];eligible_for_merge:boolean;human_approval_required:boolean }
 export interface StoredVerificationReport { head_sha:string;created_at:string;report:VerificationReport }
 export interface AutonomousAgentTarget { id:string;definition_id:string;kind:string;name:string;config:Record<string,unknown>;credential_connector_id:string|null;enabled:boolean;created_at:string;updated_at:string }
+export interface QaRepositoryGrant { repository:string;can_read:boolean;can_publish:boolean }
+export interface QaProjectRepositories { candidates:string[];grants:QaRepositoryGrant[] }
 export interface AutonomousAgentOrgSettings { enabled:boolean;retention_days:number }
 export interface AutonomousAgentMetrics { queued:number;running:number;blocked:number;open_findings:number;failed_deliveries:number;dead_letters:number;estimated_cost_usd:number }
 
@@ -809,6 +817,21 @@ export interface HarnessVersionSummary {
 }
 
 export type HarnessFormat = 'agent' | 'skill' | 'command' | 'hook' | 'output_style' | 'claude_code_plugin' | 'theme'
+export interface AgentRuntimeComponent {
+  id: string
+  kind: 'instructions' | 'skill' | 'script' | 'plugin' | 'extension' | 'prompt_template' | 'mcp'
+  enabled?: boolean
+  tools?: string[]
+  files?: Record<string, string>
+  server?: { command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string> }
+}
+export interface AgentRuntimeConfig {
+  nexusmind_profile?: string
+  acknowledge_executable?: boolean
+  harnesses?: { id: string; version: string; manifest_hash: string; components: string[] }[]
+  components?: AgentRuntimeComponent[]
+}
+
 export type HarnessComponentKind = 'file' | 'folder' | 'plugin_marketplace' | 'theme_json'
 
 export interface HarnessOwner {
@@ -838,7 +861,7 @@ export interface HarnessManifestComponent {
 
 export interface HarnessManifest {
   schema_version: '1.1'
-  targets: Array<'claude' | 'codex' | 'cursor'>
+  targets: Array<'claude' | 'codex' | 'cursor' | 'pi'>
   format: HarnessFormat
   components: HarnessManifestComponent[]
   provenance: { source: string }
@@ -863,6 +886,7 @@ export interface Harness {
 }
 
 export interface CreateHarnessRequest {
+  initial_version?: PublishHarnessVersionRequest
   slug: string
   name: string
   description?: string
@@ -1559,6 +1583,38 @@ export interface FactoryDigest {
   unlabeled_shadow_allows: number
 }
 
+export interface FactoryTrajectoryReviewItem {
+  run_id: string
+  agent_name: string
+  run_status: string
+  outcome: string | null
+  created_at: string
+}
+
+export interface FactoryLookbackEvidenceTask {
+  id: string
+  title: string
+  updated_at: string
+}
+
+export interface FactoryLookbackRecommendation {
+  memory_id: string
+  memory_title: string
+  memory_project: string
+  recurring_terms: string[]
+  recurrence_count: number
+  task_evidence: FactoryLookbackEvidenceTask[]
+  explanation: string
+}
+
+export interface FactoryLookbackResponse {
+  recommendations: FactoryLookbackRecommendation[]
+  completed_tasks_scanned: number
+  bugfix_memories_scanned: number
+  history_limit: number
+  history_truncated: boolean
+}
+
 export interface FactoryModelSpend { model: string | null; runs: number; cost_usd: number; input_tokens: number; output_tokens: number }
 export interface FactoryEconomics {
   days: number
@@ -1572,6 +1628,99 @@ export interface FactoryEconomics {
   accepted_changes_tracked: boolean
 }
 
+/**
+ * Frozen specialist evaluation contract for the Factory admin page.
+ * The backend discovers source JSONL files in its persistent eval directory;
+ * these shapes deliberately do not expose that filesystem path to the browser.
+ */
+export type FactoryEvaluationStatus = 'queued' | 'running' | 'complete' | 'failed'
+export type FactoryEvaluationSetStatus = 'ready' | 'missing'
+
+export interface FactoryEvaluationArmSummary {
+  arm: 'baseline' | 'specialist'
+  tasks: number
+  accepted: number
+  acceptance_rate: number
+  cost_usd: number | null
+  cost_per_accepted_change: number | null
+  judge_cost_usd: number
+}
+
+export interface FactoryEvaluationSummary {
+  arms: FactoryEvaluationArmSummary[]
+  specialist_beats_baseline: boolean | null
+}
+
+export interface FactoryEvaluationSet {
+  /** Stable dataset key, e.g. `docs`, `tests`, or `ui`. */
+  id: string
+  name: string
+  status: FactoryEvaluationSetStatus
+  task_count: number | null
+  completed_tasks: number
+  base_commit: string | null
+  summary: FactoryEvaluationSummary | null
+}
+
+export interface FactoryEvaluationRun {
+  id: string
+  status: FactoryEvaluationStatus
+  set_ids: string[]
+  started_at: string | null
+  updated_at: string
+  finished_at: string | null
+  error: string | null
+  /** Latest per-set results as read from the runner's JSONL outputs. */
+  sets: FactoryEvaluationSet[]
+}
+
+/** GET /v1/factory/evaluations returns discovered frozen sets and run history. */
+export interface FactoryEvaluationsResponse {
+  sets: FactoryEvaluationSet[]
+  runs: FactoryEvaluationRun[]
+}
+
+/** POST /v1/factory/evaluations starts or resumes the selected frozen sets. */
+export interface StartFactoryEvaluationRequest {
+  set_ids: string[]
+}
+
+export interface StartFactoryEvaluationResponse {
+  run: FactoryEvaluationRun
+}
+
+/** Provider/modmin config. Tokens are never returned by this API. */
+export type FactoryModelProvider = 'anthropic' | 'openai_api' | 'chatgpt_plan'
+export type FactoryModelRoleName = 'planner' | 'reviewer' | 'implementer'
+
+export interface FactoryModelRole {
+  provider: FactoryModelProvider
+  model: string
+}
+
+export type FactoryModelRoles = Record<FactoryModelRoleName, FactoryModelRole>
+
+export interface FactoryModelCredentials {
+  anthropic: 'unknown'
+  openai_api: 'unknown'
+  chatgpt_plan: 'not_connected'
+}
+
+/** GET /v1/factory/model-config; credential values are status only, never secrets. */
+export interface FactoryModelConfig {
+  roles: FactoryModelRoles
+  credentials: FactoryModelCredentials
+  /** False while selected providers are not wired into the runtime; do not fall back implicitly. */
+  execution_ready: boolean
+  updated_by: string | null
+  updated_at: string | null
+}
+
+/** PUT /v1/factory/model-config accepts role assignments only. */
+export interface UpdateFactoryModelConfigRequest {
+  roles: FactoryModelRoles
+}
+
 /** The per-organization identity sandboxed agents use to call NexusMind. */
 export interface FactoryBot {
   user_id: string
@@ -1581,8 +1730,8 @@ export interface FactoryBot {
   key_created_at: string | null
 }
 
-/** Factory F3 intake: a Slack channel or Sentry project feeding one issue-resolver agent. */
-export type FactoryIntakeKind = 'slack' | 'sentry'
+/** Factory intake source that feeds one issue-resolver agent. */
+export type FactoryIntakeKind = 'slack' | 'sentry' | 'gmail' | 'notion' | 'drive'
 export type FactoryPrivacyClass = 'public' | 'internal' | 'confidential' | 'restricted'
 export interface FactoryIntakeSource {
   id: string

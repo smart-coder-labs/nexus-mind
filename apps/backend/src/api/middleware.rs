@@ -17,6 +17,18 @@ use crate::{
 };
 
 pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
+    // Git RPC uses its own response media types. Keep this exception on the
+    // registered read-only routes; their runner authentication/leases still apply.
+    let git_media = match (
+        req.method(),
+        req.extensions().get::<MatchedPath>().map(MatchedPath::as_str),
+    ) {
+        (&Method::POST, Some("/v1/factory/runner/runs/:run/steps/:step/sources/:index/git-upload-pack")) =>
+            Some("application/x-git-upload-pack-result"),
+        (&Method::GET, Some("/v1/factory/runner/runs/:run/steps/:step/sources/:index/info/refs")) =>
+            Some("application/x-git-upload-pack-advertisement"),
+        _ => None,
+    };
     if let Some(accept) = req.headers().get(axum::http::header::ACCEPT) {
         let accept_str = accept.to_str().unwrap_or("");
         let is_acceptable = accept_str.split(',').any(|media_range| {
@@ -26,7 +38,7 @@ pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
             matches!(
                 media_type,
                 "*/*" | "application/*" | "application/json" | "image/*" | "image/png"
-            )
+            ) || Some(media_type) == git_media
         });
         if !is_acceptable {
             return (
@@ -40,6 +52,111 @@ pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
         }
     }
     next.run(req).await
+}
+
+/// Correlation id sent by the runner, echoed back and logged. Anything outside a
+/// short opaque token is ignored so a header cannot inject log content.
+pub fn request_id(headers: &axum::http::HeaderMap) -> Option<String> {
+    let value = headers.get("x-request-id")?.to_str().ok()?;
+    (!value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    .then(|| value.to_owned())
+}
+
+/// `/v1/factory/runner/runs/{run}/steps/{step}/...` → (run, step).
+fn run_step(path: &str) -> Option<(String, String)> {
+    let mut parts = path.strip_prefix("/v1/factory/runner/runs/")?.split('/');
+    let run = parts.next()?;
+    (parts.next()? == "steps").then_some(())?;
+    let step = parts.next()?;
+    (!run.is_empty() && !step.is_empty() && parts.next().is_some())
+        .then(|| (run.to_owned(), step.to_owned()))
+}
+
+/// Runner protocol diagnostics: every failure under `/v1/factory/runner` is JSON
+/// with a `code` (unknown routes, wrong methods and body rejections included), and
+/// is logged with its route template and the runner's request id. Without this a
+/// runner newer than the backend sees an empty 404 it cannot name. Rejections of
+/// a step's calls are also recorded on that step, so the panel can show them.
+pub async fn runner_diagnostics(
+    State(db): State<Arc<Mutex<Connection>>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if !req.uri().path().starts_with("/v1/factory/runner/") {
+        return next.run(req).await;
+    }
+    let request_id = request_id(req.headers());
+    let method = req.method().clone();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|p| p.as_str().to_owned())
+        .unwrap_or_else(|| "unmatched".into());
+    let target = run_step(req.uri().path());
+    let token_hash = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(crate::db::workflows::token_hash);
+    let mut response = next.run(req).await;
+    let status = response.status();
+    if status.is_client_error() || status.is_server_error() {
+        let json = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("application/json"));
+        let code = if json {
+            let (parts, body) = response.into_parts();
+            let bytes = axum::body::to_bytes(body, 64 * 1024).await.unwrap_or_default();
+            let code = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v["code"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| format!("http_{}", status.as_u16()));
+            response = Response::from_parts(parts, Body::from(bytes));
+            code
+        } else {
+            let code = match status {
+                StatusCode::NOT_FOUND => "route_not_found".to_owned(),
+                StatusCode::METHOD_NOT_ALLOWED => "method_not_allowed".to_owned(),
+                StatusCode::PAYLOAD_TOO_LARGE => "body_too_large".to_owned(),
+                other => format!("http_{}", other.as_u16()),
+            };
+            let error = match code.as_str() {
+                "route_not_found" | "method_not_allowed" => "El backend no admite esta llamada del runner. Runner y backend tienen versiones de contrato distintas; actualiza el que esté atrasado.",
+                "body_too_large" => "La petición del runner supera el tamaño admitido por el backend.",
+                _ => "El backend rechazó la petición del runner.",
+            };
+            response = (status, Json(ApiError { error: error.into(), code: code.clone() })).into_response();
+            code
+        };
+        tracing::warn!(
+            request_id = request_id.as_deref().unwrap_or("-"),
+            %method,
+            route = %route,
+            status = status.as_u16(),
+            code = %code,
+            "runner request failed"
+        );
+        if let (Some((run, step)), Some(hash)) = (target, token_hash) {
+            if status != StatusCode::UNAUTHORIZED {
+                if let Ok(c) = db.lock() {
+                    if let Err(error) = crate::db::workflow_logs::record_rejection(
+                        &c, &hash, &run, &step, &route, status.as_u16(), &code, request_id.as_deref(),
+                    ) {
+                        tracing::warn!("Could not record runner rejection: {error:#}");
+                    }
+                }
+            }
+        }
+    }
+    if let Some(id) = request_id.and_then(|id| axum::http::HeaderValue::from_str(&id).ok()) {
+        response.headers_mut().insert("x-request-id", id);
+    }
+    response
 }
 
 // The Err variant is a full axum `Response` by design (the middleware short-circuits

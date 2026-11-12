@@ -1,16 +1,50 @@
 import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Bot, Target, SlidersHorizontal, CalendarClock, ClipboardCheck } from 'lucide-react'
+import {
+  AlertTriangle,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Bot,
+  Target,
+  SlidersHorizontal,
+  CalendarClock,
+  ClipboardCheck,
+} from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalCloseButton } from '../components/ui/Modal'
+import {
+  Modal,
+  ModalHeader,
+  ModalTitle,
+  ModalContent,
+  ModalFooter,
+  ModalCloseButton,
+} from '../components/ui/Modal'
 import { Button } from '../components/ui/Button'
 import { Input, Textarea } from '../components/ui/Input'
 import { Switch } from '../components/ui/Switch'
 import { Badge } from '../components/ui/Badge'
-import type { AutonomousAgentDetail, AutonomousAgentTemplate, AutonomousAgentTemplateKey } from '../types'
-import { codexSupported, isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
+import type {
+  AutonomousAgentDetail,
+  AutonomousAgentTemplate,
+  AutonomousAgentTemplateKey,
+  Project,
+} from '../types'
+import {
+  codexSupported,
+  piSupported,
+  isolationConfig,
+  isolationFromConfig,
+  localSupported,
+  parseAllowedHosts,
+  sandboxSupported,
+  type IsolationChoice,
+} from './factory/isolation'
+import { AgentRuntimeEditor, runtimeKinds } from './factory/AgentRuntimeEditor'
+import type { AgentRuntimeConfig } from '../types'
+import { TaskExecutorSelect, type TaskExecutor } from './factory/agents/TaskExecutorSelect'
 
 /**
  * Guided create/edit wizard for autonomous agents.
@@ -24,7 +58,11 @@ import { codexSupported, isolationConfig, isolationFromConfig, localSupported, p
 
 type StepId = 'template' | 'target' | 'config' | 'schedule' | 'review'
 
-interface StepMeta { id: StepId; title: string; icon: typeof Bot }
+interface StepMeta {
+  id: StepId
+  title: string
+  icon: typeof Bot
+}
 
 const ALL_STEPS: StepMeta[] = [
   { id: 'template', title: 'Template', icon: Bot },
@@ -47,7 +85,12 @@ interface FormState {
   name: string
   description: string
   template: AutonomousAgentTemplateKey
-  executor: 'claude' | 'nexus' | 'codex'
+  executor: TaskExecutor
+  runtime: AgentRuntimeConfig
+  runtimeValid: boolean
+  useAgentModelConfig: boolean
+  executionModel: string
+  historicalModelSource: string | null
   // execution isolation (software factory sandbox)
   isolation: IsolationChoice
   allowedHosts: string
@@ -55,6 +98,7 @@ interface FormState {
   targetKind: string
   targetName: string
   targetPrimary: string // owner/repo or URL
+  targetProjectId: string
   // qa config
   outputSlack: boolean
   outputGithubIssue: boolean
@@ -68,6 +112,7 @@ interface FormState {
   qaLevel: 'basic' | 'standard' | 'deep'
   testCommand: string
   qaInstructions: string
+  qaProjectId: string
   customInstructions: string
   // lead generation
   product: string
@@ -107,6 +152,7 @@ interface FormState {
   existingCredentialConnectorId: string
   // shared / repo templates
   repository: string
+  githubPublicationConnectorId: string
   baseBranch: string
   contextRepos: string
   labels: string
@@ -125,17 +171,28 @@ interface FormState {
   timezone: string
 }
 
-function defaultState(template: AutonomousAgentTemplateKey): FormState {
+export function defaultState(template: AutonomousAgentTemplateKey): FormState {
   return {
     name: '',
     description: '',
     template,
     executor: 'claude',
+    runtime: { nexusmind_profile: 'essential', harnesses: [], components: [] },
+    runtimeValid: true,
+    useAgentModelConfig: true,
+    executionModel: '',
+    historicalModelSource: null,
     isolation: 'default',
     allowedHosts: '',
-    targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' || template === 'ai_content_manager' ? 'none' : 'repository',
+    targetKind:
+      template === 'qa' || template === 'judge'
+        ? 'web_application'
+        : template === 'lead_generation' || template === 'ai_content_manager'
+          ? 'none'
+          : 'repository',
     targetName: '',
     targetPrimary: '',
+    targetProjectId: '',
     outputSlack: false,
     outputGithubIssue: false,
     assignIssuesToSelf: false,
@@ -146,6 +203,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     qaLevel: 'standard',
     testCommand: '',
     qaInstructions: '',
+    qaProjectId: '',
     customInstructions: '',
     product: '',
     icp: '',
@@ -179,6 +237,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     loginUrl: '',
     existingCredentialConnectorId: '',
     repository: '',
+    githubPublicationConnectorId: '',
     baseBranch: 'main',
     contextRepos: '',
     labels: '',
@@ -196,17 +255,94 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
 }
 
 function csv(value: string): string[] {
-  return value.split(',').map(item => item.trim()).filter(Boolean)
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
+// Preserve extensions (verification plans, model tiers, provider options, etc.)
+// when editing. Only fields actually owned by this template's form are rebuilt.
+export function preservedConfig(config: Record<string, unknown>, template: string) {
+  const common = [
+    'executor',
+    'runtime',
+    'runtime_resolved',
+    'github_publication_connector_id',
+    'isolation',
+    'model',
+    'model_source',
+    'on_success_trigger_agent_id',
+    'on_success_trigger_delay_seconds',
+  ]
+  const fields: Record<string, string[]> = {
+    qa: [
+      'outputs',
+      'test_adapter',
+      'test_commands',
+      'qa_instructions',
+      'repository',
+      'assign_issues_to_self',
+      'sandbox_allowed_hosts',
+    ],
+    github_issue_resolver: [
+      'github_auth',
+      'base_branch',
+      'repository',
+      'context_repos',
+      'labels',
+      'excluded_paths',
+      'custom_instructions',
+      'review_after_deploy',
+      'judge_agent_id',
+    ],
+    github_pr_reviewer: [
+      'project_id',
+      'github_auth',
+      'publish',
+      'include_drafts',
+      'repository',
+      'custom_instructions',
+      'auto_merge',
+    ],
+    judge: [
+      'github_auth',
+      'outputs',
+      'repositories',
+      'publish',
+      'custom_instructions',
+      'sandbox_allowed_hosts',
+    ],
+    lead_generation: ['outputs', 'product', 'icp', 'count', 'custom_instructions'],
+    ai_content_manager: [
+      'outputs',
+      'topics',
+      'audience',
+      'language',
+      'posts_per_run',
+      'destinations',
+      'tone',
+      'cta',
+      'hashtags',
+      'custom_instructions',
+      'auto_publish',
+      'auto_publish_daily_limit',
+      'images',
+      'design_system',
+    ],
+  }
+  const owned = new Set([...common, ...(fields[template] ?? [])])
+  return Object.fromEntries(Object.entries(config).filter(([key]) => !owned.has(key)))
+}
 /** Assemble the template configuration object from structured fields. */
-function buildConfig(state: FormState): Record<string, unknown> {
+export function buildConfig(state: FormState): Record<string, unknown> {
   let config: Record<string, unknown> = {}
   if (state.template === 'qa') {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
     if (state.outputGithubIssue) outputs.push('github_issue')
     config = { outputs, test_adapter: state.testAdapter, qa_level: state.qaLevel }
+    if (state.qaProjectId) config.project_id = state.qaProjectId
     if (state.testAdapter === 'allowlisted_command') {
       // Deterministic mode: the worker runs this argv as a subprocess.
       config.test_commands = [csvArgv(state.testCommand)]
@@ -216,6 +352,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
       config.qa_instructions = state.qaInstructions.trim()
     }
     if (state.repository.trim()) config.repository = state.repository.trim()
+    if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (state.assignIssuesToSelf) config.assign_issues_to_self = true
   } else if (state.template === 'github_issue_resolver') {
     config = { github_auth: 'server_gh_cli', base_branch: state.baseBranch.trim() || 'main' }
@@ -223,13 +360,23 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (csv(state.labels).length) config.labels = csv(state.labels)
     if (csv(state.excludedPaths).length) config.excluded_paths = csv(state.excludedPaths)
-    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
-    if (state.reviewAfterDeploy) { config.review_after_deploy = true; config.judge_agent_id = state.judgeAgentId }
+    if (state.customInstructions.trim())
+      config.custom_instructions = state.customInstructions.trim()
+    if (state.reviewAfterDeploy) {
+      config.review_after_deploy = true
+      config.judge_agent_id = state.judgeAgentId
+    }
   } else if (state.template === 'lead_generation') {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
-    config = { outputs, product: state.product.trim(), icp: state.icp.trim(), count: Math.max(1, Math.min(25, Number(state.leadCount) || 10)) }
-    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    config = {
+      outputs,
+      product: state.product.trim(),
+      icp: state.icp.trim(),
+      count: Math.max(1, Math.min(25, Number(state.leadCount) || 10)),
+    }
+    if (state.customInstructions.trim())
+      config.custom_instructions = state.customInstructions.trim()
   } else if (state.template === 'judge') {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
@@ -239,7 +386,8 @@ function buildConfig(state: FormState): Record<string, unknown> {
       repositories: csv(state.repositories),
       publish: state.publishComment ? 'comment' : 'none',
     }
-    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    if (state.customInstructions.trim())
+      config.custom_instructions = state.customInstructions.trim()
   } else if (state.template === 'ai_content_manager') {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
@@ -257,12 +405,16 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (state.tone.trim()) config.tone = state.tone.trim()
     if (state.cta.trim()) config.cta = state.cta.trim()
     if (csv(state.hashtags).length) config.hashtags = csv(state.hashtags)
-    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    if (state.customInstructions.trim())
+      config.custom_instructions = state.customInstructions.trim()
     // Auto-publish is only ever written when it is on, so an agent that never
     // touched the toggle keeps no trace of it and stays approval-first.
     if (state.autoPublish) {
       config.auto_publish = true
-      config.auto_publish_daily_limit = Math.max(1, Math.min(10, Number(state.autoPublishDailyLimit) || 3))
+      config.auto_publish_daily_limit = Math.max(
+        1,
+        Math.min(10, Number(state.autoPublishDailyLimit) || 3),
+      )
     }
     if (state.imagesEnabled) {
       const images: Record<string, unknown> = {
@@ -277,7 +429,8 @@ function buildConfig(state: FormState): Record<string, unknown> {
     // The design system is kept even with images off, so turning them back on
     // does not lose the brand the user already described.
     const designSystem: Record<string, unknown> = {}
-    if (csv(state.dsPalette).length) designSystem.palette = csv(state.dsPalette).map(value => value.toUpperCase())
+    if (csv(state.dsPalette).length)
+      designSystem.palette = csv(state.dsPalette).map((value) => value.toUpperCase())
     if (state.dsTypography.trim()) designSystem.typography = state.dsTypography.trim()
     if (state.dsVisualStyle.trim()) designSystem.visual_style = state.dsVisualStyle.trim()
     if (state.dsImageryRules.trim()) designSystem.imagery_rules = state.dsImageryRules.trim()
@@ -286,18 +439,52 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (state.dsAspectRatio.trim()) designSystem.aspect_ratio = state.dsAspectRatio.trim()
     if (Object.keys(designSystem).length) config.design_system = designSystem
   } else {
-    config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
+    config = {
+      github_auth: 'server_gh_cli',
+      publish: 'comment_or_request_changes',
+      include_drafts: state.includeDrafts,
+    }
     if (state.repository.trim()) config.repository = state.repository.trim()
-    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    if (state.customInstructions.trim())
+      config.custom_instructions = state.customInstructions.trim()
     if (state.autoMerge) config.auto_merge = true
   }
   // Agent-to-agent chaining: enqueue the next agent on the same PR on success.
-  if (['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(state.template) && state.onSuccessTriggerAgentId.trim()) {
+  if (
+    ['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(state.template) &&
+    state.onSuccessTriggerAgentId.trim()
+  ) {
     config.on_success_trigger_agent_id = state.onSuccessTriggerAgentId.trim()
-    if (state.onSuccessTriggerDelaySeconds.trim()) config.on_success_trigger_delay_seconds = Math.max(0, Number(state.onSuccessTriggerDelaySeconds) || 0)
+    if (state.onSuccessTriggerDelaySeconds.trim())
+      config.on_success_trigger_delay_seconds = Math.max(
+        0,
+        Number(state.onSuccessTriggerDelaySeconds) || 0,
+      )
   }
   const extra = parseJsonObject(state.extraConfig)
-  return { ...config, ...(extra ?? {}), ...isolationConfig(state, state.template), executor: state.executor }
+  const result: Record<string, unknown> = {
+    ...config,
+    ...(extra ?? {}),
+    ...isolationConfig(state, state.template),
+    executor: state.executor,
+    runtime: state.runtime,
+  }
+  if (state.template === 'github_pr_reviewer') {
+    if (state.targetKind === 'project') {
+      result.project_id = state.targetProjectId;
+      delete result.repository;
+    } else {
+      delete result.project_id;
+    }
+  }
+  if (['github_issue_resolver', 'qa'].includes(state.template) && state.githubPublicationConnectorId) result.github_publication_connector_id = state.githubPublicationConnectorId
+  else delete result.github_publication_connector_id
+  if (state.executionModel.trim()) result.model = state.executionModel.trim()
+  else delete result.model
+  if (state.useAgentModelConfig) result.model_source = 'agent'
+  else if (state.historicalModelSource === 'factory_roles') result.model_source = 'factory_roles'
+  else delete result.model_source
+  return result
 }
 
 /** Split a shell-like command string into argv (whitespace, no shell). */
@@ -305,19 +492,20 @@ function csvArgv(command: string): string[] {
   return command.trim().split(/\s+/).filter(Boolean)
 }
 
-
 function parseJsonObject(raw: string): Record<string, unknown> | null {
   if (!raw.trim()) return null
   try {
     const value = JSON.parse(raw)
-    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null
   } catch {
     return null
   }
 }
 
 /** Derive structured fields from an existing agent's config (edit mode). */
-function stateFromAgent(agent: AutonomousAgentDetail): FormState {
+export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
   const base = defaultState(agent.template_key)
   const config = agent.revision.config as Record<string, unknown>
   const outputs = Array.isArray(config.outputs) ? (config.outputs as string[]) : []
@@ -329,32 +517,58 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     ...base,
     name: agent.name,
     description: agent.description ?? '',
-    executor: config.executor === 'nexus' || config.executor === 'codex' ? config.executor : 'claude',
+    targetKind: typeof config.project_id === 'string' ? 'project' : base.targetKind,
+    targetProjectId: typeof config.project_id === 'string' ? config.project_id : '',
+    executor:
+      config.executor === 'nexus' || config.executor === 'codex' || config.executor === 'pi'
+        ? config.executor
+        : 'claude',
+    useAgentModelConfig: config.model_source === 'agent',
+    executionModel: typeof config.model === 'string' ? config.model : '',
+    extraConfig: JSON.stringify(preservedConfig(config, agent.template_key), null, 2),
+    historicalModelSource: typeof config.model_source === 'string' ? config.model_source : null,
+    runtime: (config.runtime ?? base.runtime) as AgentRuntimeConfig,
     ...isolationFromConfig(config),
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
-    testAdapter: config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
+    testAdapter:
+      config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
     qaLevel: config.qa_level === 'basic' || config.qa_level === 'deep' ? config.qa_level : 'standard',
     testCommand: firstCommand,
     qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
-    customInstructions: typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
+    qaProjectId: typeof config.project_id === 'string' ? config.project_id : '',
+    customInstructions:
+      typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
     product: typeof config.product === 'string' ? config.product : '',
     icp: typeof config.icp === 'string' ? config.icp : '',
     leadCount: typeof config.count === 'number' ? String(config.count) : '10',
-    repositories: Array.isArray(config.repositories) ? (config.repositories as string[]).join(', ') : '',
+    repositories: Array.isArray(config.repositories)
+      ? (config.repositories as string[]).join(', ')
+      : '',
     publishComment: config.publish === 'comment',
     repository: typeof config.repository === 'string' ? config.repository : '',
+    githubPublicationConnectorId: typeof config.github_publication_connector_id === 'string' ? config.github_publication_connector_id : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
-    contextRepos: Array.isArray(config.context_repos) ? (config.context_repos as string[]).join(', ') : '',
+    contextRepos: Array.isArray(config.context_repos)
+      ? (config.context_repos as string[]).join(', ')
+      : '',
     labels: Array.isArray(config.labels) ? (config.labels as string[]).join(', ') : '',
-    excludedPaths: Array.isArray(config.excluded_paths) ? (config.excluded_paths as string[]).join(', ') : '',
+    excludedPaths: Array.isArray(config.excluded_paths)
+      ? (config.excluded_paths as string[]).join(', ')
+      : '',
     includeDrafts: config.include_drafts === true,
     reviewAfterDeploy: config.review_after_deploy === true,
     judgeAgentId: typeof config.judge_agent_id === 'string' ? config.judge_agent_id : '',
     assignIssuesToSelf: config.assign_issues_to_self === true,
     autoMerge: config.auto_merge === true,
-    onSuccessTriggerAgentId: typeof config.on_success_trigger_agent_id === 'string' ? config.on_success_trigger_agent_id : '',
-    onSuccessTriggerDelaySeconds: typeof config.on_success_trigger_delay_seconds === 'number' ? String(config.on_success_trigger_delay_seconds) : '',
+    onSuccessTriggerAgentId:
+      typeof config.on_success_trigger_agent_id === 'string'
+        ? config.on_success_trigger_agent_id
+        : '',
+    onSuccessTriggerDelaySeconds:
+      typeof config.on_success_trigger_delay_seconds === 'number'
+        ? String(config.on_success_trigger_delay_seconds)
+        : '',
     topics: Array.isArray(config.topics) ? (config.topics as string[]).join(', ') : '',
     audience: typeof config.audience === 'string' ? config.audience : '',
     contentLanguage: typeof config.language === 'string' ? config.language : 'English',
@@ -362,20 +576,31 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     cta: typeof config.cta === 'string' ? config.cta : '',
     hashtags: Array.isArray(config.hashtags) ? (config.hashtags as string[]).join(', ') : '',
     postsPerRun: typeof config.posts_per_run === 'number' ? String(config.posts_per_run) : '3',
-    destPersonal: Array.isArray(config.destinations) ? (config.destinations as string[]).includes('personal') : true,
-    destOrganization: Array.isArray(config.destinations) ? (config.destinations as string[]).includes('organization') : false,
+    destPersonal: Array.isArray(config.destinations)
+      ? (config.destinations as string[]).includes('personal')
+      : true,
+    destOrganization: Array.isArray(config.destinations)
+      ? (config.destinations as string[]).includes('organization')
+      : false,
     autoPublish: config.auto_publish === true,
-    autoPublishDailyLimit: typeof config.auto_publish_daily_limit === 'number' ? String(config.auto_publish_daily_limit) : '3',
+    autoPublishDailyLimit:
+      typeof config.auto_publish_daily_limit === 'number'
+        ? String(config.auto_publish_daily_limit)
+        : '3',
     imagesEnabled: images.enabled === true,
     imagesPerPost: typeof images.per_post === 'number' ? String(images.per_post) : '1',
     imagesProvider: typeof images.provider === 'string' ? images.provider : 'higgsfield',
     imagesModel: typeof images.model === 'string' ? images.model : 'gpt_image_2',
-    dsPalette: Array.isArray(designSystem.palette) ? (designSystem.palette as string[]).join(', ') : '',
+    dsPalette: Array.isArray(designSystem.palette)
+      ? (designSystem.palette as string[]).join(', ')
+      : '',
     dsTypography: typeof designSystem.typography === 'string' ? designSystem.typography : '',
     dsVisualStyle: typeof designSystem.visual_style === 'string' ? designSystem.visual_style : '',
-    dsImageryRules: typeof designSystem.imagery_rules === 'string' ? designSystem.imagery_rules : '',
+    dsImageryRules:
+      typeof designSystem.imagery_rules === 'string' ? designSystem.imagery_rules : '',
     dsAvoid: typeof designSystem.avoid === 'string' ? designSystem.avoid : '',
-    dsAspectRatio: typeof designSystem.aspect_ratio === 'string' ? designSystem.aspect_ratio : '1:1',
+    dsAspectRatio:
+      typeof designSystem.aspect_ratio === 'string' ? designSystem.aspect_ratio : '1:1',
     dsLogoUrl: typeof designSystem.logo_url === 'string' ? designSystem.logo_url : '',
     budgets: JSON.stringify(agent.revision.budgets ?? {}, null, 2),
   }
@@ -386,15 +611,25 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const isEdit = Boolean(editing)
+  const projectsQuery = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => client.listProjects(),
+    enabled: open,
+  })
 
   const [state, setState] = useState<FormState>(() => defaultState(templates[0]?.key ?? 'qa'))
+  const projects = useQuery({ queryKey: ['wizard-projects'], queryFn: () => client.listProjects(), enabled: open && state.template === 'qa' })
   const [stepIndex, setStepIndex] = useState(0)
   const [error, setError] = useState('')
 
-  const steps = useMemo(() => (isEdit ? ALL_STEPS.filter(step => step.id !== 'template') : ALL_STEPS), [isEdit])
+  const steps = useMemo(
+    () => (isEdit ? ALL_STEPS.filter((step) => step.id !== 'template') : ALL_STEPS),
+    [isEdit],
+  )
   const step = steps[stepIndex]
-  const selectedTemplate = templates.find(item => item.key === state.template)
-  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setState(prev => ({ ...prev, [key]: value }))
+  const selectedTemplate = templates.find((item) => item.key === state.template)
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setState((prev) => ({ ...prev, [key]: value }))
 
   // (Re)initialise whenever the modal opens or the edit target changes.
   useEffect(() => {
@@ -404,14 +639,40 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
     if (editing) {
       setState(stateFromAgent(editing))
       // Prefill schedule + target from server (best-effort).
-      void client.getAutonomousAgentSchedule(editing.id).then(schedule => {
-        const iv = schedule.kind === 'interval' ? minutesToInterval(Number(schedule.expression) || 0) : null
-        setState(prev => ({ ...prev, scheduleKind: schedule.kind, scheduleExpression: iv ? iv.value : (schedule.expression ?? prev.scheduleExpression), scheduleUnit: iv ? iv.unit : prev.scheduleUnit, timezone: schedule.timezone || prev.timezone }))
-      }).catch(() => undefined)
-      void client.listAutonomousAgentTargets(editing.id).then(targets => {
-        const first = targets.find(item => item.enabled) ?? targets[0]
-        if (first) setState(prev => ({ ...prev, targetKind: first.kind, targetName: first.name, targetPrimary: primaryFromTargetConfig(first.config), existingCredentialConnectorId: first.credential_connector_id ?? '' }))
-      }).catch(() => undefined)
+      void client
+        .getAutonomousAgentSchedule(editing.id)
+        .then((schedule) => {
+          const iv =
+            schedule.kind === 'interval'
+              ? minutesToInterval(Number(schedule.expression) || 0)
+              : null
+          setState((prev) => ({
+            ...prev,
+            scheduleKind: editing.template_key === 'github_pr_reviewer' && typeof editing.revision.config.project_id === 'string' ? 'manual' : schedule.kind,
+            scheduleExpression: iv ? iv.value : (schedule.expression ?? prev.scheduleExpression),
+            scheduleUnit: iv ? iv.unit : prev.scheduleUnit,
+            timezone: schedule.timezone || prev.timezone,
+          }))
+        })
+        .catch(() => undefined)
+      void client
+        .listAutonomousAgentTargets(editing.id)
+        .then((targets) => {
+          const projectId = editing.revision.config.project_id
+          const first = typeof projectId === 'string'
+            ? targets.find((item) => item.enabled && item.kind === 'project' && item.config.project_id === projectId)
+            : targets.find((item) => item.enabled) ?? targets[0]
+          if (first)
+            setState((prev) => ({
+              ...prev,
+              targetKind: first.kind,
+              targetName: first.name,
+              targetPrimary: primaryFromTargetConfig(first.config),
+              targetProjectId: typeof first.config.project_id === 'string' ? first.config.project_id : prev.targetProjectId,
+              existingCredentialConnectorId: first.credential_connector_id ?? '',
+            }))
+        })
+        .catch(() => undefined)
     } else {
       setState(defaultState(templates[0]?.key ?? 'qa'))
     }
@@ -428,41 +689,85 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
       const targetConfig = buildTargetConfig(state)
       let agentId: string
       if (editing) {
-        const updated = await client.updateAutonomousAgent(editing.id, { name: state.name.trim(), description: state.description.trim() || undefined, config, budgets })
+        const updated = await client.updateAutonomousAgent(editing.id, {
+          name: state.name.trim(),
+          description: state.description.trim() || undefined,
+          config,
+          budgets,
+        })
         agentId = updated.id
       } else {
-        const created = await client.createAutonomousAgent({ name: state.name.trim(), description: state.description.trim() || undefined, template_key: state.template, config, budgets })
+        const created = await client.createAutonomousAgent({
+          name: state.name.trim(),
+          description: state.description.trim() || undefined,
+          template_key: state.template,
+          config,
+          budgets,
+        })
         agentId = created.id
       }
       // Login credentials are stored in an encrypted `target_secret` connector and
       // bound to the target, so the agent can authenticate into the live app. On
       // edit we preserve the existing binding unless a new password is entered.
-      let credentialConnectorId: string | undefined = state.existingCredentialConnectorId || undefined
-      if ((state.template === 'judge' || state.template === 'qa') && state.loginUser.trim() && state.loginPassword.trim()) {
-        const secret = JSON.stringify({ USERNAME: state.loginUser.trim(), PASSWORD: state.loginPassword.trim() })
-        const connector = await client.putAutonomousAgentConnector({ kind: 'target_secret', name: `login:${agentId}`, secret, metadata: {}, scopes: ['target:use'] })
+      let credentialConnectorId: string | undefined =
+        state.existingCredentialConnectorId || undefined
+      if (
+        (state.template === 'judge' || state.template === 'qa') &&
+        state.loginUser.trim() &&
+        state.loginPassword.trim()
+      ) {
+        const secret = JSON.stringify({
+          USERNAME: state.loginUser.trim(),
+          PASSWORD: state.loginPassword.trim(),
+        })
+        const connector = await client.putAutonomousAgentConnector({
+          kind: 'target_secret',
+          name: `login:${agentId}`,
+          secret,
+          metadata: {},
+          scopes: ['target:use'],
+        })
         credentialConnectorId = connector.id
       }
-      if (state.targetName.trim() || state.targetPrimary.trim()) {
-        await client.putAutonomousAgentTarget(agentId, { kind: state.targetKind, name: state.targetName.trim() || 'Target', config: targetConfig, credential_connector_id: credentialConnectorId, enabled: true })
+      if (state.targetName.trim() || state.targetPrimary.trim() || state.targetProjectId) {
+        await client.putAutonomousAgentTarget(agentId, {
+          kind: state.targetKind,
+          name: state.targetName.trim() || 'Target',
+          config: targetConfig,
+          credential_connector_id: credentialConnectorId,
+          enabled: true,
+        })
       }
       if (state.scheduleKind !== 'manual') {
-        const expression = state.scheduleKind === 'interval'
-          ? String(intervalToMinutes(state.scheduleExpression, state.scheduleUnit))
-          : state.scheduleExpression
-        await client.putAutonomousAgentSchedule(agentId, { kind: state.scheduleKind, expression, timezone: state.timezone, misfire_policy: 'run_once', enabled: true })
+        const expression =
+          state.scheduleKind === 'interval'
+            ? String(intervalToMinutes(state.scheduleExpression, state.scheduleUnit))
+            : state.scheduleExpression
+        await client.putAutonomousAgentSchedule(agentId, {
+          kind: state.scheduleKind,
+          expression,
+          timezone: state.timezone,
+          misfire_policy: 'run_once',
+          enabled: true,
+        })
       } else if (editing) {
-        await client.putAutonomousAgentSchedule(agentId, { kind: 'manual', timezone: state.timezone, misfire_policy: 'run_once', enabled: false }).catch(() => undefined)
+        await client
+          .putAutonomousAgentSchedule(agentId, {
+            kind: 'manual',
+            timezone: state.timezone,
+            misfire_policy: 'run_once',
+            enabled: false,
+          })
+          .catch(() => undefined)
       }
       return agentId
     },
     onSuccess: () => {
-      void Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['autonomous-agents'] }),
-      ])
+      void Promise.all([queryClient.invalidateQueries({ queryKey: ['autonomous-agents'] })])
       onClose()
     },
-    onError: value => setError(value instanceof Error ? value.message : 'Could not save the agent'),
+    onError: (value) =>
+      setError(value instanceof Error ? value.message : 'Could not save the agent'),
   })
 
   if (!open) return null
@@ -471,10 +776,18 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
   const isLast = stepIndex === steps.length - 1
 
   return (
-    <Modal open={open} onOpenChange={value => { if (!value) onClose() }} size="2xl">
+    <Modal
+      open={open}
+      onOpenChange={(value) => {
+        if (!value) onClose()
+      }}
+      size="2xl"
+    >
       <ModalCloseButton className="grid h-8 w-8 place-items-center" />
       <ModalHeader>
-        <ModalTitle className="break-words pr-10">{isEdit ? `Edit “${editing?.name}”` : 'New agent'}</ModalTitle>
+        <ModalTitle className="break-words pr-10">
+          {isEdit ? `Edit “${editing?.name}”` : 'New agent'}
+        </ModalTitle>
         <ol className="mt-4 flex flex-wrap items-center gap-1.5" aria-label="Wizard steps">
           {steps.map((item, index) => {
             const Icon = item.icon
@@ -488,12 +801,16 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
                   disabled={index > stepIndex}
                   className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'bg-action-primary/15 text-accent-blue' : done ? 'text-text-secondary hover:text-text-primary' : 'text-text-tertiary'} ${index > stepIndex ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                 >
-                  <span className={`grid h-5 w-5 place-items-center rounded-full text-[11px] ${active ? 'bg-action-primary text-action-foreground' : done ? 'bg-status-success/20 text-status-success' : 'bg-foreground/[0.06]'}`}>
+                  <span
+                    className={`grid h-5 w-5 place-items-center rounded-full text-[11px] ${active ? 'bg-action-primary text-action-foreground' : done ? 'bg-status-success/20 text-status-success' : 'bg-foreground/[0.06]'}`}
+                  >
                     {done ? <Check className="h-3 w-3" /> : <Icon className="h-3 w-3" />}
                   </span>
                   {item.title}
                 </button>
-                {index < steps.length - 1 && <ChevronRight className="h-3 w-3 text-text-tertiary" />}
+                {index < steps.length - 1 && (
+                  <ChevronRight className="h-3 w-3 text-text-tertiary" />
+                )}
               </li>
             )
           })}
@@ -502,34 +819,72 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
 
       <ModalContent className="max-h-[60vh] overflow-y-auto">
         {step.id === 'template' && (
-          <StepTemplate templates={templates} value={state.template} onChange={key => setState({ ...defaultState(key) })} />
+          <StepTemplate
+            templates={templates}
+            value={state.template}
+            onChange={(key) => setState({ ...defaultState(key) })}
+          />
         )}
-        {step.id === 'target' && (
-          <StepTarget state={state} set={set} />
-        )}
+        {step.id === 'target' && <StepTarget state={state} set={set} projects={projectsQuery.data ?? []} projectsLoading={projectsQuery.isPending} projectsError={projectsQuery.isError} />}
         {step.id === 'config' && (
-          <StepConfig state={state} set={set} template={state.template} extraError={Boolean(extraError)} config={buildConfig(state)} />
+          <StepConfig
+            state={state}
+            set={set}
+            template={state.template}
+            extraError={Boolean(extraError)}
+            projects={projects.data ?? []}
+            config={buildConfig(state)}
+          />
         )}
-        {step.id === 'schedule' && (
-          <StepSchedule state={state} set={set} />
-        )}
+        {step.id === 'schedule' && <StepSchedule state={state} set={set} />}
         {step.id === 'review' && (
-          <StepReview state={state} set={set} template={selectedTemplate} isEdit={isEdit} budgetsError={Boolean(budgetsError)} />
+          <StepReview
+            state={state}
+            set={set}
+            template={selectedTemplate}
+            isEdit={isEdit}
+            budgetsError={Boolean(budgetsError)}
+          />
         )}
       </ModalContent>
 
       <ModalFooter className="flex-wrap justify-between">
-        <div className="text-xs text-status-error min-h-[1rem]" role={error ? 'alert' : undefined}>{error}</div>
+        <div className="text-xs text-status-error min-h-[1rem]" role={error ? 'alert' : undefined}>
+          {error}
+        </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+          <Button variant="outline" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
           {stepIndex > 0 && (
-            <Button variant="ghost" size="sm" leftIcon={<ChevronLeft className="h-4 w-4" />} onClick={() => setStepIndex(index => index - 1)}>Back</Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              leftIcon={<ChevronLeft className="h-4 w-4" />}
+              onClick={() => setStepIndex((index) => index - 1)}
+            >
+              Back
+            </Button>
           )}
           {!isLast && (
-            <Button variant="primary" size="sm" rightIcon={<ChevronRight className="h-4 w-4" />} disabled={!canContinue} onClick={() => setStepIndex(index => index + 1)}>Continue</Button>
+            <Button
+              variant="primary"
+              size="sm"
+              rightIcon={<ChevronRight className="h-4 w-4" />}
+              disabled={!canContinue}
+              onClick={() => setStepIndex((index) => index + 1)}
+            >
+              Continue
+            </Button>
           )}
           {isLast && (
-            <Button variant="primary" size="sm" loading={submit.isPending} disabled={!canContinue || Boolean(budgetsError)} onClick={() => submit.mutate()}>
+            <Button
+              variant="primary"
+              size="sm"
+              loading={submit.isPending}
+              disabled={!canContinue || Boolean(budgetsError)}
+              onClick={() => submit.mutate()}
+            >
               {isEdit ? 'Save revision' : 'Create (disabled)'}
             </Button>
           )}
@@ -541,35 +896,64 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
 
 function validateStep(id: StepId, state: FormState): boolean {
   switch (id) {
-    case 'template': return Boolean(state.template)
-    case 'target': return true // target is optional
+    case 'template':
+      return Boolean(state.template)
+    case 'target':
+      return state.targetKind !== 'project' || Boolean(state.targetProjectId)
     case 'config':
+      if (!state.runtimeValid || state.runtime.components?.some(c => c.enabled !== false && !runtimeKinds[state.executor]?.includes(c.kind))) return false
       if ('error' in parseAllowedHosts(state.allowedHosts)) return false
-      if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor)) return false
-      if (state.executor === 'codex' && (!codexSupported(state.template) || state.isolation === 'local')) return false
-      if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
-      if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
+      if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor))
+        return false
+      if (
+        state.executor === 'codex' &&
+        (!codexSupported(state.template) || state.isolation === 'local')
+      )
+        return false
+      if (
+        state.executor === 'pi' &&
+        (!piSupported(state.template) || state.isolation === 'sandbox')
+      )
+        return false
+      if (state.template === 'qa')
+        return state.testAdapter === 'playwright' || (csvArgv(state.testCommand).length > 0 && Boolean(state.repository.trim()))
+      if (state.template === 'lead_generation')
+        return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
       if (state.template === 'ai_content_manager') {
         if (csv(state.topics).length === 0 || state.audience.trim().length === 0) return false
         // Mirror the backend's rules so the user is blocked here rather than by a
         // validation failure after the agent is already created.
         if (state.imagesEnabled) {
-          const hasDesignSystem = [state.dsPalette, state.dsVisualStyle, state.dsImageryRules, state.dsTypography].some(value => value.trim().length > 0)
-          const paletteValid = state.dsPalette.split(',').map(value => value.trim()).filter(Boolean).every(value => /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value))
+          const hasDesignSystem = [
+            state.dsPalette,
+            state.dsVisualStyle,
+            state.dsImageryRules,
+            state.dsTypography,
+          ].some((value) => value.trim().length > 0)
+          const paletteValid = state.dsPalette
+            .split(',')
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .every((value) => /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value))
           if (!hasDesignSystem || !paletteValid) return false
         }
         if (state.autoPublish && !state.destPersonal && !state.destOrganization) return false
         return true
       }
-      if (state.template === 'github_issue_resolver' && state.reviewAfterDeploy) return state.judgeAgentId.trim().length > 0
+      if (state.template === 'github_issue_resolver' && state.reviewAfterDeploy)
+        return state.judgeAgentId.trim().length > 0
       return true
     case 'schedule':
+      if (state.template === 'github_pr_reviewer' && state.targetKind === 'project') return state.scheduleKind === 'manual'
       if (state.scheduleKind === 'manual') return true
-      if (state.scheduleKind === 'interval') return intervalToMinutes(state.scheduleExpression, state.scheduleUnit) >= 15
+      if (state.scheduleKind === 'interval')
+        return intervalToMinutes(state.scheduleExpression, state.scheduleUnit) >= 15
       return state.scheduleExpression.trim().length > 0
-    case 'review': return state.name.trim().length > 0
-    default: return true
+    case 'review':
+      return state.name.trim().length > 0
+    default:
+      return true
   }
 }
 
@@ -579,7 +963,8 @@ function primaryFromTargetConfig(config: Record<string, unknown>): string {
   return ''
 }
 
-function buildTargetConfig(state: FormState): Record<string, unknown> {
+export function buildTargetConfig(state: FormState): Record<string, unknown> {
+  if (state.targetKind === 'project') return { project_id: state.targetProjectId }
   const value = state.targetPrimary.trim()
   if (!value) return {}
   if (state.targetKind === 'web_application') {
@@ -592,21 +977,49 @@ function buildTargetConfig(state: FormState): Record<string, unknown> {
 
 /* ---------- Steps ---------- */
 
-function StepTemplate({ templates, value, onChange }: { templates: AutonomousAgentTemplate[]; value: AutonomousAgentTemplateKey; onChange: (key: AutonomousAgentTemplateKey) => void }) {
+function StepTemplate({
+  templates,
+  value,
+  onChange,
+}: {
+  templates: AutonomousAgentTemplate[]
+  value: AutonomousAgentTemplateKey
+  onChange: (key: AutonomousAgentTemplateKey) => void
+}) {
   return (
     <div className="space-y-3">
-      <p className="text-sm text-text-secondary">Pick a managed template. Each pins its own workflow, capability envelope, and budgets — you configure it, you don't rewrite it.</p>
+      <p className="text-sm text-text-secondary">
+        Pick a managed template. Each pins its own workflow, capability envelope, and budgets — you
+        configure it, you don't rewrite it.
+      </p>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3">
-        {templates.map(item => {
+        {templates.map((item) => {
           const active = item.key === value
           return (
-            <button key={item.key} type="button" aria-pressed={active} onClick={() => onChange(item.key)} className={`flex min-w-0 flex-col items-stretch justify-start text-left rounded-xl border p-4 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'border-accent-blue bg-action-primary/[0.06]' : 'border-border-primary bg-card hover:bg-muted/50'}`}>
+            <button
+              key={item.key}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(item.key)}
+              className={`flex min-w-0 flex-col items-stretch justify-start text-left rounded-xl border p-4 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${active ? 'border-accent-blue bg-action-primary/[0.06]' : 'border-border-primary bg-card hover:bg-muted/50'}`}
+            >
               <div className="flex items-start justify-between gap-2">
                 <h3 className="font-semibold text-text-primary">{item.name}</h3>
                 {active && <Check className="h-4 w-4 shrink-0 text-accent-blue" />}
               </div>
               <p className="mt-1.5 text-xs text-text-tertiary">{item.description}</p>
-              <div className="mt-3 flex flex-wrap gap-1">{item.capabilities.slice(0, 4).map(cap => <Badge key={cap} size="sm" variant="default" className="max-w-full whitespace-normal break-all">{cap}</Badge>)}</div>
+              <div className="mt-3 flex flex-wrap gap-1">
+                {item.capabilities.slice(0, 4).map((cap) => (
+                  <Badge
+                    key={cap}
+                    size="sm"
+                    variant="default"
+                    className="max-w-full whitespace-normal break-all"
+                  >
+                    {cap}
+                  </Badge>
+                ))}
+              </div>
             </button>
           )
         })}
@@ -615,7 +1028,15 @@ function StepTemplate({ templates, value, onChange }: { templates: AutonomousAge
   )
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: string
+  children: React.ReactNode
+}) {
   return (
     <label className="block">
       <span className="text-xs font-medium text-text-secondary">{label}</span>
@@ -625,65 +1046,171 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   )
 }
 
-function NativeSelect({ value, onChange, children }: { value: string; onChange: (value: string) => void; children: React.ReactNode }) {
+function NativeSelect({
+  value,
+  onChange,
+  children,
+}: {
+  value: string
+  onChange: (value: string) => void
+  children: React.ReactNode
+}) {
   return (
-    <StyledSelect value={value} onChange={event => onChange(event.target.value)} className="mt-1 block w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+    <StyledSelect
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="mt-1 block w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+    >
       {children}
     </StyledSelect>
   )
 }
 
-function StepTarget({ state, set }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void }) {
+export function StepTarget({
+  state,
+  set,
+  projects,
+  projectsLoading,
+  projectsError,
+}: {
+  state: FormState
+  set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
+  projects: Project[]
+  projectsLoading: boolean
+  projectsError: boolean
+}) {
   const isWeb = state.targetKind === 'web_application'
   if (state.template === 'lead_generation') {
-    return <p className="text-sm text-text-secondary">This agent has no fixed target — it discovers companies from the web based on the product and ICP you set in the next step. Nothing to configure here.</p>
+    return (
+      <p className="text-sm text-text-secondary">
+        This agent has no fixed target — it discovers companies from the web based on the product
+        and ICP you set in the next step. Nothing to configure here.
+      </p>
+    )
   }
   if (state.template === 'ai_content_manager') {
-    return <p className="text-sm text-text-secondary">This agent has no fixed target — it writes LinkedIn posts from the topics and audience you set in the next step. Nothing to configure here.</p>
+    return (
+      <p className="text-sm text-text-secondary">
+        This agent has no fixed target — it writes LinkedIn posts from the topics and audience you
+        set in the next step. Nothing to configure here.
+      </p>
+    )
   }
   return (
     <div className="space-y-4">
-      <p className="text-sm text-text-secondary">What should this agent act on? The target is optional now and can be added later. No credentials are stored here — Slack and GitHub are configured in Claude Code.</p>
+      <p className="text-sm text-text-secondary">
+        What should this agent act on? The target is optional now and can be added later. No
+        credentials are stored here — Slack and GitHub are configured in Claude Code.
+      </p>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Target type">
-          <NativeSelect value={state.targetKind} onChange={value => set('targetKind', value)}>
+          <NativeSelect value={state.targetKind} onChange={(value) => {
+            set('targetKind', value)
+            if (value === 'project' && state.template === 'github_pr_reviewer') set('scheduleKind', 'manual')
+          }}>
             <option value="web_application">Web application</option>
             <option value="repository">Repository</option>
             <option value="project">Project</option>
           </NativeSelect>
         </Field>
         <Field label="Target name" hint="A label to recognise this target.">
-          <Input inputSize="sm" value={state.targetName} onChange={event => set('targetName', event.target.value)} placeholder={isWeb ? 'Staging web app' : 'app repo'} />
+          <Input
+            inputSize="sm"
+            value={state.targetName}
+            onChange={(event) => set('targetName', event.target.value)}
+            placeholder={isWeb ? 'Staging web app' : state.targetKind === 'project' ? 'Product project' : 'app repo'}
+          />
         </Field>
       </div>
-      <Field label={isWeb ? 'URL' : 'Repository (owner/repo)'} hint={isWeb ? 'The base URL the QA agent will exercise.' : 'GitHub repository the agent operates on.'}>
-        <Input inputSize="sm" value={state.targetPrimary} onChange={event => set('targetPrimary', event.target.value)} placeholder={isWeb ? 'https://staging.example.com' : 'acme/web'} />
-      </Field>
+      {state.targetKind === 'project' ? (
+        <>
+          <Field label="Project" hint="Choose the NexusMind project. PR reviewers act only on GitHub repositories explicitly linked to this project in Code.">
+            <NativeSelect value={state.targetProjectId} onChange={(value) => set('targetProjectId', value)}>
+              <option value="">{projectsLoading ? 'Loading projects…' : 'Select a project'}</option>
+              {state.targetProjectId && !projects.some(project => project.id === state.targetProjectId) && <option value={state.targetProjectId}>Unavailable project</option>}
+              {projects.filter(project => !project.archived_at).map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </NativeSelect>
+          </Field>
+          {projectsError && <p role="alert" className="text-sm text-text-secondary">Could not load projects. Check your permissions and try again.</p>}
+          {!projectsLoading && !projectsError && projects.length === 0 && <p className="text-sm text-text-secondary">No projects available. Create a project first.</p>}
+        </>
+      ) : <Field
+        label={isWeb ? 'URL' : 'Repository (owner/repo)'}
+        hint={
+          isWeb
+            ? 'The base URL the QA agent will exercise.'
+            : 'GitHub repository the agent operates on.'
+        }
+      >
+        <Input
+          inputSize="sm"
+          value={state.targetPrimary}
+          onChange={(event) => set('targetPrimary', event.target.value)}
+          placeholder={isWeb ? 'https://staging.example.com' : 'acme/web'}
+        />
+      </Field>}
     </div>
   )
 }
 
-function StepConfig({ state, set, template, extraError, config }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey; extraError: boolean; config: Record<string, unknown> }) {
+function StepConfig({
+  state,
+  set,
+  template,
+  extraError,
+  config,
+  projects,
+}: {
+  state: FormState
+  set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
+  template: AutonomousAgentTemplateKey
+  extraError: boolean
+  config: Record<string, unknown>
+  projects: Project[]
+}) {
   const client = useMemo(() => createClient(), [])
-  const judgesQuery = useQuery({ queryKey: ['wizard-agents'], queryFn: () => client.listAutonomousAgents(), enabled: ['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template) })
-  const judges = (judgesQuery.data ?? []).filter(agent => agent.template_key === 'judge')
-  const chainAgents = (judgesQuery.data ?? []).filter(agent => agent.status === 'enabled')
-  const linkedinQuery = useQuery({ queryKey: ['wizard-linkedin'], queryFn: () => client.listLinkedinConnections(), enabled: template === 'ai_content_manager' })
-  const linkedinConnected = new Set((linkedinQuery.data ?? []).map(connection => connection.destination))
+  const qaRepositoriesQuery = useQuery({ queryKey:['wizard-qa-repositories',state.qaProjectId],queryFn:()=>client.listQaProjectRepositories(state.qaProjectId),enabled:template==='qa'&&Boolean(state.qaProjectId) })
+  const eligibleQaRepositories = [...new Set((qaRepositoriesQuery.data?.grants ?? []).filter(grant=>grant.can_read&&qaRepositoriesQuery.data?.candidates.includes(grant.repository)).map(grant=>grant.repository))].sort()
+  const judgesQuery = useQuery({
+    queryKey: ['wizard-agents'],
+    queryFn: () => client.listAutonomousAgents(),
+    enabled: ['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template),
+  })
+  const publicationConnections = useQuery({
+    queryKey: ['github-publication-connectors'],
+    queryFn: () => client.listAutonomousAgentConnectors(),
+    enabled: ['github_issue_resolver', 'qa'].includes(template),
+  })
+  const publishers = (publicationConnections.data ?? []).filter((connector) => connector.kind === 'target_secret' && connector.health === 'ready' && connector.secret_configured && connector.metadata.purpose === 'factory_workflow_github' && connector.scopes.includes('github:write'))
+  const judges = (judgesQuery.data ?? []).filter((agent) => agent.template_key === 'judge')
+  const chainAgents = (judgesQuery.data ?? []).filter((agent) => agent.status === 'enabled')
+  const linkedinQuery = useQuery({
+    queryKey: ['wizard-linkedin'],
+    queryFn: () => client.listLinkedinConnections(),
+    enabled: template === 'ai_content_manager',
+  })
+  const linkedinConnected = new Set(
+    (linkedinQuery.data ?? []).map((connection) => connection.destination),
+  )
   const connectLinkedin = async (destination: 'personal' | 'organization') => {
     try {
       const { url } = await client.linkedinAuthorize(destination)
       if (url) window.open(url, '_blank', 'width=600,height=760')
     } catch (err) {
-      window.alert(`LinkedIn is not configured on the server yet: ${(err as { message?: string })?.message ?? 'error'}`)
+      window.alert(
+        `LinkedIn is not configured on the server yet: ${(err as { message?: string })?.message ?? 'error'}`,
+      )
     }
   }
   // Palette feedback: the backend rejects a non-hex entry on save, so the same
   // rule is shown here while the user types rather than after they submit.
-  const paletteEntries = state.dsPalette.split(',').map(value => value.trim()).filter(Boolean)
+  const paletteEntries = state.dsPalette
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
   const isHexColour = (value: string) => /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)
   const paletteSwatches = paletteEntries.filter(isHexColour)
-  const invalidPaletteEntries = paletteEntries.filter(value => !isHexColour(value))
+  const invalidPaletteEntries = paletteEntries.filter((value) => !isHexColour(value))
   const logoInputRef = useRef<HTMLInputElement>(null)
   const [logoUploading, setLogoUploading] = useState(false)
   const [logoError, setLogoError] = useState('')
@@ -704,30 +1231,95 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   }
   return (
     <div className="space-y-5">
-      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers.">
-        <NativeSelect
+      <Field
+        label="Task executor"
+        hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers. Pi uses the worker's ChatGPT login with gpt-6.1-sol, independently of Factory role preferences, for QA, issue resolvers and PR reviewers. QA uses Playwright without shell or file-editing tools. It runs locally (unsafe: worker credentials are accessible)."
+      >
+        <TaskExecutorSelect
           value={state.executor}
-          onChange={value => {
-            set('executor', value as FormState['executor'])
+          template={template}
+          onChange={(value) => {
+            set('executor', value)
             // Codex never runs in the worker: drop a local choice instead of leaving an invalid form.
             if (value === 'codex' && state.isolation === 'local') set('isolation', 'default')
+            if (value === 'pi') set('isolation', 'local')
           }}
-        >
-          <option value="claude">Claude pure</option>
-          <option value="nexus">Nexus harness (OpenShell)</option>
-          {(codexSupported(template) || state.executor === 'codex') && (
-            <option value="codex" disabled={!codexSupported(template)}>Codex (OpenAI API key, sandbox only)</option>
-          )}
-        </NativeSelect>
+        />
+        {!piSupported(template) && (
+          <p className="mt-2 text-[12px] text-text-secondary">
+            Pi is available for QA, issue resolvers and PR reviewers. Codex is available only for
+            issue resolvers and PR reviewers.
+          </p>
+        )}
       </Field>
-      {state.executor === 'codex' && !codexSupported(template) && (
-        <p role="alert" className="text-[12px] text-text-primary">Codex runs only issue resolvers and PR reviewers. Choose another executor.</p>
+      {['claude', 'codex'].includes(state.executor) ? (
+        <Field
+          label="Modelo de ejecución (opcional)"
+          hint="Vacío conserva la selección automática del agente. Un modelo explícito compatible puede heredarse en los workflows; sus ejecuciones siempre registran el modelo elegido."
+        >
+          <Input
+            value={state.executionModel}
+            maxLength={120}
+            onChange={(e) => set('executionModel', e.target.value)}
+            placeholder={
+              state.executor === 'claude'
+                ? 'haiku, sonnet, opus o un ID claude compatible'
+                : 'Modelo Codex aprobado y con precio configurado'
+            }
+          />
+        </Field>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Este executor usa el modelo configurado en su runtime del worker. El campo de modelo de
+          Claude/Codex no lo modifica.
+        </p>
       )}
+      {['github_issue_resolver', 'github_pr_reviewer'].includes(template) && (
+        <div className="space-y-2 rounded-lg bg-muted/50 p-3">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={state.useAgentModelConfig}
+              onChange={(e) => set('useAgentModelConfig', e.target.checked)}
+            />
+            <span>Usar explícitamente el modelo y la identidad del harness de este agente</span>
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Al guardar esta opción se usa la configuración del agente, no preferencias globales
+            históricas. Las credenciales no se copian a otros procesos. Los agentes anteriores no
+            cambian automáticamente de comportamiento.
+          </p>
+          {!state.useAgentModelConfig && ['claude', 'codex'].includes(state.executor) && (
+            <p className="text-xs text-status-warning">
+              La pasarela histórica de modelos por rol no está conectada. Esta ejecución seguirá
+              bloqueada hasta elegir explícitamente su fuente de modelo.
+            </p>
+          )}
+        </div>
+      )}
+      {state.executor === 'codex' && !codexSupported(template) && (
+        <p role="alert" className="text-[12px] text-text-primary">
+          Codex runs only issue resolvers and PR reviewers. Choose another executor.
+        </p>
+      )}
+      {state.executor === 'pi' && !piSupported(template) && (
+        <p role="alert" className="text-[12px] text-text-primary">
+          Pi runs only QA, issue resolvers and PR reviewers. Choose another executor.
+        </p>
+      )}
+      <AgentRuntimeEditor value={state.runtime} executor={state.executor} onChange={value => set('runtime', value)} onValidityChange={valid => set('runtimeValid', valid)} />
       <IsolationFields state={state} set={set} template={template} />
       {template === 'qa' && (
         <>
-          <Field label="Test adapter" hint="Playwright: the agent drives the browser via the Playwright MCP — no command needed. Allowlisted command: the worker runs a pinned argv.">
-            <NativeSelect value={state.testAdapter} onChange={value => set('testAdapter', value as FormState['testAdapter'])}>
+          <Field
+            label="Test adapter"
+            hint="Playwright: the agent drives the browser via the Playwright MCP — no command needed. Allowlisted command: the worker runs a pinned argv."
+          >
+            <NativeSelect
+              value={state.testAdapter}
+              onChange={(value) => set('testAdapter', value as FormState['testAdapter'])}
+            >
               <option value="playwright">Playwright (agent-driven)</option>
               <option value="allowlisted_command">Allowlisted command</option>
             </NativeSelect>
@@ -740,25 +1332,79 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
                 <option value="deep">Deep — edge cases and cross-flow checks (400 turns)</option>
               </NativeSelect>
             </Field>
-            <Field label="What should the agent test? (optional)" hint="Claude drives the browser against the target and reports findings. Leave notes on flows or checks to prioritise; blank means general exploratory QA.">
-              <Textarea className="text-sm" rows={3} value={state.qaInstructions} onChange={event => set('qaInstructions', event.target.value)} placeholder="e.g. Sign in, add an item to the cart, and verify checkout totals." />
+            <Field
+              label="What should the agent test? (optional)"
+              hint="Claude drives the browser against the target and reports findings. Leave notes on flows or checks to prioritise; blank means general exploratory QA."
+            >
+              <Textarea
+                className="text-sm"
+                rows={3}
+                value={state.qaInstructions}
+                onChange={(event) => set('qaInstructions', event.target.value)}
+                placeholder="e.g. Sign in, add an item to the cart, and verify checkout totals."
+              />
             </Field>
           ) : (
-            <Field label="Test command" hint="Executed as argv (no shell), e.g. npx playwright test.">
-              <Input inputSize="sm" value={state.testCommand} onChange={event => set('testCommand', event.target.value)} placeholder={DEFAULT_TEST_COMMAND} />
+            <Field
+              label="Test command"
+              hint="Executed as argv (no shell), e.g. npx playwright test."
+            >
+              <Input
+                inputSize="sm"
+                value={state.testCommand}
+                onChange={(event) => set('testCommand', event.target.value)}
+                placeholder={DEFAULT_TEST_COMMAND}
+              />
             </Field>
           )}
-          <Field label="Repository to check out (owner/repo)" hint="Optional. Needed if the agent should inspect or run the codebase; the target URL is enough for pure browser QA.">
-            <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
+          <Field label="Project" hint="Optional project scope for coverage history. The web application target above remains the URL the agent tests.">
+            <NativeSelect value={state.qaProjectId} onChange={value => set('qaProjectId', value)}>
+              <option value="">Select a project…</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </NativeSelect>
           </Field>
+          {state.testAdapter === 'allowlisted_command' ? (
+            <Field label="Repository to check out" hint="Choose a repository explicitly granted to this project; the command runs in this checkout.">
+              <NativeSelect value={state.repository} onChange={value=>set('repository',value)}><option value="">Select an eligible repository…</option>{eligibleQaRepositories.map(repository=><option key={repository} value={repository}>{repository}</option>)}</NativeSelect>
+            </Field>
+          ) : (
+            <Field label="Repository to check out (owner/repo)" hint="Optional primary repository. The target URL is enough for pure browser QA.">
+              <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
+            </Field>
+          )}
+          {state.qaProjectId && <fieldset className="block">
+            <legend className="text-xs font-medium text-text-secondary">Authorized context repositories</legend>
+            <p className="mt-1 text-[11px] text-text-tertiary">Select project-linked repositories granted read access. They are cloned read-only for diagnosis.</p>
+            {eligibleQaRepositories.length ? <div className="mt-2 space-y-1">{eligibleQaRepositories.map(repository=>{const selected=csv(state.contextRepos).includes(repository);return <label key={repository} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selected} onChange={event=>{const next=new Set(csv(state.contextRepos));event.target.checked?next.add(repository):next.delete(repository);set('contextRepos',[...next].join(', '))}} />{repository}</label>})}</div> : <p className="mt-2 text-xs text-text-tertiary">No project-linked repositories have an active read grant.</p>}
+          </fieldset>}
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind is always the canonical output. Slack/GitHub delivery uses the server-side integrations in Claude Code.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              NexusMind is always the canonical output. Slack/GitHub delivery uses the server-side
+              integrations in Claude Code.
+            </p>
             <div className="mt-3 space-y-2.5">
               <Switch checked disabled size="sm" label="NexusMind (canonical)" />
-              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
-              <Switch checked={state.outputGithubIssue} onCheckedChange={value => set('outputGithubIssue', value)} size="sm" label="GitHub issue" />
-              {state.outputGithubIssue && <Switch checked={state.assignIssuesToSelf} onCheckedChange={value => set('assignIssuesToSelf', value)} size="sm" label="Assign created issues to the logged-in gh account" />}
+              <Switch
+                checked={state.outputSlack}
+                onCheckedChange={(value) => set('outputSlack', value)}
+                size="sm"
+                label="Slack summary"
+              />
+              <Switch
+                checked={state.outputGithubIssue}
+                onCheckedChange={(value) => set('outputGithubIssue', value)}
+                size="sm"
+                label="GitHub issue"
+              />
+              {state.outputGithubIssue && (
+                <Switch
+                  checked={state.assignIssuesToSelf}
+                  onCheckedChange={(value) => set('assignIssuesToSelf', value)}
+                  size="sm"
+                  label="Assign created issues to the logged-in gh account"
+                />
+              )}
             </div>
           </div>
         </>
@@ -767,23 +1413,90 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
       {template === 'github_issue_resolver' && (
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Repository (owner/repo)"><Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" /></Field>
-            <Field label="Base branch"><Input inputSize="sm" value={state.baseBranch} onChange={event => set('baseBranch', event.target.value)} placeholder="main" /></Field>
-            <Field label="Context repositories" hint="Comma-separated owner/repo. Cloned read-only so the agent has cross-repo context; changes still land only in the primary repo."><Input inputSize="sm" value={state.contextRepos} onChange={event => set('contextRepos', event.target.value)} placeholder="acme/api, acme/shared-lib" /></Field>
-            <Field label="Eligible labels" hint="Comma-separated."><Input inputSize="sm" value={state.labels} onChange={event => set('labels', event.target.value)} placeholder="autofix, good-first-issue" /></Field>
-            <Field label="Excluded paths" hint="Comma-separated globs."><Input inputSize="sm" value={state.excludedPaths} onChange={event => set('excludedPaths', event.target.value)} placeholder="infra/**, .github/**" /></Field>
+            <Field label="Repository (owner/repo)">
+              <Input
+                inputSize="sm"
+                value={state.repository}
+                onChange={(event) => set('repository', event.target.value)}
+                placeholder="acme/web"
+              />
+            </Field>
+            <Field label="Base branch">
+              <Input
+                inputSize="sm"
+                value={state.baseBranch}
+                onChange={(event) => set('baseBranch', event.target.value)}
+                placeholder="main"
+              />
+            </Field>
+            <Field
+              label="Context repositories"
+              hint="Comma-separated owner/repo. Cloned read-only so the agent has cross-repo context; changes still land only in the primary repo."
+            >
+              <Input
+                inputSize="sm"
+                value={state.contextRepos}
+                onChange={(event) => set('contextRepos', event.target.value)}
+                placeholder="acme/api, acme/shared-lib"
+              />
+            </Field>
+            <Field label="Eligible labels" hint="Comma-separated.">
+              <Input
+                inputSize="sm"
+                value={state.labels}
+                onChange={(event) => set('labels', event.target.value)}
+                placeholder="autofix, good-first-issue"
+              />
+            </Field>
+            <Field label="Excluded paths" hint="Comma-separated globs.">
+              <Input
+                inputSize="sm"
+                value={state.excludedPaths}
+                onChange={(event) => set('excludedPaths', event.target.value)}
+                placeholder="infra/**, .github/**"
+              />
+            </Field>
           </div>
-          <Field label="Custom instructions (optional)" hint="Guidance for how the agent should approach the issue — priorities, conventions, gotchas. Cannot expand its scope or lift safety limits.">
-            <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer the existing repository pattern in api/; keep the change minimal and add a test." />
+          <Field
+            label="Custom instructions (optional)"
+            hint="Guidance for how the agent should approach the issue — priorities, conventions, gotchas. Cannot expand its scope or lift safety limits."
+          >
+            <Textarea
+              className="text-sm"
+              rows={3}
+              value={state.customInstructions}
+              onChange={(event) => set('customInstructions', event.target.value)}
+              placeholder="e.g. Prefer the existing repository pattern in api/; keep the change minimal and add a test."
+            />
           </Field>
           <div className="rounded-xl border border-border-primary p-3 space-y-3">
-            <Switch checked={state.reviewAfterDeploy} onCheckedChange={value => set('reviewAfterDeploy', value)} size="sm" label="Review the PR with a Judge after deploy" />
-            <p className="text-[11px] text-text-tertiary">When on, each opened PR is marked (label + body marker) so your deploy workflow can deploy that branch to a preview and then call the Judge to verify the running app and post visual evidence on the PR. The Judge produces the visual evidence; the resolver already includes its own verification output.</p>
+            <Switch
+              checked={state.reviewAfterDeploy}
+              onCheckedChange={(value) => set('reviewAfterDeploy', value)}
+              size="sm"
+              label="Review the PR with a Judge after deploy"
+            />
+            <p className="text-[11px] text-text-tertiary">
+              When on, each opened PR is marked (label + body marker) so your deploy workflow can
+              deploy that branch to a preview and then call the Judge to verify the running app and
+              post visual evidence on the PR. The Judge produces the visual evidence; the resolver
+              already includes its own verification output.
+            </p>
             {state.reviewAfterDeploy && (
-              <Field label="Judge agent" hint="Reviews the deployed preview. Create a Judge agent first if the list is empty.">
-                <NativeSelect value={state.judgeAgentId} onChange={value => set('judgeAgentId', value)}>
+              <Field
+                label="Judge agent"
+                hint="Reviews the deployed preview. Create a Judge agent first if the list is empty."
+              >
+                <NativeSelect
+                  value={state.judgeAgentId}
+                  onChange={(value) => set('judgeAgentId', value)}
+                >
                   <option value="">Select a Judge…</option>
-                  {judges.map(judge => <option key={judge.id} value={judge.id}>{judge.name}</option>)}
+                  {judges.map((judge) => (
+                    <option key={judge.id} value={judge.id}>
+                      {judge.name}
+                    </option>
+                  ))}
                 </NativeSelect>
               </Field>
             )}
@@ -791,42 +1504,126 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
         </div>
       )}
 
+      {['github_issue_resolver', 'qa'].includes(template) && <Field label="Cuenta para publicar en GitHub" hint="Reutiliza una cuenta publicadora de Workflows para crear PRs o issues. La cuenta gh del backend sigue siendo la revisora y la usada por los webhooks; no se cambia su login.">
+        <NativeSelect value={state.githubPublicationConnectorId} onChange={(value) => set('githubPublicationConnectorId', value)}>
+          <option value="">Cuenta gh del backend (comportamiento actual)</option>
+          {state.githubPublicationConnectorId && !publishers.some((connector) => connector.id === state.githubPublicationConnectorId) && <option value={state.githubPublicationConnectorId}>Cuenta no disponible: revisa su conexión</option>}
+          {publishers.map((connector) => <option key={connector.id} value={connector.id}>{connector.name}</option>)}
+        </NativeSelect>
+        {publicationConnections.isError && <p role="alert" className="text-sm text-text-secondary">No se pudieron cargar las cuentas publicadoras. Revisa tus permisos.</p>}
+      </Field>}
       {template === 'github_pr_reviewer' && (
         <div className="space-y-4">
-          <Field label="Repository (owner/repo)"><Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" /></Field>
-          <Switch checked={state.includeDrafts} onCheckedChange={value => set('includeDrafts', value)} size="sm" label="Review draft pull requests" />
-          <Field label="Custom instructions (optional)" hint="Guidance for what the review should focus on — areas, standards, risks. Cannot approve, merge, push, or publish.">
-            <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Focus on error handling and auth checks; flag any missing input validation." />
+          {state.targetKind === 'project' ? <p className="text-sm text-text-secondary">Project-scoped reviewer: repository access is resolved server-side from this project's linked code repositories. Choose the concrete PR when running, or use requested-review webhooks.</p> : <Field label="Repository (owner/repo)">
+            <Input
+              inputSize="sm"
+              value={state.repository}
+              onChange={(event) => set('repository', event.target.value)}
+              placeholder="acme/web"
+            />
+          </Field>}
+          <Switch
+            checked={state.includeDrafts}
+            onCheckedChange={(value) => set('includeDrafts', value)}
+            size="sm"
+            label="Review draft pull requests"
+          />
+          <Field
+            label="Custom instructions (optional)"
+            hint="Guidance for what the review should focus on — areas, standards, risks. Cannot approve, merge, push, or publish."
+          >
+            <Textarea
+              className="text-sm"
+              rows={3}
+              value={state.customInstructions}
+              onChange={(event) => set('customInstructions', event.target.value)}
+              placeholder="e.g. Focus on error handling and auth checks; flag any missing input validation."
+            />
           </Field>
           <div className="rounded-xl border border-border-primary p-3 space-y-2">
-            <Switch checked={state.autoMerge} onCheckedChange={value => set('autoMerge', value)} size="sm" label="Request auto-merge for docs and tests PRs" />
-            <p className="text-[11px] text-text-tertiary">When on, a PR is proposed for merge ONLY if every changed file is documentation or tests, the review found no blocking issues, and every required GitHub check is green on the reviewed commit. The organization&apos;s merge policy (Factory policies) then decides: without a policy, or until a decision model is connected, the PR stays open for a person. An allowed merge waits 10 minutes and is re-checked before it happens; any new commit cancels it.</p>
+            <Switch
+              checked={state.autoMerge}
+              onCheckedChange={(value) => set('autoMerge', value)}
+              size="sm"
+              label="Request auto-merge for docs and tests PRs"
+            />
+            <p className="text-[11px] text-text-tertiary">
+              When on, a PR is proposed for merge ONLY if every changed file is documentation or
+              tests, the review found no blocking issues, and every required GitHub check is green
+              on the reviewed commit. The organization&apos;s merge policy (Factory policies) then
+              decides: without a policy, or until a decision model is connected, the PR stays open
+              for a person. An allowed merge waits 10 minutes and is re-checked before it happens;
+              any new commit cancels it.
+            </p>
           </div>
         </div>
       )}
 
       {template === 'lead_generation' && (
         <div className="space-y-4">
-          <Field label="Product" hint="What you're selling — name plus a one-line value prop or a URL.">
-            <Textarea className="text-sm" rows={2} value={state.product} onChange={event => set('product', event.target.value)} placeholder="NexusMind — persistent team memory for AI coding agents (nexusmind.smartcoderlabs.com)" />
+          <Field
+            label="Product"
+            hint="What you're selling — name plus a one-line value prop or a URL."
+          >
+            <Textarea
+              className="text-sm"
+              rows={2}
+              value={state.product}
+              onChange={(event) => set('product', event.target.value)}
+              placeholder="NexusMind — persistent team memory for AI coding agents (nexusmind.smartcoderlabs.com)"
+            />
           </Field>
-          <Field label="Ideal customer profile (ICP)" hint="Who to target: industry, company size, role, geography.">
-            <Textarea className="text-sm" rows={3} value={state.icp} onChange={event => set('icp', event.target.value)} placeholder="Software consultancies and dev-tool startups (10–200 people) using Claude Code / AI agents, in LATAM and the US." />
+          <Field
+            label="Ideal customer profile (ICP)"
+            hint="Who to target: industry, company size, role, geography."
+          >
+            <Textarea
+              className="text-sm"
+              rows={3}
+              value={state.icp}
+              onChange={(event) => set('icp', event.target.value)}
+              placeholder="Software consultancies and dev-tool startups (10–200 people) using Claude Code / AI agents, in LATAM and the US."
+            />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Leads per run" hint="1–25.">
-              <Input inputSize="sm" type="number" min={1} max={25} value={state.leadCount} onChange={event => set('leadCount', event.target.value)} placeholder="10" />
+              <Input
+                inputSize="sm"
+                type="number"
+                min={1}
+                max={25}
+                value={state.leadCount}
+                onChange={(event) => set('leadCount', event.target.value)}
+                placeholder="10"
+              />
             </Field>
           </div>
-          <Field label="Custom instructions (optional)" hint="Tone, angle, what to emphasize or avoid in the drafts.">
-            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Keep emails under 90 words, lead with a specific pain point, no buzzwords." />
+          <Field
+            label="Custom instructions (optional)"
+            hint="Tone, angle, what to emphasize or avoid in the drafts."
+          >
+            <Textarea
+              className="text-sm"
+              rows={2}
+              value={state.customInstructions}
+              onChange={(event) => set('customInstructions', event.target.value)}
+              placeholder="e.g. Keep emails under 90 words, lead with a specific pain point, no buzzwords."
+            />
           </Field>
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Leads and drafted emails are stored in NexusMind for your review. This agent never sends email.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              Leads and drafted emails are stored in NexusMind for your review. This agent never
+              sends email.
+            </p>
             <div className="mt-3 space-y-2.5">
               <Switch checked disabled size="sm" label="NexusMind (canonical)" />
-              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
+              <Switch
+                checked={state.outputSlack}
+                onCheckedChange={(value) => set('outputSlack', value)}
+                size="sm"
+                label="Slack summary"
+              />
             </div>
           </div>
         </div>
@@ -834,72 +1631,202 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
 
       {template === 'judge' && (
         <div className="space-y-4">
-          <Field label="Repositories (owner/repo, comma-separated)" hint="The repos this judge may target. The specific PRs/issues are chosen each time you run it. Set the live app URL in the Target step.">
-            <Input inputSize="sm" value={state.repositories} onChange={event => set('repositories', event.target.value)} placeholder="acme/web, acme/api" />
+          <Field
+            label="Repositories (owner/repo, comma-separated)"
+            hint="The repos this judge may target. The specific PRs/issues are chosen each time you run it. Set the live app URL in the Target step."
+          >
+            <Input
+              inputSize="sm"
+              value={state.repositories}
+              onChange={(event) => set('repositories', event.target.value)}
+              placeholder="acme/web, acme/api"
+            />
           </Field>
-          <Field label="Custom instructions (optional)" hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch.">
-            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Pay special attention to the checkout totals and the empty-cart state." />
+          <Field
+            label="Custom instructions (optional)"
+            hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch."
+          >
+            <Textarea
+              className="text-sm"
+              rows={2}
+              value={state.customInstructions}
+              onChange={(event) => set('customInstructions', event.target.value)}
+              placeholder="e.g. Pay special attention to the checkout totals and the empty-cart state."
+            />
           </Field>
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Verdict delivery</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind always records findings with evidence. Publishing a verdict comment on each PR/issue is opt-in.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              NexusMind always records findings with evidence. Publishing a verdict comment on each
+              PR/issue is opt-in.
+            </p>
             <div className="mt-3 space-y-2.5">
               <Switch checked disabled size="sm" label="NexusMind (canonical)" />
-              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
-              <Switch checked={state.publishComment} onCheckedChange={value => set('publishComment', value)} size="sm" label="Comment the verdict on GitHub" />
+              <Switch
+                checked={state.outputSlack}
+                onCheckedChange={(value) => set('outputSlack', value)}
+                size="sm"
+                label="Slack summary"
+              />
+              <Switch
+                checked={state.publishComment}
+                onCheckedChange={(value) => set('publishComment', value)}
+                size="sm"
+                label="Comment the verdict on GitHub"
+              />
             </div>
           </div>
-          <p className="text-[11px] text-text-tertiary">Verifies only what the PRs/issues touch against the live app — never approves, merges, or pushes.</p>
+          <p className="text-[11px] text-text-tertiary">
+            Verifies only what the PRs/issues touch against the live app — never approves, merges,
+            or pushes.
+          </p>
         </div>
       )}
 
       {template === 'ai_content_manager' && (
         <div className="space-y-4">
           <Field label="Topics (comma-separated)" hint="The themes/areas the agent writes about.">
-            <Textarea className="text-sm" rows={2} value={state.topics} onChange={event => set('topics', event.target.value)} placeholder="AI coding agents, developer productivity, persistent memory for LLMs, team knowledge" />
+            <Textarea
+              className="text-sm"
+              rows={2}
+              value={state.topics}
+              onChange={(event) => set('topics', event.target.value)}
+              placeholder="AI coding agents, developer productivity, persistent memory for LLMs, team knowledge"
+            />
           </Field>
-          <Field label="Target audience / ICP" hint="Who the content should speak to and capture as leads.">
-            <Textarea className="text-sm" rows={2} value={state.audience} onChange={event => set('audience', event.target.value)} placeholder="CTOs and lead engineers at software consultancies and dev-tool startups adopting AI agents." />
+          <Field
+            label="Target audience / ICP"
+            hint="Who the content should speak to and capture as leads."
+          >
+            <Textarea
+              className="text-sm"
+              rows={2}
+              value={state.audience}
+              onChange={(event) => set('audience', event.target.value)}
+              placeholder="CTOs and lead engineers at software consultancies and dev-tool startups adopting AI agents."
+            />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Language"><Input inputSize="sm" value={state.contentLanguage} onChange={event => set('contentLanguage', event.target.value)} placeholder="English" /></Field>
-            <Field label="Posts per run" hint="1–10."><Input inputSize="sm" type="number" min={1} max={10} value={state.postsPerRun} onChange={event => set('postsPerRun', event.target.value)} placeholder="3" /></Field>
+            <Field label="Language">
+              <Input
+                inputSize="sm"
+                value={state.contentLanguage}
+                onChange={(event) => set('contentLanguage', event.target.value)}
+                placeholder="English"
+              />
+            </Field>
+            <Field label="Posts per run" hint="1–10.">
+              <Input
+                inputSize="sm"
+                type="number"
+                min={1}
+                max={10}
+                value={state.postsPerRun}
+                onChange={(event) => set('postsPerRun', event.target.value)}
+                placeholder="3"
+              />
+            </Field>
           </div>
-          <Field label="Brand tone / voice (optional)"><Input inputSize="sm" value={state.tone} onChange={event => set('tone', event.target.value)} placeholder="practical, bold, friendly-expert" /></Field>
-          <Field label="Call to action / lead magnet (optional)" hint="Woven in naturally at the end of posts.">
-            <Input inputSize="sm" value={state.cta} onChange={event => set('cta', event.target.value)} placeholder="Try NexusMind free → nexusmind.smartcoderlabs.com" />
+          <Field label="Brand tone / voice (optional)">
+            <Input
+              inputSize="sm"
+              value={state.tone}
+              onChange={(event) => set('tone', event.target.value)}
+              placeholder="practical, bold, friendly-expert"
+            />
           </Field>
-          <Field label="Preferred hashtags (optional, comma-separated)"><Input inputSize="sm" value={state.hashtags} onChange={event => set('hashtags', event.target.value)} placeholder="#AI, #DevTools, #Startups" /></Field>
+          <Field
+            label="Call to action / lead magnet (optional)"
+            hint="Woven in naturally at the end of posts."
+          >
+            <Input
+              inputSize="sm"
+              value={state.cta}
+              onChange={(event) => set('cta', event.target.value)}
+              placeholder="Try NexusMind free → nexusmind.smartcoderlabs.com"
+            />
+          </Field>
+          <Field label="Preferred hashtags (optional, comma-separated)">
+            <Input
+              inputSize="sm"
+              value={state.hashtags}
+              onChange={(event) => set('hashtags', event.target.value)}
+              placeholder="#AI, #DevTools, #Startups"
+            />
+          </Field>
           <Field label="Custom instructions (optional)" hint="Anything else to emphasize or avoid.">
-            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer short posts; open with a contrarian take; no emojis." />
+            <Textarea
+              className="text-sm"
+              rows={2}
+              value={state.customInstructions}
+              onChange={(event) => set('customInstructions', event.target.value)}
+              placeholder="e.g. Prefer short posts; open with a contrarian take; no emojis."
+            />
           </Field>
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Destinations</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Which LinkedIn destinations these posts are for.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              Which LinkedIn destinations these posts are for.
+            </p>
             <div className="mt-3 space-y-2.5">
-              <Switch checked={state.destPersonal} onCheckedChange={value => set('destPersonal', value)} size="sm" label="Personal profile" />
-              <Switch checked={state.destOrganization} onCheckedChange={value => set('destOrganization', value)} size="sm" label="Company page" />
+              <Switch
+                checked={state.destPersonal}
+                onCheckedChange={(value) => set('destPersonal', value)}
+                size="sm"
+                label="Personal profile"
+              />
+              <Switch
+                checked={state.destOrganization}
+                onCheckedChange={(value) => set('destOrganization', value)}
+                size="sm"
+                label="Company page"
+              />
             </div>
           </div>
 
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Post images</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Generates an illustration for each post from the design system below, so the whole feed looks like one brand. Needs the Higgsfield CLI installed and signed in on the server; without it posts still go out, as text only.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              Generates an illustration for each post from the design system below, so the whole
+              feed looks like one brand. Needs the Higgsfield CLI installed and signed in on the
+              server; without it posts still go out, as text only.
+            </p>
             <div className="mt-3 space-y-2.5">
-              <Switch checked={state.imagesEnabled} onCheckedChange={value => set('imagesEnabled', value)} size="sm" label="Generate an image for each post" />
+              <Switch
+                checked={state.imagesEnabled}
+                onCheckedChange={(value) => set('imagesEnabled', value)}
+                size="sm"
+                label="Generate an image for each post"
+              />
             </div>
             {state.imagesEnabled && (
               <div className="mt-3 space-y-3">
-                <Field label="Provider" hint="Chosen explicitly, never mixed: two providers render the same design system differently, so switching mid-feed changes how your posts look.">
-                  <NativeSelect value={state.imagesProvider} onChange={value => set('imagesProvider', value)}>
+                <Field
+                  label="Provider"
+                  hint="Chosen explicitly, never mixed: two providers render the same design system differently, so switching mid-feed changes how your posts look."
+                >
+                  <NativeSelect
+                    value={state.imagesProvider}
+                    onChange={(value) => set('imagesProvider', value)}
+                  >
                     <option value="higgsfield">Higgsfield — higher quality, paid credits</option>
-                    <option value="cloudflare">Cloudflare Workers AI — FLUX.1 schnell, free daily allowance</option>
+                    <option value="cloudflare">
+                      Cloudflare Workers AI — FLUX.1 schnell, free daily allowance
+                    </option>
                   </NativeSelect>
                 </Field>
                 {state.imagesProvider === 'higgsfield' ? (
-                  <Field label="Model" hint="Credit cost per image. With 3 posts per run, the difference is roughly 20 credits a run against 3.">
-                    <NativeSelect value={state.imagesModel} onChange={value => set('imagesModel', value)}>
-                      <option value="gpt_image_2">GPT Image 2 — 6.5 credits (best composition)</option>
+                  <Field
+                    label="Model"
+                    hint="Credit cost per image. With 3 posts per run, the difference is roughly 20 credits a run against 3."
+                  >
+                    <NativeSelect
+                      value={state.imagesModel}
+                      onChange={(value) => set('imagesModel', value)}
+                    >
+                      <option value="gpt_image_2">
+                        GPT Image 2 — 6.5 credits (best composition)
+                      </option>
                       <option value="nano_banana_flash">Nano Banana 2 — 1.5 credits</option>
                       <option value="nano_banana_2_lite">Nano Banana 2 Lite — 1 credit</option>
                       <option value="seedream_v5_lite">Seedream 5.0 Lite — 1 credit</option>
@@ -908,16 +1835,42 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
                   </Field>
                 ) : (
                   <p className="rounded-md border border-border-primary p-2 text-[11px] text-text-tertiary">
-                    Uses FLUX.1 schnell. Needs <code>CLOUDFLARE_AI_TOKEN</code> on the server and object storage configured. Two limits worth knowing: it takes no logo reference, and it ignores the aspect ratio below — the model accepts only a prompt and a step count, so images come back square.
+                    Uses FLUX.1 schnell. Needs <code>CLOUDFLARE_AI_TOKEN</code> on the server and
+                    object storage configured. Two limits worth knowing: it takes no logo reference,
+                    and it ignores the aspect ratio below — the model accepts only a prompt and a
+                    step count, so images come back square.
                   </p>
                 )}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label="Images per post" hint="1–4. More than one becomes a carousel.">
-                    <Input inputSize="sm" type="number" min={1} max={4} value={state.imagesPerPost} onChange={event => set('imagesPerPost', event.target.value)} />
+                    <Input
+                      inputSize="sm"
+                      type="number"
+                      min={1}
+                      max={4}
+                      value={state.imagesPerPost}
+                      onChange={(event) => set('imagesPerPost', event.target.value)}
+                    />
                   </Field>
-                  <Field label="Aspect ratio" hint={state.imagesProvider === 'cloudflare' ? 'Not supported by FLUX.1 schnell.' : undefined}>
-                    <NativeSelect value={state.dsAspectRatio} onChange={value => set('dsAspectRatio', value)}>
-                      {['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9', 'auto'].map(ratio => <option key={ratio} value={ratio}>{ratio}</option>)}
+                  <Field
+                    label="Aspect ratio"
+                    hint={
+                      state.imagesProvider === 'cloudflare'
+                        ? 'Not supported by FLUX.1 schnell.'
+                        : undefined
+                    }
+                  >
+                    <NativeSelect
+                      value={state.dsAspectRatio}
+                      onChange={(value) => set('dsAspectRatio', value)}
+                    >
+                      {['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9', 'auto'].map(
+                        (ratio) => (
+                          <option key={ratio} value={ratio}>
+                            {ratio}
+                          </option>
+                        ),
+                      )}
                     </NativeSelect>
                   </Field>
                 </div>
@@ -929,53 +1882,121 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             <div className="rounded-xl border border-border-primary p-3 space-y-3">
               <div>
                 <p className="text-xs font-medium text-text-secondary">Design system</p>
-                <p className="mt-0.5 text-[11px] text-text-tertiary">Applied unchanged to every image the agent ever generates — that is what keeps them consistent instead of a different look each run. Fill in at least one field. Images never contain readable text: generators garble type, and the post already carries its own copy.</p>
+                <p className="mt-0.5 text-[11px] text-text-tertiary">
+                  Applied unchanged to every image the agent ever generates — that is what keeps
+                  them consistent instead of a different look each run. Fill in at least one field.
+                  Images never contain readable text: generators garble type, and the post already
+                  carries its own copy.
+                </p>
               </div>
-              <Field label="Palette (comma-separated hex)" hint="Only these colours are used. e.g. #0B0B0F, #E8E8EA, #3B82F6">
-                <Input inputSize="sm" value={state.dsPalette} onChange={event => set('dsPalette', event.target.value)} placeholder="#0B0B0F, #E8E8EA, #3B82F6" />
+              <Field
+                label="Palette (comma-separated hex)"
+                hint="Only these colours are used. e.g. #0B0B0F, #E8E8EA, #3B82F6"
+              >
+                <Input
+                  inputSize="sm"
+                  value={state.dsPalette}
+                  onChange={(event) => set('dsPalette', event.target.value)}
+                  placeholder="#0B0B0F, #E8E8EA, #3B82F6"
+                />
               </Field>
               {paletteSwatches.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
-                  {paletteSwatches.map(colour => (
-                    <span key={colour} className="h-5 w-5 rounded-[4px] border border-border-primary" style={{ backgroundColor: colour }} title={colour} />
+                  {paletteSwatches.map((colour) => (
+                    <span
+                      key={colour}
+                      className="h-5 w-5 rounded-[4px] border border-border-primary"
+                      style={{ backgroundColor: colour }}
+                      title={colour}
+                    />
                   ))}
                 </div>
               )}
               {invalidPaletteEntries.length > 0 && (
-                <p className="text-[11px] text-accent-red">Not valid hex colours: {invalidPaletteEntries.join(', ')}. Use #RGB or #RRGGBB.</p>
+                <p className="text-[11px] text-accent-red">
+                  Not valid hex colours: {invalidPaletteEntries.join(', ')}. Use #RGB or #RRGGBB.
+                </p>
               )}
               <Field label="Visual style" hint="The overall look — medium, treatment, mood.">
-                <Input inputSize="sm" value={state.dsVisualStyle} onChange={event => set('dsVisualStyle', event.target.value)} placeholder="editorial dark-tech, minimal, high contrast, shallow depth of field" />
+                <Input
+                  inputSize="sm"
+                  value={state.dsVisualStyle}
+                  onChange={(event) => set('dsVisualStyle', event.target.value)}
+                  placeholder="editorial dark-tech, minimal, high contrast, shallow depth of field"
+                />
               </Field>
-              <Field label="Typography (optional)" hint="Shapes the geometry and weight of forms; never rendered as letters.">
-                <Input inputSize="sm" value={state.dsTypography} onChange={event => set('dsTypography', event.target.value)} placeholder="geometric sans-serif, tight tracking" />
+              <Field
+                label="Typography (optional)"
+                hint="Shapes the geometry and weight of forms; never rendered as letters."
+              >
+                <Input
+                  inputSize="sm"
+                  value={state.dsTypography}
+                  onChange={(event) => set('dsTypography', event.target.value)}
+                  placeholder="geometric sans-serif, tight tracking"
+                />
               </Field>
               <Field label="Imagery rules (optional)" hint="What the pictures should be of.">
-                <Textarea className="text-sm" rows={2} value={state.dsImageryRules} onChange={event => set('dsImageryRules', event.target.value)} placeholder="abstract 3D renders and structural forms; never stock-photo people or office scenes" />
+                <Textarea
+                  className="text-sm"
+                  rows={2}
+                  value={state.dsImageryRules}
+                  onChange={(event) => set('dsImageryRules', event.target.value)}
+                  placeholder="abstract 3D renders and structural forms; never stock-photo people or office scenes"
+                />
               </Field>
-              <Field label="Avoid (optional)" hint="Added to the built-in ban on text, logos and watermarks.">
-                <Input inputSize="sm" value={state.dsAvoid} onChange={event => set('dsAvoid', event.target.value)} placeholder="gradients, neon, clip-art" />
+              <Field
+                label="Avoid (optional)"
+                hint="Added to the built-in ban on text, logos and watermarks."
+              >
+                <Input
+                  inputSize="sm"
+                  value={state.dsAvoid}
+                  onChange={(event) => set('dsAvoid', event.target.value)}
+                  placeholder="gradients, neon, clip-art"
+                />
               </Field>
-              <Field label="Logo (optional)" hint={state.imagesProvider === 'cloudflare' ? 'Ignored by Cloudflare Workers AI, which takes no reference images.' : "Used as a visual reference on every image so the mark's geometry carries across the set."}>
+              <Field
+                label="Logo (optional)"
+                hint={
+                  state.imagesProvider === 'cloudflare'
+                    ? 'Ignored by Cloudflare Workers AI, which takes no reference images.'
+                    : "Used as a visual reference on every image so the mark's geometry carries across the set."
+                }
+              >
                 <div className="space-y-2">
-                  <Input inputSize="sm" value={state.dsLogoUrl} onChange={event => set('dsLogoUrl', event.target.value)} placeholder="https://… or upload a file" />
+                  <Input
+                    inputSize="sm"
+                    value={state.dsLogoUrl}
+                    onChange={(event) => set('dsLogoUrl', event.target.value)}
+                    placeholder="https://… or upload a file"
+                  />
                   <div className="flex items-center gap-2">
                     <input
                       ref={logoInputRef}
                       type="file"
                       accept="image/png,image/jpeg,image/webp,image/svg+xml"
                       className="hidden"
-                      onChange={event => {
+                      onChange={(event) => {
                         const file = event.target.files?.[0]
                         if (file) uploadLogo(file)
                         event.target.value = ''
                       }}
                     />
-                    <Button size="sm" variant="secondary" disabled={logoUploading} onClick={() => logoInputRef.current?.click()}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={logoUploading}
+                      onClick={() => logoInputRef.current?.click()}
+                    >
                       {logoUploading ? 'Uploading…' : 'Upload logo'}
                     </Button>
                     {state.dsLogoUrl.trim() && (
-                      <img src={state.dsLogoUrl} alt="Brand logo" className="h-8 w-8 rounded-[4px] border border-border-primary object-contain" />
+                      <img
+                        src={state.dsLogoUrl}
+                        alt="Brand logo"
+                        className="h-8 w-8 rounded-[4px] border border-border-primary object-contain"
+                      />
                     )}
                   </div>
                   {logoError && <p className="text-[11px] text-accent-red">{logoError}</p>}
@@ -986,20 +2007,41 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
 
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Publishing</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">By default the agent writes drafts and you approve each one from the Findings tab.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              By default the agent writes drafts and you approve each one from the Findings tab.
+            </p>
             <div className="mt-3 space-y-2.5">
-              <Switch checked={state.autoPublish} onCheckedChange={value => set('autoPublish', value)} size="sm" label="Publish to LinkedIn automatically, without my approval" />
+              <Switch
+                checked={state.autoPublish}
+                onCheckedChange={(value) => set('autoPublish', value)}
+                size="sm"
+                label="Publish to LinkedIn automatically, without my approval"
+              />
             </div>
             {state.autoPublish && (
               <div className="mt-3 space-y-3">
                 <p className="rounded-md border border-accent-amber/40 bg-accent-amber/10 p-2 text-[11px] text-text-secondary">
-                  Each generated post goes straight to your live LinkedIn feed. A published post is public immediately and cannot be withdrawn from here — only from LinkedIn. Review the topics, tone and custom instructions before enabling this.
+                  Each generated post goes straight to your live LinkedIn feed. A published post is
+                  public immediately and cannot be withdrawn from here — only from LinkedIn. Review
+                  the topics, tone and custom instructions before enabling this.
                 </p>
-                <Field label="Maximum posts published per day" hint="1–10. Rolling 24 hours, counted per agent. Extra drafts wait for approval.">
-                  <Input inputSize="sm" type="number" min={1} max={10} value={state.autoPublishDailyLimit} onChange={event => set('autoPublishDailyLimit', event.target.value)} />
+                <Field
+                  label="Maximum posts published per day"
+                  hint="1–10. Rolling 24 hours, counted per agent. Extra drafts wait for approval."
+                >
+                  <Input
+                    inputSize="sm"
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={state.autoPublishDailyLimit}
+                    onChange={(event) => set('autoPublishDailyLimit', event.target.value)}
+                  />
                 </Field>
                 {!state.destPersonal && !state.destOrganization && (
-                  <p className="text-[11px] text-accent-red">Pick at least one destination above — the agent needs to know where to publish.</p>
+                  <p className="text-[11px] text-accent-red">
+                    Pick at least one destination above — the agent needs to know where to publish.
+                  </p>
                 )}
               </div>
             )}
@@ -1007,21 +2049,58 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <div className="rounded-xl border border-border-primary p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-medium text-text-secondary">Connect LinkedIn</p>
-              <button type="button" onClick={() => linkedinQuery.refetch()} className="text-[11px] text-accent-blue">Refresh</button>
+              <button
+                type="button"
+                onClick={() => linkedinQuery.refetch()}
+                className="text-[11px] text-accent-blue"
+              >
+                Refresh
+              </button>
             </div>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Connect the account(s) once (shared by all content agents). A window opens to authorize on LinkedIn. Without a connection nothing can be published — automatically or by hand.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              Connect the account(s) once (shared by all content agents). A window opens to
+              authorize on LinkedIn. Without a connection nothing can be published — automatically
+              or by hand.
+            </p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" variant={linkedinConnected.has('personal') ? 'ghost' : 'secondary'} onClick={() => connectLinkedin('personal')}>{linkedinConnected.has('personal') ? '✓ Personal connected — reconnect' : 'Connect personal'}</Button>
-              <Button size="sm" variant={linkedinConnected.has('organization') ? 'ghost' : 'secondary'} onClick={() => connectLinkedin('organization')}>{linkedinConnected.has('organization') ? '✓ Company connected — reconnect' : 'Connect company page'}</Button>
+              <Button
+                size="sm"
+                variant={linkedinConnected.has('personal') ? 'ghost' : 'secondary'}
+                onClick={() => connectLinkedin('personal')}
+              >
+                {linkedinConnected.has('personal')
+                  ? '✓ Personal connected — reconnect'
+                  : 'Connect personal'}
+              </Button>
+              <Button
+                size="sm"
+                variant={linkedinConnected.has('organization') ? 'ghost' : 'secondary'}
+                onClick={() => connectLinkedin('organization')}
+              >
+                {linkedinConnected.has('organization')
+                  ? '✓ Company connected — reconnect'
+                  : 'Connect company page'}
+              </Button>
             </div>
-            <p className="mt-2 text-[11px] text-text-tertiary">Requires the server's LinkedIn app to be configured (LINKEDIN_CLIENT_ID/SECRET + redirect URL).</p>
+            <p className="mt-2 text-[11px] text-text-tertiary">
+              Requires the server's LinkedIn app to be configured (LINKEDIN_CLIENT_ID/SECRET +
+              redirect URL).
+            </p>
           </div>
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Every generated post is stored in NexusMind, whether it is published automatically or waits for your approval.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              Every generated post is stored in NexusMind, whether it is published automatically or
+              waits for your approval.
+            </p>
             <div className="mt-3 space-y-2.5">
               <Switch checked disabled size="sm" label="NexusMind (canonical)" />
-              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
+              <Switch
+                checked={state.outputSlack}
+                onCheckedChange={(value) => set('outputSlack', value)}
+                size="sm"
+                label="Slack summary"
+              />
             </div>
           </div>
         </div>
@@ -1029,17 +2108,39 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
 
       {['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template) && (
         <div className="rounded-xl border border-border-primary p-3 space-y-3">
-          <p className="text-xs font-medium text-text-secondary">Chain — run another agent on success</p>
-          <p className="text-[11px] text-text-tertiary">When this agent finishes successfully on a PR, enqueue the chosen agent on the SAME PR. E.g. Resolver → PR Reviewer → Judge, so the agents hand off to each other.</p>
+          <p className="text-xs font-medium text-text-secondary">
+            Chain — run another agent on success
+          </p>
+          <p className="text-[11px] text-text-tertiary">
+            When this agent finishes successfully on a PR, enqueue the chosen agent on the SAME PR.
+            E.g. Resolver → PR Reviewer → Judge, so the agents hand off to each other.
+          </p>
           <Field label="Next agent (optional)">
-            <NativeSelect value={state.onSuccessTriggerAgentId} onChange={value => set('onSuccessTriggerAgentId', value)}>
+            <NativeSelect
+              value={state.onSuccessTriggerAgentId}
+              onChange={(value) => set('onSuccessTriggerAgentId', value)}
+            >
               <option value="">None</option>
-              {chainAgents.map(agent => <option key={agent.id} value={agent.id}>{agent.name} ({agent.template_key})</option>)}
+              {chainAgents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name} ({agent.template_key})
+                </option>
+              ))}
             </NativeSelect>
           </Field>
           {state.onSuccessTriggerAgentId && (
-            <Field label="Delay before the next run (seconds, optional)" hint="Useful when the next agent (e.g. a Judge) must wait for your deploy to reach production after a merge.">
-              <Input inputSize="sm" type="number" min={0} value={state.onSuccessTriggerDelaySeconds} onChange={event => set('onSuccessTriggerDelaySeconds', event.target.value)} placeholder="0" />
+            <Field
+              label="Delay before the next run (seconds, optional)"
+              hint="Useful when the next agent (e.g. a Judge) must wait for your deploy to reach production after a merge."
+            >
+              <Input
+                inputSize="sm"
+                type="number"
+                min={0}
+                value={state.onSuccessTriggerDelaySeconds}
+                onChange={(event) => set('onSuccessTriggerDelaySeconds', event.target.value)}
+                placeholder="0"
+              />
             </Field>
           )}
         </div>
@@ -1049,34 +2150,63 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
         <div className="rounded-xl border border-border-primary p-3 space-y-3">
           <div>
             <p className="text-xs font-medium text-text-secondary">App login</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">If the app requires sign-in, provide credentials so the agent logs in before testing — without them it hits the login gate and can't verify the real UI. Stored encrypted and never shown again; leave blank to keep the current login when editing.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">
+              If the app requires sign-in, provide credentials so the agent logs in before testing —
+              without them it hits the login gate and can't verify the real UI. Stored encrypted and
+              never shown again; leave blank to keep the current login when editing.
+            </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Username / email">
-              <Input inputSize="sm" autoComplete="off" value={state.loginUser} onChange={event => set('loginUser', event.target.value)} placeholder="qa@example.com" />
+              <Input
+                inputSize="sm"
+                autoComplete="off"
+                value={state.loginUser}
+                onChange={(event) => set('loginUser', event.target.value)}
+                placeholder="qa@example.com"
+              />
             </Field>
             <Field label="Password">
-              <Input inputSize="sm" type="password" autoComplete="new-password" value={state.loginPassword} onChange={event => set('loginPassword', event.target.value)} placeholder="••••••••" />
+              <Input
+                inputSize="sm"
+                type="password"
+                autoComplete="new-password"
+                value={state.loginPassword}
+                onChange={(event) => set('loginPassword', event.target.value)}
+                placeholder="••••••••"
+              />
             </Field>
           </div>
-          <Field label="Login URL (optional)" hint="Only if the login page isn't reachable from the app URL.">
-            <Input inputSize="sm" value={state.loginUrl} onChange={event => set('loginUrl', event.target.value)} placeholder="https://app.example.com/login" />
+          <Field
+            label="Login URL (optional)"
+            hint="Only if the login page isn't reachable from the app URL."
+          >
+            <Input
+              inputSize="sm"
+              value={state.loginUrl}
+              onChange={(event) => set('loginUrl', event.target.value)}
+              placeholder="https://app.example.com/login"
+            />
           </Field>
         </div>
       )}
 
       <details className="rounded-xl border border-border-primary p-3">
-        <summary className="cursor-pointer text-xs font-medium text-text-secondary">Advanced — extra configuration (merged JSON)</summary>
+        <summary className="cursor-pointer text-xs font-medium text-text-secondary">
+          Advanced — extra configuration (merged JSON)
+        </summary>
         <Textarea
           className="mt-2 font-mono text-xs"
           rows={4}
           value={state.extraConfig}
-          onChange={event => set('extraConfig', event.target.value)}
+          onChange={(event) => set('extraConfig', event.target.value)}
           placeholder='{"test_timeout_seconds": 900}'
           error={extraError ? 'Must be a JSON object' : undefined}
         />
         <p className="mt-2 text-[11px] text-text-tertiary">Resulting configuration:</p>
-        <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-muted p-2 font-mono text-[11px] text-text-tertiary">{JSON.stringify(config, null, 2)}</pre>
+        <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-muted p-2 font-mono text-[11px] text-text-tertiary">
+          {JSON.stringify(config, null, 2)}
+        </pre>
       </details>
     </div>
   )
@@ -1095,18 +2225,31 @@ function minutesToInterval(minutes: number): { value: string; unit: 'minutes' | 
   return { value: String(minutes), unit: 'minutes' }
 }
 
-function IsolationFields({ state, set, template }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey }) {
+function IsolationFields({
+  state,
+  set,
+  template,
+}: {
+  state: FormState
+  set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
+  template: AutonomousAgentTemplateKey
+}) {
   const supported = sandboxSupported(template, state.executor)
   const hosts = parseAllowedHosts(state.allowedHosts)
   return (
     <>
       <Field
         label="Isolation"
-        hint={supported
-          ? 'Sandbox runs the agent in a throwaway pod with no credentials; the egress proxy adds them per request. Server default follows the server setting.'
-          : 'This template or executor cannot run in the sandbox yet; it runs inside the worker.'}
+        hint={
+          supported
+            ? 'Sandbox runs the agent in a throwaway pod with no credentials; the egress proxy adds them per request. Server default follows the server setting.'
+            : 'This template or executor cannot run in the sandbox yet; it runs inside the worker.'
+        }
       >
-        <NativeSelect value={state.isolation} onChange={value => set('isolation', value as IsolationChoice)}>
+        <NativeSelect
+          value={state.isolation}
+          onChange={(value) => set('isolation', value as IsolationChoice)}
+        >
           <option value="default">Server default</option>
           {(supported || state.isolation === 'sandbox') && (
             <option value="sandbox" disabled={!supported}>
@@ -1114,26 +2257,37 @@ function IsolationFields({ state, set, template }: { state: FormState; set: <K e
             </option>
           )}
           <option value="local" disabled={!localSupported(state.executor)}>
-            {localSupported(state.executor) ? 'Local worker (unsafe)' : 'Local worker (not for Codex)'}
+            {localSupported(state.executor)
+              ? 'Local worker (unsafe)'
+              : 'Local worker (not for Codex)'}
           </option>
         </NativeSelect>
       </Field>
       {state.isolation === 'local' && (
-        <p role="alert" className="flex items-start gap-2 rounded-lg border border-border-secondary p-2 text-[12px] text-text-primary">
+        <p
+          role="alert"
+          className="flex items-start gap-2 rounded-lg border border-border-secondary p-2 text-[12px] text-text-primary"
+        >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          Local runs execute repository code and the agent inside the worker, next to its database and secrets. Use only for repositories you fully trust.
+          Local runs execute repository code and the agent inside the worker, next to its database
+          and secrets. Use only for repositories you fully trust.
         </p>
       )}
       {state.isolation === 'sandbox' && !supported && (
-        <p role="alert" className="text-[12px] text-text-primary">The sandbox is not available for this template or executor. Choose another isolation.</p>
+        <p role="alert" className="text-[12px] text-text-primary">
+          The sandbox is not available for this template or executor. Choose another isolation.
+        </p>
       )}
       {(template === 'qa' || template === 'judge') && (
-        <Field label="Extra hosts for the sandbox" hint="Third-party hosts the app under test loads (CDN, sign-in, payments), comma or line separated. Targets and the preview URL are added automatically.">
+        <Field
+          label="Extra hosts for the sandbox"
+          hint="Third-party hosts the app under test loads (CDN, sign-in, payments), comma or line separated. Targets and the preview URL are added automatically."
+        >
           <Textarea
             className="font-mono text-xs"
             rows={2}
             value={state.allowedHosts}
-            onChange={event => set('allowedHosts', event.target.value)}
+            onChange={(event) => set('allowedHosts', event.target.value)}
             placeholder="cdn.example.com, auth.example.com"
             error={'error' in hosts ? hosts.error : undefined}
           />
@@ -1143,31 +2297,66 @@ function IsolationFields({ state, set, template }: { state: FormState; set: <K e
   )
 }
 
-function StepSchedule({ state, set }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void }) {
+function StepSchedule({
+  state,
+  set,
+}: {
+  state: FormState
+  set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
+}) {
+  if (state.template === 'github_pr_reviewer' && state.targetKind === 'project') return <p className="text-sm text-text-secondary">Project reviewers run for a specific PR, through Run now or requested-review webhooks and reconciliation. Timed generic runs are not supported.</p>
   const manual = state.scheduleKind === 'manual'
   const interval = state.scheduleKind === 'interval'
-  const intervalMinutes = interval ? intervalToMinutes(state.scheduleExpression, state.scheduleUnit) : 0
+  const intervalMinutes = interval
+    ? intervalToMinutes(state.scheduleExpression, state.scheduleUnit)
+    : 0
   const tooShort = interval && state.scheduleExpression.trim().length > 0 && intervalMinutes < 15
   return (
     <div className="space-y-4">
-      <p className="text-sm text-text-secondary">When should this agent run? You can always trigger runs manually regardless of the schedule.</p>
+      <p className="text-sm text-text-secondary">
+        When should this agent run? You can always trigger runs manually regardless of the schedule.
+      </p>
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="Cadence">
-          <NativeSelect value={state.scheduleKind} onChange={value => {
-            set('scheduleKind', value)
-            if (value === 'interval' && !/^\d+$/.test(state.scheduleExpression.trim())) set('scheduleExpression', '2')
-            if (value === 'daily' && !/^\d{1,2}:\d{2}$/.test(state.scheduleExpression.trim())) set('scheduleExpression', '06:00')
-          }}>
+          <NativeSelect
+            value={state.scheduleKind}
+            onChange={(value) => {
+              set('scheduleKind', value)
+              if (value === 'interval' && !/^\d+$/.test(state.scheduleExpression.trim()))
+                set('scheduleExpression', '2')
+              if (value === 'daily' && !/^\d{1,2}:\d{2}$/.test(state.scheduleExpression.trim()))
+                set('scheduleExpression', '06:00')
+            }}
+          >
             <option value="manual">Manual only</option>
             <option value="daily">Daily</option>
             <option value="interval">Interval</option>
           </NativeSelect>
         </Field>
         {interval ? (
-          <Field label="Every" hint={tooShort ? 'Minimum is 15 minutes.' : intervalMinutes >= 15 ? `Runs every ${intervalMinutes} min.` : undefined}>
+          <Field
+            label="Every"
+            hint={
+              tooShort
+                ? 'Minimum is 15 minutes.'
+                : intervalMinutes >= 15
+                  ? `Runs every ${intervalMinutes} min.`
+                  : undefined
+            }
+          >
             <div className="flex gap-2">
-              <Input inputSize="sm" type="number" min={1} value={state.scheduleExpression} onChange={event => set('scheduleExpression', event.target.value)} placeholder="2" />
-              <NativeSelect value={state.scheduleUnit} onChange={value => set('scheduleUnit', value as FormState['scheduleUnit'])}>
+              <Input
+                inputSize="sm"
+                type="number"
+                min={1}
+                value={state.scheduleExpression}
+                onChange={(event) => set('scheduleExpression', event.target.value)}
+                placeholder="2"
+              />
+              <NativeSelect
+                value={state.scheduleUnit}
+                onChange={(value) => set('scheduleUnit', value as FormState['scheduleUnit'])}
+              >
                 <option value="minutes">minutes</option>
                 <option value="hours">hours</option>
                 <option value="days">days</option>
@@ -1176,44 +2365,113 @@ function StepSchedule({ state, set }: { state: FormState; set: <K extends keyof 
           </Field>
         ) : (
           <Field label="Time (HH:MM)">
-            <Input inputSize="sm" disabled={manual} value={state.scheduleExpression} onChange={event => set('scheduleExpression', event.target.value)} placeholder="06:00" />
+            <Input
+              inputSize="sm"
+              disabled={manual}
+              value={state.scheduleExpression}
+              onChange={(event) => set('scheduleExpression', event.target.value)}
+              placeholder="06:00"
+            />
           </Field>
         )}
         <Field label="Timezone">
-          <Input inputSize="sm" disabled={manual} value={state.timezone} onChange={event => set('timezone', event.target.value)} />
+          <Input
+            inputSize="sm"
+            disabled={manual}
+            value={state.timezone}
+            onChange={(event) => set('timezone', event.target.value)}
+          />
         </Field>
       </div>
     </div>
   )
 }
 
-function StepReview({ state, set, template, isEdit, budgetsError }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template?: AutonomousAgentTemplate; isEdit: boolean; budgetsError: boolean }) {
+function StepReview({
+  state,
+  set,
+  template,
+  isEdit,
+  budgetsError,
+}: {
+  state: FormState
+  set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
+  template?: AutonomousAgentTemplate
+  isEdit: boolean
+  budgetsError: boolean
+}) {
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Agent name" hint="Required.">
-          <Input inputSize="sm" autoFocus value={state.name} onChange={event => set('name', event.target.value)} placeholder="Nightly QA" />
+          <Input
+            inputSize="sm"
+            autoFocus
+            value={state.name}
+            onChange={(event) => set('name', event.target.value)}
+            placeholder="Nightly QA"
+          />
         </Field>
         <Field label="Description">
-          <Input inputSize="sm" value={state.description} onChange={event => set('description', event.target.value)} placeholder="Optional" />
+          <Input
+            inputSize="sm"
+            value={state.description}
+            onChange={(event) => set('description', event.target.value)}
+            placeholder="Optional"
+          />
         </Field>
       </div>
       <div className="rounded-xl border border-border-primary bg-foreground/[0.02] p-3 text-[12px] text-text-secondary">
-        Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : state.executor === 'codex' ? 'Codex (sandbox)' : 'Claude pure'}</span>
-        {' · '}Isolation: <span className="font-medium text-text-primary">{state.isolation === 'sandbox' ? 'Sandbox' : state.isolation === 'local' ? 'Local worker (unsafe)' : 'Server default'}</span>
+        Executor:{' '}
+        <span className="font-medium text-text-primary">
+          {state.executor === 'nexus'
+            ? 'Nexus harness (OpenShell)'
+            : state.executor === 'codex'
+              ? 'Codex (sandbox)'
+              : state.executor === 'pi'
+                ? 'Pi (ChatGPT, local worker)'
+                : 'Claude pure'}
+        </span>
+        {' · '}Isolation:{' '}
+        <span className="font-medium text-text-primary">
+          {state.isolation === 'sandbox'
+            ? 'Sandbox'
+            : state.isolation === 'local'
+              ? 'Local worker (unsafe)'
+              : 'Server default'}
+        </span>
       </div>
-      <Field label="Budgets (JSON)" hint="Defaults come from the template; adjust wall-time, attempts, cost, concurrency.">
-        <Textarea className="font-mono text-xs" rows={5} value={state.budgets || JSON.stringify(template?.default_budgets ?? {}, null, 2)} onChange={event => set('budgets', event.target.value)} error={budgetsError ? 'Must be a JSON object' : undefined} />
+      <Field
+        label="Budgets (JSON)"
+        hint="Defaults come from the template; adjust wall-time, attempts, cost, concurrency."
+      >
+        <Textarea
+          className="font-mono text-xs"
+          rows={5}
+          value={state.budgets || JSON.stringify(template?.default_budgets ?? {}, null, 2)}
+          onChange={(event) => set('budgets', event.target.value)}
+          error={budgetsError ? 'Must be a JSON object' : undefined}
+        />
       </Field>
       {template && (
         <div className="rounded-xl border border-border-primary bg-foreground/[0.02] p-3 text-[12px] text-text-secondary">
           <p className="font-medium text-text-primary">Authority envelope</p>
-          <div className="mt-2 flex flex-wrap gap-1">{template.capabilities.map(cap => <Badge key={cap} size="sm" variant="info">{cap}</Badge>)}</div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {template.capabilities.map((cap) => (
+              <Badge key={cap} size="sm" variant="info">
+                {cap}
+              </Badge>
+            ))}
+          </div>
         </div>
       )}
       <div className="flex items-start gap-2 rounded-xl border border-status-warning/30 bg-status-warning/[0.06] p-3 text-[12px] text-status-warning">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <p>{isEdit ? 'Saving creates a new revision and disables the agent. Validate and enable it again to resume runs.' : 'Creation always saves the agent disabled. Validate and enable it explicitly after reviewing this configuration.'}</p>
+        <p>
+          {isEdit
+            ? 'Saving creates a new revision and disables the agent. Validate and enable it again to resume runs.'
+            : 'Creation always saves the agent disabled. Validate and enable it explicitly after reviewing this configuration.'}
+        </p>
       </div>
     </div>
   )

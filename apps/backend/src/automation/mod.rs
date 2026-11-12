@@ -1,6 +1,10 @@
 pub mod codex;
+pub mod pi;
 pub mod connectors;
+pub mod github_publication;
 pub mod factory_intake;
+pub mod factory_evals;
+pub mod workflow_intake;
 pub mod golden_replay;
 pub mod image_gen;
 pub mod linkedin;
@@ -8,6 +12,10 @@ pub mod merge_gate;
 pub mod policy;
 pub mod r2;
 pub mod profiles;
+pub mod agent_runtime;
+pub(crate) mod agent_runtime_workflows;
+#[cfg(test)]
+mod agent_runtime_tests;
 pub mod provenance;
 pub mod runtime;
 pub mod sandboxed;

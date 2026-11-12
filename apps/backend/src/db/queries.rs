@@ -1569,7 +1569,7 @@ pub fn revoke_automation_attempt(
     attempt_id: &str,
     reason: &str,
 ) -> Result<bool> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::connection::AtomicSavepoint::new(conn)?;
     let affected = tx.execute(
         "UPDATE automation_attempts
          SET status = 'revoked', revoked_at = datetime('now')
@@ -16327,24 +16327,14 @@ pub fn get_project_client_id(
     .map_err(Into::into)
 }
 
-/// Links a code project (repo) to a project. One repo per project — a second
-/// link to the same project is refused rather than silently repointing the
-/// first, because "which repo is this project's repo" must have one answer.
+/// Links a code project (repo) to a project. Projects may have multiple repos;
+/// the organization predicate prevents cross-organization links.
 pub fn link_code_project_to_project(
     conn: &Connection,
     org_id: &str,
     code_project_id: i64,
     project_id: &str,
 ) -> Result<()> {
-    let taken: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM code_projects
-          WHERE org_id = ?1 AND project_id = ?2 AND id != ?3",
-        rusqlite::params![org_id, project_id, code_project_id],
-        |r| r.get(0),
-    )?;
-    if taken > 0 {
-        anyhow::bail!("project {project_id} is already linked to a repository");
-    }
     let n = conn.execute(
         "UPDATE code_projects SET project_id = ?3 WHERE org_id = ?1 AND id = ?2",
         rusqlite::params![org_id, code_project_id, project_id],
@@ -16808,10 +16798,11 @@ pub fn get_autonomous_agent_detail(
 }
 
 pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
+    if config.get("model_source").is_some_and(|v|!matches!(v.as_str(),Some("agent"|"factory_roles"))) {anyhow::bail!("invalid_model_source")}
     match config.get("executor") {
         None => Ok("claude"), // revisions created before the selector remain unchanged
         Some(serde_json::Value::String(value))
-            if value == "claude" || value == "nexus" || value == "codex" =>
+            if value == "claude" || value == "nexus" || value == "codex" || value == "pi" =>
         {
             Ok(value)
         }
@@ -16821,12 +16812,36 @@ pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
 
 fn validate_autonomous_executor(config: &serde_json::Value, template_key: &str) -> Result<()> {
     let executor = autonomous_executor(config)?;
+    if config.get("model_source").and_then(serde_json::Value::as_str)==Some("agent") {
+        if let Some(model)=config.get("model") {
+            let value=model.as_str().ok_or_else(||anyhow::anyhow!("invalid_agent_model"))?;
+            if executor=="claude" && !crate::factory::gateway::pinned_model(value) {anyhow::bail!("invalid_agent_model")}
+            if executor=="codex" && crate::automation::codex::start_check(value).is_err() {anyhow::bail!("invalid_agent_model")}
+        }
+    }
     crate::factory::sandbox::parse_allowed_hosts(config.get("sandbox_allowed_hosts"))?;
-    crate::factory::sandbox::autonomous_isolation(config, template_key, executor).map(|_| ())
+    let isolation = crate::factory::sandbox::autonomous_isolation(config, template_key, executor)?;
+    if isolation == crate::factory::sandbox::Isolation::Sandbox {
+        if let Some(raw) = config.get("runtime") {
+            let runtime: crate::automation::agent_runtime::RuntimeConfig = serde_json::from_value(raw.clone()).map_err(|_| anyhow::anyhow!("invalid_agent_runtime"))?;
+            if runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).any(|s| !s.env.is_empty() || !s.headers.is_empty()) {
+                anyhow::bail!("runtime_mcp_credentials_require_sandbox_proxy");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod autonomous_executor_tests {
+    #[test]
+    fn model_source_and_explicit_models_fail_closed() {
+        for source in [serde_json::json!("unknown"),serde_json::json!(true)] {
+            assert!(super::autonomous_executor(&serde_json::json!({"model_source":source})).is_err());
+        }
+        assert!(super::validate_autonomous_executor(&serde_json::json!({"executor":"claude","model_source":"agent","model":"sonnet"}),"github_issue_resolver").is_ok());
+        assert!(super::validate_autonomous_executor(&serde_json::json!({"executor":"claude","model_source":"agent","model":"gpt-other-provider"}),"github_issue_resolver").is_err());
+    }
     #[test]
     fn saved_configs_reject_invalid_sandbox_hosts() {
         let bad = serde_json::json!({"sandbox_allowed_hosts": ["*.acme.test"]});
@@ -16849,7 +16864,7 @@ mod autonomous_executor_tests {
     #[test]
     fn run_input_cannot_override_agent_config() {
         assert!(super::RUN_INPUT_KEYS.contains(&"app_base_url"));
-        for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor"] {
+        for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor", "model_source"] {
             assert!(!super::RUN_INPUT_KEYS.contains(&protected), "{protected}");
         }
     }
@@ -16870,10 +16885,21 @@ mod autonomous_executor_tests {
     use serde_json::json;
 
     #[test]
+    fn pi_requires_supported_templates_and_local_execution() {
+        super::validate_autonomous_executor(&json!({"executor":"pi"}), "github_issue_resolver").unwrap();
+        super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"local"}), "github_pr_reviewer").unwrap();
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "github_pr_reviewer").unwrap_err().to_string(), "pi_requires_local");
+        super::validate_autonomous_executor(&json!({"executor":"pi"}), "qa").unwrap();
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi"}), "judge").unwrap_err().to_string(), "pi_unsupported_template");
+        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "qa").unwrap_err().to_string(), "pi_requires_local");
+    }
+
+    #[test]
     fn defaults_old_agents_to_claude_and_rejects_unknown_values() {
         assert_eq!(autonomous_executor(&json!({})).unwrap(), "claude");
         assert_eq!(autonomous_executor(&json!({"executor":"claude"})).unwrap(), "claude");
         assert_eq!(autonomous_executor(&json!({"executor":"nexus"})).unwrap(), "nexus");
+        assert_eq!(autonomous_executor(&json!({"executor":"pi"})).unwrap(), "pi");
         assert!(autonomous_executor(&json!({"executor":"other"})).is_err());
         assert!(autonomous_executor(&json!({"executor":null})).is_err());
     }
@@ -16892,6 +16918,7 @@ pub fn create_autonomous_agent_definition(
         anyhow::bail!("invalid_configuration");
     }
     validate_autonomous_executor(&req.config, &req.template_key)?;
+    let runtime_config = crate::automation::agent_runtime::prepare_config(conn, org_id, user_id, &req.config)?;
     let capabilities = autonomous_agent_capabilities(&req.template_key)?;
     let definition_id = Uuid::new_v4().to_string();
     let revision_id = Uuid::new_v4().to_string();
@@ -16899,7 +16926,7 @@ pub fn create_autonomous_agent_definition(
     let config_hash = autonomous_agent_config_hash(
         &req.template_key,
         template_version,
-        &req.config,
+        &runtime_config,
         &req.budgets,
     )?;
     let tx = conn.unchecked_transaction()?;
@@ -16913,7 +16940,7 @@ pub fn create_autonomous_agent_definition(
         "INSERT INTO autonomous_agent_revisions
          (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,created_by)
          VALUES (?1,?2,1,?3,?4,?5,?6,?7)",
-        rusqlite::params![revision_id, definition_id, serde_json::to_string(&req.config)?, config_hash,
+        rusqlite::params![revision_id, definition_id, serde_json::to_string(&runtime_config)?, config_hash,
             serde_json::to_string(&capabilities)?, serde_json::to_string(&req.budgets)?, user_id],
     )?;
     tx.commit()?;
@@ -16948,6 +16975,8 @@ pub fn update_autonomous_agent_definition(
         anyhow::bail!("invalid_configuration");
     }
     validate_autonomous_executor(config, &current.definition.template_key)?;
+    let prepared_config = crate::automation::agent_runtime::prepare_config(conn, org_id, user_id, config)?;
+    let config = &prepared_config;
     let description = req
         .description
         .as_ref()
@@ -16994,6 +17023,9 @@ pub fn validate_autonomous_agent_definition(
         anyhow::bail!("agent_archived");
     }
     let mut errors = Vec::new();
+    if crate::automation::github_publication::connection(conn, org_id, &current.definition.template_key, &current.revision.config).is_err() {
+        errors.push("github_publication_connection_invalid");
+    }
     if let Some(seconds) = current
         .revision
         .budgets
@@ -17021,6 +17053,18 @@ pub fn validate_autonomous_agent_definition(
     }
     match current.definition.template_key.as_str() {
         "qa" => {
+            if let Some(value) = current.revision.config.get("project_id") {
+                if let Some(project_id) = value.as_str().filter(|value| !value.trim().is_empty()) {
+                    let belongs_to_org: bool = conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1 AND org_id=?2)",
+                        rusqlite::params![project_id, org_id],
+                        |row| row.get(0),
+                    )?;
+                    if !belongs_to_org { errors.push("project_not_found"); }
+                } else {
+                    errors.push("invalid_project_id");
+                }
+            }
             let outputs = current
                 .revision
                 .config
@@ -17037,6 +17081,7 @@ pub fn validate_autonomous_agent_definition(
                 errors.push("invalid_outputs")
             }
             if outputs.is_some_and(|v| v.iter().any(|i| i.as_str() == Some("github_issue")))
+                && current.revision.config.get("project_id").and_then(|v| v.as_str()).is_none()
                 && current
                     .revision
                     .config
@@ -17047,7 +17092,16 @@ pub fn validate_autonomous_agent_definition(
                 errors.push("github_configuration_required")
             }
         }
-        "github_issue_resolver" | "github_pr_reviewer" => {
+        "github_pr_reviewer" => {
+            if super::autonomous_scope::reviewer_repositories(conn, org_id, &current.revision.config).is_err() {
+                errors.push("valid_repository_or_project_required");
+            }
+            if current.revision.config.get("project_id").is_some() && get_autonomous_agent_schedule(conn, org_id, id)?
+                .is_some_and(|schedule| schedule.enabled && schedule.kind != "manual") {
+                errors.push("project_reviewer_requires_pr");
+            }
+        }
+        "github_issue_resolver" => {
             match current
                 .revision
                 .config
@@ -17127,6 +17181,12 @@ pub fn validate_autonomous_agent_definition(
             });
             if !repositories_valid {
                 errors.push("repositories_required")
+            }
+            if !matches!(
+                current.revision.config.get("judge_mode").and_then(|v| v.as_str()).unwrap_or("auto"),
+                "auto" | "live" | "code" | "both"
+            ) {
+                errors.push("invalid_judge_mode")
             }
             // Findings delivery, same channels as QA.
             let outputs = current
@@ -17488,6 +17548,13 @@ pub fn put_autonomous_agent_schedule(
     if definition.status == "archived" {
         anyhow::bail!("agent_archived");
     }
+    if req.enabled && req.kind != "manual" && definition.template_key == "github_pr_reviewer" {
+        let revision = get_autonomous_agent_revision(conn, definition_id, definition.current_revision)?
+            .ok_or_else(|| anyhow::anyhow!("revision_missing"))?;
+        if revision.config.get("project_id").is_some() {
+            anyhow::bail!("project_reviewer_requires_pr");
+        }
+    }
     if !matches!(req.misfire_policy.as_str(), "run_once" | "skip") {
         anyhow::bail!("invalid_misfire_policy");
     }
@@ -17524,7 +17591,10 @@ pub fn get_autonomous_agent_schedule(
 
 fn autonomous_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentRun> {
     let budget: String = row.get(8)?;
+    let input:Option<String>=row.get(13)?;
+    let origin=input.and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v|v.get("origin").cloned());
     Ok(AutonomousAgentRun {
+        trigger_origin: origin,
         id: row.get(0)?,
         definition_id: row.get(1)?,
         revision_id: row.get(2)?,
@@ -17542,15 +17612,17 @@ fn autonomous_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autonomo
 }
 
 pub fn enqueue_autonomous_agent_run(
-    conn: &Connection,
-    org_id: &str,
-    definition_id: &str,
-    trigger_kind: &str,
-    occurrence_key: &str,
-    scheduled_for: Option<&str>,
-    input: Option<&serde_json::Value>,
+    conn: &Connection,org_id: &str,definition_id: &str,trigger_kind: &str,occurrence_key: &str,scheduled_for: Option<&str>,input: Option<&serde_json::Value>,
 ) -> Result<Option<AutonomousAgentRun>> {
-    let Some(detail) = get_autonomous_agent_detail(conn, org_id, definition_id)? else {
+    enqueue_autonomous_agent_run_as(conn,org_id,definition_id,trigger_kind,occurrence_key,scheduled_for,input,None)
+}
+
+// ponytail: keep trigger identity, scheduling, input, and requester explicit for the enqueue transaction.
+#[allow(clippy::too_many_arguments, reason = "the transaction consumes separately optional scheduling, input, and requester values")]
+pub fn enqueue_autonomous_agent_run_as(
+    conn:&Connection,org_id:&str,definition_id:&str,trigger_kind:&str,occurrence_key:&str,scheduled_for:Option<&str>,input:Option<&serde_json::Value>,requested_by:Option<&str>,
+)->Result<Option<AutonomousAgentRun>>{
+    let Some(detail)=get_autonomous_agent_detail(conn,org_id,definition_id)? else {
         return Ok(None);
     };
     if detail.definition.status != "enabled" {
@@ -17561,17 +17633,18 @@ pub fn enqueue_autonomous_agent_run(
     }
     let automation_run_id = Uuid::new_v4().to_string();
     let run_id = Uuid::new_v4().to_string();
+    let requested_by=requested_by.unwrap_or(&detail.definition.created_by);
     let input_json = input.map(serde_json::to_string).transpose()?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::connection::AtomicSavepoint::new(conn)?;
     tx.execute(
         "INSERT INTO automation_runs (id,org_id,project_id,created_by,profile_version_ref,policy_generation)
          VALUES (?1,?2,NULL,?3,?4,?5)",
         rusqlite::params![automation_run_id,org_id,detail.definition.created_by,format!("{}-v{}",detail.definition.template_key,detail.definition.template_version),detail.revision.policy_generation],
     )?;
     tx.execute(
-        "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,budget_json,input_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        rusqlite::params![run_id,org_id,definition_id,detail.revision.id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,serde_json::to_string(&detail.revision.budgets)?,input_json],
+        "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,budget_json,input_json,requested_by)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        rusqlite::params![run_id,org_id,definition_id,detail.revision.id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,serde_json::to_string(&detail.revision.budgets)?,input_json,requested_by],
     )?;
     tx.commit()?;
     get_autonomous_agent_run(conn, org_id, &run_id)
@@ -17583,7 +17656,7 @@ pub fn get_autonomous_agent_run(
     id: &str,
 ) -> Result<Option<AutonomousAgentRun>> {
     conn.query_row(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at,input_json
          FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
         rusqlite::params![org_id,id], autonomous_run_from_row,
     ).optional().map_err(Into::into)
@@ -17656,7 +17729,7 @@ pub fn list_autonomous_agent_runs(
     definition_id: Option<&str>,
 ) -> Result<Vec<AutonomousAgentRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at,input_json
          FROM autonomous_agent_runs WHERE org_id=?1 AND (?2 IS NULL OR definition_id=?2) ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(
@@ -17665,6 +17738,12 @@ pub fn list_autonomous_agent_runs(
     )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+fn finalize_qa_attempt_plan_if_needed(conn:&Connection,org_id:&str,run_id:&str,attempt_id:&str)->Result<()> {
+    let template:Option<String>=conn.query_row("SELECT definition.template_key FROM autonomous_agent_runs run JOIN autonomous_agent_definitions definition ON definition.id=run.definition_id WHERE run.org_id=?1 AND run.id=?2",rusqlite::params![org_id,run_id],|row|row.get(0)).optional()?;
+    if template.as_deref()==Some("qa") {crate::db::qa_coverage::finalize_attempt_plan(conn,org_id,run_id,attempt_id)?;}
+    Ok(())
 }
 
 pub fn cancel_autonomous_agent_run(
@@ -17686,10 +17765,11 @@ pub fn cancel_autonomous_agent_run(
     )?;
     if changed == 1 {
         for attempt_id in active_attempts {
+            finalize_qa_attempt_plan_if_needed(conn,org_id,id,&attempt_id)?;
             revoke_automation_attempt(conn, org_id, &attempt_id, "run_cancelled")?;
         }
         conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND released_at IS NULL", [id])?;
-        append_autonomous_agent_event(conn, org_id, id, "run.cancelled", &serde_json::json!({}))?;
+        append_redacted_autonomous_agent_event(conn, org_id, id, "run.cancelled", &serde_json::json!({}))?;
     }
     get_autonomous_agent_run(conn, org_id, id)
 }
@@ -17739,7 +17819,7 @@ pub fn list_autonomous_agent_events(
     org_id: &str,
     run_id: &str,
 ) -> Result<Vec<crate::models::types::AutonomousAgentEvent>> {
-    let mut stmt=conn.prepare("SELECT sequence,kind,payload_json,created_at FROM autonomous_agent_events WHERE org_id=?1 AND run_id=?2 ORDER BY sequence")?;
+    let mut stmt=conn.prepare("SELECT sequence,kind,payload_json,created_at FROM autonomous_agent_events WHERE org_id=?1 AND run_id=?2 AND redaction_verified=1 ORDER BY sequence")?;
     let rows = stmt.query_map(rusqlite::params![org_id, run_id], |row| {
         let raw: String = row.get(2)?;
         Ok(crate::models::types::AutonomousAgentEvent {
@@ -17835,6 +17915,7 @@ pub fn enqueue_due_autonomous_agent_runs(conn: &Connection) -> Result<usize> {
 pub struct ClaimedAutonomousRun {
     pub org_id: String,
     pub run: AutonomousAgentRun,
+    pub requested_by:String,
     pub attempt_id: String,
     pub claim_token: String,
     pub template_key: String,
@@ -17863,6 +17944,7 @@ pub fn claim_next_autonomous_agent_run(
             |r| r.get(0),
         )?;
         for attempt_id in attempt_ids {
+            finalize_qa_attempt_plan_if_needed(conn,&org_id,&run_id,&attempt_id)?;
             revoke_automation_attempt(conn, &org_id, &attempt_id, "lease_expired")?;
         }
         conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND released_at IS NULL",[&run_id])?;
@@ -17876,7 +17958,7 @@ pub fn claim_next_autonomous_agent_run(
          LEFT JOIN autonomous_agent_work_items candidate_work ON candidate_work.run_id=r.id
          LEFT JOIN autonomous_agent_revisions candidate_revision ON candidate_revision.id=r.revision_id
          WHERE r.status='queued' AND o.autonomous_agents_enabled=1
-           AND (?1=1 OR COALESCE(json_extract(candidate_revision.config_json,'$.executor'),'claude')='nexus')
+           AND (?1=1 OR COALESCE(json_extract(candidate_revision.config_json,'$.executor'),'claude') IN ('nexus','pi'))
            AND (SELECT COUNT(*) FROM autonomous_agent_runs active
                 WHERE active.definition_id=r.definition_id AND active.status IN ('leased','running'))
                < COALESCE(json_extract(r.budget_json,'$.max_definition_concurrency'),1)
@@ -17929,6 +18011,7 @@ pub fn claim_next_autonomous_agent_run(
     tx.commit()?;
     let run = get_autonomous_agent_run(conn, &org_id, &run_id)?
         .ok_or_else(|| anyhow::anyhow!("run_missing_after_claim"))?;
+    let requested_by:String=conn.query_row("SELECT COALESCE(run.requested_by,definition.created_by) FROM autonomous_agent_runs run JOIN autonomous_agent_definitions definition ON definition.id=run.definition_id WHERE run.id=?1 AND run.org_id=?2",rusqlite::params![run_id,org_id],|row|row.get(0))?;
     let (template_key,config_raw): (String,String) = conn.query_row(
         "SELECT d.template_key,r.config_json FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r ON r.id=?2 WHERE d.id=?1",
         rusqlite::params![run.definition_id,run.revision_id], |row| Ok((row.get(0)?,row.get(1)?)),
@@ -17939,7 +18022,7 @@ pub fn claim_next_autonomous_agent_run(
         // The wizard stores a repository-based agent's repo in a `repository` target,
         // not in config.repository. Materialize it so prepare_repository and the rest
         // of the run (which read config.repository) find it when it isn't set directly.
-        if object.get("repository").and_then(|v| v.as_str()).is_none() {
+        if object.get("project_id").is_none() && object.get("repository").and_then(|v| v.as_str()).is_none() {
             if let Some(repo) = targets.iter().find_map(|t| {
                 if t.kind == "repository" && t.enabled {
                     t.config
@@ -17992,6 +18075,7 @@ pub fn claim_next_autonomous_agent_run(
     Ok(Some(ClaimedAutonomousRun {
         org_id,
         run,
+        requested_by,
         attempt_id,
         claim_token,
         template_key,
@@ -18028,12 +18112,14 @@ pub fn requeue_autonomous_agent_run_without_attempt(
     let changed=tx.execute("UPDATE autonomous_agent_runs SET status='queued',started_at=NULL WHERE id=?1 AND org_id=?2 AND status IN('leased','running')",rusqlite::params![run_id,org_id])?;
     tx.commit()?;
     if changed == 1 {
-        append_autonomous_agent_event(
+        finalize_qa_attempt_plan_if_needed(conn,org_id,run_id,attempt_id)?;
+        let safe_reason=if (1..=80).contains(&reason.len()) && reason.bytes().all(|byte|byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte==b'_') {reason} else {"runtime_unavailable"};
+        append_redacted_autonomous_agent_event(
             conn,
             org_id,
             run_id,
             "run.requeued",
-            &serde_json::json!({"reason":reason}),
+            &serde_json::json!({"reason":safe_reason}),
         )?;
     }
     Ok(changed == 1)
@@ -18055,6 +18141,8 @@ pub fn patch_autonomous_agent_org_settings(
     if retention_days.is_some_and(|v| !(7..=3650).contains(&v)) {
         anyhow::bail!("invalid_retention_days")
     }
+    let transaction=crate::db::connection::AtomicSavepoint::new(conn)?;
+    let conn=&*transaction;
     conn.execute("UPDATE organizations SET autonomous_agents_enabled=COALESCE(?2,autonomous_agents_enabled),autonomous_agent_retention_days=COALESCE(?3,autonomous_agent_retention_days) WHERE id=?1",rusqlite::params![org_id,enabled.map(i64::from),retention_days])?;
     if enabled == Some(false) {
         let attempts=conn.prepare("SELECT lease.attempt_id FROM autonomous_agent_leases lease JOIN autonomous_agent_runs run ON run.id=lease.run_id WHERE run.org_id=?1 AND lease.released_at IS NULL")?.query_map([org_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -18064,7 +18152,10 @@ pub fn patch_autonomous_agent_org_settings(
         conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE released_at IS NULL AND run_id IN(SELECT id FROM autonomous_agent_runs WHERE org_id=?1)",[org_id])?;
         conn.execute("UPDATE autonomous_agent_runs SET status='cancelled',finished_at=datetime('now') WHERE org_id=?1 AND status IN ('leased','running')",[org_id])?;
     }
-    get_autonomous_agent_org_settings(conn, org_id)
+    if enabled==Some(false) {crate::db::workflows::pause_active_runs(conn,org_id)?;}
+    let result=get_autonomous_agent_org_settings(conn, org_id)?;
+    transaction.commit()?;
+    Ok(result)
 }
 
 pub fn cleanup_autonomous_agent_retention(conn: &Connection) -> Result<usize> {
@@ -18145,8 +18236,8 @@ pub fn append_autonomous_agent_transcript_turn(
 ) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO autonomous_agent_run_transcript
-            (id,org_id,run_id,sequence,kind,payload_json)
-         VALUES (?1,?2,?3,?4,?5,?6)",
+            (id,org_id,run_id,sequence,kind,payload_json,redaction_verified)
+         VALUES (?1,?2,?3,?4,?5,?6,1)",
         rusqlite::params![
             Uuid::new_v4().to_string(),
             org_id,
@@ -18172,7 +18263,7 @@ pub fn list_autonomous_agent_transcript(
     let mut stmt = conn.prepare(
         "SELECT sequence,kind,payload_json,created_at
            FROM autonomous_agent_run_transcript
-          WHERE org_id=?1 AND run_id=?2 AND sequence>?3
+          WHERE org_id=?1 AND run_id=?2 AND sequence>?3 AND redaction_verified=1
           ORDER BY sequence LIMIT ?4",
     )?;
     let rows = stmt.query_map(
@@ -18192,27 +18283,52 @@ pub fn list_autonomous_agent_transcript(
 }
 
 pub fn append_autonomous_agent_event(
-    conn: &Connection,
-    org_id: &str,
-    run_id: &str,
-    kind: &str,
-    payload: &serde_json::Value,
+    conn: &Connection, org_id: &str, run_id: &str, kind: &str, payload: &serde_json::Value,
+) -> Result<()> {
+    append_autonomous_agent_event_with_provenance(conn, org_id, run_id, kind, payload, false)
+}
+
+/// Persist payloads sanitized at the worker result boundary.
+pub fn append_redacted_autonomous_agent_event(
+    conn: &Connection, org_id: &str, run_id: &str, kind: &str, payload: &serde_json::Value,
+) -> Result<()> {
+    append_autonomous_agent_event_with_provenance(conn, org_id, run_id, kind, payload, true)
+}
+
+fn append_autonomous_agent_event_with_provenance(
+    conn: &Connection, org_id: &str, run_id: &str, kind: &str,
+    payload: &serde_json::Value, redaction_verified: bool,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO autonomous_agent_events (id,org_id,run_id,sequence,kind,payload_json)
-         SELECT ?1,?2,?3,COALESCE(MAX(sequence),0)+1,?4,?5 FROM autonomous_agent_events WHERE run_id=?3",
-        rusqlite::params![Uuid::new_v4().to_string(),org_id,run_id,kind,serde_json::to_string(payload)?],
+        "INSERT INTO autonomous_agent_events (id,org_id,run_id,sequence,kind,payload_json,redaction_verified)
+         SELECT ?1,?2,?3,COALESCE(MAX(sequence),0)+1,?4,?5,?6 FROM autonomous_agent_events WHERE run_id=?3",
+        rusqlite::params![Uuid::new_v4().to_string(),org_id,run_id,kind,serde_json::to_string(payload)?,if redaction_verified { 1_i64 } else { 0_i64 }],
     )?;
     Ok(())
 }
 
 pub fn finish_autonomous_agent_run(
+    conn: &Connection, org_id: &str, run_id: &str, attempt_id: &str,
+    status: &str, result: &serde_json::Value,
+) -> Result<()> {
+    finish_autonomous_agent_run_with_provenance(conn, org_id, run_id, attempt_id, status, result, false)
+}
+
+pub fn finish_redacted_autonomous_agent_run(
+    conn: &Connection, org_id: &str, run_id: &str, attempt_id: &str,
+    status: &str, result: &serde_json::Value,
+) -> Result<()> {
+    finish_autonomous_agent_run_with_provenance(conn, org_id, run_id, attempt_id, status, result, true)
+}
+
+fn finish_autonomous_agent_run_with_provenance(
     conn: &Connection,
     org_id: &str,
     run_id: &str,
     attempt_id: &str,
     status: &str,
     result: &serde_json::Value,
+    redaction_verified: bool,
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let changed = tx.execute(
@@ -18246,7 +18362,7 @@ pub fn finish_autonomous_agent_run(
     // The run IS finished once the transaction commits. A failure to append the
     // event afterwards must not be reported as a failed finish: callers would treat
     // a finished run as unfinished (and skip work that depends on the finish).
-    if let Err(error) = append_autonomous_agent_event(conn, org_id, run_id, "run.finished", result)
+    if let Err(error) = append_autonomous_agent_event_with_provenance(conn, org_id, run_id, "run.finished", result, redaction_verified)
     {
         tracing::warn!(run = run_id, "Could not append run.finished event: {error:#}");
     }
@@ -18594,41 +18710,56 @@ pub fn record_github_webhook_delivery(
     Ok(true)
 }
 
+pub enum GithubRunOrigin<'a> { Webhook(&'a str), RequestedReview(&'a str), Reconciliation(&'a str) }
 #[allow(clippy::too_many_arguments)]
 pub fn enqueue_github_webhook_agents(
     conn: &Connection,
     org_id: &str,
-    _delivery_id: &str,
+    origin: GithubRunOrigin<'_>,
     repository: &str,
     kind: &str,
     external_number: i64,
     head_sha: Option<&str>,
     payload_hash: &str,
 ) -> Result<usize> {
+    let repository=repository.to_ascii_lowercase();
+    let explicit_review = matches!(origin, GithubRunOrigin::RequestedReview(_));
+    let (trigger_kind,provenance)=match origin {
+        GithubRunOrigin::Webhook(delivery) | GithubRunOrigin::RequestedReview(delivery)=>{
+            let received:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_github_deliveries WHERE org_id=?1 AND delivery_id=?2 AND lower(repository)=?3 AND payload_hash=?4 AND (?5=0 OR (event_name='pull_request' AND action='review_requested')))",rusqlite::params![org_id,delivery,repository,payload_hash,explicit_review],|r|r.get(0))?;
+            if !received {anyhow::bail!("github_delivery_evidence_required")}
+            ("github_webhook",serde_json::json!({"kind":"github_webhook","delivery_id":delivery,"explicit_review_request":explicit_review,"payload_hash":payload_hash}))
+        },
+        GithubRunOrigin::Reconciliation(scan)=>("reconcile",serde_json::json!({"kind":"github_reconciliation","scan_id":scan})),
+    };
     let template = match kind {
         "github_issue" => "github_issue_resolver",
         "github_pr" => "github_pr_reviewer",
         _ => anyhow::bail!("invalid_work_item_kind"),
     };
     let mut stmt = conn.prepare(
-        "SELECT d.id FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
+        "SELECT d.id,r.config_json FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
          ON r.definition_id=d.id AND r.revision=d.current_revision
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key=?2
-           AND json_extract(r.config_json,'$.repository')=?3 AND r.validation_status='valid'",
+           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'",
     )?;
     let ids = stmt
-        .query_map(rusqlite::params![org_id, template, repository], |row| {
-            row.get::<_, String>(0)
+        .query_map(rusqlite::params![org_id, template], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
     let mut created = 0;
-    for definition_id in ids {
+    for (definition_id, raw_config) in ids {
+        let config: serde_json::Value = serde_json::from_str(&raw_config)?;
+        let scope = if template == "github_pr_reviewer" { config } else { serde_json::json!({"repository":config["repository"]}) };
+        let allowed = super::autonomous_scope::reviewer_repositories(conn, org_id, &scope).unwrap_or_default();
+        if !allowed.iter().any(|repo| repo.eq_ignore_ascii_case(&repository)) { continue; }
         if kind == "github_issue" {
             let already_owned: bool = conn.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM autonomous_agent_work_items work
-                    WHERE work.definition_id=?1 AND work.repository=?2
+                    WHERE work.definition_id=?1 AND lower(work.repository)=?2
                       AND work.kind='github_issue' AND work.external_number=?3
                       AND work.eligibility IN('pending','eligible','completed')
                 )",
@@ -18639,7 +18770,15 @@ pub fn enqueue_github_webhook_agents(
                 continue;
             }
         }
-        let identity = head_sha.unwrap_or(payload_hash);
+        let mut generation=0_i64;
+        if kind=="github_pr" {
+            let head=head_sha.filter(|sha|crate::factory::workflows::valid_sha(sha)).ok_or_else(||anyhow::anyhow!("invalid_pull_request_head"))?;
+            let (count,live):(i64,i64)=conn.query_row("SELECT count(*),COALESCE(sum(CASE WHEN r.status IN ('queued','leased','running') OR (?5=0 AND r.status!='cancelled') THEN 1 ELSE 0 END),0) FROM autonomous_agent_work_items w JOIN autonomous_agent_runs r ON r.id=w.run_id WHERE w.definition_id=?1 AND lower(w.repository)=?2 AND w.kind='github_pr' AND w.external_number=?3 AND w.head_sha=?4",rusqlite::params![definition_id,repository,external_number,head,explicit_review],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            if live>0 {continue;}generation=count;
+        }
+        let identity = if explicit_review {
+            format!("{}:request:{}", head_sha.unwrap_or(payload_hash), provenance["delivery_id"].as_str().unwrap_or_default())
+        } else if generation>0 {format!("{}:retry:{generation}",head_sha.unwrap_or(payload_hash))}else{head_sha.unwrap_or(payload_hash).to_string()};
         let occurrence = format!(
             "github:{}",
             hex::encode(Sha256::digest(
@@ -18651,10 +18790,10 @@ pub fn enqueue_github_webhook_agents(
             conn,
             org_id,
             &definition_id,
-            "github_webhook",
+            trigger_kind,
             &occurrence,
             None,
-            None,
+            Some(&serde_json::json!({"origin":provenance})),
         ) {
             Ok(Some(run)) => run,
             Err(error) if error.to_string().contains("UNIQUE constraint failed") => continue,
@@ -18665,7 +18804,12 @@ pub fn enqueue_github_webhook_agents(
             "UPDATE autonomous_agent_runs SET snapshot_sha=?2 WHERE id=?1",
             rusqlite::params![run.id, head_sha],
         )?;
-        conn.execute("INSERT OR IGNORE INTO autonomous_agent_work_items(id,org_id,definition_id,run_id,repository,kind,external_number,head_sha,payload_hash,eligibility) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'eligible')",rusqlite::params![Uuid::new_v4().to_string(),org_id,definition_id,run.id,repository,kind,external_number,head_sha,payload_hash])?;
+        // The work-item uniqueness key must distinguish explicit re-requests/retries,
+        // even if GitHub sends identical bodies. The raw body hash remains in the delivery ledger.
+        let work_hash = if explicit_review || generation > 0 {
+            hex::encode(Sha256::digest(format!("{payload_hash}|{identity}")))
+        } else { payload_hash.to_string() };
+        conn.execute("INSERT INTO autonomous_agent_work_items(id,org_id,definition_id,run_id,repository,kind,external_number,head_sha,payload_hash,eligibility) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'eligible')",rusqlite::params![Uuid::new_v4().to_string(),org_id,definition_id,run.id,repository,kind,external_number,head_sha,work_hash])?;
         created += 1;
     }
     Ok(created)
@@ -18684,32 +18828,38 @@ pub fn list_github_reconciliation_sources(
 ) -> Result<Vec<GithubReconciliationSource>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT d.org_id,d.template_key,
-                json_extract(r.config_json,'$.repository'),
-                json_extract(r.config_json,'$.github_connector_id')
+                r.config_json,
+                COALESCE(json_extract(r.config_json,'$.github_connector_id'),'server_gh_cli')
          FROM autonomous_agent_definitions d
          JOIN autonomous_agent_revisions r
            ON r.definition_id=d.id AND r.revision=d.current_revision
          JOIN organizations o ON o.id=d.org_id
-         JOIN autonomous_agent_connectors c
+         LEFT JOIN autonomous_agent_connectors c
            ON c.id=json_extract(r.config_json,'$.github_connector_id')
           AND c.org_id=d.org_id
          WHERE d.status='enabled' AND o.autonomous_agents_enabled=1
-           AND r.validation_status='valid' AND c.health='ready'
+           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'
+           AND (c.health='ready' OR json_extract(r.config_json,'$.github_connector_id') IS NULL)
            AND d.template_key IN('github_issue_resolver','github_pr_reviewer')
-           AND json_extract(r.config_json,'$.repository') IS NOT NULL
-         ORDER BY d.org_id,d.template_key,json_extract(r.config_json,'$.repository')
+           AND (json_extract(r.config_json,'$.repository') IS NOT NULL OR (d.template_key='github_pr_reviewer' AND json_extract(r.config_json,'$.project_id') IS NOT NULL))
+         ORDER BY d.org_id,d.template_key,r.config_json
          LIMIT 100",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(GithubReconciliationSource {
-            org_id: row.get(0)?,
-            template_key: row.get(1)?,
-            repository: row.get(2)?,
-            connector_id: row.get(3)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut sources = Vec::new();
+    for (org_id, template_key, raw, connector_id) in rows {
+        let config: serde_json::Value = serde_json::from_str(&raw)?;
+        let scope = if template_key == "github_pr_reviewer" { config } else { serde_json::json!({"repository":config["repository"]}) };
+        for repository in super::autonomous_scope::reviewer_repositories(conn, &org_id, &scope).unwrap_or_default() {
+            if !sources.iter().any(|source: &GithubReconciliationSource| source.org_id == org_id && source.template_key == template_key && source.repository == repository && source.connector_id == connector_id) {
+                sources.push(GithubReconciliationSource {org_id:org_id.clone(),template_key:template_key.clone(),repository,connector_id:connector_id.clone()});
+            }
+            if sources.len() == 100 { return Ok(sources); }
+        }
+    }
+    Ok(sources)
 }
 
 pub fn create_autonomous_output_link(
@@ -18740,24 +18890,145 @@ pub fn upsert_autonomous_agent_finding(
     summary: &str,
     evidence: &serde_json::Value,
 ) -> Result<AutonomousAgentFinding> {
+    upsert_autonomous_agent_finding_with_provenance(conn, org_id, definition_id, run_id, fingerprint, title, severity, summary, evidence, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_redacted_autonomous_agent_finding(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+    run_id: &str,
+    fingerprint: &str,
+    title: &str,
+    severity: &str,
+    summary: &str,
+    evidence: &serde_json::Value,
+) -> Result<AutonomousAgentFinding> {
+    upsert_autonomous_agent_finding_with_provenance(conn, org_id, definition_id, run_id, fingerprint, title, severity, summary, evidence, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_autonomous_agent_finding_with_provenance(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+    run_id: &str,
+    fingerprint: &str,
+    title: &str,
+    severity: &str,
+    summary: &str,
+    evidence: &serde_json::Value,
+    redaction_verified: bool,
+) -> Result<AutonomousAgentFinding> {
     if !matches!(severity, "info" | "low" | "medium" | "high" | "critical") {
         anyhow::bail!("invalid_severity");
     }
+    // Serialize the identity lookup and write across worker connections. Otherwise
+    // two runs with different model-generated fingerprints can both insert.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let exact: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_findings WHERE org_id=?1 AND definition_id=?2 AND fingerprint=?3)",
+        rusqlite::params![org_id, definition_id, fingerprint], |row| row.get(0),
+    )?;
+    let is_qa: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions WHERE org_id=?1 AND id=?2 AND template_key='qa')",
+        rusqlite::params![org_id, definition_id], |row| row.get(0),
+    )?;
+    let mut canonical = fingerprint.to_string();
+    if is_qa && !exact {
+        let mut stmt = tx.prepare(
+            "SELECT fingerprint,title,evidence_json FROM autonomous_agent_findings
+             WHERE org_id=?1 AND definition_id=?2 AND status='open' ORDER BY created_at,id",
+        )?;
+        let candidates = stmt.query_map(rusqlite::params![org_id, definition_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        for candidate in candidates {
+            let (old_fingerprint, old_title, old_evidence) = candidate?;
+            let old_evidence = serde_json::from_str(&old_evidence).unwrap_or_default();
+            if qa_finding_identity_matches(&old_fingerprint, &old_title, &old_evidence, fingerprint, title, evidence) {
+                canonical = old_fingerprint;
+                break;
+            }
+        }
+    }
+    let mut stored_evidence = evidence.clone();
+    if canonical != fingerprint {
+        if let Some(object) = stored_evidence.as_object_mut() {
+            if object.contains_key("fingerprint") {
+                object.insert("fingerprint".into(), serde_json::json!(canonical));
+            }
+        }
+    }
     let id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO autonomous_agent_findings (id,org_id,definition_id,run_id,fingerprint,title,severity,summary,evidence_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+    tx.execute(
+        "INSERT INTO autonomous_agent_findings (id,org_id,definition_id,run_id,fingerprint,title,severity,summary,evidence_json,redaction_verified)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
          ON CONFLICT(org_id,definition_id,fingerprint) DO UPDATE SET run_id=excluded.run_id,title=excluded.title,
          severity=excluded.severity,summary=excluded.summary,evidence_json=excluded.evidence_json,
-         occurrence_count=autonomous_agent_findings.occurrence_count+1,updated_at=datetime('now')",
-        rusqlite::params![id,org_id,definition_id,run_id,fingerprint,title,severity,summary,serde_json::to_string(evidence)?],
+         occurrence_count=autonomous_agent_findings.occurrence_count+1,updated_at=datetime('now'),redaction_verified=excluded.redaction_verified",
+        rusqlite::params![id,org_id,definition_id,run_id,canonical,title,severity,summary,serde_json::to_string(&stored_evidence)?, if redaction_verified {1_i64} else {0_i64}],
     )?;
-    conn.query_row(
+    let finding = tx.query_row(
         "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at
          FROM autonomous_agent_findings WHERE org_id=?1 AND definition_id=?2 AND fingerprint=?3",
-        rusqlite::params![org_id,definition_id,fingerprint], finding_from_row,
-    ).map_err(Into::into)
+        rusqlite::params![org_id,definition_id,canonical], finding_from_row,
+    )?;
+    tx.commit()?;
+    Ok(finding)
 }
+
+/// Conservative QA fallback: keep location/module boundaries, normalize only
+/// fingerprint separators or an otherwise identical title. No fuzzy symptom merge.
+fn qa_finding_identity_matches(
+    old_fingerprint: &str, old_title: &str, old_evidence: &serde_json::Value,
+    fingerprint: &str, title: &str, evidence: &serde_json::Value,
+) -> bool {
+    let scope = |value: &serde_json::Value, key: &str| {
+        value.get(key).and_then(serde_json::Value::as_str).unwrap_or_default()
+            .split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    };
+    if ["module", "location"].iter().any(|key| scope(old_evidence, key) != scope(evidence, key)) {
+        return false;
+    }
+    let normalize_fingerprint = |text: &str| text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let fp = normalize_fingerprint(fingerprint);
+    if !fp.is_empty() && fp == normalize_fingerprint(old_fingerprint) {
+        return true;
+    }
+    let normalize_title = |text: &str| text.to_lowercase().split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+    let title = normalize_title(title);
+    title.split_whitespace().count() >= 3 && title == normalize_title(old_title)
+}
+
+/// Bounded reference context encourages the model to reuse canonical identities
+/// even when it would describe an existing defect with different wording.
+pub fn open_qa_finding_references(conn: &Connection, org_id: &str, definition_id: &str) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT fingerprint,title,evidence_json FROM autonomous_agent_findings
+         WHERE org_id=?1 AND definition_id=?2 AND status='open' ORDER BY created_at,id LIMIT 100",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, definition_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
+    rows.map(|row| {
+        let (fingerprint, title, evidence) = row?;
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap_or_default();
+        let mut reference = serde_json::json!({"fingerprint":fingerprint,"title":title});
+        for key in ["module", "location", "expected", "actual"] {
+            if let Some(text) = evidence.get(key).and_then(serde_json::Value::as_str) {
+                reference[key] = serde_json::json!(text.chars().take(800).collect::<String>());
+            }
+        }
+        Ok(reference)
+    }).collect()
+}
+
+#[cfg(test)]
+#[path = "qa_finding_dedup_tests.rs"]
+mod qa_finding_dedup_tests;
 
 fn finding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentFinding> {
     let evidence: String = row.get(8)?;
@@ -18781,7 +19052,7 @@ pub fn list_autonomous_agent_findings(
     conn: &Connection,
     org_id: &str,
 ) -> Result<Vec<AutonomousAgentFinding>> {
-    let mut stmt=conn.prepare("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 ORDER BY updated_at DESC")?;
+    let mut stmt=conn.prepare("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND redaction_verified=1 ORDER BY updated_at DESC")?;
     let rows = stmt.query_map([org_id], finding_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
@@ -18820,8 +19091,8 @@ pub fn patch_autonomous_agent_finding(
     if !matches!(status, "open" | "resolved" | "ignored") {
         anyhow::bail!("invalid_finding_status")
     }
-    conn.execute("UPDATE autonomous_agent_findings SET status=?3,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,status])?;
-    conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
+    conn.execute("UPDATE autonomous_agent_findings SET status=?3,updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND redaction_verified=1",rusqlite::params![org_id,id,status])?;
+    conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2 AND redaction_verified=1",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
 }
 
 pub fn get_autonomous_agent_finding(
@@ -18830,7 +19101,7 @@ pub fn get_autonomous_agent_finding(
     id: &str,
 ) -> Result<Option<AutonomousAgentFinding>> {
     conn.query_row(
-        "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",
+        "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2 AND redaction_verified=1",
         rusqlite::params![org_id, id],
         finding_from_row,
     )
@@ -18870,6 +19141,12 @@ pub fn resolve_open_findings_for_issue(
     Ok(changed)
 }
 
+/// `ignored` is the persisted archived status. Correct earlier resolutions too.
+pub fn close_findings_for_github_issue(conn: &Connection, org: &str, url: &str, status: &str) -> Result<usize> {
+    if !matches!(status, "resolved" | "ignored") { anyhow::bail!("invalid_finding_status") }
+    conn.execute("UPDATE autonomous_agent_findings SET status=?3,updated_at=datetime('now') WHERE org_id=?1 AND status!=?3 AND id IN (SELECT finding_id FROM autonomous_agent_deliveries WHERE org_id=?1 AND channel='github_issue' AND external_url=?2 COLLATE NOCASE AND finding_id IS NOT NULL)", rusqlite::params![org,url,status]).map_err(Into::into)
+}
+
 pub fn list_autonomous_agent_deliveries(
     conn: &Connection,
     org_id: &str,
@@ -18885,23 +19162,26 @@ pub fn retry_autonomous_agent_delivery(
     org_id: &str,
     id: &str,
 ) -> Result<Option<AutonomousAgentDelivery>> {
-    conn.execute("UPDATE autonomous_agent_deliveries SET status='pending',last_error_code=NULL,next_attempt_at=datetime('now'),updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND status IN ('failed','dead_letter')",rusqlite::params![org_id,id])?;
-    conn.query_row("SELECT id,run_id,finding_id,channel,status,external_id,external_url,attempts,last_error_code,created_at,updated_at FROM autonomous_agent_deliveries WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],delivery_from_row).optional().map_err(Into::into)
+    conn.execute("UPDATE autonomous_agent_deliveries SET status='pending',last_error_code=NULL,next_attempt_at=datetime('now'),updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND status IN ('failed','dead_letter') AND (finding_id IS NULL OR EXISTS(SELECT 1 FROM autonomous_agent_findings f WHERE f.id=autonomous_agent_deliveries.finding_id AND f.org_id=?1 AND f.redaction_verified=1))",rusqlite::params![org_id,id])?;
+    conn.query_row("SELECT id,run_id,finding_id,channel,status,external_id,external_url,attempts,last_error_code,created_at,updated_at FROM autonomous_agent_deliveries WHERE org_id=?1 AND id=?2 AND (finding_id IS NULL OR EXISTS(SELECT 1 FROM autonomous_agent_findings f WHERE f.id=autonomous_agent_deliveries.finding_id AND f.org_id=?1 AND f.redaction_verified=1))",rusqlite::params![org_id,id],delivery_from_row).optional().map_err(Into::into)
 }
 
 pub struct PendingAutonomousDelivery {
     pub org_id: String,
+    pub requested_by:String,
+    pub revision_id:String,
     pub delivery: AutonomousAgentDelivery,
     pub finding: AutonomousAgentFinding,
     pub config: serde_json::Value,
+    pub destination_repository: Option<String>,
 }
 
 pub fn next_pending_autonomous_delivery(
     conn: &Connection,
 ) -> Result<Option<PendingAutonomousDelivery>> {
-    conn.query_row("SELECT d.org_id,d.id,d.run_id,d.finding_id,d.channel,d.status,d.external_id,d.external_url,d.attempts,d.last_error_code,d.created_at,d.updated_at,f.id,f.definition_id,f.run_id,f.fingerprint,f.title,f.severity,f.status,f.summary,f.evidence_json,f.occurrence_count,f.created_at,f.updated_at,r.config_json FROM autonomous_agent_deliveries d JOIN autonomous_agent_findings f ON f.id=d.finding_id JOIN autonomous_agent_definitions a ON a.id=f.definition_id JOIN autonomous_agent_revisions r ON r.definition_id=a.id AND r.revision=a.current_revision WHERE ((d.status='pending' AND d.attempts>0) OR (d.status='failed' AND d.next_attempt_at<=datetime('now'))) AND d.channel IN ('slack','github_issue') ORDER BY d.updated_at LIMIT 1",[],|row|{
+    conn.query_row("SELECT d.org_id,d.id,d.run_id,d.finding_id,d.channel,d.status,d.external_id,d.external_url,d.attempts,d.last_error_code,d.created_at,d.updated_at,f.id,f.definition_id,f.run_id,f.fingerprint,f.title,f.severity,f.status,f.summary,f.evidence_json,f.occurrence_count,f.created_at,f.updated_at,r.config_json,d.destination_repository,COALESCE(run.requested_by,definition.created_by),r.id FROM autonomous_agent_deliveries d JOIN autonomous_agent_findings f ON f.id=d.finding_id JOIN autonomous_agent_runs run ON run.id=d.run_id JOIN autonomous_agent_definitions definition ON definition.id=run.definition_id JOIN autonomous_agent_revisions r ON r.id=run.revision_id WHERE f.redaction_verified=1 AND ((d.status='pending' AND (d.attempts>0 OR d.channel='github_issue') AND (d.claim_token IS NULL OR d.claim_expires_at<=datetime('now'))) OR (d.status='failed' AND d.next_attempt_at<=datetime('now'))) AND d.channel IN ('slack','github_issue') ORDER BY d.updated_at LIMIT 1",[],|row|{
         let evidence:String=row.get(20)?;let config:String=row.get(24)?;
-        Ok(PendingAutonomousDelivery{org_id:row.get(0)?,delivery:AutonomousAgentDelivery{id:row.get(1)?,run_id:row.get(2)?,finding_id:row.get(3)?,channel:row.get(4)?,status:row.get(5)?,external_id:row.get(6)?,external_url:row.get(7)?,attempts:row.get(8)?,last_error_code:row.get(9)?,created_at:row.get(10)?,updated_at:row.get(11)?},finding:AutonomousAgentFinding{id:row.get(12)?,definition_id:row.get(13)?,run_id:row.get(14)?,fingerprint:row.get(15)?,title:row.get(16)?,severity:row.get(17)?,status:row.get(18)?,summary:row.get(19)?,evidence:serde_json::from_str(&evidence).unwrap_or_default(),occurrence_count:row.get(21)?,created_at:row.get(22)?,updated_at:row.get(23)?},config:serde_json::from_str(&config).unwrap_or_default()})
+        Ok(PendingAutonomousDelivery{org_id:row.get(0)?,requested_by:row.get(26)?,revision_id:row.get(27)?,delivery:AutonomousAgentDelivery{id:row.get(1)?,run_id:row.get(2)?,finding_id:row.get(3)?,channel:row.get(4)?,status:row.get(5)?,external_id:row.get(6)?,external_url:row.get(7)?,attempts:row.get(8)?,last_error_code:row.get(9)?,created_at:row.get(10)?,updated_at:row.get(11)?},finding:AutonomousAgentFinding{id:row.get(12)?,definition_id:row.get(13)?,run_id:row.get(14)?,fingerprint:row.get(15)?,title:row.get(16)?,severity:row.get(17)?,status:row.get(18)?,summary:row.get(19)?,evidence:serde_json::from_str(&evidence).unwrap_or_default(),occurrence_count:row.get(21)?,created_at:row.get(22)?,updated_at:row.get(23)?},config:serde_json::from_str(&config).unwrap_or_default(),destination_repository:row.get(25)?})
     }).optional().map_err(Into::into)
 }
 
@@ -18954,6 +19234,14 @@ pub fn put_autonomous_agent_target(
     if req.name.trim().is_empty() || !req.config.is_object() {
         anyhow::bail!("invalid_target")
     }
+    let project_id = if req.kind == "project" {
+        let id = req.config.get("project_id").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("invalid_target"))?;
+        if get_project_by_id(conn, org_id, id)?.filter(|project| project.archived_at.is_none()).is_none() {
+            anyhow::bail!("invalid_target");
+        }
+        Some(id)
+    } else { None };
     if let Some(connector) = req.credential_connector_id.as_deref() {
         let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_connectors WHERE id=?1 AND org_id=?2 AND health!='revoked')",rusqlite::params![connector,org_id],|r|r.get(0))?;
         if !exists {
@@ -18969,7 +19257,7 @@ pub fn put_autonomous_agent_target(
         rusqlite::params![org_id, definition_id, req.name.trim()],
     )?;
     let id = Uuid::new_v4().to_string();
-    conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64])?;
+    conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled,project_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64,project_id])?;
     conn.query_row("SELECT id,definition_id,kind,name,config_json,credential_connector_id,enabled,created_at,updated_at FROM autonomous_agent_targets WHERE id=?1 AND org_id=?2",rusqlite::params![id,org_id],autonomous_target_from_row).optional().map_err(Into::into)
 }
 
@@ -19002,6 +19290,42 @@ fn delivery_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgen
     })
 }
 
+/// Pin a QA delivery destination once; retries must not follow later config edits.
+pub fn mark_autonomous_agent_delivery_needs_triage(
+    conn: &Connection,
+    org_id: &str,
+    delivery_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE autonomous_agent_deliveries SET status='dead_letter',last_error_code='needs_triage',next_attempt_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND status!='delivered'",
+        rusqlite::params![org_id, delivery_id],
+    )?;
+    Ok(())
+}
+
+pub fn pin_autonomous_agent_delivery_repository(
+    conn: &Connection,
+    org_id: &str,
+    delivery_id: &str,
+    repository: &str,
+) -> Result<()> {
+    crate::automation::connectors::validate_repository(repository)?;
+    conn.execute(
+        "UPDATE autonomous_agent_deliveries SET destination_repository=?3
+         WHERE org_id=?1 AND id=?2 AND destination_repository IS NULL",
+        rusqlite::params![org_id, delivery_id, repository],
+    )?;
+    let pinned: Option<String> = conn.query_row(
+        "SELECT destination_repository FROM autonomous_agent_deliveries WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id, delivery_id],
+        |row| row.get(0),
+    )?;
+    if pinned.as_deref() != Some(repository) {
+        anyhow::bail!("delivery_destination_mismatch");
+    }
+    Ok(())
+}
+
 pub fn complete_autonomous_agent_delivery(
     conn: &Connection,
     org_id: &str,
@@ -19009,7 +19333,7 @@ pub fn complete_autonomous_agent_delivery(
     external_id: Option<&str>,
     external_url: Option<&str>,
 ) -> Result<()> {
-    conn.execute("UPDATE autonomous_agent_deliveries SET status='delivered',external_id=?3,external_url=?4,attempts=attempts+1,last_error_code=NULL,next_attempt_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,external_id,external_url])?;
+    conn.execute("UPDATE autonomous_agent_deliveries SET status='delivered',external_id=?3,external_url=?4,attempts=attempts+1,last_error_code=NULL,next_attempt_at=NULL,claim_token=NULL,claim_expires_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,external_id,external_url])?;
     Ok(())
 }
 
@@ -19039,13 +19363,37 @@ pub fn claim_autonomous_agent_delivery(conn: &Connection, org_id: &str, id: &str
     Ok(changed == 1)
 }
 
+/// Lease idempotent GitHub issue delivery work; expired leases are safe to reclaim
+/// because every retry first searches the complete bounded history for its marker.
+pub fn claim_github_issue_delivery(conn:&Connection,org_id:&str,id:&str)->Result<Option<String>>{
+    let token=Uuid::new_v4().to_string();
+    let changed=conn.execute("UPDATE autonomous_agent_deliveries SET claim_token=?3,claim_expires_at=datetime('now','+5 minutes'),updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND channel='github_issue' AND status!='delivered' AND (claim_token IS NULL OR claim_expires_at<=datetime('now'))",rusqlite::params![org_id,id,token])?;
+    Ok((changed==1).then_some(token))
+}
+
+pub fn renew_github_issue_delivery_claim(conn:&Connection,org_id:&str,id:&str,token:&str)->Result<bool>{
+    Ok(conn.execute("UPDATE autonomous_agent_deliveries SET claim_expires_at=datetime('now','+5 minutes'),updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND channel='github_issue' AND status!='delivered' AND claim_token=?3 AND claim_expires_at>datetime('now')",rusqlite::params![org_id,id,token])?==1)
+}
+
+pub fn complete_github_issue_delivery(conn:&Connection,org_id:&str,id:&str,token:&str,external_id:Option<&str>,external_url:Option<&str>)->Result<bool>{
+    Ok(conn.execute("UPDATE autonomous_agent_deliveries SET status='delivered',external_id=?4,external_url=?5,attempts=attempts+1,last_error_code=NULL,next_attempt_at=NULL,claim_token=NULL,claim_expires_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND channel='github_issue' AND claim_token=?3 AND claim_expires_at>datetime('now') AND status!='delivered'",rusqlite::params![org_id,id,token,external_id,external_url])?==1)
+}
+
+pub fn fail_github_issue_delivery_claim(conn:&Connection,org_id:&str,id:&str,token:&str,code:&str)->Result<bool>{
+    Ok(conn.execute("UPDATE autonomous_agent_deliveries SET status=CASE WHEN attempts>=2 THEN 'dead_letter' ELSE 'failed' END,attempts=attempts+1,last_error_code=?4,next_attempt_at=CASE WHEN attempts>=2 THEN NULL ELSE datetime('now',printf('+%d seconds',30*(1 << attempts))) END,claim_token=NULL,claim_expires_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND channel='github_issue' AND claim_token=?3 AND claim_expires_at>datetime('now')",rusqlite::params![org_id,id,token,code])?==1)
+}
+
+pub fn release_github_issue_delivery_claim(conn:&Connection,org_id:&str,id:&str,token:&str)->Result<bool>{
+    Ok(conn.execute("UPDATE autonomous_agent_deliveries SET claim_token=NULL,claim_expires_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND channel='github_issue' AND claim_token=?3",rusqlite::params![org_id,id,token])?==1)
+}
+
 pub fn fail_autonomous_agent_delivery(
     conn: &Connection,
     org_id: &str,
     id: &str,
     code: &str,
 ) -> Result<()> {
-    conn.execute("UPDATE autonomous_agent_deliveries SET status=CASE WHEN attempts>=2 THEN 'dead_letter' ELSE 'failed' END,attempts=attempts+1,last_error_code=?3,next_attempt_at=CASE WHEN attempts>=2 THEN NULL ELSE datetime('now',printf('+%d seconds',30*(1 << attempts))) END,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,code])?;
+    conn.execute("UPDATE autonomous_agent_deliveries SET status=CASE WHEN attempts>=2 THEN 'dead_letter' ELSE 'failed' END,attempts=attempts+1,last_error_code=?3,next_attempt_at=CASE WHEN attempts>=2 THEN NULL ELSE datetime('now',printf('+%d seconds',30*(1 << attempts))) END,claim_token=NULL,claim_expires_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,code])?;
     Ok(())
 }
 
@@ -24652,16 +25000,42 @@ mod inheritance_tests {
     }
 
     #[test]
-    fn second_repo_link_to_same_project_is_refused() {
+    fn delivery_repository_is_pinned_and_cannot_be_redirected() {
+        let conn = setup();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_deliveries(id,org_id,run_id,channel,idempotency_key) VALUES('d1','org1','missing-run','github_issue','finding:issue')",
+            [],
+        ).unwrap();
+        pin_autonomous_agent_delivery_repository(&conn, "org1", "d1", "acme/first").unwrap();
+        assert!(pin_autonomous_agent_delivery_repository(&conn, "org1", "d1", "acme/second").is_err());
+        let pinned: String = conn.query_row(
+            "SELECT destination_repository FROM autonomous_agent_deliveries WHERE id='d1'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(pinned, "acme/first");
+        mark_autonomous_agent_delivery_needs_triage(&conn, "org1", "d1").unwrap();
+        let (status, reason): (String, String) = conn.query_row(
+            "SELECT status,last_error_code FROM autonomous_agent_deliveries WHERE id='d1'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!((status.as_str(), reason.as_str()), ("dead_letter", "needs_triage"));
+    }
+
+    #[test]
+    fn multiple_repositories_can_link_to_same_project() {
         let conn = setup();
         conn.execute("INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'repo-one', '/a')", []).unwrap();
         conn.execute("INSERT INTO code_projects (id, org_id, name, root_path) VALUES (2, 'org1', 'repo-two', '/b')", []).unwrap();
 
         link_code_project_to_project(&conn, "org1", 1, "p_a").unwrap();
-        assert!(
-            link_code_project_to_project(&conn, "org1", 2, "p_a").is_err(),
-            "one repo per project — the second link must be refused, not silently repoint the first"
-        );
+        link_code_project_to_project(&conn, "org1", 2, "p_a").unwrap();
+        let linked: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM code_projects WHERE org_id = 'org1' AND project_id = 'p_a'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(linked, 2);
     }
 
     #[test]

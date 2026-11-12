@@ -6,8 +6,10 @@ export type Dict = Record<string, unknown>
 export type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral'
 export type BadgeTone = 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple' | 'primary'
 
-export const asDict = (v: unknown): Dict | undefined => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Dict) : undefined)
-export const asNum = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+export const asDict = (v: unknown): Dict | undefined =>
+  v && typeof v === 'object' && !Array.isArray(v) ? (v as Dict) : undefined
+export const asNum = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) ? v : undefined
 export const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
 export const asArr = (v: unknown): unknown[] | undefined => (Array.isArray(v) ? v : undefined)
 
@@ -35,12 +37,24 @@ export function isPostEvidence(ev: Dict): boolean {
 // model's final message (`result.result`, a JSON string that may be wrapped in
 // ```json fences or prose), not as a direct property of the result object.
 export function parseLenient(text: string): Dict | undefined {
-  const unfenced = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
-  try { return asDict(JSON.parse(unfenced)) } catch { /* fall through */ }
+  const unfenced = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim()
+  try {
+    return asDict(JSON.parse(unfenced))
+  } catch {
+    /* fall through */
+  }
   const start = unfenced.indexOf('{')
   const end = unfenced.lastIndexOf('}')
   if (start >= 0 && end > start) {
-    try { return asDict(JSON.parse(unfenced.slice(start, end + 1))) } catch { /* give up */ }
+    try {
+      return asDict(JSON.parse(unfenced.slice(start, end + 1)))
+    } catch {
+      /* give up */
+    }
   }
   return undefined
 }
@@ -77,7 +91,13 @@ export const stepName = (step: string) => STEP_NAMES[step] ?? humanize(step)
 
 export const ACTIVE_RUN_STATUSES = ['queued', 'leased', 'running']
 export const isActiveRun = (status: string) => ACTIVE_RUN_STATUSES.includes(status)
-export const CONTINUABLE_RUN_STATUSES = ['budget_exhausted', 'partial', 'blocked_policy', 'failed', 'cancelled']
+export const CONTINUABLE_RUN_STATUSES = [
+  'budget_exhausted',
+  'partial',
+  'blocked_policy',
+  'failed',
+  'cancelled',
+]
 
 /** Run status → word, badge tone and color tone. */
 const RUN_STATUS: Record<string, { label: string; variant: BadgeTone; tone: Tone }> = {
@@ -93,7 +113,8 @@ const RUN_STATUS: Record<string, { label: string; variant: BadgeTone; tone: Tone
   cancelled: { label: 'Cancelled', variant: 'default', tone: 'neutral' },
   dead_letter: { label: 'Gave up after retries', variant: 'error', tone: 'bad' },
 }
-export const runStatusMeta = (s: string) => RUN_STATUS[s] ?? { label: humanize(s), variant: 'default' as BadgeTone, tone: 'neutral' as Tone }
+export const runStatusMeta = (s: string) =>
+  RUN_STATUS[s] ?? { label: humanize(s), variant: 'default' as BadgeTone, tone: 'neutral' as Tone }
 
 /** The five outcome classes of the outcome tape (§11), plus in-progress. */
 export type Outcome = 'success' | 'warning' | 'error' | 'neutral' | 'active'
@@ -101,21 +122,48 @@ export function runOutcome(status: string): Outcome {
   if (isActiveRun(status)) return 'active'
   if (status === 'succeeded') return 'success'
   if (status === 'partial' || status === 'budget_exhausted') return 'warning'
-  if (status === 'failed' || status === 'dead_letter' || status.startsWith('blocked')) return 'error'
+  if (status === 'failed' || status === 'dead_letter' || status.startsWith('blocked'))
+    return 'error'
   return 'neutral'
 }
 
 const TRIGGERS: Record<string, string> = {
   manual: 'Manual',
-  schedule: 'Scheduled',
-  github_webhook: 'GitHub event',
+  schedule: 'Temporizador',
+  github_webhook: 'GitHub · origen histórico no registrado',
+  reconcile: 'Reconciliación o encadenado · histórico',
   webhook: 'Webhook',
   intake: 'Intake',
 }
-export const triggerName = (kind: string) => TRIGGERS[kind] ?? humanize(kind)
+export function triggerName(kind: string, origin?: unknown): string {
+  const source = asDict(origin)
+  if (
+    kind === 'github_webhook' &&
+    source?.kind === 'github_webhook' &&
+    typeof source.delivery_id === 'string' &&
+    source.delivery_id.length > 0
+  )
+    return 'Webhook recibido de GitHub'
+  if (
+    kind === 'reconcile' &&
+    source?.kind === 'github_reconciliation' &&
+    typeof source.scan_id === 'string' &&
+    source.scan_id.length > 0
+  )
+    return 'Reconciliación de GitHub (sondeo)'
+  if (
+    kind === 'reconcile' &&
+    source?.kind === 'agent_chain' &&
+    typeof source.source_run_id === 'string' &&
+    source.source_run_id.length > 0
+  )
+    return 'Encadenado de agente'
+  return TRIGGERS[kind] ?? humanize(kind)
+}
 
 /** run.finished result `code` → a plain-language clause completing "This run …". */
 export const RESULT_CODE: Record<string, string> = {
+  pull_request_number_missing: 'no recibió el número de PR que debe revisar',
   completed: 'completed cleanly',
   cost_limit_exceeded: 'stopped after reaching the cost limit',
   wall_time_exceeded: 'stopped after reaching the time limit',
@@ -126,7 +174,9 @@ export const RESULT_CODE: Record<string, string> = {
   sandbox_environment_failed: 'failed to prepare its sandbox environment',
   claude_auth_required: 'needs Claude Code re-authentication',
   claude_runtime_unavailable: 'could not reach the Claude Code runtime',
-  nexus_executor_not_ready: 'needs its Nexus OpenShell executor and Claude login provisioned',
+  nexus_executor_not_ready: 'needs its Nexus OpenShell executor provisioned',
+  nexus_image_not_configured: 'needs the OpenShell sandbox image configured',
+  nexus_gateway_not_configured: 'needs an OpenShell gateway registered for the worker',
   nexus_auth_required: 'needs Claude login inside its OpenShell sandbox',
   nexus_gateway_unavailable: 'could not reach the OpenShell gateway',
   nexus_cli_unavailable: 'could not start the Nexus worker executable',
@@ -137,8 +187,16 @@ export const RESULT_CODE: Record<string, string> = {
 
 /** Result codes that mean the run never got a working sandbox/runtime. */
 export const SANDBOX_FAILURE_CODES = new Set([
-  'sandbox_create_failed', 'sandbox_environment_failed', 'claude_auth_required', 'claude_runtime_unavailable',
-  'nexus_executor_not_ready', 'nexus_auth_required', 'nexus_gateway_unavailable', 'nexus_cli_unavailable',
+  'sandbox_create_failed',
+  'sandbox_environment_failed',
+  'claude_auth_required',
+  'claude_runtime_unavailable',
+  'nexus_executor_not_ready',
+  'nexus_image_not_configured',
+  'nexus_gateway_not_configured',
+  'nexus_auth_required',
+  'nexus_gateway_unavailable',
+  'nexus_cli_unavailable',
 ])
 
 // ── Runtime / settings ──
@@ -149,26 +207,50 @@ const RUNTIME_STATUS: Record<string, { label: string; variant: BadgeTone }> = {
   reauth_required: { label: 'Needs re-authentication', variant: 'warning' },
   unavailable: { label: 'Unavailable', variant: 'error' },
 }
-export const runtimeStatusMeta = (s?: string | null) => (s ? RUNTIME_STATUS[s] ?? { label: humanize(s), variant: 'default' as BadgeTone } : { label: 'Not checked yet', variant: 'default' as BadgeTone })
+export const runtimeStatusMeta = (s?: string | null) =>
+  s
+    ? (RUNTIME_STATUS[s] ?? { label: humanize(s), variant: 'default' as BadgeTone })
+    : { label: 'Not checked yet', variant: 'default' as BadgeTone }
 
 // ── Findings ──
 
 export const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info']
 export const severityLabel = (s: string) => humanize(s)
-export const severityVariant = (s: string): BadgeTone => (s === 'critical' || s === 'high' ? 'error' : s === 'medium' ? 'warning' : s === 'low' ? 'info' : 'default')
-export const severityDot = (s: string) => (s === 'critical' || s === 'high' ? 'bg-status-error' : s === 'medium' ? 'bg-status-warning' : s === 'low' ? 'bg-status-info' : 'bg-text-tertiary')
+export const severityVariant = (s: string): BadgeTone =>
+  s === 'critical' || s === 'high'
+    ? 'error'
+    : s === 'medium'
+      ? 'warning'
+      : s === 'low'
+        ? 'info'
+        : 'default'
+export const severityDot = (s: string) =>
+  s === 'critical' || s === 'high'
+    ? 'bg-status-error'
+    : s === 'medium'
+      ? 'bg-status-warning'
+      : s === 'low'
+        ? 'bg-status-info'
+        : 'bg-text-tertiary'
 
 const FINDING_STATUS: Record<string, { label: string; variant: BadgeTone }> = {
   open: { label: 'Open', variant: 'default' },
   resolved: { label: 'Resolved', variant: 'success' },
   ignored: { label: 'Archived', variant: 'warning' },
 }
-export const findingStatusMeta = (s: string) => FINDING_STATUS[s] ?? { label: humanize(s), variant: 'default' as BadgeTone }
+export const findingStatusMeta = (s: string) =>
+  FINDING_STATUS[s] ?? { label: humanize(s), variant: 'default' as BadgeTone }
 
 /** Evidence classes (`sast`, `dast`, `functional`…) — short acronyms stay upper case. */
 export const evidenceKindLabel = (k: string) => (k.length <= 4 ? k.toUpperCase() : humanize(k))
 
-const CHANNELS: Record<string, string> = { slack: 'Slack', github_issue: 'GitHub issue', linkedin: 'LinkedIn', email: 'Email', webhook: 'Webhook' }
+const CHANNELS: Record<string, string> = {
+  slack: 'Slack',
+  github_issue: 'GitHub issue',
+  linkedin: 'LinkedIn',
+  email: 'Email',
+  webhook: 'Webhook',
+}
 export const channelName = (c: string) => CHANNELS[c] ?? humanize(c)
 const DELIVERY_STATUS: Record<string, { label: string; tone: Tone }> = {
   sent: { label: 'Sent', tone: 'ok' },
@@ -177,7 +259,8 @@ const DELIVERY_STATUS: Record<string, { label: string; tone: Tone }> = {
   failed: { label: 'Failed', tone: 'bad' },
   dead_letter: { label: 'Gave up after retries', tone: 'bad' },
 }
-export const deliveryStatusMeta = (s: string) => DELIVERY_STATUS[s] ?? { label: humanize(s), tone: 'neutral' as Tone }
+export const deliveryStatusMeta = (s: string) =>
+  DELIVERY_STATUS[s] ?? { label: humanize(s), tone: 'neutral' as Tone }
 
 // ── Numbers and time ──
 
@@ -191,14 +274,24 @@ export const dur = (s: number) => {
 }
 export const round = (n: number) => String(Math.round(n))
 /** Backend timestamps are UTC without a zone suffix. */
-export const parseUtc = (iso?: string | null) => (iso ? Date.parse(`${iso.replace(' ', 'T')}Z`) : NaN)
+export const parseUtc = (iso?: string | null) =>
+  iso ? Date.parse(`${iso.replace(' ', 'T')}Z`) : NaN
 export const fmtTime = (iso?: string | null) => {
   const t = parseUtc(iso)
-  return Number.isFinite(t) ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+  return Number.isFinite(t)
+    ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : ''
 }
 export const fmtDateTime = (iso?: string | null) => {
   const t = parseUtc(iso)
-  return Number.isFinite(t) ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
+  return Number.isFinite(t)
+    ? new Date(t).toLocaleString([], {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : ''
 }
 
 export function relativeTime(iso?: string | null, now = Date.now()): string {
@@ -206,8 +299,14 @@ export function relativeTime(iso?: string | null, now = Date.now()): string {
   if (!Number.isFinite(t)) return ''
   const diff = Math.max(0, now - t) / 1000
   if (diff < 60) return 'just now'
-  if (diff < 3600) { const m = Math.floor(diff / 60); return `${m} minute${m === 1 ? '' : 's'} ago` }
-  if (diff < 86_400) { const h = Math.floor(diff / 3600); return `${h} hour${h === 1 ? '' : 's'} ago` }
+  if (diff < 3600) {
+    const m = Math.floor(diff / 60)
+    return `${m} minute${m === 1 ? '' : 's'} ago`
+  }
+  if (diff < 86_400) {
+    const h = Math.floor(diff / 3600)
+    return `${h} hour${h === 1 ? '' : 's'} ago`
+  }
   const d = Math.floor(diff / 86_400)
   if (d < 30) return `${d} day${d === 1 ? '' : 's'} ago`
   return new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' })
@@ -222,10 +321,18 @@ export function dayLabel(iso?: string | null, now = new Date()): string {
   const days = Math.round((startOf(now) - startOf(d)) / 86_400_000)
   if (days === 0) return 'Today'
   if (days === 1) return 'Yesterday'
-  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) })
+  return d.toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}),
+  })
 }
 
-export function runDurationSeconds(run: { started_at: string | null; finished_at: string | null }): number | undefined {
+export function runDurationSeconds(run: {
+  started_at: string | null
+  finished_at: string | null
+}): number | undefined {
   const s = parseUtc(run.started_at)
   const f = parseUtc(run.finished_at)
   return Number.isFinite(s) && Number.isFinite(f) ? Math.max(0, (f - s) / 1000) : undefined

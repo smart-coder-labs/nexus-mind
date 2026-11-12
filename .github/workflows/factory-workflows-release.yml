@@ -1,0 +1,212 @@
+name: Factory workflows release
+
+on:
+  push:
+    branches: [deploy/factory-workflows-v95, feat/factory-auto-environment]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/backend
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scripts/factory/requirements.txt
+      - name: Backend checks and regression tests
+        run: |
+          cargo check --locked --manifest-path apps/backend/Cargo.toml --all-targets
+          cargo test --locked --manifest-path apps/backend/Cargo.toml --lib -- --test-threads=1
+          docker pull python:3.12-alpine
+          export FACTORY_TEST_IMAGE=$(docker image inspect python:3.12-alpine --format '{{.Id}}')
+          export FACTORY_NODE_IMAGE=node@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd
+          docker pull "$FACTORY_NODE_IMAGE"
+          cargo test --locked --manifest-path apps/backend/Cargo.toml --test factory_workflows --test factory_workflows_api --test backup_api_test --test backup_restore_test
+          SDK_CONTEXT=$(mktemp -d)
+          docker build --tag nexusmind-managed-runtime:test --file scripts/factory/Dockerfile.agent "$SDK_CONTEXT"
+          rmdir "$SDK_CONTEXT"
+          export FACTORY_MANAGED_IMAGE=$(docker image inspect nexusmind-managed-runtime:test --format '{{.Id}}')
+          export FACTORY_NODE_TEST_IMAGE="$FACTORY_MANAGED_IMAGE"
+          python3 -m pip install -r scripts/factory/requirements.txt
+          sudo systemd-run --scope -p MemoryMax=3G -p TasksMax=512 \
+            runuser -u "$(id -un)" -- env PATH="$PATH" \
+            FACTORY_TEST_IMAGE="$FACTORY_TEST_IMAGE" FACTORY_NODE_IMAGE="$FACTORY_NODE_IMAGE" \
+            FACTORY_MANAGED_IMAGE="$FACTORY_MANAGED_IMAGE" FACTORY_NODE_TEST_IMAGE="$FACTORY_NODE_TEST_IMAGE" \
+            python3 -m unittest discover -s scripts/factory -p 'test_*.py' -v
+
+  admin-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/admin/package-lock.json
+      - name: Install, test and build admin
+        working-directory: apps/admin
+        env:
+          VITE_API_URL: https://api.nexusmind.smartcoderlabs.com
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npx vitest run src/pages/factory src/pages/FactoryDigest.test.tsx src/pages/FactoryIntake.test.tsx src/pages/FactoryPolicies.test.tsx src/pages/AutonomousAgents.test.tsx src/pages/AutonomousAgentWizard.config.test.tsx src/components/Layout.test.tsx src/components/Layout.only-context.test.tsx
+          npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: factory-admin
+          path: apps/admin/dist
+
+  backend-image:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: apps/backend/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/smart-coder-labs/nexusmind-backend:${{ github.sha }}-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  commands-image:
+    needs: backend-image
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: apps/backend/factory-commands.Dockerfile
+          platforms: linux/arm64
+          push: true
+          build-args: BACKEND_IMAGE=ghcr.io/smart-coder-labs/nexusmind-backend@${{ needs.backend-image.outputs.digest }}
+          tags: ghcr.io/smart-coder-labs/nexusmind-factory-commands:${{ github.sha }}-arm64
+          cache-from: type=gha,scope=factory-commands
+          cache-to: type=gha,scope=factory-commands,mode=max
+
+  agent-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: scripts/factory/Dockerfile.agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/smart-coder-labs/nexusmind-workflow-agent:${{ github.sha }}
+          cache-from: type=gha,scope=workflow-agent
+          cache-to: type=gha,scope=workflow-agent,mode=max
+
+  deploy-backend:
+    needs: [verify, backend-image, commands-image, agent-image, admin-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Back up SQLite and update existing workloads without replacing secrets
+        env:
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          PUBLISH_ORG_ID: ${{ vars.FACTORY_GITHUB_PUBLISH_ORG_ID }}
+          BACKEND_MODEL_ORG_ID: ${{ vars.FACTORY_BACKEND_MODEL_ORG_ID }}
+          BACKEND_IMAGE: ghcr.io/smart-coder-labs/nexusmind-backend@${{ needs.backend-image.outputs.digest }}
+          COMMANDS_IMAGE: ghcr.io/smart-coder-labs/nexusmind-factory-commands@${{ needs.commands-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -m 600 /dev/null /tmp/oracle_key
+          trap 'rm -f /tmp/oracle_key' EXIT
+          printf '%s\n' "$SSH_KEY" > /tmp/oracle_key
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+          [[ "$PUBLISH_ORG_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo 'Configure FACTORY_GITHUB_PUBLISH_ORG_ID for the authorized organization'; exit 1; }
+          [[ -z "$BACKEND_MODEL_ORG_ID" || "$BACKEND_MODEL_ORG_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo 'Invalid FACTORY_BACKEND_MODEL_ORG_ID'; exit 1; }
+          SSHOPTS="-i /tmp/oracle_key -o StrictHostKeyChecking=yes -o ConnectTimeout=15"
+          ssh $SSHOPTS "$REMOTE" 'kubectl -n nexusmind exec deploy/nexusmind-backend -c backend -- python3 -c '\''import sqlite3,os,datetime; p="/data/pre-workflows-"+datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")+".db"; s=sqlite3.connect("file:/data/nexusmind.db?mode=ro",uri=True); d=sqlite3.connect(p); s.backup(d); assert d.execute("pragma integrity_check").fetchone()[0]=="ok"; d.close(); s.close(); os.chmod(p,0o600); print("Verified backup:",p)'\'''
+          ssh $SSHOPTS "$REMOTE" "kubectl -n nexusmind set env deployment/nexusmind-backend -c backend FACTORY_GITHUB_PUBLISH_ORG_ID=$PUBLISH_ORG_ID FACTORY_BACKEND_MODEL_ORG_ID=$BACKEND_MODEL_ORG_ID && kubectl -n nexusmind set env deployment/nexusmind-backend -c autonomous-worker FACTORY_SANDBOX_IMAGE=$BACKEND_IMAGE FACTORY_COMMANDS_IMAGE=$COMMANDS_IMAGE && kubectl -n nexusmind set image deployment/nexusmind-backend backend=$BACKEND_IMAGE autonomous-worker=$BACKEND_IMAGE && kubectl -n nexusmind rollout status deployment/nexusmind-backend --timeout=600s"
+          ssh $SSHOPTS "$REMOTE" "kubectl -n nexusmind-egress set image deployment/factory-egress-proxy proxy=$BACKEND_IMAGE && kubectl -n nexusmind-egress rollout status deployment/factory-egress-proxy --timeout=300s"
+          curl --fail --retry 12 --retry-delay 5 https://api.nexusmind.smartcoderlabs.com/v1/health
+
+  deploy-admin:
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: factory-admin
+          path: admin-dist
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          command: pages deploy admin-dist --project-name=nexusmind-admin --branch=main

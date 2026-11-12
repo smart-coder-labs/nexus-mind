@@ -3,7 +3,8 @@
 //! local runner, so the worker classifies both paths with the same code.
 //!
 //! Configuration (worker environment):
-//! - `FACTORY_SANDBOX_IMAGE`: task pod image (v1: the backend image).
+//! - `FACTORY_SANDBOX_IMAGE`: agent task pod image (v1: the backend image).
+//! - `FACTORY_COMMANDS_IMAGE`: optional verification image, defaults to the agent image.
 //! - `FACTORY_PROXY_SIGNING_KEY`: shared with the egress proxy, at least 32 bytes.
 
 use std::path::Path;
@@ -19,6 +20,9 @@ use crate::factory::{
     workspace::pack_workspace,
 };
 use crate::store::sqlite::SqliteStore;
+
+/// Rewrites a lockfile for the registry proxy; None when nothing changes.
+type LockfileRewrite = fn(&str, &str) -> Option<String>;
 
 /// WIP checkpoint interval, as on the local path.
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(180);
@@ -47,6 +51,7 @@ pub(crate) struct SandboxedRun<'a> {
     pub receipts: &'a std::sync::Mutex<Vec<crate::factory::verification::VerificationReceipt>>,
     /// Browser-driven templates (QA, judge): target hosts and where screenshots go.
     pub qa: Option<QaSandbox<'a>>,
+    pub qa_checkpoint: Option<&'a super::worker::QaCheckpointContext>,
     /// The pod slot within the run (`main`, or `issue-<n>` in a resolver fanout).
     pub slot: &'a str,
     /// Code-writing templates: every diff of the agent's work, periodic and
@@ -144,6 +149,7 @@ pub(crate) fn failure_code(run_id: &str, error: &anyhow::Error) -> String {
 /// What every sandboxed pod of a run shares.
 struct Prepared {
     image: String,
+    commands_image: String,
     signing_key: String,
     workspace_tar: Vec<u8>,
     runtime: Arc<KubeRuntime>,
@@ -151,9 +157,23 @@ struct Prepared {
     now: i64,
 }
 
+fn image_for_profile<'a>(profile: PodProfile, agent: &'a str, commands: &'a str) -> &'a str {
+    if profile == PodProfile::Commands {
+        commands
+    } else {
+        agent
+    }
+}
+
 async fn prepare(run: &SandboxedRun<'_>) -> anyhow::Result<Prepared> {
     let image = std::env::var("FACTORY_SANDBOX_IMAGE")
         .map_err(|_| anyhow::anyhow!("sandbox_unconfigured"))?;
+    // Verification commands may need compilers that the agent image does not
+    // carry. Keep that toolchain in a separate image used only by commands pods.
+    let commands_image = std::env::var("FACTORY_COMMANDS_IMAGE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| image.clone());
     let signing_key = std::env::var("FACTORY_PROXY_SIGNING_KEY")
         .ok()
         .filter(|key| key.len() >= 32)
@@ -164,6 +184,7 @@ async fn prepare(run: &SandboxedRun<'_>) -> anyhow::Result<Prepared> {
     }
     Ok(Prepared {
         image,
+        commands_image,
         signing_key,
         workspace_tar: pack_workspace(run.workdir, run.secret_values).await?,
         runtime: Arc::new(KubeRuntime::in_cluster().await?),
@@ -206,7 +227,7 @@ impl Prepared {
                 pod_suffix: format!("{}-{}-{suffix}", self.attempt, run.slot),
                 profile,
                 slot: run.slot.to_string(),
-                image: self.image.clone(),
+                image: image_for_profile(profile, &self.image, &self.commands_image).to_string(),
                 run_token: token.to_string(),
                 wall_time_secs: lifetime.as_secs() as i64,
             }),
@@ -304,16 +325,22 @@ async fn run_commands(
             github_packages_npmrc(&all, &registry).into_bytes(),
         ));
         for (relative, scopes) in &found {
-            let lockfile = run.workdir.join(relative).join("package-lock.json");
-            if let Some(proxied) = std::fs::read_to_string(&lockfile)
-                .ok()
-                .and_then(|raw| proxied_lockfile(&raw, &registry))
-            {
-                let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
-                    .join(relative)
-                    .join("package-lock.json");
-                job.files
-                    .push((target.to_string_lossy().into_owned(), proxied.into_bytes()));
+            let rewrites: [(&str, LockfileRewrite); 2] = [
+                ("package-lock.json", proxied_lockfile),
+                ("pnpm-lock.yaml", proxied_pnpm_lockfile),
+            ];
+            for (name, rewrite) in rewrites {
+                let lockfile = run.workdir.join(relative).join(name);
+                if let Some(proxied) = std::fs::read_to_string(&lockfile)
+                    .ok()
+                    .and_then(|raw| rewrite(&raw, &registry))
+                {
+                    let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
+                        .join(relative)
+                        .join(name);
+                    job.files
+                        .push((target.to_string_lossy().into_owned(), proxied.into_bytes()));
+                }
             }
             let existing = std::fs::read_to_string(run.workdir.join(relative).join(".npmrc")).ok();
             let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
@@ -332,6 +359,7 @@ async fn run_commands(
         );
         job.files.push((path.to_string(), proxy.into_bytes()));
     }
+    crate::factory::resolver_checks::bind_proxy_integrity(&mut job.files,&mut job.verification)?;
     let mut runs = run_in_sandbox(prepared.runtime.clone(), &job, &mut |_: &[u8]| {})
         .await?
         .verification;
@@ -418,17 +446,21 @@ fn workspace_npm_scopes(
         depth: usize,
         found: &mut Vec<(std::path::PathBuf, std::collections::BTreeSet<String>)>,
     ) {
+        let mut scopes = std::collections::BTreeSet::new();
         if let Ok(raw) = std::fs::read_to_string(dir.join("package-lock.json")) {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let scopes = github_packages_scopes(&value);
-                if !scopes.is_empty() {
-                    let relative = dir
-                        .strip_prefix(root)
-                        .unwrap_or(Path::new(""))
-                        .to_path_buf();
-                    found.push((relative, scopes));
-                }
+                scopes.extend(github_packages_scopes(&value));
             }
+        }
+        if let Ok(raw) = std::fs::read_to_string(dir.join("pnpm-lock.yaml")) {
+            scopes.extend(pnpm_github_packages_scopes(&raw));
+        }
+        if !scopes.is_empty() {
+            let relative = dir
+                .strip_prefix(root)
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            found.push((relative, scopes));
         }
         if depth == 0 {
             return;
@@ -501,6 +533,32 @@ pub(crate) fn proxied_lockfile(raw: &str, registry_url: &str) -> Option<String> 
         .then(|| raw.replace(FROM, &format!("\"resolved\": \"{registry_url}")))
 }
 
+/// The GitHub Packages scopes a `pnpm-lock.yaml` downloads from: its
+/// `tarball: https://npm.pkg.github.com/download/@scope/...` resolutions.
+pub(crate) fn pnpm_github_packages_scopes(raw: &str) -> std::collections::BTreeSet<String> {
+    const FROM: &str = "tarball: https://npm.pkg.github.com/";
+    raw.match_indices(FROM)
+        .filter_map(|(at, _)| {
+            let rest = &raw[at + FROM.len()..];
+            let rest = rest.strip_prefix("download/").unwrap_or(rest);
+            let scope = rest.strip_prefix('@')?.split(['/', '%']).next()?;
+            let valid = !scope.is_empty()
+                && scope
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            valid.then(|| format!("@{}", scope.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
+/// [`proxied_lockfile`] for pnpm: the `tarball:` resolutions point at the proxy
+/// route; integrity hashes stay as they are.
+pub(crate) fn proxied_pnpm_lockfile(raw: &str, registry_url: &str) -> Option<String> {
+    const FROM: &str = "tarball: https://npm.pkg.github.com/";
+    raw.contains(FROM)
+        .then(|| raw.replace(FROM, &format!("tarball: {registry_url}")))
+}
+
 /// A scanner's report from a commands pod, or why there is none. The worker only
 /// parses this output; it never runs the scanner itself for a sandboxed run.
 pub(crate) fn scanner_output(
@@ -564,6 +622,11 @@ pub(crate) async fn run_claude_sandboxed(
     };
     let run_token = prepared.token(run.org_id, &token_run_id, agent_life, hosts)?;
     // Everything a transcript or error could echo that is still live: redact it.
+    if let Some(context)=run.qa_checkpoint {
+        if let Ok(mut discovered)=context.sandbox_secrets.lock() {
+            if !discovered.contains(&run_token) { discovered.push(run_token.clone()); }
+        }
+    }
     let secrets: Vec<String> = run
         .secret_values
         .iter()
@@ -602,15 +665,42 @@ pub(crate) async fn run_claude_sandboxed(
         )];
         agent_job.collect_dir = Some(crate::factory::sandbox::QA_OUTPUT_DIR.to_string());
     }
+    let runtime_config = {
+        let db = run.store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
+        use rusqlite::OptionalExtension;
+        let text: Option<String> = conn.query_row("SELECT r.config_json FROM autonomous_agent_runs a JOIN autonomous_agent_revisions r ON r.id=a.revision_id WHERE a.id=?1 AND a.org_id=?2", rusqlite::params![run.run_id, run.org_id], |row| row.get(0)).optional()?;
+        text.map(|text| serde_json::from_str::<serde_json::Value>(&text)).transpose()?
+    };
+    if let Some(runtime_config) = runtime_config.as_ref() {
+    let runtime = super::agent_runtime::runtime_from_config(runtime_config)?;
+    anyhow::ensure!(runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).all(|s| s.env.is_empty() && s.headers.is_empty()), "runtime_mcp_credentials_require_sandbox_proxy");
+    let executor = if codex { "codex" } else { "claude" };
+    let root = if codex { crate::factory::sandbox::CODEX_HOME } else { "/tmp/agent-runtime" };
+    let nexus: serde_json::Value = serde_json::from_str(&crate::factory::sandbox::nexusmind_mcp())?;
+    let mut nexus = nexus["mcpServers"]["plugin_nexusmind_nexusmind"].clone();
+    nexus["env"]["NEXUSMIND_BASE_URL"] = serde_json::json!(format!("http://{}/r/{run_token}/nexusmind", crate::factory::sandbox::PROXY_AUTHORITY));
+    let plan = super::agent_runtime::plan(&runtime, executor, root, nexus)?;
+    for (path, content) in plan.files {
+        if codex && path.ends_with("/runtime.toml") {
+            let (_, bytes) = agent_job.files.iter_mut().find(|(path, _)| path == crate::factory::sandbox::CODEX_CONFIG_PATH).ok_or_else(|| anyhow::anyhow!("codex_config_missing"))?;
+            let base = String::from_utf8(bytes.clone())?;
+            *bytes = format!("{}{}", base.split("\n[mcp_servers.").next().unwrap_or(&base), content).into_bytes();
+        } else { agent_job.files.push((path, content.into_bytes())); }
+    }
+    if !codex {
+        let base = argv.windows(2).find(|a| a[0] == "--allowedTools").map(|a| a[1].clone()).unwrap_or_default();
+        let tools = plan.mcp_names.iter().map(|n| format!("mcp__{n}__*")).collect::<Vec<_>>().join(",");
+        argv.extend(["--setting-sources".into(), "".into(), "--allowedTools".into(), format!("{base},{tools}")]);
+    }
+    argv.extend(plan.args);
+    } else if !codex && run.writes.is_some() {
+        // Frozen replay jobs have no autonomous revision: preserve their existing toolbox.
+        argv.extend(["--mcp-config".into(), crate::factory::sandbox::nexusmind_mcp()]);
+    }
     // Checkpoint diffs from the executor are forwarded in order; the forwarder
     // ends (its channel closes with the job) before the final diff is sent.
     let forwarder = run.writes.as_ref().map(|sink| {
-        if !codex {
-            argv.extend([
-                "--mcp-config".to_string(),
-                crate::factory::sandbox::nexusmind_mcp(),
-            ]);
-        }
         agent_job.collect_diff = true;
         let (inner, mut received) = tokio::sync::mpsc::unbounded_channel();
         agent_job.checkpoints = Some(crate::factory::sandbox_exec::Checkpoints {
@@ -638,6 +728,7 @@ pub(crate) async fn run_claude_sandboxed(
                 org_id,
                 run_id,
                 secrets_ref,
+                run.qa_checkpoint,
                 &mut sequence,
                 line,
             )
@@ -681,10 +772,17 @@ pub(crate) async fn run_claude_sandboxed(
             *slot = runs.iter().map(|run| run.receipt()).collect();
         }
     }
+    let redact_output = |bytes: Vec<u8>| {
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        for secret in secrets.iter().filter(|value| !value.is_empty()) {
+            text = text.replace(secret, "[REDACTED]");
+        }
+        text.into_bytes()
+    };
     Ok(std::process::Output {
         status: exit_status(output.exit_code),
-        stdout: output.stdout,
-        stderr: output.stderr,
+        stdout: redact_output(output.stdout),
+        stderr: redact_output(output.stderr),
     })
 }
 
@@ -715,12 +813,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pnpm_lockfile_private_tarballs_go_through_the_proxy() {
+        let raw = "lockfileVersion: '9.0'\npackages:\n  '@kasymir/ui-commons@0.2.11':\n    resolution: {integrity: sha512-x==, tarball: https://npm.pkg.github.com/download/@kasymir/ui-commons/0.2.11/53f2}\n  'react@19.0.0':\n    resolution: {integrity: sha512-y==}\n";
+        let scopes = pnpm_github_packages_scopes(raw);
+        assert_eq!(scopes.into_iter().collect::<Vec<_>>(), vec!["@kasymir".to_string()]);
+        let proxied = proxied_pnpm_lockfile(raw, "http://proxy/r/T/ghpkg/").unwrap();
+        assert!(proxied.contains("tarball: http://proxy/r/T/ghpkg/download/@kasymir/ui-commons/0.2.11/53f2}"));
+        assert!(proxied.contains("integrity: sha512-x=="));
+        assert!(proxied_pnpm_lockfile("lockfileVersion: '9.0'\n", "http://proxy/r/T/ghpkg/").is_none());
+        assert!(pnpm_github_packages_scopes("tarball: https://npm.pkg.github.com/download/@ba d/x").is_empty());
+    }
+
+    #[test]
     fn the_prompt_moves_to_stdin_and_claude_resolves_from_path() {
         let mut command = Command::new("/usr/local/bin/claude");
         command.args(["-p", "review this", "--permission-mode", "plan"]);
         let (argv, prompt) = sandbox_invocation(&command);
         assert_eq!(argv, ["claude", "-p", "--permission-mode", "plan"]);
         assert_eq!(prompt.as_deref(), Some(&b"review this"[..]));
+    }
+
+    #[test]
+    fn only_verification_pods_use_the_commands_image() {
+        assert_eq!(
+            image_for_profile(PodProfile::Agent, "agent-image", "commands-image"),
+            "agent-image"
+        );
+        assert_eq!(
+            image_for_profile(PodProfile::Commands, "agent-image", "commands-image"),
+            "commands-image"
+        );
     }
 
     #[test]

@@ -107,6 +107,7 @@ export default function AuditLog() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
+            aria-label="Search the audit log"
             placeholder="Search by action, user, resource…"
             className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
           />
@@ -117,6 +118,7 @@ export default function AuditLog() {
           )}
         </div>
         <select
+          aria-label="Filter by action"
           value={actionFilter}
           onChange={e => setActionFilter(e.target.value)}
           className="bg-surface-primary border border-border-primary rounded-lg px-3 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"

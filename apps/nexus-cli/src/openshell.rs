@@ -4,6 +4,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -17,6 +19,10 @@ use std::{
 use uuid::Uuid;
 
 const INSTALLER: &str = "https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh";
+const MAX_CLAUDE_AUTH_FILE_BYTES: u64 = 1024 * 1024;
+// OpenShell sandbox exec rejects stdin payloads of 4 MiB or larger.
+const OPENSHELL_EXEC_STDIN_CHUNK_BYTES: usize = 3 * 1024 * 1024;
+const CLAUDE_SANDBOX_CONFIG_DIR: &str = "/sandbox/.claude";
 const CODEX_AUTH_BOOTSTRAP_SCRIPT: &str = r#"import json, os, pathlib, sys
 auth = json.loads(sys.argv[2])
 for field, name in (("access_token", "CODEX_AUTH_ACCESS_TOKEN"), ("refresh_token", "CODEX_AUTH_REFRESH_TOKEN"), ("account_id", "CODEX_AUTH_ACCOUNT_ID")):
@@ -128,7 +134,7 @@ impl OpenShell {
                 self.clear_codex_auth();
                 output?
             }
-            "claude-code-headless" => self.raw_command_output(&["claude", "auth", "status"])?,
+            "claude-code-headless" => self.claude_auth_status()?,
             _ => bail!("auth status is available for Claude Code and Codex only"),
         };
         let text = format!(
@@ -136,7 +142,9 @@ impl OpenShell {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        if !output.status.success() {
+        if !output.status.success()
+            || runtime == "claude-code-headless" && !claude_status_ready(&output)
+        {
             bail!(
                 "{} login is not ready in OpenShell: {}",
                 runtime,
@@ -144,6 +152,79 @@ impl OpenShell {
             );
         }
         Ok(crate::redacted(text.trim()))
+    }
+
+    /// The worker's subscription login lives outside the sandbox. OpenShell
+    /// deliberately does not inherit host files, so seed only Claude Code's
+    /// auth files into the persistent sandbox when its own login is absent.
+    /// Files travel through the authenticated OpenShell upload channel and are
+    /// restricted to the sandbox user's HOME; they are never printed or put in
+    /// a provider environment variable.
+    fn claude_auth_status(&self) -> Result<Output> {
+        let output = self.raw_command_output(&["claude", "auth", "status"])?;
+        if claude_status_ready(&output) {
+            return Ok(output);
+        }
+        self.provision_claude_auth()?;
+        self.raw_command_output(&["claude", "auth", "status"])
+    }
+
+    fn provision_claude_auth(&self) -> Result<()> {
+        let home = env::var_os("HOME")
+            .map(PathBuf::from)
+            .context("Claude login is not ready in OpenShell: worker HOME is unavailable")?;
+        let files = host_claude_auth_files(&home)
+            .context(
+                "Claude login is not ready in OpenShell: worker Claude credentials are unavailable",
+            )?;
+
+        let prepared = self.raw_command_output(&["mkdir", "-p", CLAUDE_SANDBOX_CONFIG_DIR])?;
+        if !prepared.status.success() {
+            bail!("could not prepare Claude login storage in the OpenShell sandbox");
+        }
+        for (source, _, destination) in &files {
+            self.stream_claude_auth_file(source, destination)?;
+        }
+        let secured = self.raw_command_output(&["chmod", "700", CLAUDE_SANDBOX_CONFIG_DIR])?;
+        if !secured.status.success() {
+            bail!("could not secure Claude login files in the OpenShell sandbox");
+        }
+        for (_, _, path) in &files {
+            let secured = self.raw_command_output(&["chmod", "600", path])?;
+            if !secured.status.success() {
+                bail!("could not secure Claude login files in the OpenShell sandbox");
+            }
+        }
+        Ok(())
+    }
+
+    /// Stream the credential through OpenShell's authenticated exec channel.
+    /// The gateway's file-upload endpoint can fail for sandbox home paths; the
+    /// exec channel carries the bytes only on stdin, never argv or logs.
+    fn stream_claude_auth_file(&self, source: &Path, destination: &str) -> Result<()> {
+        let contents = fs::read(source).context("could not read worker Claude credentials")?;
+        let command_line = format!("umask 077; cat > {destination}");
+        let mut command = Command::new(&self.binary);
+        command.args(["sandbox", "exec", "-n", &self.sandbox, "--no-tty", "--", "sh", "-c", &command_line]);
+        command.stdin(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .context("could not start Claude credential transfer to OpenShell")?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("OpenShell Claude credential transfer has no stdin")?;
+        stdin
+            .write_all(&contents)
+            .context("could not stream Claude credentials to OpenShell")?;
+        drop(stdin);
+        let uploaded = child
+            .wait_with_output()
+            .context("could not finish Claude credential transfer to OpenShell")?;
+        if !uploaded.status.success() {
+            bail!("could not provision Claude login in the OpenShell sandbox");
+        }
+        Ok(())
     }
 
     pub fn installed() -> bool {
@@ -360,38 +441,32 @@ impl OpenShell {
         // A filtered archive prevents .git, .nexus sessions, ignored build
         // artifacts, and common credential files from entering the sandbox.
         let archive = make_archive(root)?;
-        let remote = format!(
-            "/sandbox/{}",
-            archive
-                .file_name()
-                .unwrap_or_else(|| OsStr::new("nexus-upload.tar"))
-                .to_string_lossy()
-        );
         let mkdir = self.raw_command_output(&["mkdir", "-p", &self.workspace])?;
         if !mkdir.status.success() {
             bail!("could not prepare OpenShell workspace");
         }
-        let output = Command::new(&self.binary)
-            .args(["sandbox", "upload", &self.sandbox])
-            .arg(&archive)
-            .arg("/sandbox")
-            .output()?;
+        // The gateway file-upload endpoint can reject sandbox paths. Stream in
+        // bounded chunks over authenticated exec; a single stdin transfer is
+        // limited to 4 MiB by OpenShell.
+        let remote_archive = format!("/sandbox/.nexus-upload-{}.tar", Uuid::new_v4());
+        let transfer = self.stream_file_to_sandbox(&archive, &remote_archive);
         let _ = fs::remove_file(&archive);
-        if !output.status.success() {
-            bail!(
-                "OpenShell repository upload failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
+        if let Err(error) = transfer {
+            let _ = self.raw_command_output(&["rm", "-f", &remote_archive]);
+            return Err(error);
         }
-        self.remove_stale_guest_files(root)?;
-        let extract = self.command_output(&["tar", "-xf", &remote, "-C", &self.workspace], None)?;
-        let _ = self.raw_command_output(&["rm", "-f", &remote]);
+        let extract = self.command_output(
+            &["tar", "-xf", &remote_archive, "-C", &self.workspace],
+            None,
+        )?;
+        let _ = self.raw_command_output(&["rm", "-f", &remote_archive]);
         if !extract.status.success() {
             bail!(
                 "OpenShell archive extraction failed: {}",
                 String::from_utf8_lossy(&extract.stderr).trim()
             );
         }
+        self.remove_stale_guest_files(root)?;
         let baseline = self.command_output(&["sh", "-c",
             "git init -q && git add -A && git -c user.name=Nexus -c user.email=nexus@localhost commit -qm 'Nexus sandbox baseline' --allow-empty"], None)?;
         if !baseline.status.success() {
@@ -399,6 +474,51 @@ impl OpenShell {
                 "could not prepare Git baseline in OpenShell: {}",
                 String::from_utf8_lossy(&baseline.stderr).trim()
             );
+        }
+        Ok(())
+    }
+
+    fn stream_file_to_sandbox(&self, source: &Path, destination: &str) -> Result<()> {
+        let mut source = fs::File::open(source)
+            .context("could not open OpenShell repository archive")?;
+        let mut buffer = vec![0; OPENSHELL_EXEC_STDIN_CHUNK_BYTES];
+        let mut first_chunk = true;
+        loop {
+            let length = source.read(&mut buffer)?;
+            if length == 0 {
+                break;
+            }
+            let redirect = if first_chunk { ">" } else { ">>" };
+            let command_line = format!("cat {redirect} {destination}");
+            let mut command = self.exec_command(&["sh", "-c", &command_line], false, None)?;
+            command.stdin(Stdio::piped());
+            let mut child = command
+                .spawn()
+                .context("could not start OpenShell repository transfer")?;
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("OpenShell repository transfer has no stdin")?;
+            let copied = stdin.write_all(&buffer[..length]);
+            drop(stdin);
+            if let Err(error) = copied {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("could not stream repository archive to OpenShell");
+            }
+            let output = child
+                .wait_with_output()
+                .context("could not finish OpenShell repository transfer")?;
+            if !output.status.success() {
+                bail!(
+                    "OpenShell repository upload failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            first_chunk = false;
+        }
+        if first_chunk {
+            bail!("OpenShell repository archive is empty");
         }
         Ok(())
     }
@@ -415,19 +535,14 @@ impl OpenShell {
         if !prepared.status.success() {
             bail!("could not prepare OpenShell worker configuration directory");
         }
-        let uploaded = Command::new(&self.binary)
-            .args(["sandbox", "upload", &self.sandbox])
-            .arg(source)
-            .arg(&destination)
-            .output()?;
-        if !uploaded.status.success() {
-            bail!("could not upload worker configuration to OpenShell");
-        }
         let filename = source
             .file_name()
             .context("worker configuration has no filename")?
             .to_string_lossy();
-        Ok(format!("{destination}/{filename}"))
+        let remote_path = format!("{destination}/{filename}");
+        self.stream_file_to_sandbox(source, &remote_path)
+            .context("could not upload worker configuration to OpenShell")?;
+        Ok(remote_path)
     }
 
     pub fn upload_worker_mcp_config(&self, source: &Path) -> Result<String> {
@@ -504,16 +619,9 @@ impl OpenShell {
             let _ = fs::remove_file(&archive);
             bail!("could not prepare OpenShell context directory");
         }
-        let uploaded = Command::new(&self.binary)
-            .args(["sandbox", "upload", &self.sandbox])
-            .arg(&archive)
-            .arg("/sandbox")
-            .output();
+        let uploaded = self.stream_file_to_sandbox(&archive, &remote_archive);
         let _ = fs::remove_file(&archive);
-        let uploaded = uploaded?;
-        if !uploaded.status.success() {
-            bail!("could not upload worker context to OpenShell");
-        }
+        uploaded.context("could not upload worker context to OpenShell")?;
         let extracted = self.raw_command_output(&[
             "tar", "-xf", &remote_archive, "-C", &destination,
         ])?;
@@ -564,14 +672,27 @@ impl OpenShell {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
         }
-        let output = Command::new(&self.binary)
-            .args(["sandbox", "download", &self.sandbox, &self.workspace])
+        let archive = env::temp_dir().join(format!(
+            "nexus-sandbox-download-{}.tar",
+            Uuid::new_v4()
+        ));
+        let transfer = self.stream_workspace_to_archive(&archive);
+        if let Err(error) = transfer {
+            let _ = fs::remove_file(&archive);
+            return Err(error).context("OpenShell repository download failed");
+        }
+        let extracted = Command::new("tar")
+            .arg("-xf")
+            .arg(&archive)
+            .arg("-C")
             .arg(&staging)
-            .output()?;
-        if !output.status.success() {
+            .output()
+            .context("could not extract the OpenShell repository download")?;
+        let _ = fs::remove_file(&archive);
+        if !extracted.status.success() {
             bail!(
-                "OpenShell repository download failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "OpenShell repository archive extraction failed: {}",
+                String::from_utf8_lossy(&extracted.stderr).trim()
             );
         }
         // Directory download copies its contents into the destination.
@@ -604,6 +725,67 @@ impl OpenShell {
             );
         }
         result
+    }
+
+    /// Stream the sandbox workspace archive to a protected host-side file.
+    /// OpenShell's file-transfer endpoint cannot resolve this executor's
+    /// workspace mount, while exec stdout is streamed without a size cap.
+    fn stream_workspace_to_archive(&self, archive: &Path) -> Result<()> {
+        let mut command = Command::new(&self.binary);
+        command.args([
+            "sandbox",
+            "exec",
+            "-n",
+            &self.sandbox,
+            "--no-tty",
+            "--",
+            "tar",
+            "-cf",
+            "-",
+            "-C",
+            &self.workspace,
+            ".",
+        ]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .context("could not start OpenShell workspace download")?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .context("OpenShell workspace download has no stdout")?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(archive) {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("could not create protected OpenShell download archive");
+            }
+        };
+        let copied = std::io::copy(&mut stdout, &mut file);
+        drop(stdout);
+        drop(file);
+        let output = child
+            .wait_with_output()
+            .context("could not finish OpenShell workspace download")?;
+        let copied = copied.context("could not stream OpenShell workspace archive to the host")?;
+        if !output.status.success() {
+            bail!(
+                "OpenShell workspace archive command failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        if copied == 0 {
+            bail!("OpenShell workspace archive is empty");
+        }
+        Ok(())
     }
 
     pub fn exec_command(
@@ -666,6 +848,48 @@ impl OpenShell {
         args.extend(argv.iter().map(OsString::from));
         args
     }
+}
+
+fn claude_status_ready(output: &Output) -> bool {
+    output.status.success()
+        && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|status| status.get("loggedIn").and_then(serde_json::Value::as_bool))
+            == Some(true)
+}
+
+/// Select only the two Claude Code authentication files. Reject symlinks,
+/// non-regular files, empty files and unexpectedly large files before sending
+/// anything through the OpenShell gateway.
+fn host_claude_auth_files(home: &Path) -> Result<Vec<(PathBuf, &'static str, &'static str)>> {
+    let claude_dir = home.join(".claude");
+    let dir_meta = fs::symlink_metadata(&claude_dir)
+        .context("worker Claude credential directory is unavailable")?;
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+        bail!("worker Claude credential directory is unsafe");
+    }
+
+    let mut files = Vec::new();
+    let path = home.join(".claude/.credentials.json");
+    let metadata = fs::symlink_metadata(&path)
+        .context("worker Claude credentials are unavailable")?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_CLAUDE_AUTH_FILE_BYTES
+    {
+        bail!("worker Claude credential file is unsafe");
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o077 != 0 {
+        bail!("worker Claude credential file permissions are unsafe");
+    }
+    files.push((
+        path,
+        CLAUDE_SANDBOX_CONFIG_DIR,
+        "/sandbox/.claude/.credentials.json",
+    ));
+    Ok(files)
 }
 
 fn ensure_codex_policy(binary: &Path, sandbox: &str, managed: bool) -> Result<()> {
@@ -1389,6 +1613,69 @@ mod tests {
         }}))
         .is_err());
     }
+
+    #[test]
+    fn claude_auth_status_requires_a_logged_in_json_response() {
+        let ready = Command::new("sh")
+            .args(["-c", "printf '{\"loggedIn\":true}'"])
+            .output()
+            .unwrap();
+        let logged_out = Command::new("sh")
+            .args(["-c", "printf '{\"loggedIn\":false}'"])
+            .output()
+            .unwrap();
+        assert!(claude_status_ready(&ready));
+        assert!(!claude_status_ready(&logged_out));
+        assert!(!claude_status_ready(&Output {
+            status: ready.status,
+            stdout: b"not json".to_vec(),
+            stderr: Vec::new(),
+        }));
+    }
+
+    #[test]
+    fn claude_auth_provisioning_selects_only_bounded_auth_files() {
+        let home = temporary("claude-auth-files");
+        fs::create_dir(home.join(".claude")).unwrap();
+        let credentials = home.join(".claude/.credentials.json");
+        fs::write(&credentials, "{\"oauth\":true}").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600)).unwrap();
+        let files = host_claude_auth_files(&home).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, home.join(".claude/.credentials.json"));
+        assert_eq!(files[0].1, CLAUDE_SANDBOX_CONFIG_DIR);
+        assert_eq!(files[0].2, "/sandbox/.claude/.credentials.json");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn claude_auth_provisioning_rejects_symlinks_and_oversized_files() {
+        let home = temporary("claude-auth-validation");
+        fs::create_dir(home.join(".claude")).unwrap();
+        fs::write(home.join("credentials.json"), "{\"oauth\":true}").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            home.join("credentials.json"),
+            home.join(".claude/.credentials.json"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert!(host_claude_auth_files(&home).is_err());
+
+        #[cfg(unix)]
+        fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
+        #[cfg(unix)]
+        fs::write(
+            home.join(".claude/.credentials.json"),
+            vec![b'x'; MAX_CLAUDE_AUTH_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert!(host_claude_auth_files(&home).is_err());
+        fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn sandbox_name_is_deterministic_and_scoped_to_runtime() {
         let root = Path::new("/workspace/project");

@@ -72,7 +72,9 @@ const NODE_PATH: &str = "NODE_PATH=/usr/local/lib/node_modules:/usr/lib/node_mod
 const BROWSERS_PATH: &str = "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright";
 
 /// Runs a package script and leaves a marker when it passes.
-const RUN_MARKED: &str = r#"marker=$1; cd "$2" || exit 96; shift 2; "$@" && : > "$marker""#;
+/// The marker's folder is created here: nothing else may have written to it
+/// yet (with no screenshots planned, no file goes into the pod's /tmp/nm-ui).
+const RUN_MARKED: &str = r#"marker=$1; cd "$2" || exit 96; shift 2; "$@" && mkdir -p "${marker%/*}" && : > "$marker""#;
 /// Runs only after the build passed (exit 99 otherwise).
 const AFTER_BUILD: &str = r#"marker=$1; cd "$2" || exit 96; shift 2; [ -e "$marker" ] || exit 99; exec "$@""#;
 
@@ -644,6 +646,19 @@ fn failure(what: &str, run: &CommandRun) -> Option<String> {
     }
 }
 
+/// The infrastructure failure of a UI checks pod run, if any: the install
+/// failed or a build, lint or test command lost its exit status. As for the
+/// tests checks (see `specialist_tests::infra_failure`), the change cannot
+/// touch a manifest or lockfile, so this is an attempt error, not `ui_build`.
+pub fn infra_failure(plan: &UiPlan, runs: &[CommandRun]) -> Option<&'static str> {
+    plan.steps.iter().zip(runs).find_map(|(step, run)| match (step, run.exit_code) {
+        (PodStep::Install(_), Some(0)) => None,
+        (PodStep::Install(_), _) => Some(tests::CHECKS_INSTALL_FAILED),
+        (PodStep::Build(_) | PodStep::Lint(_) | PodStep::Tests(_), None) => Some(tests::CHECKS_POD_FAILED),
+        _ => None,
+    })
+}
+
 /// Turns the pod's runs into `ui_build`, `ui_lint`, `ui_tests` and
 /// `ui_screenshots`, and the checked images.
 pub fn interpret(plan: &UiPlan, runs: &[CommandRun]) -> (Vec<CheckOutcome>, Vec<Screenshot>) {
@@ -845,6 +860,7 @@ pub(crate) async fn run_checks(
         verification: &[],
         receipts: &receipts,
         qa: None,
+        qa_checkpoint: None,
         slot: &slot,
         writes: None,
     };
@@ -866,6 +882,9 @@ pub(crate) async fn run_checks(
         .map_err(|error| super::sandboxed::failure_code(env.run_id, &error))?;
     if runs.len() != plan.commands.len() {
         return Err("ui_checks_incomplete".into());
+    }
+    if let Some(code) = infra_failure(&plan, &runs) {
+        return Err(code.into());
     }
     Ok(interpret(&plan, &runs))
 }
@@ -1009,6 +1028,16 @@ mod tests_ui {
         assert_eq!(config["shots"].as_array().unwrap().len(), 4, "/tasks at two viewports, light and dark");
         assert!(plan.files.iter().any(|(p, c)| p == SCRIPT_PATH && c.starts_with(b"'use strict'")));
         assert_eq!(plan.skipped, [("ui_lint", "skipped: no `lint` script".to_string())]);
+    }
+
+    #[test]
+    fn an_install_or_a_lost_status_is_infrastructure_but_a_broken_build_is_not() {
+        let plan = prepare(&admin(), &paths(&["apps/admin/src/pages/Tasks.tsx"]), &[]).unwrap();
+        // install, build, test, screenshots.
+        assert_eq!(infra_failure(&plan, &[run(Some(1)), run(Some(99)), run(Some(1)), run(Some(99))]), Some("checks_install_failed"));
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(None)]), Some("checks_pod_failed"));
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(Some(2)), run(Some(1)), run(Some(99))]), None);
+        assert_eq!(infra_failure(&plan, &[run(Some(0)), run(Some(0)), run(Some(0)), run(None)]), None, "the screenshots judge their own run");
     }
 
     #[test]
@@ -1215,5 +1244,27 @@ mod tests_ui {
         assert_eq!(server_of(&json!({"devDependencies": {"vite": "5"}})), Some(Server::Vite));
         assert_eq!(server_of(&json!({"dependencies": {"next": "15", "vite": "5"}})), Some(Server::Next));
         assert_eq!(server_of(&json!({"dependencies": {"react-scripts": "5"}})), None);
+    }
+
+    #[test]
+    fn a_passing_build_leaves_its_marker_even_in_a_folder_nothing_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("nm-ui/built");
+        let marker = marker.to_str().unwrap();
+        let workdir = dir.path().to_str().unwrap();
+        let run = |script: &str, tail: &[&str]| {
+            std::process::Command::new("sh")
+                .args(["-c", script, "sh", marker, workdir])
+                .args(tail)
+                .status()
+                .unwrap()
+                .code()
+        };
+        assert_eq!(run(AFTER_BUILD, &["true"]), Some(99), "nothing runs before the build passed");
+        assert_eq!(run(RUN_MARKED, &["false"]), Some(1));
+        assert!(!std::path::Path::new(marker).exists(), "a failed build leaves no marker");
+        assert_eq!(run(RUN_MARKED, &["true"]), Some(0));
+        assert!(std::path::Path::new(marker).exists());
+        assert_eq!(run(AFTER_BUILD, &["true"]), Some(0));
     }
 }

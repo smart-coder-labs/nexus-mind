@@ -5,10 +5,10 @@ import type { AutonomousAgentEvent } from '../../../types'
 import { asArr, asDict, asStr } from '../shared/format'
 
 // ── Conversation transcript → readable chat ──
-// Distils the raw Claude stream-json turns into human-readable chat messages:
+// Distils Claude stream-json and Pi JSONL events into human-readable chat:
 // assistant prose, a one-line note per tool call, tool errors, and the final
 // result. System/init turns and non-error tool outputs are dropped as noise.
-function toolResultText(content: unknown): string {
+export function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content
   const arr = asArr(content)
   if (arr) return arr.map(x => { const d = asDict(x); return asStr(d?.text) ?? (d?.type === 'image' ? '[image]' : JSON.stringify(x)) }).join('\n')
@@ -44,10 +44,59 @@ function decodeAssistantText(text: string): Pick<ChatMsg, 'markdown' | 'pretty' 
 
 function toChatMessages(turns: AutonomousAgentEvent[]): ChatMsg[] {
   const out: ChatMsg[] = []
+  let piMessage: { key: string; blocks: Map<number, { text: string; row?: ChatMsg }> } | undefined
+  let piSession = ''
+  const piTools = new Set<string>()
+  const piTextRows = new Map<ChatMsg, string>()
+  const piText = (sequence: number, index: number, text: string, append = false) => {
+    piMessage ??= { key: `pi-${sequence}`, blocks: new Map() }
+    const block = piMessage.blocks.get(index) ?? { text: '' }
+    block.text = append ? block.text + text : text
+    if (block.text.trim()) {
+      if (!block.row) {
+        block.row = { key: `${piMessage.key}-${index}`, kind: 'assistant' }
+        out.push(block.row)
+      }
+      piTextRows.set(block.row, block.text)
+    }
+    piMessage.blocks.set(index, block)
+  }
   for (const turn of turns) {
     const p = asDict(turn.payload) ?? {}
     const type = asStr(p.type) ?? turn.kind
-    if (type !== 'assistant' && type !== 'user') continue // drop system/init and result (dup of the final assistant message)
+    if (type === 'session') {
+      piSession = asStr(p.id) ?? String(turn.sequence)
+      piMessage = undefined
+    } else if (type === 'message_start') {
+      piMessage = asDict(p.message)?.role === 'assistant' ? { key: `pi-${turn.sequence}`, blocks: new Map() } : undefined
+    } else if (type === 'message_update') {
+      const event = asDict(p.assistantMessageEvent)
+      const index = typeof event?.contentIndex === 'number' ? event.contentIndex : 0
+      if (event?.type === 'text_delta') piText(turn.sequence, index, asStr(event.delta) ?? '', true)
+      else if (event?.type === 'text_end') piText(turn.sequence, index, asStr(event.content) ?? '')
+    } else if (type === 'message_end') {
+      const message = asDict(p.message)
+      if (message?.role === 'assistant') {
+        const content = asArr(message.content) ?? []
+        content.forEach((block, i) => {
+          const b = asDict(block)
+          if (b?.type === 'text') piText(turn.sequence, i, asStr(b.text) ?? '')
+        })
+        if (asStr(message.errorMessage)) out.push({ key: `pi-error-${turn.sequence}`, kind: 'tool-error', plain: asStr(message.errorMessage)!.slice(0, 800) })
+        piMessage = undefined
+      }
+    } else if (type === 'tool_execution_start' || type === 'tool_execution_end') {
+      const key = `pi-tool-${piSession}-${asStr(p.toolCallId) ?? turn.sequence}`
+      if (!piTools.has(key)) {
+        piTools.add(key)
+        out.push({ key, kind: 'tool', tool: asStr(p.toolName) ?? 'tool' })
+      }
+      if (type === 'tool_execution_end' && p.isError === true) {
+        out.push({ key: `${key}-error`, kind: 'tool-error', plain: toolResultText(asDict(p.result)?.content).slice(0, 800) || 'Tool failed.' })
+      }
+    }
+    // Pi turn_end/agent_end repeat finalized messages; never render them again.
+    if (type !== 'assistant' && type !== 'user') continue
     const content = asArr(asDict(p.message)?.content) ?? []
     content.forEach((block, i) => {
       const b = asDict(block) ?? {}
@@ -58,6 +107,8 @@ function toChatMessages(turns: AutonomousAgentEvent[]): ChatMsg[] {
       else if (bt === 'tool_result' && b.is_error === true) out.push({ key, kind: 'tool-error', plain: toolResultText(b.content).slice(0, 800) })
     })
   }
+  // Decode once per message, not once per token (long JSON drafts are common).
+  for (const [row, text] of piTextRows) Object.assign(row, decodeAssistantText(text))
   return out
 }
 
@@ -83,7 +134,7 @@ export function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[];
   // Keep the newest message in view while the run streams.
   useEffect(() => {
     if (live && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [messages.length, live])
+  }, [messages, live])
   if (!turns.length) return <p className="text-sm text-text-tertiary">{live ? 'Waiting for the agent to start…' : 'No conversation was recorded for this run.'}</p>
   return (
     <div ref={scrollRef} className="max-h-[520px] space-y-2 overflow-y-auto rounded-md border border-border-primary bg-muted/50 p-3">

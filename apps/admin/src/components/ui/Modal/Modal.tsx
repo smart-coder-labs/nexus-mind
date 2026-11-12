@@ -100,7 +100,7 @@ export const ModalDescription = ({ children, className, ...props }: React.Compon
 );
 
 export const ModalContent = ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div data-slot="dialog-body" className={cn('admin-dialog-body min-h-0 py-1', className)} {...props}>{children}</div>
+  <div data-slot="dialog-body" className={cn('admin-dialog-body min-h-0 overflow-y-auto overscroll-contain py-1', className)} {...props}>{children}</div>
 );
 
 export const ModalFooter = ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (

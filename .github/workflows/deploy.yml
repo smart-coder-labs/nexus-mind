@@ -4,13 +4,11 @@ on:
   push:
     branches: [main, agent/autonomous-agents-mvp]
 
-# Deploys of one branch run one at a time, in push order. Two merges in a row
-# used to build in parallel and race on the mutable `main-arm64` tag: the older
-# image could land last and roll out without the newer commit. Queued runs are
-# superseded by the newest, which builds from its own (latest) commit.
+# Both configured branches deploy to the same production services. Keep only the
+# newest run so an older commit cannot roll out after a newer push.
 concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: false
+  group: deploy-production
+  cancel-in-progress: true
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -66,6 +64,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -79,6 +79,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push sandbox image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: apps/nexus-cli/sandbox
@@ -88,9 +89,41 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  factory-commands-build:
+    name: Build verification commands image (arm64) and push to GHCR
+    needs: backend-oracle-build
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push commands image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/factory-commands.Dockerfile
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            BACKEND_IMAGE=ghcr.io/${{ needs.backend-oracle-build.outputs.owner_lc }}/nexusmind-backend:main-arm64
+          tags: ghcr.io/${{ needs.backend-oracle-build.outputs.owner_lc }}/nexusmind-factory-commands:main-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   backend-oracle-deploy:
     name: Deploy backend to oracle (k3s) over SSH
-    needs: [backend-oracle-build, openshell-sandbox-build]
+    needs: [backend-oracle-build, openshell-sandbox-build, factory-commands-build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,11 +133,14 @@ jobs:
           SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
           SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
           SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NEXUS_OPENSHELL_IMAGE: ghcr.io/${{ needs.backend-oracle-build.outputs.owner_lc }}/nexusmind-openshell@${{ needs.openshell-sandbox-build.outputs.image_digest }}
         run: |
           set -euo pipefail
           : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
           : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
           : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+          : "${NEXUS_OPENSHELL_IMAGE:?OpenShell sandbox image digest was not produced}"
 
           install -m 600 /dev/null /tmp/oracle_key
           printf '%s\n' "$SSH_KEY" > /tmp/oracle_key
@@ -117,12 +153,26 @@ jobs:
           # `ubuntu` has kubectl on the box. Ship + apply the manifests, then roll
           # the deployment so the freshly built :main-arm64 digest is pulled
           # (imagePullPolicy: Always). Recreate strategy => brief (~40s) downtime.
+          scp $SSHOPTS deploy/oracle/k8s/factory-sandbox.yaml "$REMOTE:/tmp/factory-sandbox.yaml"
           scp $SSHOPTS deploy/oracle/k8s/nexusmind.yaml "$REMOTE:/tmp/nexusmind.yaml"
+          if [ -n "$SENTRY_DSN" ]; then
+            printf '{"stringData":{"SENTRY_DSN":"%s"}}' "$SENTRY_DSN" | \
+              ssh $SSHOPTS "$REMOTE" 'kubectl -n nexusmind patch secret nexusmind-env --type=merge --patch-file=/dev/stdin'
+          fi
+          ssh $SSHOPTS "$REMOTE" 'kubectl apply -f /tmp/factory-sandbox.yaml && kubectl apply -f /tmp/nexusmind.yaml'
+          ssh $SSHOPTS "$REMOTE" \
+            "kubectl -n nexusmind set env deployment/nexusmind-backend -c autonomous-worker NEXUS_OPENSHELL_IMAGE=$NEXUS_OPENSHELL_IMAGE"
           ssh $SSHOPTS "$REMOTE" '
             set -e
-            kubectl apply -f /tmp/nexusmind.yaml
             kubectl -n nexusmind rollout restart deploy/nexusmind-backend
             kubectl -n nexusmind rollout status deploy/nexusmind-backend --timeout=240s
+            # The egress proxy runs the same backend image under the sandbox
+            # namespace. Refresh it too so policy/allowlist code matches this
+            # commit before the next verification replay. A zero-surge strategy
+            # lets this complete when the one-node cluster has no free CPU.
+            kubectl -n nexusmind-egress patch deployment factory-egress-proxy --type=merge --patch="{\"spec\":{\"strategy\":{\"type\":\"RollingUpdate\",\"rollingUpdate\":{\"maxUnavailable\":1,\"maxSurge\":0}}}}"
+            kubectl -n nexusmind-egress rollout restart deploy/factory-egress-proxy
+            kubectl -n nexusmind-egress rollout status deploy/factory-egress-proxy --timeout=240s
           '
           rm -f /tmp/oracle_key
           echo "oracle k8s deploy complete."
@@ -143,6 +193,8 @@ jobs:
         run: cd apps/admin && npm ci && npm run build
         env:
           VITE_API_URL: https://api.nexusmind.smartcoderlabs.com
+          VITE_SENTRY_DSN: ${{ vars.VITE_SENTRY_DSN_ADMIN }}
+          VITE_SENTRY_ENVIRONMENT: production
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
@@ -168,6 +220,8 @@ jobs:
         env:
           PUBLIC_SUPABASE_URL: ${{ secrets.PUBLIC_SUPABASE_URL }}
           PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.PUBLIC_SUPABASE_ANON_KEY }}
+          PUBLIC_SENTRY_DSN: ${{ vars.PUBLIC_SENTRY_DSN_LANDING }}
+          PUBLIC_SENTRY_ENVIRONMENT: production
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
@@ -192,6 +246,8 @@ jobs:
         run: cd apps/backoffice && npm ci && npm run build
         env:
           VITE_API_URL: https://api.nexusmind.smartcoderlabs.com
+          VITE_SENTRY_DSN: ${{ vars.VITE_SENTRY_DSN_BACKOFFICE }}
+          VITE_SENTRY_ENVIRONMENT: production
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3

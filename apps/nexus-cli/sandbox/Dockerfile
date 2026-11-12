@@ -1,5 +1,13 @@
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e
 USER root
+# The pinned community base currently ships policy entries using
+# `tls: terminate`, which OpenShell gateway 0.1.2 rejects (automatic TLS
+# termination is represented by omitting `tls`). Normalize its inherited
+# policy before adding NexusMind rules so new sandboxes can reach Ready.
+RUN sed -i \
+    -e 's/, tls: terminate//g' \
+    -e '/^[[:space:]]*tls: terminate[[:space:]]*$/d' \
+    /etc/openshell/policy.yaml
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npm install --global @openai/codex@0.154.0 @anthropic-ai/claude-code@2.1.235 @smart-coder-labs/nexusmind-mcp@0.15.0 playwright@1.63.0 @playwright/mcp@0.0.82 \
     && PKGN="$(npm root -g)/@smart-coder-labs/nexusmind-mcp" \

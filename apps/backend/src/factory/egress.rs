@@ -7,6 +7,21 @@
 //! `factory_egress_proxy` binary; everything that decides lives here, so it can be
 //! tested without sockets.
 
+/// Public package registries and build artifact hosts. Tunnels carry no
+/// credential; run tokens still scope which pods may use them.
+pub const DEFAULT_TUNNEL_ALLOWLIST: &[&str] = &[
+    "registry.npmjs.org",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "crates.io",
+    "static.crates.io",
+    "index.crates.io",
+    "codeload.github.com",
+    "parcel.pyke.io", // ort-sys downloads its pinned ONNX Runtime build artifact.
+    // GitHub Packages answers tarball downloads with a presigned URL here.
+    "pkg-npm.githubusercontent.com",
+];
+
 /// Which upstream a reverse route targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Upstream {
@@ -575,7 +590,7 @@ mod tests {
 
     const KEY: &[u8] = b"test-signing-key-32-bytes-long!!";
     const NOW: i64 = 1_790_000_000;
-    const ALLOW: &[&str] = &["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"];
+    const ALLOW: &[&str] = DEFAULT_TUNNEL_ALLOWLIST;
 
     fn token(run: &str, expires: i64) -> String {
         sign_run_token(KEY, "org-1", run, expires).unwrap()
@@ -878,6 +893,22 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(format!("run:{token}"))
         );
         decide(KEY, "CONNECT", target, Some(&basic), ALLOW, NOW)
+    }
+
+    #[test]
+    fn registry_only_tokens_can_reach_the_exact_onnx_artifact_host() {
+        let registry = token(&registry_only_run_id("run-1"), NOW + 60);
+        assert!(matches!(
+            connect(&registry, "parcel.pyke.io:443"),
+            Decision::Tunnel { host, port: 443, .. } if host == "parcel.pyke.io"
+        ));
+        assert_eq!(
+            connect(&registry, "parcel.pyke.io.evil.example:443"),
+            Decision::Deny {
+                reason: "host_not_allowlisted",
+                run_id: Some("run-1-registry".into())
+            }
+        );
     }
 
     #[test]

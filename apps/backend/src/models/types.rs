@@ -1897,6 +1897,9 @@ fn default_misfire_policy() -> String {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct AutonomousAgentRun {
+    /// Recorded by the control plane; absent for legacy runs with ambiguous provenance.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub trigger_origin: Option<serde_json::Value>,
     pub id: String,
     pub definition_id: String,
     pub revision_id: String,
@@ -2210,7 +2213,7 @@ pub fn validate_typed_harness_manifest(manifest: &serde_json::Value) -> Result<(
     if targets.is_empty()
         || targets
             .iter()
-            .any(|v| !matches!(v.as_str(), Some("claude" | "codex" | "cursor")))
+            .any(|v| !matches!(v.as_str(), Some("claude" | "codex" | "cursor" | "pi")))
     {
         return Err("missing_targets");
     }
@@ -2392,21 +2395,49 @@ fn looks_like_windows_absolute_path(path: &str) -> bool {
         && matches!(bytes[2], b'\\' | b'/')
 }
 
-fn validate_safe_manifest_content(content: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_safe_manifest_content(content: &str) -> Result<(), &'static str> {
     if content.len() > 64 * 1024 {
         return Err("component_content_too_large");
     }
     let lower = content.to_lowercase();
     if lower.contains("raw-secret")
-        || lower.contains("bearer ")
-        || lower.contains("nm_live")
-        || lower.contains("ghp_")
-        || lower.contains("/users/")
+        || content.contains("/Users/")
         || contains_openai_key(&lower)
+        || contains_literal_credential(content)
     {
         return Err("secret_scan_failed");
     }
     Ok(())
+}
+
+fn credential_placeholder(value: &str) -> bool {
+    let value = value.trim();
+    if value == "..." { return true; }
+    let value = value.trim_end_matches(['.', ',', ';', ')']);
+    (value.starts_with("${") && value.ends_with('}'))
+        || (value.starts_with("{{") && value.ends_with("}}"))
+        || matches!(value.to_ascii_lowercase().as_str(), "<token>" | "<access_token>" | "<jwt>" | "<password>" | "<secret>" | "<api_key>" | "<redacted>" | "[redacted]" | "[redacted:secret]" | "[redacted:token]" | "[redacted:path]" | "...")
+}
+
+fn contains_literal_credential(content: &str) -> bool {
+    // Topic words are not secrets. Check literal headers/assignments and known key formats.
+    // ponytail: prefix/literal heuristics; extend the tested patterns for new credential formats.
+    use std::sync::OnceLock;
+    static TOKENS: OnceLock<regex::Regex> = OnceLock::new();
+    static BEARER: OnceLock<regex::Regex> = OnceLock::new();
+    static QUOTED: OnceLock<regex::Regex> = OnceLock::new();
+    static ENVIRONMENT: OnceLock<regex::Regex> = OnceLock::new();
+    let tokens = TOKENS.get_or_init(|| regex::Regex::new(r"(?i)\b(?:gh[pousr]_[a-z0-9_]{16,}|github_pat_[a-z0-9_]{16,}|nm_live_[a-z0-9_-]{6,}|nm_[a-f0-9]{64})\b|-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----\s+[A-Za-z0-9+/=]{20,}").unwrap());
+    if tokens.is_match(content) { return true; }
+    let bearer = BEARER.get_or_init(|| regex::Regex::new(r#"(?i)(authorization[\"']?\s*[:=]\s*[\"']?)?\bbearer[ \t]+([^\s\"'`,;]+)"#).unwrap());
+    if bearer.captures_iter(content).any(|capture| {
+        let value = capture.get(2).unwrap().as_str();
+        !credential_placeholder(value) && (capture.get(1).is_some() || (value.len() >= 20 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b"._~+/=-".contains(&b))))
+    }) { return true; }
+    let quoted = QUOTED.get_or_init(|| regex::Regex::new(r#"(?i)\b[a-z0-9_-]*(?:api[_-]?key|password|passwd|secret|token)[\"']?\s*[:=]\s*[\"']([^\"'\r\n]+)[\"']"#).unwrap());
+    let environment = ENVIRONMENT.get_or_init(|| regex::Regex::new(r#"(?im)^\s*(?:export\s+)?[A-Z0-9_]*(?:API_KEY|PASSWORD|PASSWD|SECRET|TOKEN)\s*=\s*([^\s#\"'`]+)"#).unwrap());
+    quoted.captures_iter(content).chain(environment.captures_iter(content))
+        .any(|capture| !credential_placeholder(capture.get(1).unwrap().as_str()))
 }
 
 /// An OpenAI key is `sk-` followed by a long opaque token. A bare `contains("sk-")`
@@ -3915,6 +3946,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn secret_scan_accepts_security_review_guidance_but_rejects_literal_credentials() {
+        for guidance in [
+            "Review Bearer tokens, authorization headers and password handling.",
+            "Use Authorization: Bearer ${ACCESS_TOKEN} or Authorization: Bearer <token> in documentation.",
+            "Example: Authorization: Bearer <token>. Review authorization handling.",
+            "Review /users/{id}/roles; do not log token values. Known prefixes: ghp_, nm_live_, sk-.",
+            r#"Examples: {"api_key":"${API_KEY}","password":"<password>","token_type":"Bearer"}"#,
+            "API_KEY=${API_KEY}\nTOKEN_TYPE=Bearer",
+            r#"{"api_key":"[REDACTED:secret]","token":"[REDACTED:token]"}"#,
+        ] { assert!(validate_safe_manifest_content(guidance).is_ok(), "rejected safe guidance: {guidance}"); }
+        for credential in [
+            "Authorization: Bearer actual-private-value",
+            r#"{"api_key":"actual-private-value"}"#,
+            "PASSWORD=actual-private-value",
+            "password=actual-private-value",
+            "Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+            "nm_live_secret",
+            "nm_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ] { assert_eq!(validate_safe_manifest_content(credential), Err("secret_scan_failed")); }
+    }
+
     /// …but a real key must still be caught, boundary and all.
     #[test]
     fn secret_scan_still_catches_a_real_openai_key() {
@@ -3930,7 +3983,7 @@ mod tests {
             );
         }
 
-        // The other patterns are unchanged.
+        // Real GitHub keys, literal Bearer headers and private home paths remain blocked.
         assert_eq!(
             validate_safe_manifest_content("ghp_0123456789abcdef"),
             Err("secret_scan_failed")

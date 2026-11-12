@@ -5,9 +5,7 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(&config.log_level)
-        .init();
+    let _sentry = nexusmind::observability::init(&config.log_level);
 
     if !config.autonomous_agents_enabled {
         anyhow::bail!("AUTONOMOUS_AGENTS_ENABLED must be true for the worker")

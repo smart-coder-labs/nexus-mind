@@ -627,6 +627,7 @@ fn worker_exec(
         "claude", "-p", "--output-format", "stream-json", "--verbose",
         "--max-turns", &max_turns, "--permission-mode", permission_mode,
         "--allowedTools", allowed_tools,
+        "--setting-sources", "", "--strict-mcp-config",
     ];
     if let Some(path) = guest_config.as_deref() {
         argv.extend(["--mcp-config", path]);

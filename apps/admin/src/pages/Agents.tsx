@@ -305,8 +305,9 @@ interface AgentCardProps {
 function AgentCard({ keyData, onRevoke, onRotate, revoking }: AgentCardProps) {
   return (
     <div className="border border-border-primary bg-surface-primary rounded-xl p-5 flex flex-col gap-3 group relative transition-colors hover:border-border-primary">
-      {/* Hover actions */}
-      <div className="absolute top-4 right-4 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* Hover actions — always visible on small screens (no hover), hover- or
+          focus-revealed from sm up so keyboard users can reach them. */}
+      <div className="absolute top-4 right-4 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
         <button
           onClick={() => onRotate(keyData)}
           className={`p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-foreground/[0.06] transition-colors ${FOCUS_TILE}`}
@@ -537,11 +538,16 @@ export default function Agents() {
 
       {/* Filter bar */}
       <div className="flex items-center">
-        <div className="bg-foreground/[0.04] rounded-full p-0.5 flex items-center gap-0.5">
+        <div
+          role="group"
+          aria-label="Filter agents by status"
+          className="bg-foreground/[0.04] rounded-full p-0.5 flex items-center gap-0.5"
+        >
           {(['All', 'Active', 'Inactive', 'Expired'] as const).map(filter => (
             <button
               key={filter}
               onClick={() => setStatusFilter(filter)}
+              aria-pressed={statusFilter === filter}
               className={`px-3 py-1 rounded-full text-sm transition-colors border ${FOCUS_CANVAS} ${
                 statusFilter === filter
                   ? 'bg-action-primary/10 text-accent-blue border-accent-blue/40 font-semibold'

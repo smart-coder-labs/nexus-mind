@@ -8,6 +8,12 @@
         "value": "inter",
         "createdAt": "2026-10-09T20:09:37.386Z",
         "reason": "User explicitly requested preserving Claude’s existing design. docs/DESIGN_DIRECTION.md section 3 specifies system-ui, -apple-system, Inter; this import and fallback predate this refinement."
+      },
+      {
+        "rule": "overused-font",
+        "value": "geist",
+        "createdAt": "2026-10-21T02:44:09.729Z",
+        "reason": "Owner-selected Audit1 Admin design system explicitly specifies self-hosted Geist Variable as the interface font in apps/admin/DESIGN.md and PRODUCT.md."
       }
     ]
   }

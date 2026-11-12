@@ -9,17 +9,8 @@
   to { transform: translateX(0); opacity: 1; }
 }
 
-@keyframes progressFill {
-  from { width: 0%; }
-  to { width: var(--progress-width); }
-}
-
 .animate-slide-in {
   animation: slideIn 0.3s ease-out;
-}
-
-.progress-bar-fill {
-  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .custom-checkbox {

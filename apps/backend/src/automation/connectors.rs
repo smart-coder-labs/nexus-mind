@@ -84,9 +84,13 @@ pub async fn github_installation_token(
     Ok(response.json::<InstallationTokenResponse>().await?.token)
 }
 
-async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
+pub(crate) async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
+    github_post_at("https://api.github.com",token,path,body).await
+}
+
+async fn github_post_at(base_url:&str,token:&str,path:&str,body:Value)->Result<Value>{
     let response = reqwest::Client::new()
-        .post(format!("https://api.github.com{path}"))
+        .post(format!("{base_url}{path}"))
         .timeout(GITHUB_TIMEOUT)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
@@ -108,7 +112,7 @@ async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
     Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
-async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
+pub(crate) async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
     Ok(reqwest::Client::new()
         .patch(format!("https://api.github.com{path}"))
         .bearer_auth(token)
@@ -134,9 +138,13 @@ fn http_status(error: &anyhow::Error) -> Option<u16> {
 /// No GitHub read may hang the worker: callers run on the tick loop.
 const GITHUB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn github_get(token: &str, path: &str) -> Result<Value> {
+pub(crate) async fn github_get(token: &str, path: &str) -> Result<Value> {
+    github_get_at("https://api.github.com",token,path).await
+}
+
+async fn github_get_at(base_url:&str,token:&str,path:&str)->Result<Value>{
     Ok(reqwest::Client::new()
-        .get(format!("https://api.github.com{path}"))
+        .get(format!("{base_url}{path}"))
         .timeout(GITHUB_TIMEOUT)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
@@ -404,6 +412,19 @@ pub async fn list_labeled_github_issues(
         .ok_or_else(|| anyhow::anyhow!("issues_unreadable"))
 }
 
+/// Workflow intake must not silently starve older issues behind the first page.
+pub async fn list_labeled_github_issues_bounded(token:&str,repository:&str,label:&str)->Result<Vec<Value>> {
+    let mut issues=list_labeled_github_issues(token,repository,label).await?;
+    if issues.len()<100 {return Ok(issues)}
+    let(owner,repo)=repository_parts(repository)?;
+    for page in 2..=10 {
+        let value=github_get(token,&format!("/repos/{owner}/{repo}/issues?state=open&labels={label}&sort=updated&direction=desc&per_page=100&page={page}")).await?;
+        let batch=value.as_array().ok_or_else(||anyhow::anyhow!("issues_unreadable"))?;
+        issues.extend(batch.iter().cloned());
+        if batch.len()<100 {return Ok(issues)}
+    }
+    anyhow::bail!("github_issue_limit_exceeded")
+}
 pub async fn list_recent_github_issues(token: &str, repository: &str) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(
@@ -581,6 +602,21 @@ pub async fn required_status_checks(
 
 /// Creates a labelled issue with exactly one POST and no unlabelled retry: a
 /// timeout may hide a created issue, which the caller finds by its marker.
+pub async fn ensure_github_issue_labels(token:&str,repository:&str,labels:&[String])->Result<()> {
+    let (owner,repo)=repository_parts(repository)?;
+    for label in labels {ensure_github_label(token,owner,repo,label).await;}
+    Ok(())
+}
+
+pub async fn post_github_issue_once(token:&str,repository:&str,title:&str,body:&str,labels:&[String])->Result<Value>{
+    post_github_issue_once_at("https://api.github.com",token,repository,title,body,labels).await
+}
+
+pub(crate) async fn post_github_issue_once_at(base_url:&str,token:&str,repository:&str,title:&str,body:&str,labels:&[String])->Result<Value>{
+    let (owner,repo)=repository_parts(repository)?;
+    github_post_at(base_url,token,&format!("/repos/{owner}/{repo}/issues"),json!({"title":title,"body":body,"labels":labels})).await
+}
+
 pub async fn create_github_issue_once(
     token: &str,
     repository: &str,
@@ -588,16 +624,13 @@ pub async fn create_github_issue_once(
     body: &str,
     labels: &[String],
 ) -> Result<Value> {
-    let (owner, repo) = repository_parts(repository)?;
-    for label in labels {
-        ensure_github_label(token, owner, repo, label).await;
-    }
-    github_post(
-        token,
-        &format!("/repos/{owner}/{repo}/issues"),
-        json!({"title":title,"body":body,"labels":labels}),
-    )
-    .await
+    create_github_issue_once_at("https://api.github.com",token,repository,title,body,labels).await
+}
+
+async fn create_github_issue_once_at(base_url:&str,token:&str,repository:&str,title:&str,body:&str,labels:&[String])->Result<Value>{
+    ensure_github_issue_labels(token,repository,labels).await?;
+    let (owner,repo)=repository_parts(repository)?;
+    github_post_at(base_url,token,&format!("/repos/{owner}/{repo}/issues"),json!({"title":title,"body":body,"labels":labels})).await
 }
 
 /// A recent open issue whose body carries `marker` (and only that: a matching
@@ -615,23 +648,39 @@ pub async fn find_github_issue_with_marker(token: &str, repository: &str, marker
     }).cloned())
 }
 
-pub async fn find_github_issue_by_marker(
-    token: &str,
-    repository: &str,
-    marker: &str,
-    title: &str,
-) -> Result<Option<Value>> {
+pub async fn find_github_issue_by_marker(token:&str,repository:&str,marker:&str)->Result<Option<Value>> {
+    find_github_issue_by_marker_at("https://api.github.com",token,repository,marker).await
+}
+
+pub async fn find_github_issues_by_marker(token:&str,repositories:&[String],marker:&str)->Result<Vec<(String,Value)>> {
+    find_github_issues_by_marker_at("https://api.github.com",token,repositories,marker).await
+}
+
+async fn find_github_issues_by_marker_at(base_url:&str,token:&str,repositories:&[String],marker:&str)->Result<Vec<(String,Value)>> {
+    let mut found=Vec::new();
+    for repository in repositories {
+        if let Some(issue)=find_github_issue_by_marker_at(base_url,token,repository,marker).await? {
+            found.push((repository.clone(),issue));
+        }
+    }
+    Ok(found)
+}
+
+async fn find_github_issue_by_marker_at(base_url:&str,token:&str,repository:&str,marker:&str)->Result<Option<Value>> {
     let (owner, repo) = repository_parts(repository)?;
-    // Do NOT require the `nexusmind-qa` label: issues created while the bot lacked
-    // label permission are unlabelled and would be invisible, causing duplicates.
-    // Scan recent OPEN issues and match on the fingerprint marker OR an identical
-    // title so a same-bug finding whose fingerprint drifted still dedupes.
-    let value = github_get(
-        token,
-        &format!("/repos/{owner}/{repo}/issues?state=open&sort=created&direction=desc&per_page=100"),
-    )
-    .await?;
-    Ok(find_issue_marker(&value, marker, title))
+    let fingerprint=normalize_fingerprint(&extract_fingerprint(marker));
+    // Scan all issue states: a lost POST response can leave a closed issue, and
+    // creating a replacement is still a duplicate. Stop rather than publish if
+    // the bounded scan cannot prove the marker absent.
+    let mut issues=Vec::new();
+    for page in 1..=100 {
+        let value=github_get_at(base_url,token,&format!("/repos/{owner}/{repo}/issues?state=all&sort=created&direction=desc&per_page=100&page={page}")).await?;
+        let Some(rows)=value.as_array() else {anyhow::bail!("github_issue_search_invalid")};
+        if let Some(issue)=rows.iter().find(|issue|issue.get("pull_request").is_none() && issue.get("body").and_then(Value::as_str).is_some_and(|body|body.contains(marker) || (!fingerprint.is_empty() && normalize_fingerprint(&extract_fingerprint(body))==fingerprint))) {return Ok(Some(issue.clone()));}
+        issues.extend(rows.iter().filter(|issue|issue.get("pull_request").is_none()).cloned());
+        if rows.len()<100 {return Ok(find_issue_marker(&json!(issues),marker));}
+    }
+    anyhow::bail!("github_issue_search_incomplete")
 }
 
 pub async fn find_github_pull_by_head(
@@ -696,123 +745,13 @@ fn normalize_fingerprint(text: &str) -> String {
         .collect()
 }
 
-/// Lowercase alphanumeric title with runs of punctuation/space collapsed to a
-/// single space — the comparison form for near-duplicate title detection.
-fn normalize_title(text: &str) -> String {
-    let mut out = String::new();
-    let mut prev_space = true;
-    for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.extend(ch.to_lowercase());
-            prev_space = false;
-        } else if !prev_space {
-            out.push(' ');
-            prev_space = true;
-        }
-    }
-    out.trim().to_string()
-}
-
-/// Leading `[Module]` tag (lowercased) if present, else empty. Two titles only
-/// dedupe by similarity when their module tag matches, so a lookalike symptom
-/// in a different module is never merged.
-fn module_prefix(text: &str) -> String {
-    let trimmed = text.trim_start();
-    if trimmed.starts_with('[') {
-        if let Some(end) = trimmed.find(']') {
-            return trimmed[..=end].to_lowercase();
-        }
-    }
-    String::new()
-}
-
-/// Digit runs in order — distinct bugs often differ only by a number
-/// ("2 items" vs "3 items"), so these must match for a title-similarity merge.
-fn digit_tokens(text: &str) -> Vec<String> {
-    text.split(|ch: char| !ch.is_ascii_digit())
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// Token-coverage similarity: the fraction of the SHORTER title's words that
-/// also appear in the other title (multiset intersection over the smaller word
-/// count). Catches "same title + a few extra words" drift that character-level
-/// metrics miss, while the module + number guards upstream keep distinct
-/// defects apart. 1.0 == one title's words are all contained in the other.
-fn title_similarity(left: &str, right: &str) -> f64 {
-    let tokens = |value: &str| value.split_whitespace().map(str::to_string).collect::<Vec<_>>();
-    let left_tokens = tokens(left);
-    let mut right_tokens = tokens(right);
-    let denom = left_tokens.len().min(right_tokens.len());
-    if denom == 0 {
-        return 0.0;
-    }
-    let mut overlap = 0usize;
-    for token in &left_tokens {
-        if let Some(pos) = right_tokens.iter().position(|other| other == token) {
-            right_tokens.remove(pos);
-            overlap += 1;
-        }
-    }
-    overlap as f64 / denom as f64
-}
-
-/// Minimum title coverage to treat two issues as the same defect when the
-/// fingerprint drifted. High on purpose — this is a last-resort dedup.
-const TITLE_DEDUP_THRESHOLD: f64 = 0.9;
-
-/// Titles shorter than this (in words) are too generic to dedupe by coverage
-/// alone, so a title match requires at least this many words on the shorter side.
-const TITLE_DEDUP_MIN_WORDS: usize = 3;
-
-fn find_issue_marker(value: &Value, marker: &str, title: &str) -> Option<Value> {
-    // Dedup an incoming finding against recent OPEN issues through three ladders,
-    // most precise first: (1) the exact fingerprint marker in the body; (2) the
-    // same fingerprint after case/separator normalization; (3) a near-identical
-    // title (same [Module], same numbers) when the fingerprint drifted entirely.
-    let want_fingerprint = normalize_fingerprint(&extract_fingerprint(marker));
-    let want_title = normalize_title(title);
-    let want_module = module_prefix(title);
-    let want_digits = digit_tokens(&want_title);
-    value.as_array().and_then(|items| {
-        items
-            .iter()
-            .find(|item| {
-                if item.get("pull_request").is_some() {
-                    return false;
-                }
-                let body = item.get("body").and_then(Value::as_str).unwrap_or_default();
-                if !marker.is_empty() && body.contains(marker) {
-                    return true;
-                }
-                if !want_fingerprint.is_empty() {
-                    let their_fingerprint =
-                        normalize_fingerprint(&extract_fingerprint(body));
-                    if !their_fingerprint.is_empty() && their_fingerprint == want_fingerprint {
-                        return true;
-                    }
-                }
-                if !want_title.is_empty() {
-                    let raw_title = item.get("title").and_then(Value::as_str).unwrap_or_default();
-                    let their_title = normalize_title(raw_title);
-                    let shorter_words = want_title
-                        .split_whitespace()
-                        .count()
-                        .min(their_title.split_whitespace().count());
-                    if !their_title.is_empty()
-                        && shorter_words >= TITLE_DEDUP_MIN_WORDS
-                        && module_prefix(raw_title) == want_module
-                        && digit_tokens(&their_title) == want_digits
-                        && title_similarity(&want_title, &their_title) >= TITLE_DEDUP_THRESHOLD
-                    {
-                        return true;
-                    }
-                }
-                false
-            })
-            .cloned()
-    })
+fn find_issue_marker(value: &Value, marker: &str) -> Option<Value> {
+    let fingerprint=normalize_fingerprint(&extract_fingerprint(marker));
+    value.as_array().and_then(|items|items.iter().find(|item|{
+        if item.get("pull_request").is_some(){return false}
+        let body=item.get("body").and_then(Value::as_str).unwrap_or_default();
+        (!marker.is_empty() && body.contains(marker)) || (!fingerprint.is_empty() && normalize_fingerprint(&extract_fingerprint(body))==fingerprint)
+    }).cloned())
 }
 
 fn find_body_marker(value: &Value, marker: &str) -> Option<Value> {
@@ -1004,7 +943,7 @@ pub async fn close_github_pull(token: &str, repository: &str, number: i64) -> Re
     .await
 }
 
-async fn github_delete(token: &str, path: &str) -> Result<()> {
+pub(crate) async fn github_delete(token: &str, path: &str) -> Result<()> {
     let response = reqwest::Client::new()
         .delete(format!("https://api.github.com{path}"))
         .bearer_auth(token)
@@ -1110,12 +1049,24 @@ pub async fn publish_pr_review(
     number: i64,
     body: &str,
     request_changes: bool,
+    commit_id: Option<&str>,
+    comments: &[Value],
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
+    let mut payload =
+        json!({"body":body,"event":if request_changes {"REQUEST_CHANGES"} else {"COMMENT"}});
+    // Pinning the reviewed head keeps inline line numbers tied to the code the
+    // agent actually read, even if the PR moved since.
+    if let Some(commit) = commit_id.filter(|c| c.len() == 40 && c.bytes().all(|b| b.is_ascii_hexdigit())) {
+        payload["commit_id"] = json!(commit);
+    }
+    if !comments.is_empty() {
+        payload["comments"] = json!(comments);
+    }
     github_post(
         token,
         &format!("/repos/{owner}/{repo}/pulls/{number}/reviews"),
-        json!({"body":body,"event":if request_changes {"REQUEST_CHANGES"} else {"COMMENT"}}),
+        payload,
     )
     .await
 }
@@ -1153,6 +1104,86 @@ mod tests {
         assert!(validate_slack_webhook("https://hooks.slack.com/not-services/X").is_err());
     }
 
+    #[tokio::test]
+    async fn github_issue_recovery_scans_http_pages_and_finds_closed_marker_once() {
+        use axum::{extract::Query,http::HeaderMap,routing::get,Json,Router};
+        use std::{collections::HashMap,sync::{Arc,Mutex}};
+        let pages=Arc::new(Mutex::new(Vec::new()));
+        let observed=pages.clone();
+        let marker="<!-- nexusmind-fingerprint:checkout-total -->".to_string();
+        let response_marker=marker.clone();
+        let app=Router::new().route("/repos/acme/api/issues",get(move |headers:HeaderMap,Query(query):Query<HashMap<String,String>>|{
+            let observed=observed.clone();let response_marker=response_marker.clone();
+            async move {
+                assert_eq!(headers.get("authorization").and_then(|value|value.to_str().ok()),Some("Bearer test-token"));
+                assert_eq!(query.get("state").map(String::as_str),Some("all"));
+                assert_eq!(query.get("per_page").map(String::as_str),Some("100"));
+                let page=query.get("page").cloned().unwrap_or_default();
+                observed.lock().unwrap().push(page.clone());
+                if page=="1" {Json(json!((0..100).map(|number|json!({"number":number,"title":"unrelated","body":"no marker","state":"open"})).collect::<Vec<_>>()))}
+                else if page=="2" {Json(json!([{"number":101,"title":"old issue","body":response_marker,"state":"closed"}]))}
+                else {Json(json!([]))}
+            }
+        }));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base=format!("http://{}",listener.local_addr().unwrap());
+        let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+        let found=find_github_issue_by_marker_at(&base,"test-token","acme/api",&marker).await.unwrap().unwrap();
+        assert_eq!(found["number"],101);
+        assert_eq!(found["state"],"closed");
+        assert_eq!(*pages.lock().unwrap(),vec!["1".to_string(),"2".to_string()]);
+        pages.lock().unwrap().clear();
+        let missing=find_github_issue_by_marker_at(&base,"test-token","acme/api","missing-marker").await.unwrap();
+        assert!(missing.is_none(),"unexpected issue for missing marker: {missing:?}");
+        assert_eq!(*pages.lock().unwrap(),vec!["1".to_string(),"2".to_string()]);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn marker_search_covers_all_authorized_repository_candidates() {
+        use axum::{extract::{Path,Query},routing::get,Json,Router};
+        use std::collections::HashMap;
+        let marker="<!-- nexusmind-fingerprint:shared-responsibility -->";
+        let app=Router::new().route("/repos/:owner/:repo/issues",get(move |Path((owner,repo)):Path<(String,String)>,Query(_query):Query<HashMap<String,String>>|async move{
+            if owner=="acme"&&repo=="web" {Json(json!([{"number":8,"html_url":"https://github.com/acme/web/issues/8","body":marker,"state":"closed"}]))}
+            else {Json(json!([]))}
+        }));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base=format!("http://{}",listener.local_addr().unwrap());
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let candidates=vec!["acme/api".to_string(),"acme/web".to_string()];
+        let found=find_github_issues_by_marker_at(&base,"test-token",&candidates,marker).await.unwrap();
+        assert_eq!(found.len(),1);
+        assert_eq!(found[0].0,"acme/web");
+        assert_eq!(found[0].1["state"],"closed");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn lost_github_issue_response_is_recovered_without_a_second_post() {
+        use axum::{extract::State,http::{HeaderMap,StatusCode},routing::get,Json,Router};
+        use std::sync::{Arc,Mutex,atomic::{AtomicUsize,Ordering}};
+        #[derive(Clone)] struct Mock {issues:Arc<Mutex<Vec<Value>>>,posts:Arc<AtomicUsize>}
+        let state=Mock{issues:Arc::new(Mutex::new(Vec::new())),posts:Arc::new(AtomicUsize::new(0))};
+        let app=Router::new().route("/repos/acme/api/issues",get(|State(state):State<Mock>|async move{Json(state.issues.lock().unwrap().clone())}).post(|State(state):State<Mock>,headers:HeaderMap,Json(body):Json<Value>|async move{
+            assert_eq!(headers.get("authorization").and_then(|value|value.to_str().ok()),Some("Bearer test-token"));
+            state.posts.fetch_add(1,Ordering::SeqCst);
+            let issue=json!({"number":5,"state":"closed","body":body["body"]});
+            state.issues.lock().unwrap().push(issue);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })).with_state(state.clone());
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base=format!("http://{}",listener.local_addr().unwrap());
+        let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+        let marker="<!-- nexusmind-fingerprint:lost-response -->";
+        assert!(create_github_issue_once_at(&base,"test-token","acme/api","same title",marker,&[]).await.is_err());
+        let recovered=find_github_issue_by_marker_at(&base,"test-token","acme/api",marker).await.unwrap().unwrap();
+        assert_eq!(recovered["number"],5);
+        assert_eq!(recovered["state"],"closed");
+        assert_eq!(state.posts.load(Ordering::SeqCst),1);
+        server.abort();
+    }
+
     #[test]
     fn ambiguous_github_writes_reconcile_only_the_exact_marker() {
         let marker = "<!-- nexusmind-fingerprint:abc -->";
@@ -1162,20 +1193,11 @@ mod tests {
             {"number":3,"body":marker,"pull_request":{}}
         ]);
         assert_eq!(
-            find_issue_marker(&issues, marker, "").and_then(|value| value.get("number").cloned()),
+            find_issue_marker(&issues, marker).and_then(|value| value.get("number").cloned()),
             Some(json!(2))
         );
-        assert!(find_issue_marker(&issues, "missing", "").is_none());
-        // Title match dedupes even when the fingerprint marker drifted.
-        assert_eq!(
-            find_issue_marker(
-                &json!([{"number":7,"title":"[NexusMind QA] POS toast"}]),
-                "missing",
-                "[NexusMind QA] POS toast",
-            )
-            .and_then(|value| value.get("number").cloned()),
-            Some(json!(7))
-        );
+        assert!(find_issue_marker(&issues, "missing").is_none());
+        assert!(find_issue_marker(&json!([{"number":7,"title":"[NexusMind QA] POS toast"}]),"missing").is_none());
         assert_eq!(
             find_body_marker(&json!([{"id":9,"body":"NexusMind run: `run-1`"}]), "run-1")
                 .and_then(|value| value.get("id").cloned()),
@@ -1184,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn find_issue_marker_dedupes_on_normalized_fingerprint_and_near_title() {
+    fn find_issue_marker_requires_a_normalized_fingerprint_match() {
         // Fingerprint drifted only by case/separator → still the same defect.
         let issues = json!([
             {"number":11,"title":"[POS] toast","body":"x\n<!-- nexusmind-fingerprint:POS_Toast_UUID -->"}
@@ -1193,32 +1215,23 @@ mod tests {
             find_issue_marker(
                 &issues,
                 "<!-- nexusmind-fingerprint:pos-toast-uuid -->",
-                "[POS] something else entirely",
             )
             .and_then(|value| value.get("number").cloned()),
             Some(json!(11)),
         );
 
-        // Same [Module], title reworded a little, fingerprint gone → title match.
+        // Similar titles without the stable marker are different findings.
         let issues = json!([
             {"number":12,"title":"[Users] Archive user is a no-op","body":"no marker here"}
         ]);
-        assert_eq!(
-            find_issue_marker(
-                &issues,
-                "missing",
-                "[Users] Archive user is a no-op — no status sent",
-            )
-            .and_then(|value| value.get("number").cloned()),
-            Some(json!(12)),
-        );
+        assert!(find_issue_marker(&issues,"missing").is_none());
 
-        // Guardrails: different module, or a differing number, must NOT merge.
+        // Similar titles in any module are not enough evidence to merge.
         let issues = json!([
             {"number":13,"title":"[Billing] Total wrong for 2 items","body":""},
             {"number":14,"title":"[Cart] Archive user is a no-op","body":""}
         ]);
-        assert!(find_issue_marker(&issues, "missing", "[Billing] Total wrong for 3 items").is_none());
-        assert!(find_issue_marker(&issues, "missing", "[Orders] Total wrong for 2 items").is_none());
+        assert!(find_issue_marker(&issues, "missing").is_none());
+        assert!(find_issue_marker(&issues, "missing").is_none());
     }
 }

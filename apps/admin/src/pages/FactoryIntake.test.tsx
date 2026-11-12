@@ -10,6 +10,7 @@ import { chooseSelectOption } from '../test/select'
 const api = vi.hoisted(() => ({
   listFactoryIntakeSources: vi.fn(),
   listFactoryIntakeItems: vi.fn(),
+  listProjects: vi.fn(),
   getFactoryWatchdog: vi.fn(),
   listAutonomousAgentConnectors: vi.fn(),
   listAutonomousAgents: vi.fn(),
@@ -71,6 +72,7 @@ describe('FactoryIntake', () => {
     vi.clearAllMocks()
     api.listFactoryIntakeSources.mockResolvedValue([source])
     api.listFactoryIntakeItems.mockResolvedValue(items)
+    api.listProjects.mockResolvedValue([{ id: 'p-app', org_id: 'org1', name: 'app', description: null, parent_id: null, created_at: '2026-10-04' }])
     api.getFactoryWatchdog.mockResolvedValue(null)
     api.listAutonomousAgentConnectors.mockResolvedValue([
       { id: 'conn-secret', kind: 'target_secret', name: 'intake: Bugs', health: 'ready', metadata: { purpose: 'factory_intake', source_kind: 'slack' } },
@@ -110,7 +112,7 @@ describe('FactoryIntake', () => {
     const save = screen.getByRole('button', { name: 'Save source' })
     expect(save).toBeDisabled()
     await user.type(screen.getByLabelText('Name'), 'Bugs')
-    await user.type(screen.getByLabelText('NexusMind project for the tasks'), 'app')
+    await chooseSelectOption(user, screen.getByLabelText('NexusMind project for the tasks'), 'app')
     await user.click(screen.getByLabelText(/issue resolver/i))
     expect(screen.queryByRole('option', { name: 'Reviewer' })).not.toBeInTheDocument()
     await user.click(await screen.findByRole('option', { name: 'App resolver' }))
@@ -131,6 +133,35 @@ describe('FactoryIntake', () => {
       resolver_definition_id: 'def-1',
       config: { channel_id: 'C0123ABCD', allowed_reactors: ['ULEAD0001', 'UOPS00002'] },
     }))
+  })
+
+  it.each([
+    { label: 'Gmail label', tokenLabel: 'Gmail read-only OAuth token', kind: 'gmail', config: {}, fill: async () => {} },
+    { label: 'Notion pages', tokenLabel: 'Notion integration token', kind: 'notion', config: { database_id: '12345678-1234-1234-1234-123456789abc' }, fill: async (user: ReturnType<typeof userEvent.setup>) => { await user.type(screen.getByLabelText('Database ID (optional)'), '12345678-1234-1234-1234-123456789abc') } },
+    { label: 'Drive transcripts', tokenLabel: 'Google Drive read-only OAuth token', kind: 'drive', config: { folder_id: 'Folder_123-ab' }, fill: async (user: ReturnType<typeof userEvent.setup>) => { await user.type(screen.getByLabelText('Google Drive folder ID'), 'Folder_123-ab') } },
+  ])('creates a $label source with the backend config', async ({ label, tokenLabel, kind, config, fill }) => {
+    api.listFactoryIntakeSources.mockResolvedValue([])
+    renderPage(['factory_policy:read', 'factory_policy:write', 'autonomous_agent:manage_connectors'])
+    const user = userEvent.setup()
+    await screen.findByText(/no intake sources yet/i)
+    await waitFor(() => expect(api.listAutonomousAgents).toHaveBeenCalled())
+    await user.click(screen.getByRole('button', { name: 'Add source' }))
+    await user.click(screen.getByRole('radio', { name: new RegExp(label, 'i') }))
+    await user.type(screen.getByLabelText('Name'), `Source ${label}`)
+    await chooseSelectOption(user, screen.getByLabelText('NexusMind project for the tasks'), 'app')
+    await user.click(screen.getByLabelText(/issue resolver/i))
+    await user.click(await screen.findByRole('option', { name: 'App resolver' }))
+    await fill(user)
+    await user.type(screen.getByLabelText(tokenLabel), 'provider-token')
+    await user.click(screen.getByRole('button', { name: 'Save source' }))
+    await waitFor(() => expect(api.createFactoryIntakeSource).toHaveBeenCalled())
+    expect(api.putAutonomousAgentConnector).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'target_secret',
+      secret: 'provider-token',
+      scopes: ['target:use'],
+      metadata: { purpose: 'factory_intake', source_kind: kind },
+    }))
+    expect(api.createFactoryIntakeSource).toHaveBeenCalledWith(expect.objectContaining({ kind, connector_id: 'conn-new', config }))
   })
 
   it('pauses a source and says when saving fails', async () => {
@@ -154,12 +185,12 @@ describe('FactoryIntake', () => {
     expect(screen.queryByLabelText(/slack bot token/i)).not.toBeInTheDocument()
   })
 
-  it('turns Slack notifications on with a Slack webhook connector', async () => {
+  it('turns Slack notifications on with a Slack bot connector', async () => {
     renderPage(['factory_policy:read', 'factory_policy:write'])
     const user = userEvent.setup()
     const card = await screen.findByRole('region', { name: 'Slack notifications' })
     expect(within(card).getByRole('button', { name: 'Turn on' })).toBeDisabled()
-    await user.click(within(card).getByLabelText('Slack webhook'))
+    await user.click(within(card).getByLabelText('Slack bot connector'))
     expect(screen.getByRole('option', { name: 'Team channel' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'intake: Bugs' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('option', { name: 'Team channel' }))

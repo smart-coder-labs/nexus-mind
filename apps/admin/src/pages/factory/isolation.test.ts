@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported } from './isolation'
+import { isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, piSupported, sandboxSupported } from './isolation'
 
 describe('sandboxSupported', () => {
   it('matches the templates the server can sandbox, with the Claude executor only', () => {
@@ -16,6 +16,17 @@ describe('sandboxSupported', () => {
     expect(sandboxSupported('qa', 'codex')).toBe(false)
     expect(localSupported('codex')).toBe(false)
     expect(localSupported('claude')).toBe(true)
+  })
+})
+
+describe('Pi isolation', () => {
+  it('keeps the ChatGPT identity in the local worker, not a task pod', () => {
+    expect(localSupported('pi')).toBe(true)
+    expect(sandboxSupported('github_issue_resolver', 'pi')).toBe(false)
+    expect(sandboxSupported('github_pr_reviewer', 'pi')).toBe(false)
+    expect(piSupported('qa')).toBe(true)
+    expect(piSupported('judge')).toBe(false)
+    expect(sandboxSupported('qa', 'pi')).toBe(false)
   })
 })
 
