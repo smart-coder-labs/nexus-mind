@@ -19052,7 +19052,7 @@ pub fn list_autonomous_agent_findings(
     conn: &Connection,
     org_id: &str,
 ) -> Result<Vec<AutonomousAgentFinding>> {
-    let mut stmt=conn.prepare("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND redaction_verified=1 ORDER BY updated_at DESC")?;
+    let mut stmt=conn.prepare("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND redaction_verified=1 ORDER BY created_at DESC,rowid DESC")?;
     let rows = stmt.query_map([org_id], finding_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
