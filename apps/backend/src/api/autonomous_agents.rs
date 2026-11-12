@@ -3100,6 +3100,20 @@ mod tests {
     }
 
     #[test]
+    fn findings_list_newest_first_regardless_of_updates() {
+        let (conn, org_id, user_id) = fixture();
+        let created = queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &request()).unwrap();
+        queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &created.definition.id).unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &created.definition.id, "enabled").unwrap();
+        let run = queries::enqueue_autonomous_agent_run(&conn, &org_id, &created.definition.id, "manual", "order", None, None).unwrap().unwrap();
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|fp| queries::upsert_redacted_autonomous_agent_finding(&conn, &org_id, &created.definition.id, &run.id, fp, fp, "low", "s", &serde_json::json!({})).unwrap().id).collect();
+        // Same-second inserts must still come back newest first, and updating the oldest must not move it.
+        queries::patch_autonomous_agent_finding(&conn, &org_id, &ids[0], "resolved").unwrap();
+        let listed: Vec<String> = queries::list_autonomous_agent_findings(&conn, &org_id).unwrap().into_iter().map(|f| f.id).collect();
+        assert_eq!(listed, vec![ids[2].clone(), ids[1].clone(), ids[0].clone()]);
+    }
+
+    #[test]
     fn finding_reads_mutations_and_retries_quarantine_legacy_rows() {
         let (conn, org_id, user_id) = fixture();
         let created = queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &request()).unwrap();

@@ -125,6 +125,8 @@ fn concurrent_connections_cannot_insert_two_open_rows_for_the_same_qa_defect() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("qa.db");
     f.conn.execute("VACUUM INTO ?1", [path.to_str().unwrap()]).unwrap();
+    // Persist WAL first: two connections switching journal_mode at once can fail BUSY without waiting.
+    connect(path.to_str().unwrap()).unwrap();
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let handles: Vec<_> = [OLD_FP, NEW_FP].into_iter().enumerate().map(|(i, fp)| {
         let (path, org, definition, run, barrier) = (path.clone(), f.org.clone(), f.definition.clone(), f.runs[i].clone(), barrier.clone());
