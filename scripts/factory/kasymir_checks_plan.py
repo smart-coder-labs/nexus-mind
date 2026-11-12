@@ -23,12 +23,23 @@ def strict(command, kind, *, browser=False):
     assert len(script)<4096
     return ['node','-e',script]
 
+INTEGRATION_SPECS=r'\.integration\.(spec|test)\.[cm]?[jt]sx?$'
+
 def node_tests(package, script='test', paths=None):
     body=package['scripts'][script]
     args=['npm','test'] if script=='test' else ['npm','run',script]
     if 'jest' in body:
         extra=['--ci','--runInBand','--passWithNoTests=false','--json','--outputFile=/output/nm-test-results.json']
         if paths:extra+=['--runTestsByPath',*paths]
+        elif script=='test':
+            # Integration specs skip themselves without their services (e.g. no
+            # DATABASE_URL), which the strict report rejects as a skip. They belong
+            # to an environment check, so the unit check leaves them out; any other
+            # skip still fails. The CLI flag replaces the repo's configured
+            # patterns, so those are kept.
+            jest=package.get('jest') if isinstance(package.get('jest'),dict) else {}
+            for pattern in [*(jest.get('testPathIgnorePatterns') or ['/node_modules/']),INTEGRATION_SPECS]:
+                extra.append('--testPathIgnorePatterns='+pattern)
         return strict(args+['--',*extra],'jest')
     if 'vitest' in body:
         extra=['--passWithNoTests=false','--reporter=json','--outputFile=/output/nm-test-results.json']
