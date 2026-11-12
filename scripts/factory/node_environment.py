@@ -186,8 +186,10 @@ def prepare(work, checks, destination, cache, heartbeat=lambda: None, timeout=30
             raise NodeEnvironmentError('node_cache_invalid')
         if path.exists() and (path.stat().st_size > MAX_PACKAGE or hashlib.sha512(path.read_bytes()).digest()!=digest):
             path.unlink()
+        if path.exists():
+            os.utime(path)  # Retention evicts only tarballs no recent step reused.
         if not path.exists():
-            # ponytail: shared content cache, reserve host disk; add eviction if versions accumulate.
+            # Shared content cache; runner.prune_checkouts evicts unused versions.
             if shutil.disk_usage(cache).free < MAX_PACKAGE + 1024*1024*1024:
                 raise NodeEnvironmentError('node_disk_reserve_required')
             request = urllib.request.Request(url,headers={'User-Agent':'NexusMind-locked-dependencies'})

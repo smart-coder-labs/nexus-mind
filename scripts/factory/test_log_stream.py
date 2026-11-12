@@ -169,6 +169,35 @@ class CheckoutRetentionTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in root.iterdir() if p.is_dir()), ['blocked', 'foreign', 'journal', 'unknown'])
             self.assertEqual(runner.prune_checkouts({'state_dir': state}, api), [])  # at most hourly
 
+    def test_blocked_unlisted_and_gone_runs_age_out_and_unused_tarballs_are_evicted(self):
+        import runner
+        from control_plane import ControlPlaneError
+        with tempfile.TemporaryDirectory() as state:
+            root = Path(state)
+            for run, age in [('old-blocked', 20), ('recent-blocked', 10), ('old-unlisted', 10), ('gone', 10), ('flaky', 10)]:
+                (root / run / 'step-1' / 'node_modules' / 'pkg').mkdir(parents=True)
+                (root / run / 'step-1' / 'node_modules').chmod(0o500)  # npm leaves read-only directories
+                manifest = root / run / 'checkout-manifest.json'
+                manifest.write_text(json.dumps({'run_id': run}))
+                os.utime(manifest, (time.time() - age * 86400,) * 2)
+            def call(path):
+                if path == '/runs':  # only the latest 100 runs are listed
+                    return {'runs': [{'id': 'old-blocked', 'status': 'blocked'}, {'id': 'recent-blocked', 'status': 'blocked'}]}
+                if path == '/runs/old-unlisted':
+                    return {'status': 'succeeded'}
+                raise ControlPlaneError('GET', '/runs/{run}', 'rn-1', status=404 if path == '/runs/gone' else 503)
+            api = mock.Mock(); api.call.side_effect = call
+            cache = root / '.node-cache'; cache.mkdir()
+            old = time.time() - 30 * 86400
+            for name in ['unused.tgz', 'linked.tgz', 'fresh.tgz']:
+                (cache / name).write_bytes(b'x')
+            os.link(cache / 'linked.tgz', root / 'recent-blocked' / 'linked.tgz')
+            for name in ['unused.tgz', 'linked.tgz']:
+                os.utime(cache / name, (old, old))
+            self.assertEqual(sorted(runner.prune_checkouts({'state_dir': state}, api)), ['gone', 'old-blocked', 'old-unlisted'])
+            self.assertEqual(sorted(p.name for p in root.iterdir() if p.is_dir() and p.name != '.node-cache'), ['flaky', 'recent-blocked'])
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), ['fresh.tgz', 'linked.tgz'])
+
 
 if __name__ == '__main__':
     unittest.main()

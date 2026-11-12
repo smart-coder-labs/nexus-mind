@@ -250,7 +250,9 @@ def prepare(job, roots, state_dir, config=None, heartbeat=lambda: None):
                 raise ValueError("Invalid commit")
             destination = stage / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            git(["clone", "--no-local", "--no-checkout", "--", str(source), str(destination)], stage, 300)
+            # A local clone hardlinks the workspace's immutable objects (copying only
+            # across filesystems), so a run costs its checkout, not the history.
+            git(["clone", "--no-checkout", "--", str(source), str(destination)], stage, 300)
             if refresh:
                 if git(['config', '--get', 'remote.origin.url'], source) != repo['remote']:
                     raise ValueError('Source remote differs from the confirmed inventory')
@@ -362,11 +364,41 @@ def reconcile(config, api):
                 cleanup(config, manifest.parent.name, state)
 
 
+def sweep_step_dirs(state):
+    """Remove step copies and preparation stages left by a crash or an older
+    runner. Called under the runner lock, so no step is running; integrated
+    services keep their copy mounted until their own cleanup."""
+    from execution import remove_tree
+    state = Path(state)
+    if not state.is_dir():
+        return
+    leftovers = list(state.glob('prepare-*'))
+    for run in state.iterdir():
+        if run.is_dir() and not run.is_symlink() and not any((run / n).exists() for n in ('services.json', 'application-images.json')):
+            leftovers.extend(run.glob('step-*'))
+    for path in leftovers:
+        remove_tree(path)
+
+
+def run_status(api, run, listed):
+    """Status from the recent-runs listing, else from the run itself (the listing
+    holds only the latest 100). 'gone' when the backend no longer assigns it here."""
+    if run in listed:
+        return listed[run]
+    try:
+        return api.call('/runs/' + run).get('status')
+    except ControlPlaneError as error:
+        return 'gone' if error.status == 404 else None
+
+
 def prune_checkouts(config, api, now=None):
-    """Remove disposable run checkouts of finished runs after a retention period.
-    Only runner-owned directories with a matching ownership marker, whose run the
-    backend reports as succeeded/cancelled, with no pending completion or live
-    services. Unknown or blocked runs are always kept (they may be retried)."""
+    """Remove disposable run checkouts after a retention period: succeeded,
+    cancelled or no longer assigned runs after `checkout_retention_days`, blocked
+    runs (retryable) after `blocked_checkout_retention_days`. Only runner-owned
+    directories with a matching ownership marker, with no pending completion or
+    live services. Runs whose status cannot be read are kept. Also evicts cached
+    npm tarballs no step links to and nothing used within the retention."""
+    from execution import remove_tree
     now = now or time.time()
     state = Path(config['state_dir'])
     marker = state / '.checkout-retention'
@@ -377,12 +409,16 @@ def prune_checkouts(config, api, now=None):
     days = config.get('checkout_retention_days', 7)
     if not isinstance(days, (int, float)) or days <= 0:
         return []
-    manifests = [m for m in state.glob('*/checkout-manifest.json') if now - m.stat().st_mtime > days * 86400]
-    statuses = {r['id']: r['status'] for r in api.call('/runs').get('runs', [])} if manifests else {}
+    blocked_days = config.get('blocked_checkout_retention_days', 14)
+    limits = {'succeeded': days, 'cancelled': days, 'gone': days}
+    if isinstance(blocked_days, (int, float)) and blocked_days > 0:
+        limits['blocked'] = blocked_days
+    manifests = [m for m in state.glob('*/checkout-manifest.json') if now - m.stat().st_mtime > min(limits.values()) * 86400]
+    listed = {r['id']: r['status'] for r in api.call('/runs').get('runs', [])} if manifests else {}
     removed = []
     for manifest in manifests:
         root = manifest.parent
-        if root.is_symlink() or root.parent != state or statuses.get(root.name) not in ('succeeded', 'cancelled'):
+        if root.is_symlink() or root.parent != state or not safe_id(root.name):
             continue
         if any((root / name).exists() for name in ('pending-completion.json', 'services.json', 'application-images.json')):
             continue
@@ -390,9 +426,20 @@ def prune_checkouts(config, api, now=None):
             owned = json.loads(manifest.read_text()).get('run_id') == root.name
         except ValueError:
             owned = False
-        if owned:
-            shutil.rmtree(root)
+        if not owned:
+            continue
+        limit = limits.get(run_status(api, root.name, listed))
+        if limit is not None and now - manifest.stat().st_mtime > limit * 86400:
+            remove_tree(root)
             removed.append(root.name)
+    # A tarball linked into a live step has more than one link; prepare() touches
+    # the ones it reuses, so only unused versions age out.
+    cache = state / '.node-cache'
+    if cache.is_dir() and not cache.is_symlink():
+        for tarball in cache.glob('*.tgz'):
+            info = tarball.lstat()
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and now - info.st_mtime > days * 86400:
+                tarball.unlink()
     marker.touch()
     if removed:
         print('Removed ' + str(len(removed)) + ' finished run checkout(s) past retention', flush=True)
@@ -463,6 +510,7 @@ def tick_locked(config, roots):
             cleanup(config,manifest.parent.name,config['state_dir'])
     api = API(config['api_url'], config['runner_token'])
     reconcile(config, api)
+    sweep_step_dirs(config['state_dir'])
     prune_checkouts(config, api)
     # Polling has its own persisted due times and scoped connectors; no intake
     # credential is ever downloaded to the runner.

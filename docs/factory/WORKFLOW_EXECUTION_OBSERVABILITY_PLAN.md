@@ -286,8 +286,13 @@ que no hizo falta que el usuario aplicara una migración de producción.
   React nunca interpreta HTML. Cada hora se borra la salida de runs terminados con
   más de 14 días (`FACTORY_WORKFLOW_LOG_RETENTION_DAYS`) y queda un marcador
   `capture.pruned`; los resultados, evidencias y artefactos se conservan. El runner
-  borra los checkouts de runs terminados con más de 7 días
-  (`checkout_retention_days`); los runs bloqueados o desconocidos se conservan.
+  borra los checkouts de runs terminados o ya no asignados con más de 7 días
+  (`checkout_retention_days`) y los de runs bloqueados con más de 14
+  (`blocked_checkout_retention_days`); si no puede leer el estado, conserva el
+  checkout. La copia de cada fase (`step-*`, con su `node_modules`) se borra al
+  terminar la fase, y los tarballs npm sin uso salen de `.node-cache` con la
+  misma retención. El checkout de un run comparte por hardlink los objetos Git
+  del workspace en vez de copiar el historial.
   «Registro completo» solo aparece si no hubo pérdidas, truncado ni retención.
 
 **Desviaciones:** el reenvío de logs usa memoria acotada, no una cola en disco: si
