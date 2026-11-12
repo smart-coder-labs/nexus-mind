@@ -120,6 +120,10 @@ def agent_prompt(context, adapter):
                     'functional, design and security issues, not stylistic noise. Do not edit files. '
                     'Return success=false and verdict=changes_requested if review finds blocking issues. ',
     }.get(role, 'Complete only the current phase, within its authorized write scope. ')
+    if context.get('node_dependencies'):
+        instructions += ('npm dependencies of context.node_dependencies are already installed from the lockfile. '
+                         'There is no network: never run npm install/ci (npm ci deletes node_modules first); '
+                         'run tests with the installed tools, e.g. npx jest or npm test. ')
     if context.get('task_scope') == 'documentation' and role in ('implementation', 'test_author'):
         # The backend's decision model classified this task as documentation-only.
         instructions += ('This task is documentation-only. Edit only documentation (Markdown and docs/ files). '
@@ -159,6 +163,13 @@ def main():
         path.symlink_to(target,target_is_directory=True)
     if mode == 'agent':
         if adapter.get('format') == 'codex': codex_prices(adapter.get('usd_per_million'))
+        for relative in adapter.get('node_dependencies', []):
+            root = (Path('/work') / relative).resolve()
+            if Path('/work') not in root.parents or (root / 'node_modules').exists():
+                continue
+            # Best effort: a failed install leaves the agent where it was before.
+            if bootstrap_node(root, output):
+                announce('dependencies ' + relative + ': instalación offline fallida')
         # No prior model conversation or other role's instructions are persisted.
         prompt = agent_prompt(context, adapter)
         command = list(adapter['command'])

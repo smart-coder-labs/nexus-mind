@@ -24,7 +24,7 @@ class API:
             self.artifacts.append((data['name'], content))
             return {'digest': hashlib.sha256(content).hexdigest(), 'id': str(len(self.artifacts))}
         if path.endswith('/events'):
-            assert data['kind'] in {'agent.started', 'agent.tool', 'command.started', 'command.finished', 'service.ready', 'log.chunk'}
+            assert data['kind'] in {'agent.started', 'agent.tool', 'command.started', 'command.finished', 'service.ready', 'log.chunk', 'dependency.log'}
             assert len(data['message'].encode()) <= 4096
             self.events.append(data)
         return {'active': True}
@@ -292,6 +292,35 @@ class ExecutionTests(unittest.TestCase):
         prepare.assert_called_once()
         self.assertEqual(self.api.events[-1]['kind'],'command.started')
         self.assertIn('dependencias npm',self.api.events[-1]['message'])
+
+    def test_writable_agent_gets_offline_node_dependencies_best_effort(self):
+        repo = Path(self.config['state_dir']) / self.job['run_id'] / 'web'
+        (repo / 'package.json').write_text('{}'); (repo / 'package-lock.json').write_text('{}')
+        runner.git(['add', '.'], repo); runner.git(['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','node'], repo)
+        self.job['execution']['heads']['web'] = runner.git(['rev-parse','HEAD'], repo)
+        adapter = {'kind':'agent','role':'implementation','image':'sha256:' + 'a'*64,'command':['pi']}
+        staged = []
+        def stop(_config, _job, adapter, inp):
+            staged.append((adapter,)); raise RuntimeError('stop before container')
+        with patch('node_environment.prepare') as prepare, patch('agent_runtime.stage_runtime', side_effect=stop):
+            with self.assertRaisesRegex(RuntimeError, 'stop before container'):
+                execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertEqual(prepare.call_args.args[1], [{'cwd':'web'}])
+        self.assertEqual(staged[-1][0]['node_dependencies'], ['web'])
+        # A repository that cannot be prepared offline does not block the agent.
+        with patch('node_environment.prepare', side_effect=ValueError('node_lockfile_v2_or_v3_required')), patch('agent_runtime.stage_runtime', side_effect=stop):
+            with self.assertRaisesRegex(RuntimeError, 'stop before container'):
+                execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertNotIn('node_dependencies', staged[-1][0])
+        self.assertEqual(self.api.events[-1]['kind'], 'dependency.log')
+        # Read-only roles never install.
+        with patch('node_environment.prepare') as prepare, patch('agent_runtime.stage_runtime', side_effect=stop):
+            with self.assertRaisesRegex(RuntimeError, 'stop before container'):
+                execution.isolated_adapter(self.config,self.job,dict(adapter,role='investigation'),[self.root],self.api,runner.git,runner.private_file)
+        prepare.assert_not_called()
+        from container_entry import agent_prompt
+        self.assertIn('never run npm install/ci', agent_prompt({**self.job, 'node_dependencies':['web']}, {'role':'implementation'}))
+        self.assertNotIn('npm install/ci', agent_prompt(self.job, {'role':'implementation'}))
 
     def test_api_contract_rejections_hold_instead_of_exhausting_attempts(self):
         # Every control-plane failure holds: hold=false on a check/review step queues

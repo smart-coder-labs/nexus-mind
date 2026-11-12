@@ -477,8 +477,14 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
         if len(diff.encode()) > 256 * 1024:
             raise ValueError('Diff context exceeds review budget')
         context['diffs'][repo['path']] = diff
-    if adapter.get('node_bootstrap'):
-        if adapter['kind']!='checks' or not node_bootstrap_image(config, adapter['image']):
+    # Agents run offline (network=none for Pi), so `npm ci` inside them cannot
+    # work: writable agent steps get the same lockfile-pinned offline install as checks.
+    agent_node = []
+    # Same condition as the read-only /work mount below.
+    if adapter['kind']=='agent' and adapter.get('driver','container')=='container' and adapter.get('role') not in ('investigation','reviewer') and job['step']['kind']!='review':
+        agent_node = [{'cwd':r} for r in job['step'].get('write_repositories') or [] if (work/r/'package.json').is_file() and (work/r/'package-lock.json').is_file()]
+    if adapter.get('node_bootstrap') or agent_node:
+        if adapter.get('node_bootstrap') and (adapter['kind']!='checks' or not node_bootstrap_image(config, adapter['image'])):
             raise ValueError('Node environment must be registered by the operator')
         from node_environment import prepare
         started=time.monotonic();last_heartbeat=started
@@ -486,9 +492,22 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
             nonlocal last_heartbeat
             if time.monotonic()-last_heartbeat>=5:
                 api.call('/runs/'+job['run_id']+'/steps/'+job['step']['id']+'/lease',{'lease_token':job['lease_token']});last_heartbeat=time.monotonic()
+        if agent_node:
+            # Only the operator .npmrc (host-side, private registries); agents never get .env.
+            repositories={path:{'npmrc':entry['npmrc']} for path,entry in repo_secrets(api, job).items() if entry.get('npmrc')}
+            secrets.extend(secret_values(repositories))
         mark_stage(job, 'node_dependencies')
         log_event(api,job,'command.started','Preparando dependencias npm fijadas por lockfile, sin scripts de instalación')
-        prepare(work,adapter['checks'],inp/'node-dependencies',Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']),npmrc={path:entry['npmrc'] for path,entry in repositories.items() if entry.get('npmrc')})
+        npmrc={path:entry['npmrc'] for path,entry in repositories.items() if entry.get('npmrc')}
+        destination=inp/'node-dependencies'
+        try:
+            prepare(work,adapter.get('checks') or agent_node,destination,Path(config['state_dir'])/'.node-cache',heartbeat,timeout=min(300,job['step']['timeout_seconds']),npmrc=npmrc)
+            if agent_node:adapter=dict(adapter,node_dependencies=[c['cwd'] for c in agent_node]);context['node_dependencies']=adapter['node_dependencies']
+        except (ValueError, OSError) as error:
+            if not agent_node:raise
+            # Best effort for agents: without prepared dependencies they run as before.
+            shutil.rmtree(destination,ignore_errors=True)
+            log_event(api,job,'dependency.log','Dependencias npm no preparadas para el agente: '+str(error))
         remaining=job['step']['timeout_seconds']-(time.monotonic()-started)
         if remaining<1:raise ValueError('Node environment preparation exceeded step time budget')
         # Shallow copy keeps the shared step trace; only the timeout changes.
@@ -501,7 +520,7 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
     if adapter.get('driver', 'container') == 'container':
         runtime = runtime_command(config)
         name = 'nm-' + uuid.uuid4().hex
-        command = [runtime, 'run', '--rm', '--pull=never', '--name', name, *restrictions(bool(adapter.get('node_bootstrap'))),
+        command = [runtime, 'run', '--rm', '--pull=never', '--name', name, *restrictions(bool(adapter.get('node_bootstrap') or adapter.get('node_dependencies'))),
                    '--network', adapter_network(config, adapter, job['run_id']), '--workdir', '/work',
                    '--mount', 'type=bind,src=' + str(work) + ',dst=/work' + (',readonly' if adapter.get('role') in ('investigation','reviewer') or job['step']['kind']=='review' else ''),
                    '--mount', 'type=bind,src=' + str(inp) + ',dst=/input,readonly',
