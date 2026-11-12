@@ -806,3 +806,40 @@ fn observable_history_is_attributed_paginated_budgeted_and_retained() {
     assert_eq!(coverage["pruned_events"], logs::LOG_LIMIT);
     assert!(db::run_detail(&c, &org, &run).unwrap()["events"].as_array().unwrap().iter().any(|e| e["kind"] == "backend.rejected"));
 }
+
+#[test]
+fn intake_starts_new_work_beside_blocked_runs_bounded_and_without_duplicates() {
+    use nexusmind::automation::workflow_intake::{start_intake_runs, MAX_RUNS_PER_POLL};
+    let (c, org, user, _, w) = setup();
+    let d = define(
+        &c,
+        &org,
+        &user,
+        &w,
+        vec![step("prepare", &[], StepKind::Prepare)],
+    );
+    let stuck = run(&c, &org, &d);
+    c.execute(
+        "UPDATE factory_workflow_runs SET status='blocked' WHERE id=?1",
+        [&stuck],
+    )
+    .unwrap();
+    let tasks = |n: usize| {
+        (0..n)
+            .map(|i| (format!("github:acme/app#{i}"), json!({"title":format!("Fix {i}")})))
+            .collect::<Vec<_>>()
+    };
+    let first = start_intake_runs(&c, &org, &d, &w, "source", "github", tasks(7), db::start_pinned_run)
+        .unwrap();
+    assert_eq!(first.len(), MAX_RUNS_PER_POLL, "a blocked run must not hold new issues back");
+    let second = start_intake_runs(&c, &org, &d, &w, "source", "github", tasks(7), db::start_pinned_run)
+        .unwrap();
+    assert_eq!(second.len(), 2, "the next poll starts only the issues not seen yet");
+    assert!(start_intake_runs(&c, &org, &d, &w, "source", "github", tasks(7), db::start_pinned_run)
+        .unwrap()
+        .is_empty());
+    let status: String = c
+        .query_row("SELECT status FROM factory_workflow_runs WHERE id=?1", [&stuck], |r| r.get(0))
+        .unwrap();
+    assert_eq!(status, "blocked");
+}

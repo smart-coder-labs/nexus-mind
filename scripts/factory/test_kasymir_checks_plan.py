@@ -38,5 +38,23 @@ class RecipeTests(unittest.TestCase):
             self.assertEqual(result.returncode==0,passed)
 
 
+    def test_unit_jest_check_leaves_out_self_skipping_integration_specs_only(self):
+        import re
+        package={'scripts':{'test':'jest'}}
+        args=json.loads(recipes.node_tests(package)[2].split('cp.spawnSync("npm",')[1].split(',{encoding')[0])
+        patterns=[a.split('=',1)[1] for a in args if a.startswith('--testPathIgnorePatterns=')]
+        self.assertEqual(patterns[0],'/node_modules/')
+        ignored=lambda path:any(re.search(p,path) for p in patterns)
+        self.assertTrue(ignored('src/modules/refund-receipt/operations-report.integration.spec.ts'))
+        self.assertFalse(ignored('src/modules/bank-accounts/bank-account.mapper.spec.ts'))
+        # The CLI flag replaces configured patterns, so the repository's own stay.
+        own=dict(package,jest={'testPathIgnorePatterns':['/dist/']})
+        own_args=recipes.node_tests(own)[2]
+        self.assertIn('--testPathIgnorePatterns=/dist/',own_args)
+        self.assertNotIn('--testPathIgnorePatterns=/node_modules/',own_args)
+        # Explicit paths and other scripts (e.g. e2e) are unchanged.
+        self.assertNotIn('testPathIgnorePatterns',recipes.node_tests(package,paths=['a.spec.ts'])[2])
+        self.assertNotIn('testPathIgnorePatterns',recipes.node_tests({'scripts':{'test:e2e':'jest'}},'test:e2e')[2])
+
 if __name__=='__main__':
     unittest.main()

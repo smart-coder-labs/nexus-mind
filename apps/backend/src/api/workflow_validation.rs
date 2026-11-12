@@ -138,6 +138,16 @@ pub async fn task_scope(store: &SqliteStore, org: &str, run: &str, task: &Value)
 
 /// After a step blocks: ask Jev which phase can resolve it and re-queue it.
 /// Runs detached from the runner's completion request; failures are recorded.
+/// Target, recorded decision and whether to use the static repair rule. An unsure
+/// or unknown Jev answer must not strand the run: it falls back to the static
+/// repair step exactly as when Jev is unavailable.
+fn jev_recovery(answers: &Value, candidates: &[v::Candidate]) -> (Option<String>, Value, bool) {
+    let (target, confidence) = v::apply_recovery(answers, candidates);
+    let choice = answers.pointer("/answers/recovery/choice").cloned();
+    let fallback = target.is_none();
+    (target, json!({"source": "jev", "choice": choice, "confidence": confidence}), fallback)
+}
+
 pub async fn recover(store: SqliteStore, org: String, run: String, step: String) {
     let Some(key) = v::decision_key(&org) else { return };
     let context = {
@@ -154,16 +164,41 @@ pub async fn recover(store: SqliteStore, org: String, run: String, step: String)
     };
     let request = v::recovery_request(&context.task, &step, &context.failure, &context.candidates);
     let (target, decision, fallback) = match v::ask(&key, &request).await {
-        Ok(answers) => {
-            let (target, confidence) = v::apply_recovery(&answers, &context.candidates);
-            let choice = answers.pointer("/answers/recovery/choice").cloned();
-            (target, json!({"source": "jev", "choice": choice, "confidence": confidence}), false)
-        }
+        Ok(answers) => jev_recovery(&answers, &context.candidates),
         Err(e) => (None, json!({"source": "fallback", "jev_error": e.to_string()}), true),
     };
     let h = store.conn();
     let Ok(c) = h.lock() else { return };
     if let Err(e) = db::apply_recovery(&c, &org, &run, &step, target.as_deref(), decision, fallback) {
         tracing::warn!(error = %e, run = %run, "workflow recovery failed");
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    fn candidates() -> Vec<v::Candidate> {
+        vec![v::Candidate { id: "implement".into(), description: "Implement".into() }]
+    }
+
+    #[test]
+    fn unsure_or_unknown_jev_answers_fall_back_to_the_static_repair_step() {
+        let answer = |choice: &str, confidence: f64| {
+            json!({"answers": {"recovery": {"choice": choice, "confidence": confidence}}})
+        };
+        let (target, decision, fallback) = jev_recovery(&answer("implement", 0.95), &candidates());
+        assert_eq!(target.as_deref(), Some("implement"));
+        assert!(!fallback);
+        assert_eq!(decision["source"], "jev");
+        // The production case: Jev picked a phase with low confidence.
+        let (target, decision, fallback) = jev_recovery(&answer("tests", 0.52), &candidates());
+        assert!(target.is_none());
+        assert!(fallback, "a low-confidence answer must still queue a repair");
+        assert_eq!(decision["choice"], "tests");
+        let (target, _, fallback) = jev_recovery(&answer("nonexistent", 0.99), &candidates());
+        assert!(target.is_none() && fallback);
+        let (_, _, fallback) = jev_recovery(&json!({}), &candidates());
+        assert!(fallback);
     }
 }

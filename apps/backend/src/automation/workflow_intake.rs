@@ -53,6 +53,8 @@ struct GithubConfig {
     include_assigned: bool,
 }
 const MAX_GITHUB_INTAKE_REPOSITORIES: usize = 100;
+/// New runs one intake may start in a single poll; the rest wait for the next poll.
+pub const MAX_RUNS_PER_POLL: usize = 5;
 fn github_config(config: &Value) -> Result<GithubConfig> {
     let mut value: GithubConfig = serde_json::from_value(config.clone())
         .map_err(|_| anyhow::anyhow!("invalid_github_intake_config"))?;
@@ -377,23 +379,14 @@ pub async fn poll(store: &SqliteStore, org: &str, runner: Option<&str>) -> Resul
             poll_one(store, org, &id, &definition, &kind, &connector_id, &config),
         )
         .await;
-        let (count, error) = match result {
-            Ok(Ok(count)) => (count, None),
-            Ok(Err(e)) => (0, Some(e.to_string())),
-            Err(_) => (0, Some("intake_timeout".into())),
+        let (runs, error) = match result {
+            Ok(Ok(runs)) => (runs, None),
+            Ok(Err(e)) => (Vec::new(), Some(e.to_string())),
+            Err(_) => (Vec::new(), Some("intake_timeout".into())),
         };
-        started += count;
-        if count > 0 {
-            let run = {
-                let h = store.conn();
-                let c = h
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
-                c.query_row("SELECT e.run_id FROM factory_workflow_events e JOIN factory_workflow_runs r ON r.id=e.run_id WHERE r.org_id=?1 AND e.kind='intake.received' AND json_extract(e.payload_json,'$.source_id')=?2 ORDER BY e.seq DESC LIMIT 1",params![org,id],|r|r.get::<_,String>(0)).ok()
-            };
-            if let Some(run) = run {
-                let _ = crate::factory::workflow_policy::assess_intake(store, org, &run).await;
-            }
+        started += runs.len();
+        for run in runs {
+            let _ = crate::factory::workflow_policy::assess_intake(store, org, &run).await;
         }
         let h = store.conn();
         let c = h
@@ -443,7 +436,7 @@ async fn poll_one(
     kind: &str,
     connector_id: &str,
     config: &Value,
-) -> Result<u32> {
+) -> Result<Vec<String>> {
     let (credential, workspace) = {
         let h = store.conn();
         let c = h
@@ -454,10 +447,6 @@ async fn poll_one(
             params![definition, org],
             |r| r.get(0),
         )?;
-        let active:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM factory_workflow_runs WHERE org_id=?1 AND workspace_id=?2 AND status NOT IN ('succeeded','cancelled'))",params![org,id],|r|r.get(0))?;
-        if active {
-            return Ok(0);
-        }
         (
             connector(&c, org, connector_id, kind, config)?,
             workflows::workspace_by_id(&c, org, &id)?,
@@ -545,21 +534,48 @@ async fn poll_one(
             )?,
         )?;
     }
-    let busy:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM factory_workflow_runs WHERE org_id=?1 AND workspace_id=?2 AND status NOT IN ('succeeded','cancelled'))",params![org,workspace["id"].as_str()],|r|r.get(0))?;
-    if busy {
-        return Ok(0);
-    }
+    start_intake_runs(
+        &c,
+        org,
+        definition,
+        workspace["id"].as_str().ok_or_else(|| anyhow::anyhow!("not_found"))?,
+        source,
+        kind,
+        tasks,
+        workflows::start_run,
+    )
+}
+
+/// Starts runs for tasks this workspace has not seen yet, at most
+/// `MAX_RUNS_PER_POLL`. New work starts regardless of other runs in the workspace
+/// (blocked, waiting for approval or running): each run prepares its own isolated
+/// copies, so one stuck task must not hold every later issue back.
+#[allow(clippy::too_many_arguments)]
+pub fn start_intake_runs(
+    c: &rusqlite::Connection,
+    org: &str,
+    definition: &str,
+    workspace: &str,
+    source: &str,
+    kind: &str,
+    tasks: Vec<(String, Value)>,
+    start: impl Fn(&rusqlite::Connection, &str, &str, &str, &Value) -> Result<Value>,
+) -> Result<Vec<String>> {
+    let mut started = Vec::new();
     for (key, mut task) in tasks {
-        let known:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM factory_workflow_runs WHERE org_id=?1 AND workspace_id=?2 AND source_key=?3)",params![org,workspace["id"].as_str(),key],|r|r.get(0))?;
+        if started.len() >= MAX_RUNS_PER_POLL {
+            break;
+        }
+        let known:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM factory_workflow_runs WHERE org_id=?1 AND workspace_id=?2 AND source_key=?3)",params![org,workspace,key],|r|r.get(0))?;
         if known {
             continue;
         }
         task["origin_trust"] = json!("untrusted");
-        let run = workflows::start_run(&c, org, definition, &key, &task)?;
+        let run = start(c, org, definition, &key, &task)?;
         let id = run["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("invalid_run"))?;
-        let allowed = crate::factory::workflow_policy::decision(&c, org, id, "fix", &[], false)?
+        let allowed = crate::factory::workflow_policy::decision(c, org, id, "fix", &[], false)?
             ["allowed"]
             == true;
         if !allowed {
@@ -569,15 +585,15 @@ async fn poll_one(
             )?;
         }
         workflows::event(
-            &c,
+            c,
             id,
             None,
             "intake.received",
             json!({"source_id":source,"kind":kind,"needs_approval":!allowed}),
         )?;
-        return Ok(1);
+        started.push(id.to_string());
     }
-    Ok(0)
+    Ok(started)
 }
 
 #[cfg(test)]
