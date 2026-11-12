@@ -103,7 +103,7 @@ export const MODES: {
     title: 'The decision model decides',
     short: 'Model decides',
     description: 'Allowed when the decision model finds the conditions met with enough confidence. Held for a person until a model is connected.',
-  },,
+  },
   {
     value: 'always',
     title: 'Always (dangerous)',
@@ -111,7 +111,7 @@ export const MODES: {
     description:
       'Allowed every time, with no person and no decision model. Only safety floors (risky paths, sensitive tasks) still hold it.',
     danger: true,
-  }
+  },
 ]
 
 export function modeMeta(mode: FactoryPolicyMode) {
