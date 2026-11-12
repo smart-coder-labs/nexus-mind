@@ -208,6 +208,22 @@ def cleanup(config, run, state_dir):
     manifest.unlink(missing_ok=True)
 
 
+def remove_tree(path):
+    """Delete a runner-owned directory even when a container left read-only
+    directories in it (npm packages often do). Never follows symlinks."""
+    path = Path(path)
+    if path.is_symlink() or not path.is_dir():
+        return
+    path.chmod(0o700)
+    for here, dirs, _ in os.walk(path):
+        for name in dirs:
+            child = Path(here) / name
+            if not child.is_symlink():
+                with contextlib.suppress(OSError):
+                    child.chmod(0o700)
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def stage_sources(job, state_dir, git):
     run_root = Path(state_dir) / job['run_id']
     if not run_root.is_dir() or run_root.is_symlink():
@@ -431,6 +447,15 @@ def isolated_adapter(config, job, adapter, roots, api, git, private_file):
     if adapter['kind']=='checks': protect_verification_scripts(config,job,adapter,git)
     mark_stage(job, 'stage_sources')
     working, work = stage_sources(job, config['state_dir'], git)
+    # The step copy (sources plus the node_modules the container installs) is
+    # disposable once results, logs and adopted commits are out of it.
+    try:
+        return staged_adapter(config, job, adapter, roots, api, git, private_file, working, work)
+    finally:
+        remove_tree(working)
+
+
+def staged_adapter(config, job, adapter, roots, api, git, private_file, working, work):
     verified_source = tree_fingerprint(work)
     out = working / 'output'; out.mkdir()
     inp = working / 'input'; inp.mkdir()

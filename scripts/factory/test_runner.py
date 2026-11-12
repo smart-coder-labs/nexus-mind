@@ -75,6 +75,28 @@ class RunnerTests(unittest.TestCase):
         # Preparation is idempotent after an ambiguous completion/network failure.
         self.assertEqual(runner.prepare(job, [self.root], self.base / "state"), evidence)
 
+    def test_run_checkout_shares_workspace_objects_instead_of_copying_history(self):
+        repos = runner.discover(self.root, [self.root])
+        job = {"run_id": "run-1", "snapshot": {"workspace": {"root_path": str(self.root), "repositories": repos}}}
+        runner.prepare(job, [self.root], self.base / "state")
+        objects = [p for p in (self.repo / ".git" / "objects").rglob("*") if p.is_file() and len(p.parent.name) == 2]
+        self.assertTrue(objects)
+        for source in objects:
+            linked = self.base / "state" / "run-1" / "api" / ".git" / "objects" / source.relative_to(self.repo / ".git" / "objects")
+            self.assertTrue(linked.samefile(source))
+
+    def test_sweep_removes_leftover_step_copies_but_not_live_services_or_checkouts(self):
+        state = self.base / "state"
+        for path in ["run-a/step-1/work/api/node_modules/pkg", "run-a/api", "run-b/step-2/work", "prepare-x/api"]:
+            (state / path).mkdir(parents=True)
+        (state / "run-a/step-1/work/api/node_modules").chmod(0o500)  # npm leaves read-only directories
+        (state / "run-b/services.json").write_text("{}")
+        runner.sweep_step_dirs(state)
+        self.assertFalse((state / "run-a/step-1").exists())
+        self.assertFalse((state / "prepare-x").exists())
+        self.assertTrue((state / "run-a/api").is_dir())
+        self.assertTrue((state / "run-b/step-2").is_dir())
+
     def test_new_runs_fetch_branch_heads_but_retries_keep_the_first_fetch(self):
         self.command('branch', '-M', 'release/accounting')
         self.command('remote', 'add', 'origin', 'https://github.com/acme/api.git')

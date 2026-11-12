@@ -322,6 +322,22 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn('never run npm install/ci', agent_prompt({**self.job, 'node_dependencies':['web']}, {'role':'implementation'}))
         self.assertNotIn('npm install/ci', agent_prompt(self.job, {'role':'implementation'}))
 
+    def test_step_copy_is_removed_whether_the_step_succeeds_or_fails(self):
+        run_root = Path(self.config['state_dir']) / self.job['run_id']
+        adapter = {'kind':'agent','role':'implementation','image':'sha256:' + 'a'*64,'command':['pi']}
+        def stop(_config, _job, _adapter, inp):
+            (inp.parent / 'work' / 'api' / 'node_modules' / 'pkg').mkdir(parents=True)
+            (inp.parent / 'work' / 'api' / 'node_modules').chmod(0o500)
+            raise RuntimeError('stop before container')
+        with patch('agent_runtime.stage_runtime', side_effect=stop):
+            with self.assertRaisesRegex(RuntimeError, 'stop before container'):
+                execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertEqual(list(run_root.glob('step-*')), [])
+        self.assertTrue((run_root / 'api' / 'code.txt').is_file())
+        with patch.object(execution, 'staged_adapter', return_value=(True, [], {})):
+            self.assertEqual(execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file), (True, [], {}))
+        self.assertEqual(list(run_root.glob('step-*')), [])
+
     def test_api_contract_rejections_hold_instead_of_exhausting_attempts(self):
         # Every control-plane failure holds: hold=false on a check/review step queues
         # an agent repair, which an unavailable backend must never trigger.
