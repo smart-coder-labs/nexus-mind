@@ -159,6 +159,13 @@ pub fn evaluate(
         ));
     }
     match mode {
+        PolicyMode::Always => {
+            return done(verdict(
+                Verdict::Allow,
+                VerdictSource::Policy,
+                "policy_always".into(),
+            ))
+        }
         PolicyMode::AfterFix => {
             return done(if input.fix_verified {
                 verdict(Verdict::Allow, VerdictSource::Policy, "fix_verified".into())
@@ -280,6 +287,21 @@ mod tests {
         );
         let manual = [policy(Action::Merge, PolicyMode::Manual, None, None)];
         assert_eq!(eval(&merge_docs(), &manual, allow).verdict, Verdict::Hold);
+    }
+
+    #[test]
+    fn always_allows_without_a_person_or_the_model_but_floors_still_hold() {
+        let always = [policy(Action::Merge, PolicyMode::Always, None, None)];
+        let v = eval(&merge_docs(), &always, ModelDecision::NotConfigured);
+        assert_eq!(
+            (v.verdict, v.source, v.reason.as_str()),
+            (Verdict::Allow, VerdictSource::Policy, "policy_always")
+        );
+        assert!(!needs_model(&merge_docs(), &always));
+        let mut risky = merge_docs();
+        risky.floors = vec!["sensitive_task_needs_a_person".into()];
+        let v = eval(&risky, &always, ModelDecision::Allow { confidence: 1.0 });
+        assert_eq!((v.verdict, v.source), (Verdict::Hold, VerdictSource::Floor));
     }
 
     #[test]

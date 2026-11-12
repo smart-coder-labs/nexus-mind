@@ -47,24 +47,33 @@ export function taskClassLabel(value: string): string {
 }
 
 /** The four rungs of the autonomy ladder; `after_fix`/`after_merge` share "Gated". */
-export type Rung = 'never' | 'person' | 'gated' | 'model'
+export type Rung = 'never' | 'person' | 'gated' | 'model' | 'always'
 
 export const RUNGS: { rung: Rung; label: string }[] = [
   { rung: 'never', label: 'Never' },
   { rung: 'person', label: 'Person' },
   { rung: 'gated', label: 'Gated' },
   { rung: 'model', label: 'Model' },
+  { rung: 'always', label: 'Always' },
 ]
 
 export function rungOf(mode: FactoryPolicyMode): Rung {
   if (mode === 'never') return 'never'
   if (mode === 'manual') return 'person'
   if (mode === 'criteria') return 'model'
+  if (mode === 'always') return 'always'
   return 'gated'
 }
 
 /** "Who decides" choices, in ladder order, with what each means. */
-export const MODES: { value: FactoryPolicyMode; title: string; short: string; description: string }[] = [
+export const MODES: {
+  value: FactoryPolicyMode
+  title: string
+  short: string
+  description: string
+  /** Removes the person and the decision model from the loop. */
+  danger?: boolean
+}[] = [
   {
     value: 'never',
     title: 'Never',
@@ -94,7 +103,15 @@ export const MODES: { value: FactoryPolicyMode; title: string; short: string; de
     title: 'The decision model decides',
     short: 'Model decides',
     description: 'Allowed when the decision model finds the conditions met with enough confidence. Held for a person until a model is connected.',
-  },
+  },,
+  {
+    value: 'always',
+    title: 'Always (dangerous)',
+    short: 'Always',
+    description:
+      'Allowed every time, with no person and no decision model. Only safety floors (risky paths, sensitive tasks) still hold it.',
+    danger: true,
+  }
 ]
 
 export function modeMeta(mode: FactoryPolicyMode) {

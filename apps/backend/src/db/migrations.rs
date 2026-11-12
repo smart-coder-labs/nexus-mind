@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 110;
+pub const LATEST_USER_VERSION: i32 = 111;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -113,6 +113,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     crate::db::qa_coverage::migrate(conn)?;
     run_v109(conn)?;
     run_v110(conn)?;
+    run_v111(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -153,6 +154,43 @@ pub fn run_v110(conn: &Connection) -> Result<()> {
         tx.execute(&format!("UPDATE {table} SET observation_order=?1 WHERE id=?2"), rusqlite::params![order,id])?;
     }
     tx.execute_batch("PRAGMA user_version=110;")?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v111: allow the dangerous `always` policy mode. SQLite cannot alter a
+/// CHECK, so the table is rebuilt with identical columns, rows and index.
+pub fn run_v111(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 111 { return Ok(()); }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE factory_action_policies_v111 (
+             id               TEXT PRIMARY KEY,
+             org_id           TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             action           TEXT NOT NULL CHECK (action IN
+                 ('fix','publish','open_pr','reply','close','approve','merge','deploy','notify','recover')),
+             mode             TEXT NOT NULL CHECK (mode IN
+                 ('never','manual','criteria','after_fix','after_merge','always')),
+             scope_project    TEXT NOT NULL DEFAULT '',
+             scope_task_class TEXT NOT NULL DEFAULT '' CHECK (scope_task_class IN
+                 ('','docs','tests','ui','backend','bugfix','refactor','migration','infra','security','unknown')),
+             allow_json       TEXT NOT NULL DEFAULT '[]',
+             stop_json        TEXT NOT NULL DEFAULT '[]',
+             version          INTEGER NOT NULL CHECK (version >= 1),
+             updated_by       TEXT NOT NULL,
+             created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, action, scope_project, scope_task_class)
+         );
+         INSERT INTO factory_action_policies_v111 (id,org_id,action,mode,scope_project,scope_task_class,allow_json,stop_json,version,updated_by,created_at,updated_at)
+             SELECT id,org_id,action,mode,scope_project,scope_task_class,allow_json,stop_json,version,updated_by,created_at,updated_at FROM factory_action_policies;
+         DROP TABLE factory_action_policies;
+         ALTER TABLE factory_action_policies_v111 RENAME TO factory_action_policies;
+         CREATE INDEX IF NOT EXISTS idx_factory_action_policies_org
+             ON factory_action_policies(org_id, action);
+         PRAGMA user_version=111;",
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -4362,7 +4400,8 @@ mod tests {
         assert_eq!(get_user_version(&conn), 98);
         assert!(!conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='qa_scenario_results')", [], |r| r.get::<_,bool>(0)).unwrap());
         let factory_schema = |c: &Connection| -> String {
-            c.query_row("SELECT group_concat(type||'|'||name||'|'||COALESCE(sql,''),';') FROM (SELECT type,name,sql FROM sqlite_master WHERE name LIKE 'factory_%' ORDER BY type,name)", [], |r| r.get(0)).unwrap()
+            // v111 deliberately rebuilds factory_action_policies to allow `always`.
+            c.query_row("SELECT group_concat(type||'|'||name||'|'||COALESCE(sql,''),';') FROM (SELECT type,name,sql FROM sqlite_master WHERE name LIKE 'factory_%' AND tbl_name<>'factory_action_policies' ORDER BY type,name)", [], |r| r.get(0)).unwrap()
         };
         let factory_before = factory_schema(&conn);
         let (org,user,_) = crate::db::queries::bootstrap(&conn,"QA","qa","qa@example.invalid","QA").unwrap();
@@ -4371,7 +4410,7 @@ mod tests {
         conn.execute("INSERT INTO automation_runs(id,org_id,created_by,profile_version_ref,policy_generation) VALUES('auto',?1,?2,'qa-v1',1)",rusqlite::params![org.id,user.id]).unwrap();
         conn.execute("INSERT INTO autonomous_agent_runs(id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,budget_json) VALUES('before-upgrade',?1,?2,?3,'auto','manual','fixture','{}')",rusqlite::params![org.id,detail.definition.id,detail.revision.id]).unwrap();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn),110);
+        assert_eq!(get_user_version(&conn),LATEST_USER_VERSION);
         assert_eq!(factory_schema(&conn),factory_before,"published factory schema must not change");
         assert_eq!(conn.query_row("SELECT requested_by FROM autonomous_agent_runs WHERE id='before-upgrade'",[],|r|r.get::<_,String>(0)).unwrap(),user.id);
         for table in ["qa_scenario_results","qa_repository_grants","qa_repository_snapshots","qa_scenario_checkpoints","qa_scenario_inventory","qa_batch_plans","qa_observation_order"] {
@@ -4394,7 +4433,7 @@ mod tests {
         assert_eq!(factory_schema(&conn),factory_before);
         assert_eq!(conn.query_row("SELECT id||'|'||tested_at||'|'||observation_order FROM qa_scenario_results",[],|r|r.get::<_,String>(0)).unwrap(),before);
         assert_eq!(conn.query_row("SELECT count(*) FROM qa_observation_order",[],|r|r.get::<_,i64>(0)).unwrap(),sequence);
-        assert_eq!(get_user_version(&conn),110);
+        assert_eq!(get_user_version(&conn),LATEST_USER_VERSION);
     }
     #[test]
     fn creates_all_tables() {

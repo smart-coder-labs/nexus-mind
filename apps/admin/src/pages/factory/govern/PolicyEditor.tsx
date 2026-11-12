@@ -1,5 +1,6 @@
 import { StyledSelect } from '@/components/ui/Select/StyledSelect'
-import { Plus, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Plus, Trash2, X } from 'lucide-react'
+import { useState } from 'react'
 import { Button } from '../../../components/ui/Button'
 import { Input } from '../../../components/ui/Input'
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '../../../components/ui/Modal'
@@ -76,7 +77,12 @@ export function PolicyEditor({
   deleting: boolean
   deleteError: string
 }) {
-  const set = <K extends keyof PolicyDraft>(key: K, value: PolicyDraft[K]) => draft && onChange({ ...draft, [key]: value })
+  const set = <K extends keyof PolicyDraft>(key: K, value: PolicyDraft[K]) => {
+    if (key === 'mode') setDangerAccepted(false)
+    if (draft) onChange({ ...draft, [key]: value })
+  }
+  // A dangerous mode needs an explicit acknowledgement each time it is chosen.
+  const [dangerAccepted, setDangerAccepted] = useState(false)
 
   return (
     <Modal open={draft !== null} onOpenChange={value => { if (!value) onClose() }} size="xl" position="right">
@@ -134,9 +140,24 @@ export function PolicyEditor({
                     onChange={value => set('mode', value as FactoryPolicyMode)}
                     title={mode.title}
                     description={mode.description}
+                    tone={mode.danger ? 'danger' : undefined}
+                    icon={mode.danger ? <AlertTriangle className="h-4 w-4 text-status-error" aria-hidden="true" /> : undefined}
                   />
                 ))}
               </div>
+              {draft.mode === 'always' && (
+                <InlineAlert>
+                  <span className="block font-medium">Agents will {draft.action} without asking anyone.</span>
+                  <label className="mt-2 flex items-start gap-2 text-[13px]">
+                    <input
+                      type="checkbox"
+                      checked={dangerAccepted}
+                      onChange={event => setDangerAccepted(event.target.checked)}
+                    />
+                    I understand that no person or decision model reviews this action first.
+                  </label>
+                </InlineAlert>
+              )}
             </FieldGroup>
 
             <FieldGroup title="Conditions" description="One condition per row. The decision model reads them; safety floors still apply.">
@@ -174,7 +195,9 @@ export function PolicyEditor({
               </Button>
             )}
             <Button size="sm" variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button size="sm" loading={saving} onClick={onSave}>Save as v{draft.version}</Button>
+            <Button size="sm" loading={saving} disabled={draft.mode === 'always' && !dangerAccepted} onClick={onSave}>
+              Save as v{draft.version}
+            </Button>
           </ModalFooter>
         </div>
       )}
