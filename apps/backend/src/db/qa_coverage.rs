@@ -296,9 +296,10 @@ pub fn context_for_scope(conn: &Connection, org: &str, agent: &str, config: &Val
           WHERE org_id=?1 AND agent_id=?2 AND project_id IS ?3 AND application=?4 AND environment=?5
             AND (COALESCE(last_status,'')!='blocked' OR blocker_fingerprint IS NOT last_blocker_fingerprint)
             AND critical={}
+            AND (?7=0 OR critical=1 OR COALESCE(last_status,'')!='passed')
           {order} LIMIT ?6", if critical_only { 1 } else { 0 });
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![org, agent, project, application, environment, count], |row| {
+        let rows = stmt.query_map(params![org, agent, project, application, environment, count, config.get("qa_skip_passed").and_then(Value::as_bool).unwrap_or(false)], |row| {
             let status: Option<String> = row.get(3)?;
             let critical: bool = row.get(5)?;
             let reason = if critical { "recheck critical scenario" } else { match status.as_deref() { None => "known scenario not yet executed", Some("failed") => "recheck known failed scenario", _ => "rotate a previously passed scenario" } };
@@ -1108,6 +1109,8 @@ mod tests {
         assert_eq!(keys[4],"products-old");
         assert!(!keys.contains(&"login-auth"));
         assert!(keys.contains(&"orders-check"));
+        let skip_passed = context_for_scope(&c,"o","a",&json!({"application":"web","environment":"staging","qa_skip_passed":true}),20).unwrap();
+        assert!(!skip_passed.iter().any(|row| row["key"] == "orders-check"));
         persist_batch_plan(&c,"o","a","blocked-run","attempt-1",&cfg,&[json!({"key":"login-auth","description":"check login","reason":"blocker changed"})]).unwrap();
         assert!(!context_for_scope(&c,"o","a",&cfg,20).unwrap().iter().any(|row| row["key"] == "login-auth"));
         c.execute("UPDATE qa_scenario_inventory SET blocker_fingerprint='login-service-restored' WHERE scenario_key='login-auth'",[]).unwrap();
