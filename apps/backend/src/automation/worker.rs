@@ -4105,7 +4105,13 @@ pub(crate) fn fixed_prompt(
     // Give the agent its exact turn budget so it can stop exploring in time to
     // emit the JSON; running out mid-action (error_max_turns) discards everything.
     let stop_by = max_turns.saturating_sub(20).max(1);
-    let turn_budget = format!(" You have a HARD limit of {max_turns} turns and each browser action consumes one. Stop opening new areas by turn {stop_by} and spend your remaining turns writing the final JSON. It is far better to cover fewer flows and return a valid summary than to run out of turns mid-action — if you sense you are running low, stop immediately and emit the JSON now.");
+    let qa_level = config.get("qa_level").and_then(|v| v.as_str()).unwrap_or("standard");
+    let depth_guidance = match qa_level {
+        "basic" => " Basic depth: prioritize login, primary navigation, and one happy-path check per critical flow; skip low-value edge cases.",
+        "deep" => " Deep depth: systematically cover each discovered area, positive and negative paths, validation boundaries, roles where authorized, cross-flow regressions, and useful edge cases. Do not stop after smoke checks; use the available budget while preserving time for valid final JSON.",
+        _ => " Standard depth: cover key user flows, meaningful validation/error paths, and adjacent regressions; expand beyond smoke checks where budget allows.",
+    };
+    let turn_budget = format!(" You have a HARD limit of {max_turns} turns and each browser action consumes one. Stop opening new areas by turn {stop_by} and spend your remaining turns writing the final JSON. It is far better to cover fewer flows and return a valid summary than to run out of turns mid-action — if you sense you are running low, stop immediately and emit the JSON now.{depth_guidance}");
     // Optional free-text operator guidance, honored as focus/priority direction but
     // never as authority to exceed the hard restrictions stated in each objective.
     let qa_coverage_clause = if template == "qa" {
@@ -6081,9 +6087,14 @@ async fn execute_claim(
         .get("max_turns")
         .and_then(|v| v.as_u64())
         .unwrap_or(match claim.template_key.as_str() {
+            "qa" => match runtime_config.get("qa_level").and_then(|v| v.as_str()) {
+                Some("basic") => 120,
+                Some("deep") => 400,
+                _ => 250,
+            },
             // Resolving an issue means cloning context, reading code, editing and
             // verifying — 20 turns barely starts, so the run kept exhausting them.
-            "qa" | "judge" => 250,
+            "judge" => 250,
             "github_issue_resolver" => 150,
             "lead_generation" => 80,
             _ => 60,
