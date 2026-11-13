@@ -545,6 +545,80 @@ fn parallel_steps_can_finish_while_a_sibling_is_blocked() {
     assert_eq!(db::run_detail(&c, &o, &run).unwrap()["status"], "succeeded");
 }
 #[test]
+fn moved_bases_restart_atomically_with_fresh_sources_bounded_budget_and_no_reused_evidence() {
+    use nexusmind::{db::factory_queries, factory::contracts::ActionPolicy};
+    fn stale(c: &rusqlite::Connection, run: &str, spent: f64) {
+        // Simulate completed fenced work followed by the server's stale-base rejection.
+        c.execute("UPDATE factory_workflow_runs SET status='blocked',cost_usd=?2,heads_json=?3,snapshot_json=json_set(snapshot_json,'$.sources_pending',json('false')) WHERE id=?1",rusqlite::params![run,spent,json!({"api":"b".repeat(40)}).to_string()]).unwrap();
+        c.execute("UPDATE factory_workflow_steps SET status='succeeded',attempt=1,result_json=?2 WHERE run_id=?1",rusqlite::params![run,json!({"heads":{"api":"b".repeat(40)},"evidence":[{"check":"tests","status":"pass"}]}).to_string()]).unwrap();
+        c.execute("UPDATE factory_workflow_steps SET status='blocked',result_json=?2 WHERE run_id=?1 AND step_id='publish'",rusqlite::params![run,json!({"output":{"error":"base_moved_reverify","exception_type":"ControlPlaneError","hold":true}}).to_string()]).unwrap();
+    }
+    let (c, org, user, runner, workspace) = setup();
+    let mut r=repo(false);r.branch=Some("main".into());
+    db::report_inventory(&c,&org,&runner,&workspace,&[r.clone()]).unwrap();
+    let revision=db::workspace_by_id(&c,&org,&workspace).unwrap()["inventory_revision"].as_i64().unwrap();
+    r.writable=true;
+    db::confirm_inventory(&c,&org,&workspace,revision,&[r]).unwrap();
+    let mut prepare=step("prepare",&[],StepKind::Prepare);prepare.adapter="prepare-workspace".into();
+    let mut publish=step("publish",&["verify"],StepKind::Publish);publish.adapter="policy-publisher".into();
+    let definition=define(&c,&org,&user,&workspace,vec![prepare,step("verify",&["prepare"],StepKind::Check),publish]);
+    let root=run(&c,&org,&definition);stale(&c,&root,3.0);
+    assert!(db::restart_after_base_move(&c,"other-org",&root,"publish").unwrap().is_none());
+    assert!(db::restart_after_base_move(&c,&org,&root,"verify").unwrap().is_none());
+    assert!(db::restart_after_base_move(&c,&org,&root,"publish").unwrap().is_none(),"recovery needs policy authorization");
+    for action in ["recover","fix"] {
+        let policy:ActionPolicy=serde_json::from_value(json!({"schema_version":1,"action":action,"mode":"always","scope":{},"allow":[],"stop":[],"version":1})).unwrap();
+        factory_queries::upsert_factory_policy(&c,&org,&user,&policy).unwrap();
+    }
+    let previous_verify=db::run_detail(&c,&org,&root).unwrap()["steps"].as_array().unwrap().iter().find(|s|s["id"]=="verify").unwrap().clone();
+    db::control_run(&c,&org,&root,"resume",None).unwrap();
+    let refreshed=db::run_detail(&c,&org,&root).unwrap();
+    let first=refreshed["events"].as_array().unwrap().iter().find(|e|e["kind"]=="run.base_refreshed").unwrap()["payload"]["replacement_run"].as_str().unwrap().to_string();
+    assert!(db::restart_after_base_move(&c,&org,&root,"publish").unwrap().is_none(),"a handoff is idempotent");
+    let retired=db::run_detail(&c,&org,&root).unwrap();
+    assert_eq!(retired["status"],"cancelled");
+    assert_eq!(retired["steps"].as_array().unwrap().iter().find(|s|s["id"]=="verify").unwrap(),&previous_verify);
+    let next=db::run_detail(&c,&org,&first).unwrap();
+    assert_eq!(next["snapshot"]["source_policy"],"fresh");
+    assert_eq!(next["snapshot"]["sources_pending"],true);
+    assert_eq!(next["snapshot"]["definition"]["max_cost_usd"],17.0);
+    assert_eq!(next["execution"]["heads"],json!({"api":"a".repeat(40)}));
+    assert!(next["steps"].as_array().unwrap().iter().all(|s|s["status"]=="pending"&&s["result"].is_null()));
+    assert_eq!(next["task"],retired["task"]);
+    assert_eq!(next["execution"]["repairs"],0);
+    stale(&c,&first,5.0);
+    let second=db::restart_after_base_move(&c,&org,&first,"publish").unwrap().unwrap();
+    assert_eq!(db::run_detail(&c,&org,&second).unwrap()["snapshot"]["definition"]["max_cost_usd"],12.0);
+    stale(&c,&second,1.0);
+    assert!(db::restart_after_base_move(&c,&org,&second,"publish").unwrap().is_none(),"never refresh without a bound");
+    for (key,spent,partial,attempt) in [("budget",20.0,false,1),("partial",0.0,true,1),("uncertain",0.0,false,2)] {
+        let id=db::start_pinned_run(&c,&org,&definition,key,&json!({"title":"Fix"})).unwrap()["id"].as_str().unwrap().to_string();
+        stale(&c,&id,spent);
+        if partial {c.execute("INSERT INTO factory_workflow_publications(run_id,repository_path,head_sha,state) VALUES (?1,'api',?2,'awaiting_ci')",rusqlite::params![id,"b".repeat(40)]).unwrap();}
+        c.execute("UPDATE factory_workflow_steps SET attempt=?2 WHERE run_id=?1 AND step_id='publish'",rusqlite::params![id,attempt]).unwrap();
+        assert!(db::restart_after_base_move(&c,&org,&id,"publish").unwrap().is_none(),"{key}");
+        assert_eq!(db::run_detail(&c,&org,&id).unwrap()["status"],"blocked");
+    }
+    let manual:ActionPolicy=serde_json::from_value(json!({"schema_version":1,"action":"fix","mode":"manual","scope":{},"allow":[],"stop":[],"version":2})).unwrap();
+    factory_queries::upsert_factory_policy(&c,&org,&user,&manual).unwrap();
+    let held=db::start_pinned_run(&c,&org,&definition,"manual-fix",&json!({"title":"Fix"})).unwrap()["id"].as_str().unwrap().to_string();
+    stale(&c,&held,0.0);
+    let pending=db::restart_after_base_move(&c,&org,&held,"publish").unwrap().unwrap();
+    assert_eq!(db::run_detail(&c,&org,&pending).unwrap()["status"],"blocked","do not carry old fix approval into a new run");
+    let invalid=db::start_pinned_run(&c,&org,&definition,"invalid-config",&json!({"title":"Fix"})).unwrap()["id"].as_str().unwrap().to_string();
+    stale(&c,&invalid,0.0);
+    let mut r=repo(false); // An operator removed branch confirmation after the old run.
+    db::report_inventory(&c,&org,&runner,&workspace,&[r.clone()]).unwrap();
+    let revision=db::workspace_by_id(&c,&org,&workspace).unwrap()["inventory_revision"].as_i64().unwrap();
+    r.writable=true;db::confirm_inventory(&c,&org,&workspace,revision,&[r]).unwrap();
+    let before:i64=c.query_row("SELECT count(*) FROM factory_workflow_runs",[],|r|r.get(0)).unwrap();
+    assert!(db::restart_after_base_move(&c,&org,&invalid,"publish").unwrap_err().to_string().contains("source_branch_not_confirmed"));
+    let after:i64=c.query_row("SELECT count(*) FROM factory_workflow_runs",[],|r|r.get(0)).unwrap();
+    assert_eq!(before,after,"a failed handoff cannot leave an orphan replacement");
+    assert_eq!(db::run_detail(&c,&org,&invalid).unwrap()["status"],"blocked");
+}
+
+#[test]
 fn heartbeat_infrastructure_hold_never_asks_for_code_repair() {
     use nexusmind::factory::workflows::Outcome;
     let (c, org, user, runner, workspace) = setup();

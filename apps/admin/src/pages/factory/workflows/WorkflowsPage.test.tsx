@@ -43,6 +43,12 @@ const detail = {
   events: [],
 }
 describe('execution failure diagnostics', () => {
+  it('links the replacement run instead of silently leaving a stale-base run cancelled', () => {
+    const run = { ...detail, status: 'cancelled', events: [{ seq: 1, step_id: 'publish', kind: 'run.base_refreshed', payload: { replacement_run: 'next-run' }, created_at: detail.created_at }] }
+    render(<MemoryRouter><ExecutionDetail run={run} control={vi.fn()} approve={vi.fn()} artifact={vi.fn()} disabled={false} /></MemoryRouter>)
+    expect(screen.getByRole('status')).toHaveTextContent('el presupuesto restante')
+    expect(screen.getByRole('link', { name: 'Ver revalidación automática' })).toHaveAttribute('href', '/factory/workflows?run=next-run')
+  })
   it('shows advisory QA findings as warnings, not as a QA pass or blocked run', () => {
     render(<ExecutionDetail run={{ ...detail, steps: [{ id: definition.steps[0].id, status: 'succeeded', attempt: 1, result: { qa_report_only: true, evidence: [{ check: 'functional', status: 'fail' }] } }] }} control={vi.fn()} approve={vi.fn()} artifact={vi.fn()} disabled={false} />)
     expect(screen.getByText('Completada con hallazgos QA')).toBeInTheDocument()

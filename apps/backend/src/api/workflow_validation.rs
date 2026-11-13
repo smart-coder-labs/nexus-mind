@@ -149,6 +149,22 @@ fn jev_recovery(answers: &Value, candidates: &[v::Candidate]) -> (Option<String>
 }
 
 pub async fn recover(store: SqliteStore, org: String, run: String, step: String) {
+    // Base freshness is deterministic and must work without a decision model.
+    {
+        let h = store.conn();
+        let Ok(c) = h.lock() else { return };
+        match db::restart_after_base_move(&c, &org, &run, &step) {
+            Ok(Some(next)) => {
+                tracing::info!(run = %run, replacement = %next, "workflow scheduled fresh-base revalidation");
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(run = %run, error = %error, "workflow base revalidation could not be scheduled");
+                return;
+            }
+        }
+    }
     let Some(key) = v::decision_key(&org) else { return };
     let context = {
         let h = store.conn();

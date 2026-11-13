@@ -2,6 +2,7 @@ import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
 import { RawJson } from '../shared/ui'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { StepObservability } from './StepObservability'
 import type { WorkflowEventPage, WorkflowEventQuery, WorkflowRun } from './types'
 const status = (s: string) =>
@@ -51,6 +52,8 @@ export function ExecutionDetail({
 }) {
   const [opened, setOpened] = useState<string | null>(null)
   const live = ['queued', 'running', 'blocked'].includes(run.status)
+  const refresh = run.events.find((event) => event.kind === 'run.base_refreshed')?.payload
+  const replacement = refresh && typeof refresh === 'object' ? (refresh as Record<string, unknown>).replacement_run : undefined
   return (
     <section aria-label="Detalle de ejecución" className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -60,6 +63,12 @@ export function ExecutionDetail({
         </div>
         <Badge>{status(run.status)}</Badge>
       </header>
+      {typeof replacement === 'string' && (
+        <p role="status" className="rounded-lg border border-border p-3 text-sm">
+          La rama base cambió. Se inició una revalidación con fuentes actualizadas y el presupuesto restante; las evidencias anteriores se conservan, pero no acreditan el nuevo commit.{' '}
+          <Link className="underline" to={`/factory/workflows?run=${encodeURIComponent(replacement)}`}>Ver revalidación automática</Link>
+        </p>
+      )}
       {run.execution && (
         <div className="flex flex-wrap gap-x-6 gap-y-2 rounded-lg bg-muted/50 p-3 text-sm">
           <span>
