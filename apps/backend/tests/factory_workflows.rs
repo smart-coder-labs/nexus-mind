@@ -599,6 +599,13 @@ fn moved_bases_restart_atomically_with_fresh_sources_bounded_budget_and_no_reuse
         assert!(db::restart_after_base_move(&c,&org,&id,"publish").unwrap().is_none(),"{key}");
         assert_eq!(db::run_detail(&c,&org,&id).unwrap()["status"],"blocked");
     }
+    let collision=db::start_pinned_run(&c,&org,&definition,"collision",&json!({"title":"Fix"})).unwrap()["id"].as_str().unwrap().to_string();
+    stale(&c,&collision,3.0);
+    let reserved=format!("base-refresh:{collision}:1");
+    let unrelated=db::start_pinned_run(&c,&org,&definition,&reserved,&json!({"title":"Unrelated"})).unwrap();
+    assert!(db::restart_after_base_move(&c,&org,&collision,"publish").unwrap_err().to_string().contains("base_refresh_key_conflict"));
+    assert_eq!(db::run_detail(&c,&org,&collision).unwrap()["status"],"blocked");
+    assert_eq!(db::run_detail(&c,&org,unrelated["id"].as_str().unwrap()).unwrap(),unrelated);
     let manual:ActionPolicy=serde_json::from_value(json!({"schema_version":1,"action":"fix","mode":"manual","scope":{},"allow":[],"stop":[],"version":2})).unwrap();
     factory_queries::upsert_factory_policy(&c,&org,&user,&manual).unwrap();
     let held=db::start_pinned_run(&c,&org,&definition,"manual-fix",&json!({"title":"Fix"})).unwrap()["id"].as_str().unwrap().to_string();

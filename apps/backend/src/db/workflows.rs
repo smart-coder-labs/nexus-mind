@@ -343,6 +343,8 @@ fn create_run(
     }
     let existing:Option<String>=tx.query_row("SELECT id FROM factory_workflow_runs WHERE org_id=?1 AND workspace_id=?2 AND source_key=?3",params![org,d.workspace_id,source_key],|r|r.get(0)).optional()?;
     if let Some(existing) = existing {
+        // A replacement cannot inherit an unrelated run's task, approvals or larger budget.
+        if budget.is_some() { bail!("base_refresh_key_conflict") }
         return Ok(existing);
     }
     if !factory_enabled(tx, org)? {
