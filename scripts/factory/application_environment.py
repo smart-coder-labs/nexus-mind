@@ -377,7 +377,9 @@ def node_build(config, job, work, run_root, name, service, api):
     recipe = context / 'Dockerfile'
     command = ['npm', 'run', script]
     if 'vite' in text: command += ['--', '--host', '0.0.0.0']
-    recipe.write_text('FROM ' + local_base(config, sdk, job) + '\nCOPY --chown=1000:1000 app /app\nCOPY --chown=1000:1000 packages /nm-packages\nCOPY bootstrap.py /nm-bootstrap.py\nWORKDIR /app\nUSER 1000:1000\nRUN ["python3", "/nm-bootstrap.py"]\nENTRYPOINT ["python3", "/nm-bootstrap.py", "start"]\nEXPOSE ' + str(port) + '\nCMD ' + json.dumps(command) + '\n')
+    # UMask=0077 must not make the trusted helper unreadable to the non-root
+    # build/runtime user. Only this public helper gets a fixed read-only mode.
+    recipe.write_text('FROM ' + local_base(config, sdk, job) + '\nCOPY --chown=1000:1000 app /app\nCOPY --chown=1000:1000 packages /nm-packages\nCOPY --chmod=0444 bootstrap.py /nm-bootstrap.py\nWORKDIR /app\nUSER 1000:1000\nRUN ["python3", "/nm-bootstrap.py"]\nENTRYPOINT ["python3", "/nm-bootstrap.py", "start"]\nEXPOSE ' + str(port) + '\nCMD ' + json.dumps(command) + '\n')
     service['_env'].setdefault('PORT', str(port))
     service['_env'].setdefault('HOST', '0.0.0.0')
     service['_has_seed'] = 'test:seed' in scripts
