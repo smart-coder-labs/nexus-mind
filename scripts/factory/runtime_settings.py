@@ -227,7 +227,7 @@ def suite(config,job,profile,roots,api,git,private_file):
                 if path.endswith('/artifacts'):data=dict(data,name=unique+'-'+data['name'])
                 return api.call(path,data)
         try:
-            passed,items,_=isolated_adapter(config,child,adapter,roots,NamedArtifacts(),git,private_file)
+            passed,items,outcome=isolated_adapter(config,child,adapter,roots,NamedArtifacts(),git,private_file)
         except ValueError as error:
             # A repository Node cannot install deterministically (no committed
             # lockfile, v1 lockfile, workspaces) is not verifiable here: record
@@ -239,6 +239,12 @@ def suite(config,job,profile,roots,api,git,private_file):
         for item in items:item['check']=role
         failed+=[{'check':role,'cwd':check['cwd']} for item in items if item.get('status')=='fail']
         evidence.extend(items);success=success and passed
+        if not passed and outcome.get('output',{}).get('hold') is True:
+            # Infrastructure failures must not burn code-repair attempts or
+            # repeat the same failed dependency install for every check.
+            output=suite_output(evidence,failed)
+            output.update({k:v for k,v in outcome['output'].items() if k in ('hold','error','detail')})
+            return False,evidence,{'input_revision':job['execution']['revision'],'heads':job['execution']['heads'],'output':output,'cost_usd':0}
         if adapter.get('network')=='services':validate_services(config,job)
     required=set(job['step'].get('options',{}).get('required_checks',[]))
     if not required.issubset({e.get('check') for e in evidence}):success=False

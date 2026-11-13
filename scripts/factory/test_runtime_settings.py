@@ -140,6 +140,19 @@ class ValidationPlanSuiteTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertEqual(outcome['output']['failed'],[{'check':'tests','cwd':'api'}])
         self.assertEqual(outcome['output']['checks'],{'not_applicable':2,'fail':1})
+    def test_infrastructure_hold_survives_suite_and_stops_repeated_installs(self):
+        import runtime_settings as rs
+        api=Mock();api.call.return_value={'decisions':[]}
+        outcome={'output':{'hold':True,'error':'node_dependency_install_failed','detail':'ENOSPC'}}
+        with patch('execution.isolated_adapter',return_value=(False,[{'check':'tests-0','status':'fail'}],outcome)) as adapter,patch.object(rs,'repository_facts',return_value=[]):
+            success,evidence,result=rs.suite({'state_dir':'/tmp'},self.job(),self.profile(),[],api,Mock(),Mock())
+        self.assertFalse(success)
+        self.assertTrue(result['output']['hold'])
+        self.assertEqual(result['output']['error'],'node_dependency_install_failed')
+        self.assertEqual(result['output']['detail'],'ENOSPC')
+        self.assertEqual(evidence[0]['check'],'tests')
+        adapter.assert_called_once()
+
     def test_older_backend_runs_every_check(self):
         (_,evidence,_),calls=self.run_suite(None)
         self.assertEqual(len(calls),3)
