@@ -545,6 +545,53 @@ fn parallel_steps_can_finish_while_a_sibling_is_blocked() {
     assert_eq!(db::run_detail(&c, &o, &run).unwrap()["status"], "succeeded");
 }
 #[test]
+fn qa_findings_continue_with_failed_evidence_but_builds_and_infrastructure_still_block() {
+    use nexusmind::{db::workflow_execution as execution, factory::workflows::Outcome};
+    let cases = [
+        ("isolated-functional-qa", "functional", Some(EvidenceStatus::Fail), json!({}), true),
+        ("isolated-design-qa", "design", Some(EvidenceStatus::Fail), json!({}), true),
+        ("isolated-security-qa", "security", Some(EvidenceStatus::Fail), json!({}), true),
+        ("isolated-verification", "tests", Some(EvidenceStatus::Fail), json!({}), false),
+        ("isolated-functional-qa", "functional", Some(EvidenceStatus::Blocked), json!({}), false),
+        ("isolated-functional-qa", "functional", Some(EvidenceStatus::Fail), json!({"hold":true}), false),
+        ("isolated-functional-qa", "functional", Some(EvidenceStatus::Fail), json!({"error":"node_dependency_install_failed"}), false),
+        ("isolated-functional-qa", "tests", Some(EvidenceStatus::Fail), json!({}), false),
+        ("isolated-functional-qa", "functional", None, json!({}), false),
+    ];
+    for (adapter, check, state, output, reports_only) in cases {
+        let (c, org, user, runner, workspace) = setup();
+        let mut qa = step("qa", &[], StepKind::Check);
+        qa.adapter = adapter.into();
+        qa.options = json!({"required_checks":[check]});
+        let definition = define(&c, &org, &user, &workspace, vec![qa, step("gate", &["qa"], StepKind::Gate)]);
+        let run = run(&c, &org, &definition);
+        let capabilities = vec![format!("adapter:{adapter}"), "adapter:test".into()];
+        let job = db::claim(&c, &org, &runner, &capabilities, 100).unwrap().unwrap();
+        let fence = job["lease_token"].as_str().unwrap();
+        let artifact = execution::put_artifact(&c, &org, &runner, &run, "qa", fence, "qa.json", "application/json", b"{}", 101).unwrap();
+        let heads = BTreeMap::from([("api".into(), "a".repeat(40))]);
+        let evidence: Vec<_> = state.into_iter().map(|status| Evidence {
+            check: check.into(), status, commits: heads.clone(), artifact_digest: artifact["digest"].as_str().unwrap().into(),
+        }).collect();
+        let outcome = Outcome { input_revision: 0, heads, output, cost_usd: 0.0 };
+        db::complete_with_outcome(&c, &org, &runner, &run, "qa", fence, false, &evidence, Some(&outcome), 102).unwrap();
+        let detail = db::run_detail(&c, &org, &run).unwrap();
+        let qa = detail["steps"].as_array().unwrap().iter().find(|s| s["id"] == "qa").unwrap();
+        assert_eq!(qa["status"], if reports_only { "succeeded" } else { "blocked" }, "{adapter} {check}");
+        assert_eq!(qa["result"]["qa_report_only"] == true, reports_only);
+        assert_eq!(detail["execution"]["repairs"], 0);
+        if reports_only {
+            assert_eq!(qa["result"]["evidence"][0]["status"], "fail", "QA must not be relabeled as passed");
+            let next = db::claim(&c, &org, &runner, &capabilities, 103).unwrap().unwrap();
+            assert_eq!(next["step"]["id"], "gate");
+            assert_eq!(next["dependency_results"]["qa"]["qa_report_only"], true);
+        } else {
+            assert_eq!(detail["status"], "blocked");
+        }
+    }
+}
+
+#[test]
 fn changed_heads_are_fenced_and_review_failure_queues_a_fresh_bounded_repair() {
     use nexusmind::db::workflow_execution as execution;
     use nexusmind::factory::workflows::Outcome;

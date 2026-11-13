@@ -18,6 +18,7 @@ const status = (s: string) =>
 function StepFailure({ result }: { result: unknown }) {
   if (!result || typeof result !== 'object') return null
   const data = result as Record<string, unknown>
+  if (data.qa_report_only === true) return <p role="status" className="mt-3 text-sm text-muted-foreground">QA detectó hallazgos no bloqueantes. Se incluirán en el PR; las comprobaciones fallidas no se marcaron como aprobadas.</p>
   const output = data.output && typeof data.output === 'object' ? data.output as Record<string, unknown> : {}
   const error = typeof output.error === 'string' ? output.error : typeof data.reason === 'string' ? data.reason : ''
   if (!error) return null
@@ -82,6 +83,7 @@ export function ExecutionDetail({
       >
         {run.snapshot.definition.steps.map((step) => {
           const state = run.steps.find((s) => s.id === step.id)
+          const qaReported = !!state?.result && typeof state.result === 'object' && (state.result as Record<string, unknown>).qa_report_only === true
           const role = (
             {
               'isolated-investigator': 'investigation',
@@ -95,7 +97,7 @@ export function ExecutionDetail({
             <li key={step.id} className="p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-medium">{step.name}</h3>
-                <Badge>{status(state?.status ?? 'pending')}</Badge>
+                <Badge variant={qaReported ? 'warning' : 'default'}>{qaReported ? 'Completada con hallazgos QA' : status(state?.status ?? 'pending')}</Badge>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 {step.adapter} · intento {state?.attempt ?? 0} de {step.max_attempts}

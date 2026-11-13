@@ -213,15 +213,24 @@ def suite(config,job,profile,roots,api,git,private_file):
             digest=skip_evidence(api,job,'validation-plan.json',{'decisions':decisions})
             for name,cwd in sorted(skipped):
                 evidence.append({'check':name,'status':'not_applicable','commits':job['execution']['heads'],'artifact_digest':digest})
-    for index,check in enumerate(profile['checks']):
+    from itertools import groupby
+    def isolation(entry):
+        check=entry[1]
+        return (check['image'],check['cwd'],tuple(check.get('environment_refs',[])),check['name'] in ('functional','design','security'))
+    active=[(i,c) for i,c in enumerate(profile['checks']) if (c['name'],c['cwd']) not in skipped]
+    # Adjacent checks with identical isolation share one disposable checkout and
+    # dependency install. Preserve order; cap batches below result/evidence limits.
+    groups=[list(entries) for _,entries in groupby(active,key=isolation)]
+    for group in (entries[i:i+32] for entries in groups for i in range(0,len(entries),32)):
         if time.monotonic()-start>=job['step']['timeout_seconds']:raise RuntimeSettingsError('Suite time budget exceeded')
-        if (check['name'],check['cwd']) in skipped:continue
-        role=check['name'];unique=role+'-'+str(index);child=copy.deepcopy(job)
-        child['step'].setdefault('options',{})['required_checks']=[unique]
+        check=group[0][1]
+        checks={c['name']+'-'+str(i):c for i,c in group}
+        unique=next(iter(checks));child=copy.deepcopy(job)
+        child['step'].setdefault('options',{})['required_checks']=list(checks)
         child['step']['timeout_seconds']=max(1,int(job['step']['timeout_seconds']-(time.monotonic()-start)))
-        adapter={'kind':'checks','image':check['image'],'environment_refs':check.get('environment_refs',[]),'checks':[{'name':unique,'cwd':check['cwd'],'command':check['command']}]}
+        adapter={'kind':'checks','image':check['image'],'environment_refs':check.get('environment_refs',[]),'checks':[{'name':name,'cwd':c['cwd'],'command':c['command']} for name,c in checks.items()]}
         if node_bootstrap_image(config, check['image']):adapter['node_bootstrap']=True
-        if role in ('functional','design','security'):adapter['network']='services';validate_services(config,job)
+        if isolation(group[0])[-1]:adapter['network']='services';validate_services(config,job)
         class NamedArtifacts:
             def call(self,path,data=None):
                 if path.endswith('/artifacts'):data=dict(data,name=unique+'-'+data['name'])
@@ -233,11 +242,15 @@ def suite(config,job,profile,roots,api,git,private_file):
             # lockfile, v1 lockfile, workspaces) is not verifiable here: record
             # it as not applicable with its reason instead of aborting the suite.
             if not (error.args and error.args[0] in UNPROFILED_NODE):raise
-            digest=skip_evidence(api,job,unique+'-not-applicable.json',{'check':unique,'cwd':check['cwd'],'code':error.args[0],'reason':str(error)})
-            evidence.append({'check':role,'status':'not_applicable','commits':job['execution']['heads'],'artifact_digest':digest})
+            digest=skip_evidence(api,job,unique+'-not-applicable.json',{'checks':list(checks),'cwd':check['cwd'],'code':error.args[0],'reason':str(error)})
+            for c in checks.values():
+                evidence.append({'check':c['name'],'status':'not_applicable','commits':job['execution']['heads'],'artifact_digest':digest})
             continue
-        for item in items:item['check']=role
-        failed+=[{'check':role,'cwd':check['cwd']} for item in items if item.get('status')=='fail']
+        for item in items:
+            if item.get('check') not in checks:raise ValueError('Unexpected grouped check evidence')
+            original=checks[item['check']]
+            item['check']=original['name']
+            if item.get('status')=='fail':failed.append({'check':original['name'],'cwd':original['cwd']})
         evidence.extend(items);success=success and passed
         if not passed and outcome.get('output',{}).get('hold') is True:
             # Infrastructure failures must not burn code-repair attempts or

@@ -233,7 +233,7 @@ def main():
                 if failure: result['detail'] = failure[1]
     elif mode == 'checks':
         checks = []
-        prepared_repositories=set()
+        preparations={}
         for check in adapter['checks']:
             if check.get('not_applicable_reason'):
                 checks.append({'name':check['name'],'status':'not_applicable','reason':check['not_applicable_reason'],'exit_code':None})
@@ -242,12 +242,12 @@ def main():
             cwd = cwd.resolve()
             if cwd != Path('/work') and Path('/work') not in cwd.parents:
                 raise ValueError('Unsafe check directory')
-            if adapter.get('node_bootstrap') and str(cwd) not in prepared_repositories:
-                preparation=bootstrap_node(cwd,output)
-                if preparation:
-                    checks.append({'name':check['name'],'exit_code':preparation,'preparation_error':'node_dependency_install_failed'})
+            if adapter.get('node_bootstrap'):
+                if str(cwd) not in preparations:
+                    preparations[str(cwd)]=bootstrap_node(cwd,output)
+                if preparations[str(cwd)]:
+                    checks.append({'name':check['name'],'exit_code':preparations[str(cwd)],'preparation_error':'node_dependency_install_failed'})
                     continue
-                prepared_repositories.add(str(cwd))
             announce('check ' + check['name'] + ': inicio')
             started = time.monotonic()
             with (output / (check['name'] + '.log')).open('wb') as log:

@@ -906,8 +906,20 @@ pub fn complete_with_outcome(
         && !evidence
             .iter()
             .any(|e| matches!(e.status, EvidenceStatus::Fail | EvidenceStatus::Blocked));
-    let status = if passed { "succeeded" } else { "blocked" };
-    let result = json!({"evidence":evidence,"heads":commits,"input_revision":revision,"output":outcome.output,"cost_usd":outcome.cost_usd,"reason":if success && !verified {Some("missing_passing_evidence")} else {outcome.output["error"].as_str()}});
+    let qa_report = !passed && !changed && step.qa_check().is_some_and(|check| {
+        outcome.output["hold"] != true
+            && outcome.output["error"].is_null()
+            && evidence.iter().any(|e| e.status == EvidenceStatus::Fail)
+            && evidence.iter().all(|e| e.check == check && (applicable(e) || e.status == EvidenceStatus::Fail))
+    });
+    let completed = passed || qa_report;
+    let status = if completed { "succeeded" } else { "blocked" };
+    let mut result = json!({"evidence":evidence,"heads":commits,"input_revision":revision,"output":outcome.output,"cost_usd":outcome.cost_usd,"reason":if success && !verified {Some("missing_passing_evidence")} else {outcome.output["error"].as_str()}});
+    if qa_report {
+        // Completion is not a QA pass: retain every failing evidence item.
+        result["qa_report_only"] = json!(true);
+        result["reason"] = json!("qa_findings_reported");
+    }
     let n=tx.execute("UPDATE factory_workflow_steps SET status=?1,result_json=?2,lease_token=NULL,lease_until=NULL WHERE run_id=?3 AND step_id=?4 AND status='running' AND lease_token=?5 AND lease_until>?6",params![status,result.to_string(),run,step_id,fence,now])?;
     if n != 1 {
         bail!("lease_conflict");
@@ -926,7 +938,7 @@ pub fn complete_with_outcome(
             json!({"revision":revision+1,"heads":commits}),
         )?;
     }
-    if !passed {
+    if !completed {
         tx.execute(
             "UPDATE factory_workflow_runs SET status='blocked' WHERE id=?1",
             [run],
@@ -949,14 +961,16 @@ pub fn complete_with_outcome(
         &tx,
         run,
         Some(step_id),
-        if passed {
+        if qa_report {
+            "step.qa_reported"
+        } else if passed {
             "step.succeeded"
         } else {
             "step.blocked"
         },
         result.clone(),
     )?;
-    if !passed
+    if !completed
         && matches!(step.kind, StepKind::Check | StepKind::Review)
         && outcome.output.get("hold").and_then(Value::as_bool) != Some(true)
     {

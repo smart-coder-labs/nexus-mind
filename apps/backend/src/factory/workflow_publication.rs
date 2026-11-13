@@ -179,6 +179,42 @@ fn verified(
     }
     Ok(gate && roles.contains("tests") && roles.contains("build"))
 }
+
+fn qa_notes(detail: &Value) -> String {
+    let mut notes = Vec::new();
+    for step in detail["steps"].as_array().into_iter().flatten() {
+        let result = &step["result"];
+        if result["qa_report_only"] != true || result["heads"] != detail["execution"]["heads"] {
+            continue;
+        }
+        for evidence in result["evidence"].as_array().into_iter().flatten() {
+            if evidence["status"] == "fail" {
+                notes.push(format!("- `{}` / `{}`: **failed**. Report artifact: `{}`.",
+                    step["id"].as_str().unwrap_or("qa"),
+                    evidence["check"].as_str().unwrap_or("qa"),
+                    evidence["artifact_digest"].as_str().unwrap_or("unknown")));
+            }
+        }
+    }
+    if notes.is_empty() { return String::new(); }
+    let total = notes.len();
+    notes.truncate(50);
+    format!("## QA findings (non-blocking)\n\nThese checks failed; they were not marked as passed. Build/tests remain required.\nShowing {} of {total} failed checks. Full evidence for change set revision {} is retained in NexusMind run `{}`:\n\n{}\n",
+        notes.len(), detail["execution"]["revision"], detail["id"].as_str().unwrap_or(""), notes.join("\n"))
+}
+
+fn with_qa_notes(body: &str, notes: &str) -> Result<String> {
+    const START: &str = "<!-- nexusmind:qa:start -->";
+    const END: &str = "<!-- nexusmind:qa:end -->";
+    let section = if notes.is_empty() { String::new() } else { format!("{START}\n{notes}{END}") };
+    if let Some(start) = body.find(START) {
+        let end = body[start..].find(END).ok_or_else(|| anyhow::anyhow!("qa_note_marker_conflict"))? + start + END.len();
+        let mut updated = body.to_string();
+        updated.replace_range(start..end, &section);
+        return Ok(updated);
+    }
+    Ok(if section.is_empty() { body.to_string() } else { format!("{body}\n\n{section}") })
+}
 pub fn backend_account_enabled(org: &str) -> bool {
     std::env::var("FACTORY_GITHUB_PUBLISH_ORG_ID")
         .ok()
@@ -492,6 +528,7 @@ async fn publish_using(
     )?;
     authorize(store, org, runner, run, step, request, &paths)?;
     let mut published = Vec::new();
+    let qa = qa_notes(&initial);
     let check_authority = || -> Result<()> {
         let (_, current) = authorize(store, org, runner, run, step, request, &paths)?;
         if current != credential {
@@ -612,6 +649,7 @@ async fn publish_using(
                 .as_str()
                 .unwrap_or("NexusMind change");
             let body=format!("NexusMind workflow `{run}`.\n\nVerified change set revision {}.\n\n{}\n\nThis is a draft. Each repository's PR belongs to the same integrated change set; do not merge independently without checking compatibility. NexusMind does not merge or deploy this workflow.\n<!-- nexusmind:workflow:{run} -->",request.revision,initial["execution"]["heads"]);
+            let body = with_qa_notes(&body, &qa)?;
             pull=github.post(&format!("{prefix}/pulls"),json!({"title":title.chars().take(200).collect::<String>(),"body":body,"head":name,"base":default,"draft":true})).await.ok();
             if pull.is_none() {
                 pull = github
@@ -634,6 +672,12 @@ async fn publish_using(
         let number = pull["number"]
             .as_i64()
             .ok_or_else(|| anyhow::anyhow!("pr_number_missing"))?;
+        let previous_body = pull["body"].as_str().unwrap_or("");
+        let body = with_qa_notes(previous_body, &qa)?;
+        if body != previous_body {
+            check_authority()?;
+            github.call(reqwest::Method::PATCH, &format!("{prefix}/pulls/{number}"), Some(json!({"body":body}))).await?;
+        }
         let pending = json!({"repository":repository,"number":number,"url":pull["html_url"],"head_sha":head,"branch":name,"ci":{"status":"pending"}});
         {
             let h = store.conn();

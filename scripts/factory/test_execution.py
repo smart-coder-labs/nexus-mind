@@ -60,6 +60,28 @@ class RepoSecretsTests(unittest.TestCase):
         with self.assertRaises(execution.ControlPlaneError):execution.repo_secrets(api,{'run_id':'r','step':{'id':'s'},'lease_token':'t'})
 
 
+class AdvisoryQAGateTests(unittest.TestCase):
+    def test_reported_qa_failure_passes_gate_without_relabeling_evidence(self):
+        heads={'api':'a'*40}
+        result={'heads':heads,'qa_report_only':True,'evidence':[{'check':'functional','status':'fail','commits':heads}]}
+        job={'run_id':'r','lease_token':'t','step':{'id':'gate','depends_on':['qa']},
+             'execution':{'heads':heads,'revision':1},'dependency_results':{'qa':result}}
+        passed,evidence,outcome=delivery.gate(job,API())
+        self.assertTrue(passed)
+        self.assertEqual(outcome['output']['qa_findings'],['qa'])
+        self.assertEqual(result['evidence'][0]['status'],'fail')
+        self.assertEqual(evidence[0]['status'],'pass','the gate passed, not the QA check')
+        for marker,status,commits in ((False,'fail',heads),(True,'blocked',heads),(True,'fail',{'api':'b'*40})):
+            result.update(qa_report_only=marker,evidence=[{'check':'functional','status':status,'commits':commits}])
+            with self.assertRaises(ValueError):delivery.gate(job,API())
+        result.update(qa_report_only=True,evidence=[])
+        with self.assertRaises(ValueError):delivery.gate(job,API())
+        result['evidence']=[{'check':'functional','status':'fail','commits':heads}]
+        job['step']['depends_on'].append('verify')
+        job['dependency_results']['verify']={'heads':heads,'evidence':[{'check':'tests','status':'fail','commits':heads}]}
+        with self.assertRaises(ValueError):delivery.gate(job,API())
+
+
 class ExecutionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

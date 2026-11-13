@@ -152,13 +152,18 @@ def outcome(job, result):
 
 def gate(job, api):
     heads = job['execution']['heads']
+    qa_findings = []
     for name in job['step']['depends_on']:
         result = job['dependency_results'].get(name)
         if not result or result.get('heads') != heads or not result.get('evidence'):
             raise ValueError('Gate dependency has missing or stale evidence')
-        if any(e['status'] not in ('pass', 'not_applicable') or e['commits'] != heads for e in result['evidence']):
+        # This marker is set only by the backend after validating a dedicated QA
+        # phase, its artifacts and SHA. Never waive missing/blocked/stale evidence.
+        allowed = ('pass', 'not_applicable', 'fail') if result.get('qa_report_only') is True else ('pass', 'not_applicable')
+        if any(e['status'] not in allowed or e['commits'] != heads for e in result['evidence']):
             raise ValueError('Gate dependency failed')
-    report = {'verified': True, 'heads': heads, 'dependencies': job['step']['depends_on']}
+        if result.get('qa_report_only') is True: qa_findings.append(name)
+    report = {'verified': True, 'heads': heads, 'dependencies': job['step']['depends_on'], 'qa_findings': qa_findings}
     a = upload(api, job, 'verification-gate.json', 'application/json', json.dumps(report, sort_keys=True).encode())
     return True, [{'check': 'gate', 'status': 'pass', 'commits': heads, 'artifact_digest': a['digest']}], outcome(job, report)
 
