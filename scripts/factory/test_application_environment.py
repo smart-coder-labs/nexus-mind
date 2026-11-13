@@ -129,12 +129,17 @@ volumes:
         job={'run_id':'run','lease_token':'lease','step':{'id':'environment','timeout_seconds':60}}
         service=app.plan(self.work,self.repos,entrypoints=['api/package.json'])['api']
         npmrc='@private:registry=https://npm.pkg.github.com/\n//npm.pkg.github.com/:_authToken=fixture-private-registry-token\n'
-        with patch('execution.repo_secrets',return_value={'api':{'npmrc':npmrc}}),patch('node_environment.prepare') as prepare,patch.object(app,'local_base',return_value=image):
-            app.node_build(config,job,self.work,run_root,'api',service,Mock())
+        previous_umask=os.umask(0o077)
+        try:
+            with patch('execution.repo_secrets',return_value={'api':{'npmrc':npmrc}}),patch('node_environment.prepare') as prepare,patch.object(app,'local_base',return_value=image):
+                app.node_build(config,job,self.work,run_root,'api',service,Mock())
+        finally:os.umask(previous_umask)
         self.assertEqual(prepare.call_args.kwargs['npmrc'],{'api':npmrc})
         self.assertEqual(prepare.call_args.args[3],run_root.parent/'.node-cache')
         self.assertIn('fixture-private-registry-token',service['_redactions'])
         context=run_root/'application-node-api'
+        self.assertEqual((context/'bootstrap.py').stat().st_mode & 0o777,0o600,'reproduce service UMask=0077')
+        self.assertIn('COPY --chmod=0444 bootstrap.py /nm-bootstrap.py',(context/'Dockerfile').read_text())
         self.assertFalse((context/'app/.env').exists())
         for path in context.rglob('*'):
             if path.is_file():self.assertNotIn('fixture-private-registry-token',path.read_text())
@@ -232,6 +237,8 @@ volumes:
 
     @unittest.skipUnless(os.environ.get('FACTORY_NODE_TEST_IMAGE'), 'Set FACTORY_NODE_TEST_IMAGE for real offline npm/build/start/test:seed integration')
     def test_real_node_manifest_build_and_declared_test_fixture(self):
+        previous_umask=os.umask(0o077)
+        self.addCleanup(os.umask,previous_umask)
         from test_execution import ExecutionTests
         import runner
         import delivery
@@ -247,17 +254,23 @@ volumes:
         package = {'name': 'candidate-app', 'version': '1.0.0', 'config': {'port': 8080}, 'scripts': {'start': 'node server.js', 'build': 'node -e "require(\'fs\').writeFileSync(\'built.txt\',\'candidate\')"', 'test:seed': 'node -e "require(\'fs\').writeFileSync(\'/tmp/fixture\',\'seeded\')"'}}
         (repo / 'package.json').write_text(json.dumps(package))
         (repo / 'package-lock.json').write_text(json.dumps({'name': 'candidate-app', 'version': '1.0.0', 'lockfileVersion': 3, 'packages': {'': {'name': 'candidate-app', 'version': '1.0.0'}}}))
-        (repo / 'server.js').write_text("const fs=require('fs');require('http').createServer((q,r)=>r.end(fs.readFileSync('built.txt','utf8')+':'+(fs.existsSync('/tmp/fixture')?'seeded':'empty')+':'+String(process.env.NEXUSMIND_API_KEY))).listen(Number(process.env.PORT),'0.0.0.0')")
+        (repo / 'server.js').write_text("const fs=require('fs');require('http').createServer((q,r)=>r.end(fs.readFileSync('built.txt','utf8')+':'+(fs.existsSync('/tmp/fixture')?'seeded':'empty')+':'+String(process.env.NEXUSMIND_API_KEY)+':'+process.getuid())).listen(Number(process.env.PORT),'0.0.0.0')")
         runner.git(['add', '.'], repo)
         runner.git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'candidate application'], repo)
         fixture.job['execution']['heads']['api'] = runner.git(['rev-parse', 'HEAD'], repo)
         fixture.job['step'] = {'id': 'environment', 'kind': 'check', 'adapter': 'integrated-environment', 'timeout_seconds': 120}
+        # Simulate a runner UID different from the reviewed build UID. Do not
+        # patch os.getuid: private host files must retain their real ownership.
+        restrictions=delivery.restrictions
+        def different_host_uid():
+            limits=restrictions();limits[1]='2001:2001';return limits
         try:
-            self.assertTrue(delivery.services(fixture.config, fixture.job, [fixture.root], fixture.api, runner.git, runner.private_file)[0])
+            with patch.object(delivery,'restrictions',side_effect=different_host_uid):
+                self.assertTrue(delivery.services(fixture.config, fixture.job, [fixture.root], fixture.api, runner.git, runner.private_file)[0])
         except Exception:
             self.fail('\n'.join(data.decode() for name, data in fixture.api.artifacts if name.endswith('.log')))
         fixture.job['step'] = {'id': 'functional', 'kind': 'check', 'adapter': 'qa', 'write_repositories': [], 'timeout_seconds': 60}
-        adapter = {'kind': 'checks', 'image': image, 'network': 'services', 'checks': [{'name': 'functional', 'command': ['python3', '-c', "import urllib.request; assert urllib.request.urlopen('http://api:8080').read()==b'candidate:seeded:undefined'"]}]}
+        adapter = {'kind': 'checks', 'image': image, 'network': 'services', 'checks': [{'name': 'functional', 'command': ['python3', '-c', "import urllib.request; assert urllib.request.urlopen('http://api:8080').read()==b'candidate:seeded:undefined:1000'"]}]}
         self.assertTrue(execution.isolated_adapter(fixture.config, fixture.job, adapter, [fixture.root], fixture.api, runner.git, runner.private_file)[0])
         self.assertTrue(any(name.startswith('test-seed-') for name, _ in fixture.api.artifacts))
 

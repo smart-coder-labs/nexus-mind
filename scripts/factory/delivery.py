@@ -57,6 +57,9 @@ def services(config, job, roots, api, git, private_file):
                 raise ValueError('Invalid service cwd')
             limits = restrictions()
             if automatic and service.get('_postgres'): limits[1] = 'postgres'
+            # The trusted Node recipe builds private (umask 077) source as UID
+            # 1000. Keep that non-root UID at runtime, not the host runner's UID.
+            if automatic and service.get('_generated') is True: limits[1] = '1000:1000'
             command = [runtime, 'run', '-d', '--pull=never', '--name', name, *limits,
                        '--network', network, '--network-alias', alias]
             if automatic:
