@@ -282,6 +282,35 @@ class ExecutionTests(unittest.TestCase):
         self.assertNotEqual(outcome['heads']['api'], self.job['execution']['heads']['api'])
         self.assertEqual((Path(self.config['state_dir'])/self.job['run_id']/'api'/'docs'/'requested.md').read_text(), '# Requested document\n')
 
+    def test_node_checks_mount_disposable_disk_scratch(self):
+        self.job['step'].update(id='verify',kind='check',write_repositories=[])
+        self.config['node_memory_mb']=8192
+        adapter={'kind':'checks','node_bootstrap':True,'image':'sha256:'+'a'*64,
+                 'checks':[{'name':'tests','cwd':'api','command':['npm','test']}]}
+        captured=[]
+        def stop(command,*args,**kwargs):
+            captured.extend(command)
+            scratch=next(value for value in command if value.endswith(',dst=/scratch'))
+            self.assertTrue(Path(scratch.split('src=',1)[1].split(',dst=',1)[0]).is_dir())
+            raise RuntimeError('stop at isolated container')
+        with patch.object(execution,'node_bootstrap_image',return_value=True),patch('node_environment.prepare'),patch('agent_runtime.stage_runtime'),patch.object(execution,'pinned_image',return_value=adapter['image']),patch.object(execution,'monitor',side_effect=stop),patch.object(execution.os,'getuid',return_value=1000):
+            with self.assertRaisesRegex(RuntimeError,'stop at isolated container'):
+                execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertIn('--memory=8192m',captured)
+        self.assertIn('none',captured)
+        self.assertFalse(list((Path(self.config['state_dir'])/self.job['run_id']).glob('step-*')))
+
+    def test_node_resource_budget_is_bounded_and_operator_tunable(self):
+        with patch.object(execution.os, 'getuid', return_value=1000):
+            self.assertIn('--memory=6144m', execution.restrictions(True))
+            self.assertIn('fsize=1073741824:1073741824', execution.restrictions(True))
+            self.assertIn('nofile=8192:8192', execution.restrictions(True))
+            self.assertIn('core=0:0', execution.restrictions(True))
+            self.assertIn('--memory=8192m', execution.restrictions(True, 8192))
+            self.assertIn('--memory=2048m', execution.restrictions(False))
+            for value in (True, 0, '8192', 32769):
+                with self.assertRaises(ValueError): execution.restrictions(True, value)
+
     def test_dependency_preparation_emits_a_backend_accepted_event(self):
         self.job['step'].update(id='verify',kind='check',write_repositories=[])
         adapter = {'kind':'checks','node_bootstrap':True,'image':'sha256' + ':' + 'a'*64,

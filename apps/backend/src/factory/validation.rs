@@ -187,7 +187,7 @@ pub fn scope_from_classification(classified: &Value) -> Option<&'static str> {
 
 /// Failures no phase can fix by running again: re-running only spends the
 /// repair budget. They block immediately with their reason.
-pub const INFRASTRUCTURE_FAILURES: [&str; 1] = ["model_unavailable"];
+pub const INFRASTRUCTURE_FAILURES: [&str; 2] = ["model_unavailable", "node_dependency_install_failed"];
 
 pub fn infrastructure_failure(step_result: &Value) -> Option<&str> {
     let code = step_result.pointer("/output/error").and_then(Value::as_str)?;
@@ -338,6 +338,7 @@ mod tests {
     #[test]
     fn an_unavailable_model_is_infrastructure_not_a_phase_to_retry() {
         assert_eq!(infrastructure_failure(&json!({"output": {"error": "model_unavailable"}})), Some("model_unavailable"));
+        assert_eq!(infrastructure_failure(&json!({"output": {"error": "node_dependency_install_failed", "hold": true}})), Some("node_dependency_install_failed"));
         assert_eq!(infrastructure_failure(&json!({"output": {"error": "agent_invalid_json"}})), None);
         assert_eq!(infrastructure_failure(&Value::Null), None);
     }
