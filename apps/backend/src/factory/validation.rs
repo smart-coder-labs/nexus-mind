@@ -191,7 +191,9 @@ pub const INFRASTRUCTURE_FAILURES: [&str; 2] = ["model_unavailable", "node_depen
 
 pub fn infrastructure_failure(step_result: &Value) -> Option<&str> {
     let code = step_result.pointer("/output/error").and_then(Value::as_str)?;
-    INFRASTRUCTURE_FAILURES.contains(&code).then_some(code)
+    let control_plane = step_result.pointer("/output/exception_type").and_then(Value::as_str) == Some("ControlPlaneError")
+        && step_result.pointer("/output/hold").and_then(Value::as_bool) == Some(true);
+    (INFRASTRUCTURE_FAILURES.contains(&code) || control_plane).then_some(code)
 }
 
 /// A phase Jev may send a failure back to.
@@ -339,6 +341,10 @@ mod tests {
     fn an_unavailable_model_is_infrastructure_not_a_phase_to_retry() {
         assert_eq!(infrastructure_failure(&json!({"output": {"error": "model_unavailable"}})), Some("model_unavailable"));
         assert_eq!(infrastructure_failure(&json!({"output": {"error": "node_dependency_install_failed", "hold": true}})), Some("node_dependency_install_failed"));
+        for code in ["adapter_http_500", "adapter_http_503", "adapter_network_TimeoutError", "lease_conflict", "storage_unavailable"] {
+            assert_eq!(infrastructure_failure(&json!({"output": {"error": code, "exception_type": "ControlPlaneError", "hold": true}})), Some(code));
+        }
+        assert_eq!(infrastructure_failure(&json!({"output": {"error": "adapter_http_500"}})), None, "require the structured infrastructure diagnostic, not a guessed error prefix");
         assert_eq!(infrastructure_failure(&json!({"output": {"error": "agent_invalid_json"}})), None);
         assert_eq!(infrastructure_failure(&Value::Null), None);
     }

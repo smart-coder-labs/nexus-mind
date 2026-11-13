@@ -545,6 +545,27 @@ fn parallel_steps_can_finish_while_a_sibling_is_blocked() {
     assert_eq!(db::run_detail(&c, &o, &run).unwrap()["status"], "succeeded");
 }
 #[test]
+fn heartbeat_infrastructure_hold_never_asks_for_code_repair() {
+    use nexusmind::factory::workflows::Outcome;
+    let (c, org, user, runner, workspace) = setup();
+    let definition = define(&c, &org, &user, &workspace, vec![step("implement", &[], StepKind::Agent)]);
+    let run = run(&c, &org, &definition);
+    let job = db::claim(&c, &org, &runner, &["adapter:test".into()], 100).unwrap().unwrap();
+    let outcome = Outcome {
+        input_revision: 0,
+        heads: BTreeMap::from([("api".into(), "a".repeat(40))]),
+        output: json!({"error":"adapter_http_500","exception_type":"ControlPlaneError","hold":true,"request":"POST /runs/:run/steps/:step/lease"}),
+        cost_usd: 0.0,
+    };
+    db::complete_with_outcome(&c, &org, &runner, &run, "implement", job["lease_token"].as_str().unwrap(), false, &[], Some(&outcome), 101).unwrap();
+    assert!(db::recovery_context(&c, &org, &run, "implement").unwrap().is_none());
+    let detail = db::run_detail(&c, &org, &run).unwrap();
+    assert_eq!(detail["status"], "blocked");
+    assert_eq!(detail["execution"]["repairs"], 0);
+    assert!(detail["events"].as_array().unwrap().iter().any(|e| e["kind"] == "recovery.skipped" && e["payload"]["reason"] == "infrastructure" && e["payload"]["code"] == "adapter_http_500"));
+}
+
+#[test]
 fn qa_findings_continue_with_failed_evidence_but_builds_and_infrastructure_still_block() {
     use nexusmind::{db::workflow_execution as execution, factory::workflows::Outcome};
     let cases = [
