@@ -291,10 +291,25 @@ fn start_with_sources(
     task: &Value,
     refresh_sources: bool,
 ) -> Result<Value> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let run = create_run(&tx, org, definition, source_key, task, refresh_sources, None)?;
+    tx.commit()?;
+    run_detail(conn, org, &run)
+}
+
+/// Shared validation/insertion, also used inside the atomic base-refresh handoff.
+fn create_run(
+    tx: &Connection,
+    org: &str,
+    definition: &str,
+    source_key: &str,
+    task: &Value,
+    refresh_sources: bool,
+    budget: Option<f64>,
+) -> Result<String> {
     if source_key.is_empty() || source_key.len() > 512 || task.to_string().len() > 65536 {
         bail!("invalid_task");
     }
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let (text, creator): (String, String) = tx
         .query_row(
             "SELECT definition_json,created_by FROM factory_workflow_definitions WHERE id=?1 AND org_id=?2",
@@ -304,7 +319,7 @@ fn start_with_sources(
         .optional()?
         .ok_or_else(|| anyhow::anyhow!("not_found"))?;
     let mut d: Definition = serde_json::from_str(&text)?;
-    let mut w = workspace_by_id(&tx, org, &d.workspace_id)?;
+    let mut w = workspace_by_id(tx, org, &d.workspace_id)?;
     if w["confirmed_revision"].is_null() || w["confirmed_revision"] != w["inventory_revision"] {
         bail!("workspace_not_confirmed");
     }
@@ -312,8 +327,12 @@ fn start_with_sources(
         w["repositories"].clone(),
     )?)
     .map_err(anyhow::Error::msg)?;
+    if let Some(budget) = budget {
+        if !budget.is_finite() || budget <= 0.0 { bail!("invalid_cost_budget") }
+        d.max_cost_usd = d.max_cost_usd.min(budget);
+    }
     scope_github_issue_run(&mut d, &mut w, task)?;
-    crate::automation::agent_runtime_workflows::verify(&tx, org, &creator, &d)?;
+    crate::automation::agent_runtime_workflows::verify(tx, org, &creator, &d)?;
     let active_runner: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM factory_runners WHERE id=?1 AND org_id=?2 AND revoked=0)",
         params![w["runner_id"].as_str(), org],
@@ -324,10 +343,11 @@ fn start_with_sources(
     }
     let existing:Option<String>=tx.query_row("SELECT id FROM factory_workflow_runs WHERE org_id=?1 AND workspace_id=?2 AND source_key=?3",params![org,d.workspace_id,source_key],|r|r.get(0)).optional()?;
     if let Some(existing) = existing {
-        tx.commit()?;
-        return run_detail(conn, org, &existing);
+        // A replacement cannot inherit an unrelated run's task, approvals or larger budget.
+        if budget.is_some() { bail!("base_refresh_key_conflict") }
+        return Ok(existing);
     }
-    if !factory_enabled(&tx, org)? {
+    if !factory_enabled(tx, org)? {
         bail!("factory_paused")
     }
     if w["runtime"]["revision"].as_u64().unwrap_or(0) > 0
@@ -345,7 +365,7 @@ fn start_with_sources(
     {
         let config: super::workflow_runtime::RuntimeConfig =
             serde_json::from_value(w["runtime"]["config"].clone())?;
-        let resolved = super::workflow_runtime::resolve_bindings(&tx, org, &config)?;
+        let resolved = super::workflow_runtime::resolve_bindings(tx, org, &config)?;
         super::workflow_runtime::validate(
             &resolved,
             &serde_json::from_value::<Vec<Repository>>(w["repositories"].clone())?
@@ -393,15 +413,72 @@ fn start_with_sources(
         )?;
     }
     event(
-        &tx,
+        tx,
         &run,
         None,
         "run.queued",
         json!({"source_key":source_key}),
     )?;
-    tx.commit()?;
-    run_detail(conn, org, &run)
+    Ok(run)
 }
+/// A moved publication base needs fresh sources/evidence, never a code repair or
+/// a bypass of publication verification. Keep a bounded, budget-preserving lineage.
+pub fn restart_after_base_move(conn: &Connection, org: &str, run: &str, step_id: &str) -> Result<Option<String>> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let row: Option<(String, String, String, String, f64)> = tx.query_row(
+        "SELECT status,definition_id,task_json,snapshot_json,cost_usd FROM factory_workflow_runs WHERE id=?1 AND org_id=?2",
+        params![run, org], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ).optional()?;
+    let Some((status, definition, task, snapshot, spent)) = row else { return Ok(None) };
+    if status != "blocked" { return Ok(None) }
+    let snapshot = parse(snapshot)?;
+    let d: Definition = serde_json::from_value(snapshot["definition"].clone())?;
+    if !d.steps.iter().any(|s| s.id == step_id && matches!(s.kind, StepKind::Publish) && s.adapter == "policy-publisher") {
+        return Ok(None);
+    }
+    let (status, attempt, result): (String, u32, Option<String>) = tx.query_row(
+        "SELECT status,attempt,result_json FROM factory_workflow_steps WHERE run_id=?1 AND step_id=?2",
+        params![run, step_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let result = result.map(parse).transpose()?.unwrap_or(Value::Null);
+    if status != "blocked" || result["output"]["error"] != "base_moved_reverify"
+        || result["output"]["exception_type"] != "ControlPlaneError" { return Ok(None) }
+    let previous: Option<String> = tx.query_row(
+        "SELECT payload_json FROM factory_workflow_events WHERE run_id=?1 AND kind='run.restarted_from' ORDER BY seq DESC LIMIT 1",
+        [run], |r| r.get(0),
+    ).optional()?;
+    let lineage = previous.map(parse).transpose()?.unwrap_or(Value::Null);
+    let origin = lineage["origin_run"].as_str().unwrap_or(run);
+    let generation = lineage["generation"].as_u64().unwrap_or(0);
+    let remaining = d.max_cost_usd - spent;
+    let published: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM factory_workflow_publications WHERE run_id=?1)", [run], |r| r.get(0))?;
+    let recovery = crate::factory::workflow_policy::decision(&tx, org, run, "recover", &[], false)?;
+    // ponytail: at most two fresh runs; reuse old plans only with proof that their inputs did not change.
+    let stop = if attempt != 1 || published { Some("publication_may_have_side_effects") }
+        else if recovery["allowed"] != true { Some("recovery_policy_approval_required") }
+        else if generation >= 2 { Some("base_refresh_limit") }
+        else if !remaining.is_finite() || remaining < 0.01 { Some("cost_budget_exhausted") }
+        else { None };
+    if let Some(reason) = stop {
+        event(&tx, run, Some(step_id), "run.base_refresh_skipped", json!({"reason":reason}))?;
+        tx.commit()?;
+        return Ok(None);
+    }
+    let next_generation = generation + 1;
+    let source_key = format!("base-refresh:{origin}:{next_generation}");
+    let next = create_run(&tx, org, &definition, &source_key, &parse(task)?, true, Some(remaining))?;
+    let fix = crate::factory::workflow_policy::decision(&tx, org, &next, "fix", &[], false)?;
+    if fix["allowed"] != true {
+        tx.execute("UPDATE factory_workflow_runs SET status='blocked' WHERE id=?1", [&next])?;
+    }
+    tx.execute("UPDATE factory_workflow_runs SET status='cancelled' WHERE id=?1 AND org_id=?2 AND status='blocked'", params![run, org])?;
+    tx.execute("UPDATE factory_workflow_steps SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE run_id=?1 AND status!='succeeded'", [run])?;
+    event(&tx, &next, None, "run.restarted_from", json!({"previous_run":run,"origin_run":origin,"generation":next_generation,"remaining_budget_usd":remaining,"needs_approval":fix["allowed"]!=true}))?;
+    event(&tx, run, Some(step_id), "run.base_refreshed", json!({"replacement_run":next,"origin_run":origin,"generation":next_generation,"reason":"base_moved_reverify"}))?;
+    tx.commit()?;
+    Ok(Some(next))
+}
+
 pub fn factory_enabled(conn: &Connection, org: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT autonomous_agents_enabled FROM organizations WHERE id=?1",
@@ -1223,6 +1300,18 @@ pub fn control_run(
     action: &str,
     step_id: Option<&str>,
 ) -> Result<()> {
+    if action == "resume" {
+        let snapshot: Option<String> = conn.query_row(
+            "SELECT snapshot_json FROM factory_workflow_runs WHERE id=?1 AND org_id=?2 AND status='blocked'",
+            params![run, org], |r| r.get(0),
+        ).optional()?;
+        if let Some(snapshot) = snapshot {
+            let definition: Definition = serde_json::from_value(parse(snapshot)?["definition"].clone())?;
+            for step in definition.steps.iter().filter(|s| matches!(s.kind, StepKind::Publish) && s.adapter == "policy-publisher") {
+                if restart_after_base_move(conn, org, run, &step.id)?.is_some() { return Ok(()) }
+            }
+        }
+    }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let detail = run_detail(&tx, org, run)?;
     if action == "cancel" {
