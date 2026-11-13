@@ -80,6 +80,17 @@ class ControlPlaneTests(unittest.TestCase):
         Backend.script = [(504, 'text/html', b'timeout'), (200, 'application/json', b'{"active":true}')]
         self.assertEqual(self.api.call('/runs/' + RUN + '/steps/verify/lease', {'lease_token': 'fence'}), {'active': True})
 
+    def test_http_500_heartbeat_retries_but_never_repeats_model_or_publication(self):
+        Backend.script = [(500, 'text/html', b'upstream failed'), (200, 'application/json', b'{"active":true}')]
+        self.assertEqual(self.api.call('/runs/' + RUN + '/steps/implement/lease', {'lease_token':'fence'}), {'active':True})
+        self.assertEqual(len(Backend.seen), 2)
+        for path in ('/claim', '/runs/' + RUN + '/steps/implement/model', '/runs/' + RUN + '/steps/publish/publish', '/runs/' + RUN + '/steps/implement/complete'):
+            Backend.script, Backend.seen = [(500, 'text/html', b'upstream failed')], []
+            _, diagnostic = self.fail_with(path, {})
+            self.assertEqual(len(Backend.seen), 1)
+            self.assertTrue(diagnostic['retryable'] and diagnostic['hold'])
+            self.assertIn('ingress', diagnostic['solution'])
+
     def test_contract_errors_are_not_retried_and_keep_the_backend_code(self):
         Backend.script = [(422, 'application/json', b'{"code":"invalid_event","error":"x"}')]
         error, diagnostic = self.fail_with('/runs/' + RUN + '/steps/verify/events', {})

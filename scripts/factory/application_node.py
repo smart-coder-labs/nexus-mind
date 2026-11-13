@@ -10,7 +10,9 @@ def main():
     cache = '/tmp/nexusmind-npm-cache'
     script = """const fs=require('fs');const c=require('/usr/local/lib/node_modules/npm/node_modules/cacache');(async()=>{for(const p of JSON.parse(fs.readFileSync('/nm-packages/manifest.json')).packages){await c.put(process.argv[1]+'/_cacache',p.url,fs.readFileSync('/nm-packages/'+p.file),{integrity:p.integrity})}})().catch(()=>process.exit(1))"""
     subprocess.run(['node', '-e', script, cache], check=True)
-    subprocess.run(['npm', 'ci', '--offline', '--no-audit', '--no-fund', '--cache', cache], check=True)
+    # Registry credentials stay on the host. Dependency lifecycle downloads must
+    # not run in the offline build; the declared application build still runs.
+    subprocess.run(['npm', 'ci', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--cache', cache], check=True)
     package = json.loads(Path('package.json').read_text())
     if 'build' in package.get('scripts', {}):
         subprocess.run(['npm', 'run', 'build'], check=True)

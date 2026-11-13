@@ -119,14 +119,60 @@ volumes:
             app.plan(self.work, self.repos)
         self.assertEqual(list(app.plan(self.work, self.repos, entrypoints=['api/compose.yaml'])), ['web'])
 
+    def test_native_node_build_uses_host_only_registry_auth_and_shared_verified_cache(self):
+        from unittest.mock import Mock
+        image='sha256:'+'a'*64
+        (self.work/'api/package.json').write_text('{"scripts":{"start":"next start"}}')
+        (self.work/'api/.env').write_text('PRIVATE=not-for-image')
+        run_root=self.work/'state'/'run';run_root.mkdir(parents=True)
+        config={'state_dir':str(run_root.parent),'managed_images':{'agent':image},'allowed_images':[image]}
+        job={'run_id':'run','lease_token':'lease','step':{'id':'environment','timeout_seconds':60}}
+        service=app.plan(self.work,self.repos,entrypoints=['api/package.json'])['api']
+        npmrc='@private:registry=https://npm.pkg.github.com/\n//npm.pkg.github.com/:_authToken=fixture-private-registry-token\n'
+        with patch('execution.repo_secrets',return_value={'api':{'npmrc':npmrc}}),patch('node_environment.prepare') as prepare,patch.object(app,'local_base',return_value=image):
+            app.node_build(config,job,self.work,run_root,'api',service,Mock())
+        self.assertEqual(prepare.call_args.kwargs['npmrc'],{'api':npmrc})
+        self.assertEqual(prepare.call_args.args[3],run_root.parent/'.node-cache')
+        self.assertIn('fixture-private-registry-token',service['_redactions'])
+        context=run_root/'application-node-api'
+        self.assertFalse((context/'app/.env').exists())
+        for path in context.rglob('*'):
+            if path.is_file():self.assertNotIn('fixture-private-registry-token',path.read_text())
+
+    def test_native_cli_port_flags_override_environment_for_build_and_healthcheck(self):
+        from unittest.mock import Mock
+        image='sha256:'+'a'*64
+        run_root=self.work/'state'/'run';run_root.mkdir(parents=True)
+        config={'state_dir':str(run_root.parent),'managed_images':{'agent':image},'allowed_images':[image]}
+        job={'run_id':'run','lease_token':'lease','step':{'id':'environment','timeout_seconds':60}}
+        for flags in ('-p 8080','-p8080','--port 8080','--port=8080'):
+            (self.work/'api/package.json').write_text(json.dumps({'scripts':{'start':'next start '+flags}}))
+            service=app.plan(self.work,self.repos,entrypoints=['api/package.json'])['api']
+            service['_env']['PORT']='3000'
+            with self.subTest(flags=flags),patch('execution.repo_secrets',return_value={}),patch('node_environment.prepare'),patch.object(app,'local_base',return_value=image):
+                app.node_build(config,job,self.work,run_root,'api',service,Mock())
+            self.assertIn('EXPOSE 8080',Path(service['_build']['dockerfile']).read_text())
+
+    def test_native_offline_install_disables_dependency_scripts_but_runs_application_build(self):
+        import application_node
+        with patch.object(application_node.Path,'read_text',return_value='{"scripts":{"build":"next build"}}'),patch.object(application_node.subprocess,'run') as run:
+            application_node.main()
+        self.assertIn('--offline',run.call_args_list[1].args[0])
+        self.assertIn('--ignore-scripts',run.call_args_list[1].args[0])
+        self.assertEqual(run.call_args_list[2].args[0],['npm','run','build'])
+
     def test_builds_require_an_actual_bounded_cgroup_not_cli_resource_hints(self):
         def bounded(path, *args, **kwargs):
             if str(path) == '/proc/self/cgroup': return '0::/user.slice/runner.service\n'
-            if path.name == 'memory.max': return str(1024 ** 3)
+            if path.name == 'memory.max': return str(gib * 1024 ** 3)
             if path.name == 'pids.max': return '256'
             raise FileNotFoundError()
-        with patch.object(Path, 'read_text', bounded):
-            self.assertEqual(app.build_cgroup(), '/user.slice/runner.service')
+        for gib in (1,6,8):
+            with patch.object(Path, 'read_text', bounded):
+                self.assertEqual(app.build_cgroup(), '/user.slice/runner.service')
+        gib=9
+        with patch.object(Path, 'read_text', bounded),self.assertRaises(app.EnvironmentDecision):
+            app.build_cgroup()
         with patch.object(Path, 'read_text', return_value='0::/\n'), self.assertRaises(app.EnvironmentDecision):
             app.build_cgroup()
 

@@ -278,11 +278,11 @@ def build_cgroup():
         root = Path('/sys/fs/cgroup') / group.lstrip('/')
         memory = int((root / 'memory.max').read_text())
         pids = int((root / 'pids.max').read_text())
-        if not 64 * 1024 * 1024 <= memory <= 4 * 1024 ** 3 or not 32 <= pids <= 4096:
+        if not 64 * 1024 * 1024 <= memory <= 8 * 1024 ** 3 or not 32 <= pids <= 4096:
             raise ValueError()
         return group
     except (OSError, ValueError, StopIteration):
-        raise EnvironmentDecision('Run the runner in a bounded systemd service/scope (MemoryMax up to 4G, TasksMax up to 4096)') from None
+        raise EnvironmentDecision('Run the runner in a bounded systemd service/scope (MemoryMax up to 8G, TasksMax up to 4096)') from None
 
 
 def local_base(config, image, job=None):
@@ -348,7 +348,7 @@ def dockerfile(config, text, job=None, api=None):
 
 
 def node_build(config, job, work, run_root, name, service, api):
-    from execution import copy_source
+    from execution import copy_source, repo_secrets, secret_values
     from node_environment import prepare as dependencies
     root = inside(Path(work), service['_root'])
     package = json.loads((root / 'package.json').read_text())
@@ -357,8 +357,8 @@ def node_build(config, job, work, run_root, name, service, api):
     if not script or not isinstance(scripts[script], str):
         raise EnvironmentDecision('Choose a runnable application manifest: ' + service['_manifest'])
     text = scripts[script]
-    explicit = re.search(r'--port[= ]+(\d+)', text)
-    port = service['_env'].get('PORT') or package.get('config', {}).get('port') or (explicit[1] if explicit else 5173 if 'vite' in text else 3000 if 'next ' in text or 'react-scripts ' in text else None)
+    explicit = re.search(r'(?:^|\s)(?:--port(?:=|\s+)|-p\s*)(\d+)(?=\s|$)', text)
+    port = explicit[1] if explicit else service['_env'].get('PORT') or package.get('config', {}).get('port') or (5173 if 'vite' in text else 3000 if 'next ' in text or 'react-scripts ' in text else None)
     if not str(port).isdigit() or not 1024 <= int(port) <= 65535:
         raise EnvironmentDecision('Declare the application test PORT: ' + service['_manifest'])
     sdk = config.get('managed_images', {}).get('agent') or config.get('managed_images', {}).get('node')
@@ -368,8 +368,11 @@ def node_build(config, job, work, run_root, name, service, api):
     if context.exists(): shutil.rmtree(context)
     context.mkdir(mode=0o700)
     copy_source(root, context / 'app')
-    dependencies(work, [{'cwd': service['_root']}], context / 'packages', Path(config['state_dir']) / 'node-package-cache',
-                 heartbeat=lambda: api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/lease', {'lease_token': job['lease_token']}), timeout=job['step']['timeout_seconds'])
+    repositories = {path: {'npmrc': entry['npmrc']} for path, entry in repo_secrets(api, job).items() if entry.get('npmrc')}
+    service['_redactions'].extend(secret_values(repositories))
+    dependencies(work, [{'cwd': service['_root']}], context / 'packages', Path(config['state_dir']) / '.node-cache',
+                 heartbeat=lambda: api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/lease', {'lease_token': job['lease_token']}), timeout=job['step']['timeout_seconds'],
+                 npmrc={path: entry['npmrc'] for path, entry in repositories.items()})
     shutil.copyfile(Path(__file__).with_name('application_node.py'), context / 'bootstrap.py')
     recipe = context / 'Dockerfile'
     command = ['npm', 'run', script]
@@ -426,7 +429,9 @@ def prepare(config, job, work, api, roots, private_file):
                 if build.get('target'):
                     if not NAME.fullmatch(build['target']): raise EnvironmentDecision('Invalid Dockerfile target')
                     command += ['--target', build['target']]
-                command += ['--cgroup-parent', cgroup, '--ulimit', 'nofile=1024:1024', '--ulimit', 'fsize=268435456:268435456', build['context']]
+                node = service.get('_generated') is True
+                command += ['--cgroup-parent', cgroup, '--ulimit', 'core=0:0', '--ulimit', 'nofile=8192:8192' if node else 'nofile=1024:1024',
+                            '--ulimit', 'fsize=1073741824:1073741824' if node else 'fsize=268435456:268435456', build['context']]
                 if shutil.disk_usage(run_root).free < 1024 * 1024 * 1024:
                     raise EnvironmentDecision('Application build needs at least 1 GiB free disk')
                 log = run_root / ('build-' + name + '.log')

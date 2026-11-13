@@ -9,7 +9,7 @@ import urllib.error
 # Contract version of the runner protocol; sent as a capability so a backend can
 # refuse an incompatible runner before leasing it work.
 RUNNER_CONTRACT = 1
-TRANSIENT_STATUSES = (408, 429, 502, 503, 504)
+TRANSIENT_STATUSES = (408, 429, 500, 502, 503, 504)
 
 
 class ControlPlaneError(OSError):
@@ -95,7 +95,7 @@ def control_plane_diagnostic(error):
         kind = 'credential'
     elif status is None or status == 408:
         kind = 'network'
-    elif status in (502, 503, 504) and not error.json_body:
+    elif status in (500, 502, 503, 504) and not error.json_body:
         kind = 'unavailable'
     else:
         kind = 'other'
