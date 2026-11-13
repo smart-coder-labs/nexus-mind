@@ -144,7 +144,12 @@ class ExecutionTests(unittest.TestCase):
     def test_verification_cannot_auto_fix_committed_source(self):
         self.job['step']={'id':'verify','kind':'check','adapter':'qa','write_repositories':[],'timeout_seconds':60}
         adapter={'kind':'checks','image':os.environ['FACTORY_TEST_IMAGE'],'checks':[{'name':'build','command':['python3','-c',"from pathlib import Path; Path('/work/api/code.txt').write_text('silently fixed')"]}]}
-        with self.assertRaises(ValueError):execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        with self.assertRaises(execution.WorkspaceOutputError) as caught:
+            execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file)
+        self.assertEqual(caught.exception.details['error'], 'verification_source_mutation')
+        self.assertEqual(caught.exception.details['paths'], ['api/code.txt'])
+        self.assertEqual(caught.exception.details['limit'], 0)
+        self.assertTrue(caught.exception.details['hold'])
         repo=Path(self.config['state_dir'])/self.job['run_id']/'api'
         self.assertEqual((repo/'code.txt').read_text(),'old\n')
 
