@@ -31,25 +31,30 @@ class NodeBootstrapTests(unittest.TestCase):
             self.assertIn('/scratch/nm-npm-cache/_cacache', tee.call_args_list[0].args[0][2])
             self.assertEqual(tee.call_args.kwargs['env']['TMPDIR'], '/scratch')
 
-    def test_dependency_failure_holds_without_running_application_checks(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'input').mkdir(); (root / 'output').mkdir(); (root / 'work').mkdir()
-            (root / 'input/context.json').write_text('{}')
-            (root / 'input/adapter.json').write_text(json.dumps({
-                'kind': 'checks', 'node_bootstrap': True,
-                'checks': [{'name': 'tests', 'cwd': 'api', 'command': ['npm', 'test']}]}))
-            def path(value):
-                return root / str(value).lstrip('/')
-            with patch.object(entry, 'Path', side_effect=path), \
-                 patch.object(entry, 'bootstrap_node', return_value=1), \
-                 patch.object(entry, 'tee') as tee:
-                self.assertEqual(entry.main(), 0)
-            result = json.loads((root / 'output/result.json').read_text())
-            self.assertFalse(result['success'])
-            self.assertTrue(result['hold'])
-            self.assertEqual(result['error'], 'node_dependency_install_failed')
-            tee.assert_not_called()
+    def test_dependency_install_is_shared_by_checks_even_when_it_fails(self):
+        for installation in (0,1):
+            with self.subTest(installation=installation),tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'input').mkdir(); (root / 'output').mkdir(); (root / 'work/api').mkdir(parents=True)
+                (root / 'input/context.json').write_text('{}')
+                (root / 'input/adapter.json').write_text(json.dumps({
+                    'kind': 'checks', 'node_bootstrap': True,
+                    'checks': [{'name': name, 'cwd': 'api', 'command': ['npm', name]} for name in ('build','tests','typecheck')]}))
+                def path(value):
+                    return root / str(value).lstrip('/')
+                with patch.object(entry, 'Path', side_effect=path), \
+                     patch.object(entry, 'bootstrap_node', return_value=installation) as bootstrap, \
+                     patch.object(entry, 'announce'), \
+                     patch.object(entry, 'tee', return_value=0) as tee:
+                    self.assertEqual(entry.main(), 0)
+                result = json.loads((root / 'output/result.json').read_text())
+                self.assertEqual(result['success'],installation==0)
+                self.assertEqual(len(result['checks']),3)
+                bootstrap.assert_called_once()
+                self.assertEqual(tee.call_count,0 if installation else 3)
+                if installation:
+                    self.assertTrue(result['hold'])
+                    self.assertEqual(result['error'], 'node_dependency_install_failed')
 
 
 if __name__ == '__main__':

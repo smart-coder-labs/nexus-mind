@@ -70,7 +70,9 @@ class RuntimeSettingsTests(unittest.TestCase):
     directory=Path(f.config['state_dir'])/f.job['run_id']/repo;(directory/'module.py').write_text('VALUE=2\n');runner.git(['add','module.py'],directory);runner.git(['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','candidate'],directory);f.job['execution']['heads'][repo]=runner.git(['rev-parse','HEAD'],directory)
     checks += [{'name':'tests','cwd':repo,'image':os.environ['FACTORY_TEST_IMAGE'],'command':['python3','-c',f"from pathlib import Path;ns={{}};exec(Path('/work/{repo}/module.py').read_text(),ns);assert ns['VALUE']==2"],'environment_refs':[]},{'name':'build','cwd':repo,'image':os.environ['FACTORY_TEST_IMAGE'],'command':['python3','-c',f"import py_compile;py_compile.compile('/work/{repo}/module.py',cfile='/output/{repo}.pyc',doraise=True)"],'environment_refs':[]}]
    f.job['step']={'id':'verify','kind':'check','adapter':'qa','write_repositories':[],'timeout_seconds':60,'options':{'required_checks':['tests','build']}}
-   passed,evidence,result=settings.suite(f.config,f.job,{'checks':checks},[f.root],f.api,runner.git,runner.private_file)
+   with patch('execution.isolated_adapter',wraps=fixtures.execution.isolated_adapter) as isolated:
+    passed,evidence,result=settings.suite(f.config,f.job,{'checks':checks},[f.root],f.api,runner.git,runner.private_file)
+   self.assertEqual(isolated.call_count,2,'one container per repository, not per check')
    self.assertTrue(passed,repr(f.api.artifacts));self.assertEqual(len(evidence),4);self.assertEqual(result['heads'],f.job['execution']['heads']);names=[name for name,_ in f.api.artifacts];self.assertEqual(len(names),len(set(names)))
   finally:f.tearDown()
  def test_only_requested_operator_managed_digest_images_are_pulled_automatically(self):
@@ -95,7 +97,7 @@ class ValidationPlanSuiteTests(unittest.TestCase):
                 'snapshot':{'workspace':{'repositories':[{'path':'api','head_sha':'a'*40},{'path':'web','head_sha':'c'*40}]}}}
     def profile(self):
         return {'kind':'suite','checks':[{'name':'tests','cwd':'api','image':'i','command':['x']},{'name':'tests','cwd':'web','image':'i','command':['x']},{'name':'build','cwd':'web','image':'i','command':['x']}]}
-    def run_suite(self,decisions,adapter_effect=None):
+    def run_suite(self,decisions,adapter_effect=None,profile=None):
         import runtime_settings as rs
         calls=[];api=Mock()
         def call(path,data=None):
@@ -110,9 +112,10 @@ class ValidationPlanSuiteTests(unittest.TestCase):
         def adapter(config,child,adapter,roots,named,git,private_file):
             calls.append((child['step']['options']['required_checks'][0],adapter['checks'][0]['cwd']))
             if adapter_effect:adapter_effect(adapter)
-            return True,[{'check':adapter['checks'][0]['name'],'status':'pass'}],{}
+            self.assertEqual(child['step']['options']['required_checks'],[c['name'] for c in adapter['checks']])
+            return True,[{'check':c['name'],'status':'pass'} for c in adapter['checks']],{}
         with patch('execution.isolated_adapter',side_effect=adapter),patch.object(rs,'repository_facts',return_value=[]):
-            return rs.suite({'state_dir':'/tmp'},self.job(),self.profile(),[],api,Mock(),Mock()),calls
+            return rs.suite({'state_dir':'/tmp'},self.job(),profile or self.profile(),[],api,Mock(),Mock()),calls
     def test_skipped_checks_do_not_run_and_are_reported_as_not_applicable(self):
         decisions=[{'check':{'name':'tests','cwd':'api'},'run':True},{'check':{'name':'tests','cwd':'web'},'run':False},{'check':{'name':'build','cwd':'web'},'run':False}]
         (success,evidence,_),calls=self.run_suite(decisions)
@@ -153,14 +156,56 @@ class ValidationPlanSuiteTests(unittest.TestCase):
         self.assertEqual(evidence[0]['check'],'tests')
         adapter.assert_called_once()
 
+    def test_compatible_checks_share_one_container_in_declared_order(self):
+        profile={'checks':[{'name':name,'cwd':'api','image':'i','command':['run',name]} for name in ('build','tests','typecheck')]}
+        groups=[]
+        (success,evidence,_),calls=self.run_suite(None,lambda adapter:groups.append(adapter),profile)
+        self.assertTrue(success)
+        self.assertEqual(len(calls),1)
+        self.assertEqual([c['command'] for c in groups[0]['checks']],[['run',n] for n in ('build','tests','typecheck')])
+        self.assertEqual([e['check'] for e in evidence],['build','tests','typecheck'])
+
+    def test_large_groups_are_bounded_without_dropping_checks(self):
+        profile={'checks':[{'name':'tests','cwd':'api','image':'i','command':['x']} for _ in range(65)]}
+        sizes=[]
+        (success,evidence,_),calls=self.run_suite(None,lambda adapter:sizes.append(len(adapter['checks'])),profile)
+        self.assertTrue(success)
+        self.assertEqual(sizes,[32,32,1])
+        self.assertEqual(len(evidence),65)
+        self.assertEqual(len(calls),3)
+
+    def test_isolation_boundaries_and_command_order_are_preserved(self):
+        import copy
+        from unittest.mock import patch
+        base={'checks':[{'name':'tests','cwd':'api','image':'i','command':['x']} for _ in range(3)]}
+        for change in ({'image':'other'},{'cwd':'web'},{'environment_refs':['private-env']},{'name':'security'}):
+            profile=copy.deepcopy(base);profile['checks'][1].update(change)
+            with self.subTest(change=change),patch('delivery.validate_services'):
+                (success,evidence,_),calls=self.run_suite(None,profile=profile)
+            self.assertTrue(success)
+            self.assertEqual(len(calls),3,'do not merge across isolation boundaries or reorder checks')
+            self.assertEqual(len(evidence),3)
+
+    def test_failure_of_later_grouped_check_keeps_its_identity(self):
+        import runtime_settings as rs
+        profile={'checks':[{'name':name,'cwd':'api','image':'i','command':['x']} for name in ('build','tests')]}
+        api=Mock();api.call.return_value={'decisions':[]}
+        items=[{'check':'build-0','status':'pass'},{'check':'tests-1','status':'fail'}]
+        with patch('execution.isolated_adapter',return_value=(False,items,{})),patch.object(rs,'repository_facts',return_value=[]):
+            success,evidence,result=rs.suite({},self.job(),profile,[],api,Mock(),Mock())
+        self.assertFalse(success)
+        self.assertEqual(result['output']['failed'],[{'check':'tests','cwd':'api'}])
+        self.assertEqual([e['check'] for e in evidence],['build','tests'])
+
     def test_older_backend_runs_every_check(self):
         (_,evidence,_),calls=self.run_suite(None)
-        self.assertEqual(len(calls),3)
+        self.assertEqual(len(calls),2)
+        self.assertEqual([e['check'] for e in evidence],['tests','tests','build'])
     def test_repository_without_lockfile_is_not_applicable_instead_of_aborting(self):
         def effect(adapter):
             if adapter['checks'][0]['cwd']=='web':raise ValueError('node_committed_package_lock_required')
         (success,evidence,_),calls=self.run_suite(None,effect)
-        self.assertEqual(len(calls),3)
+        self.assertEqual(len(calls),2)
         self.assertEqual([e['status'] for e in evidence].count('not_applicable'),2)
         def other(adapter):raise ValueError('something_else')
         with self.assertRaises(ValueError):self.run_suite(None,other)

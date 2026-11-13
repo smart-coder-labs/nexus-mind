@@ -104,6 +104,23 @@ pub struct Step {
     #[serde(default)]
     pub options: serde_json::Value,
 }
+impl Step {
+    /// Only the three dedicated, read-only QA phases may report findings without
+    /// blocking publication. Build/tests and independent review stay blocking.
+    pub fn qa_check(&self) -> Option<&'static str> {
+        if !matches!(self.kind, StepKind::Check) || !self.write_repositories.is_empty() {
+            return None;
+        }
+        let check = match self.adapter.as_str() {
+            "isolated-functional-qa" => "functional",
+            "isolated-design-qa" => "design",
+            "isolated-security-qa" => "security",
+            _ => return None,
+        };
+        let required = self.options.get("required_checks")?.as_array()?;
+        (required.len() == 1 && required[0].as_str() == Some(check)).then_some(check)
+    }
+}
 fn one() -> u32 {
     1
 }

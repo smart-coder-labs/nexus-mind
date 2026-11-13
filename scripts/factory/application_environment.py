@@ -303,6 +303,18 @@ def dockerfile(config, text, job=None, api=None):
     result, stages, args = [], set(), {}
     stage_count = 0
     logical = text.lstrip('\ufeff').replace('\\\n', '')
+    missing_args = []
+    for line in logical.splitlines():
+        tokens = line.strip().split(None, 1)
+        if tokens and tokens[0].upper() == 'ARG':
+            key, sep, _ = (tokens[1] if len(tokens) > 1 else '').partition('=')
+            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+                raise EnvironmentDecision('Invalid Dockerfile ARG declaration')
+            if not sep and key not in missing_args: missing_args.append(key)
+    if missing_args:
+        # Report all blockers before resolving images, avoiding one full repair
+        # and verification cycle per missing default.
+        raise EnvironmentDecision('Declare non-secret Dockerfile ARG defaults: ' + ', '.join(missing_args))
     for line in logical.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith('#'):
@@ -312,9 +324,7 @@ def dockerfile(config, text, job=None, api=None):
         if instruction in ('ADD', 'ONBUILD') or '<<' in body or re.search(r'--(network|security|mount)(?:\s|=)', body, re.I):
             raise EnvironmentDecision('Dockerfile remote additions/privileged mounts are not authorized')
         if instruction == 'ARG':
-            key, sep, value = body.partition('=')
-            if not sep:
-                raise EnvironmentDecision('Declare a non-secret Dockerfile ARG default: ' + key)
+            key, _, value = body.partition('=')
             args[key] = value
         if instruction == 'FROM':
             stage_count += 1

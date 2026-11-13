@@ -95,6 +95,15 @@ volumes:
             with self.subTest(recipe=recipe), patch.object(app, 'resolve_image', return_value=(image, {})), patch.object(app, 'local_base', return_value=image), self.assertRaises(app.EnvironmentDecision):
                 app.dockerfile({}, recipe)
 
+    def test_missing_dockerfile_defaults_are_reported_together_before_image_resolution(self):
+        recipe='FROM node:22\nARG APP_CONFIG_APP_IDENTIFIER\nARG NEXT_PUBLIC_API_URL\nARG NEXT_PUBLIC_SITE_URL\nARG NEXT_PUBLIC_API_URL\nARG PORT=3000\n'
+        with patch.object(app, 'resolve_image') as resolve:
+            with self.assertRaises(app.EnvironmentDecision) as error: app.dockerfile({},recipe)
+        self.assertEqual(str(error.exception),'Declare non-secret Dockerfile ARG defaults: APP_CONFIG_APP_IDENTIFIER, NEXT_PUBLIC_API_URL, NEXT_PUBLIC_SITE_URL')
+        resolve.assert_not_called()
+        with self.assertRaisesRegex(app.EnvironmentDecision,'Invalid Dockerfile ARG declaration'):
+            app.dockerfile({},'FROM node:22\nARG bad-name\n')
+
     def test_external_registry_cannot_trigger_docker_or_credential_helpers(self):
         with patch.object(app.subprocess, 'run') as run:
             for reference in ['evil.example/app:1', 'localhost:5000/app:1', 'user/app:1', 'node', 'node:22 --privileged']:

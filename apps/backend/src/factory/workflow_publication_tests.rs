@@ -12,12 +12,46 @@ fn hash(kind: &str, data: &[u8]) -> String {
     h.update(data);
     hex::encode(h.finalize())
 }
+#[test]
+fn qa_notes_preserve_failures_and_only_report_current_heads() {
+    let mut detail = json!({"id":"run-qa","execution":{"revision":3,"heads":{"api":"a".repeat(40)}},"steps":[
+        {"id":"functional","result":{"qa_report_only":true,"heads":{"api":"a".repeat(40)},"evidence":[
+            {"check":"functional","status":"fail","artifact_digest":"d".repeat(64)},
+            {"check":"functional","status":"pass","artifact_digest":"e".repeat(64)}]}}
+    ]});
+    let notes = qa_notes(&detail);
+    assert!(notes.contains("QA findings (non-blocking)"));
+    assert!(notes.contains("not marked as passed"));
+    assert!(notes.contains("`functional` / `functional`: **failed**"));
+    assert!(notes.contains(&"d".repeat(64)));
+    assert!(!notes.contains(&"e".repeat(64)));
+    detail["steps"][0]["result"]["heads"]["api"] = json!("b".repeat(40));
+    assert!(qa_notes(&detail).is_empty(), "stale QA must not annotate another commit");
+}
+
+#[test]
+fn qa_pr_annotations_update_idempotently_without_overwriting_human_notes() {
+    let body = "Human PR description";
+    let first = with_qa_notes(body, "First QA report\n").unwrap() + "\nHuman follow-up";
+    let updated = with_qa_notes(&first, "Latest QA report\n").unwrap();
+    assert!(updated.starts_with(body));
+    assert!(updated.ends_with("Human follow-up"));
+    assert!(!updated.contains("First QA report"));
+    assert_eq!(updated.matches("nexusmind:qa:start").count(), 1);
+    assert_eq!(with_qa_notes(&updated, "Latest QA report\n").unwrap(), updated);
+    let cleared = with_qa_notes(&updated, "").unwrap();
+    assert!(!cleared.contains("Latest QA report"));
+    assert!(cleared.contains("Human follow-up"));
+    assert!(with_qa_notes("<!-- nexusmind:qa:start -->incomplete", "report").is_err());
+}
+
 #[derive(Default)]
 struct Remote {
     branch: Option<String>,
     pull: Option<Value>,
     prs: u32,
     refs: u32,
+    body_updates: u32,
     conclusion: Option<String>,
     login: Option<String>,
 }
@@ -71,6 +105,10 @@ async fn github(
         remote.branch = Some(data["sha"].as_str().unwrap().into());
         json!({"object":{"sha":remote.branch}})
     } else if path.ends_with("/pulls/42") {
+        if method == Method::PATCH {
+            remote.body_updates += 1;
+            remote.pull.as_mut().unwrap()["body"] = data["body"].clone();
+        }
         remote.pull.clone().unwrap_or(Value::Null)
     } else if path.ends_with("/check-runs") {
         json!({"check_runs":[{"name":"ci","status":"completed","conclusion":remote.conclusion.as_deref().unwrap_or("success")}]})
@@ -81,7 +119,7 @@ async fn github(
     } else if path.ends_with("/pulls") {
         remote.prs += 1;
         assert_eq!(data["draft"], true);
-        let pull = json!({"number":42,"html_url":"https://github.com/acme/api/pull/42","head":{"sha":remote.branch}});
+        let pull = json!({"number":42,"html_url":"https://github.com/acme/api/pull/42","head":{"sha":remote.branch},"body":data["body"]});
         remote.pull = Some(pull.clone());
         pull
     } else {
@@ -120,8 +158,9 @@ async fn exercise_publication(backend: bool) {
     let secret = crate::crypto::encrypt("test-github-token").unwrap();
     c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,created_by) VALUES ('github',?1,'target_secret','GitHub',?2,?3,'[\"github:write\"]','ready',?4)",params![org.id,secret,json!({"purpose":"factory_workflow_github","repositories":["acme/api"]}).to_string(),user.id]).unwrap();
     let mut definition:Definition=serde_json::from_value(json!({"name":"Delivery","workspace_id":wid,"steps":[
-        {"id":"qa","name":"QA","kind":"check","adapter":"qa"},
-        {"id":"gate","name":"Gate","kind":"gate","adapter":"gate","depends_on":["qa"]},
+        {"id":"qa","name":"Verification","kind":"check","adapter":"qa"},
+        {"id":"functional","name":"Functional QA","kind":"check","adapter":"isolated-functional-qa","options":{"required_checks":["functional"]}},
+        {"id":"gate","name":"Gate","kind":"gate","adapter":"gate","depends_on":["qa","functional"]},
         {"id":"publish","name":"Publish","kind":"publish","adapter":"publisher","depends_on":["gate"],"options":{"connector_id":"github","github_required_checks":["ci"]}}
     ]})).unwrap();
     if backend {
@@ -160,6 +199,7 @@ async fn exercise_publication(backend: bool) {
     for step in ["qa", "gate"] {
         c.execute("UPDATE factory_workflow_steps SET status='succeeded',result_json=?1 WHERE run_id=?2 AND step_id=?3",params![json!({"heads":heads,"evidence":[{"check":"tests","status":"pass","commits":heads},{"check":"build","status":"pass","commits":heads}]}).to_string(),id,step]).unwrap();
     }
+    c.execute("UPDATE factory_workflow_steps SET status='succeeded',result_json=?1 WHERE run_id=?2 AND step_id='functional'",params![json!({"heads":heads,"qa_report_only":true,"evidence":[{"check":"functional","status":"fail","commits":heads,"artifact_digest":"d".repeat(64)}]}).to_string(),id]).unwrap();
     for action in ["publish", "open_pr"] {
         workflow_execution::approve(&c, &org.id, &user.id, id, action, 1).unwrap();
     }
@@ -216,11 +256,27 @@ async fn exercise_publication(backend: bool) {
     assert_eq!(result["pull_requests"][0]["head_sha"], head);
     assert_eq!(result["pull_requests"][0]["ci"]["status"], "passed");
     assert!(!result.to_string().contains("test-github-token"));
+    {
+        let mut remote = state.lock().unwrap();
+        let body = remote.pull.as_ref().unwrap()["body"].as_str().unwrap();
+        assert!(body.contains("QA findings (non-blocking)"));
+        assert!(body.contains("`functional` / `functional`: **failed**"));
+        let body = body.replace("QA findings (non-blocking)", "outdated QA notes") + "\nHuman reviewer note";
+        remote.pull.as_mut().unwrap()["body"] = json!(body);
+    }
     publish_using(&store, &org.id, rid, id, "publish", &request, &client)
         .await
         .unwrap();
     assert_eq!(state.lock().unwrap().prs, 1);
     assert_eq!(state.lock().unwrap().refs, 1);
+    {
+        let remote = state.lock().unwrap();
+        assert_eq!(remote.body_updates, 1);
+        let body = remote.pull.as_ref().unwrap()["body"].as_str().unwrap();
+        assert!(body.contains("Human reviewer note"));
+        assert!(!body.contains("outdated QA notes"));
+        assert_eq!(body.matches("nexusmind:qa:start").count(), 1);
+    }
     for conclusion in ["skipped", "neutral", "failure"] {
         state.lock().unwrap().conclusion = Some(conclusion.into());
         assert_eq!(

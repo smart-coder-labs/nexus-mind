@@ -43,6 +43,12 @@ const detail = {
   events: [],
 }
 describe('execution failure diagnostics', () => {
+  it('shows advisory QA findings as warnings, not as a QA pass or blocked run', () => {
+    render(<ExecutionDetail run={{ ...detail, steps: [{ id: definition.steps[0].id, status: 'succeeded', attempt: 1, result: { qa_report_only: true, evidence: [{ check: 'functional', status: 'fail' }] } }] }} control={vi.fn()} approve={vi.fn()} artifact={vi.fn()} disabled={false} />)
+    expect(screen.getByText('Completada con hallazgos QA')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Se incluirán en el PR')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
   it.each([
     { error: 'workspace_file_too_large', path: 'api/assets/large.bin', actual: 10485761, limit: 10485760, solution: 'Reduce el archivo y reintenta.' },
     { error: 'workspace_hard_link', path: 'api/linked.bin', actual: 2, limit: 1, solution: 'Sustituye el enlace por una copia independiente.' },
