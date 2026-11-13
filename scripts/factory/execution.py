@@ -591,8 +591,15 @@ def staged_adapter(config, job, adapter, roots, api, git, private_file, working,
     mark_stage(job, 'collect_output')
     check_tree(out)
     check_tree(work)
-    if adapter['kind']=='checks' and {k:v for k,v in tree_fingerprint(work).items() if k in verified_source}!=verified_source:
-        raise ValueError('Verification changed source files instead of checking the pinned commit')
+    if adapter['kind']=='checks':
+        checked_source = tree_fingerprint(work)
+        changed = sorted(path for path, value in verified_source.items() if checked_source.get(path) != value)
+        if changed:
+            error = WorkspaceOutputError(
+                'verification_source_mutation', changed[0], len(changed), 0,
+                'Verification changed pinned source files. Regenerate and commit tracked build outputs in the authorized write phase, then verify the new commit. Do not ignore changes or disable the source immutability check.')
+            error.details['paths'] = changed[:20]
+            raise error
     if exit_code or not (out / 'result.json').is_file() or (out / 'result.json').is_symlink():
         result = {'success': False, 'error': 'isolated_adapter_failed'}
     else:
