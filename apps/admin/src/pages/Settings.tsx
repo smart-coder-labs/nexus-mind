@@ -24,7 +24,7 @@ const PRIMARY_BTN = 'h-9 px-4 rounded-md bg-action-primary hover:bg-action-prima
 const NEUTRAL_BTN = 'h-9 px-4 rounded-md bg-foreground/[0.06] border border-border-primary text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-foreground/[0.10] transition-colors disabled:opacity-40'
 const NEUTRAL_BTN_SM = 'h-8 px-3 rounded-md bg-foreground/[0.06] border border-border-primary text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-foreground/[0.10] transition-colors disabled:opacity-40 inline-flex shrink-0 whitespace-nowrap items-center gap-1.5'
 
-const inputCls = 'w-full h-9 px-3 py-1 rounded-md border border-input bg-transparent dark:bg-input/30 text-foreground text-base md:text-sm placeholder:text-muted-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] transition-[color,box-shadow]'
+const inputCls = 'w-full h-9 px-3 py-1 rounded-md border border-input bg-transparent dark:bg-input/30 text-foreground text-base md:text-sm placeholder:text-muted-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px] transition-[color,box-shadow]'
 const selectCls = 'h-9 px-3 rounded-md border border-border-primary bg-foreground/[0.03] text-text-primary text-base md:text-sm focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none'
 
 // ── Memory Templates ──────────────────────────────────────────────────────────
@@ -194,7 +194,7 @@ function MemoryTemplatesSection() {
             <StyledSelect
               value={formType}
               onChange={e => setFormType(e.target.value as TemplateType)}
-              className="bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             >
               {TEMPLATE_TYPES.map(t => (
                 <option key={t} value={t}>{t}</option>
@@ -208,7 +208,7 @@ function MemoryTemplatesSection() {
               onChange={e => setFormContent(e.target.value)}
               placeholder="Template content that will pre-fill the memory..."
               rows={5}
-              className="w-full bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px] shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px] shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -1014,7 +1014,7 @@ export default function Settings() {
                     value={announcementText}
                     onChange={e => setAnnouncementText(e.target.value)}
                     placeholder="e.g. Scheduled maintenance on Saturday 2 AM UTC. Expect ~30 min downtime."
-                    className="w-full min-h-[72px] px-3.5 py-3 rounded-md border border-input bg-transparent dark:bg-input/30 text-text-primary text-sm leading-[1.55] placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="w-full min-h-[72px] px-3.5 py-3 rounded-md border border-input bg-transparent dark:bg-input/30 text-text-primary text-sm leading-[1.55] placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
 
                   <div className="flex items-center gap-2.5 mt-3.5 flex-wrap">
@@ -1150,7 +1150,7 @@ export default function Settings() {
                     onChange={e => setCustomInstructions(e.target.value)}
                     rows={5}
                     placeholder="e.g. Always use TypeScript strict mode. Prefer functional components. Follow our naming conventions…"
-                    className="w-full min-h-[120px] px-3.5 py-3 rounded-md border border-input bg-transparent dark:bg-input/30 text-text-primary text-sm leading-[1.6] font-mono placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="w-full min-h-[120px] px-3.5 py-3 rounded-md border border-input bg-transparent dark:bg-input/30 text-text-primary text-sm leading-[1.6] font-mono placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                   <div className="flex items-center gap-3 mt-3.5">
                     <button

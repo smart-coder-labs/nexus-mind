@@ -9,28 +9,30 @@ interface MetricSummaryProps {
   children?: ReactNode
 }
 
-/** A static count with its supporting information always visible. */
+/** A static count with its supporting information always visible.
+ *  Signal stat card: glass-1 shell, golden kpi number, data-hue icon chip and the
+ *  accent edge on hover. The accent (a --d1..--d4 series colour) tints the icon
+ *  only; the card surface stays neutral. */
 export function MetricSummary({ label, value, icon: Icon, accent, children }: MetricSummaryProps) {
   const accentStyle = accent ? {
     '--metric-accent': accent,
-    '--metric-tint': 'color-mix(in srgb, var(--metric-accent) 10%, var(--card))',
-    '--metric-edge': 'color-mix(in srgb, var(--metric-accent) 26%, var(--border))',
-    '--metric-icon-bg': 'color-mix(in srgb, var(--metric-accent) 15%, var(--card))',
+    '--metric-edge': 'color-mix(in oklab, var(--metric-accent) 26%, var(--border))',
+    '--metric-icon-bg': 'color-mix(in oklab, var(--metric-accent) 14%, transparent)',
   } as React.CSSProperties : undefined
 
   return (
     <div
-      className="group flex h-full min-h-[118px] min-w-0 max-w-full flex-col rounded-xl border bg-card px-4 py-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-md data-[accent=true]:border-[var(--metric-edge)] data-[accent=true]:bg-[var(--metric-tint)]"
+      className="glass-1 sig-card sig-reveal group flex h-full min-h-[118px] min-w-0 max-w-full flex-col rounded-2xl p-phi-3 sm:p-phi-4"
       data-accent={accent ? 'true' : undefined}
       style={accentStyle}
     >
-      <div className="flex min-w-0 items-center justify-between gap-3">
-        <span className="min-w-0 truncate text-xs font-medium leading-5 text-muted-foreground" title={label}>{label}</span>
-        {Icon && <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-transparent bg-muted text-muted-foreground transition-colors data-[accent=true]:border-[var(--metric-edge)] data-[accent=true]:bg-[var(--metric-icon-bg)] data-[accent=true]:text-[var(--metric-accent)]" data-accent={accent ? 'true' : undefined}><Icon aria-hidden="true" className="size-[18px]" /></span>}
+      <div className="flex min-w-0 items-center justify-between gap-phi-2">
+        <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-muted-foreground" title={label}>{label}</span>
+        {Icon && <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-transparent bg-muted text-muted-foreground transition-colors data-[accent=true]:border-[var(--metric-edge)] data-[accent=true]:bg-[var(--metric-icon-bg)] data-[accent=true]:text-[var(--metric-accent)]" data-accent={accent ? 'true' : undefined}><Icon aria-hidden="true" className="size-4" /></span>}
       </div>
-      <div className="mt-2 min-w-0 text-2xl font-semibold leading-none tracking-[-0.04em] text-foreground tabular-nums [overflow-wrap:anywhere]">{value}</div>
+      <div className="mt-phi-2 min-w-0 text-title font-semibold leading-none tracking-[-0.03em] text-foreground tabular-nums [overflow-wrap:anywhere] sm:text-kpi">{value}</div>
       {children && (
-        <div className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-2 text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+        <div className="mt-auto flex flex-wrap items-center justify-between gap-x-phi-3 gap-y-phi-1 pt-phi-2 text-micro text-muted-foreground [overflow-wrap:anywhere]">
           {children}
         </div>
       )}

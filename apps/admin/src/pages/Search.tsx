@@ -144,7 +144,7 @@ export default function Search() {
 
         <div className="w-full max-w-[720px] flex flex-col gap-3">
           {/* Search box */}
-          <div className="relative flex items-center h-[54px] px-[18px] rounded-xl border border-input bg-card shadow-xs focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-[3px]">
+          <div className="relative flex items-center h-[54px] px-[18px] rounded-xl border border-input bg-card shadow-xs focus-within:border-ring focus-within:ring-ring focus-within:ring-[3px]">
             <SearchIcon className="w-[18px] h-[18px] text-accent-blue shrink-0" />
             <input
               autoFocus
@@ -183,7 +183,7 @@ export default function Search() {
                   value={activeTab}
                   onChange={e => setActiveTab(e.target.value as Tab)}
                   aria-label="Filter by result type"
-                  className="appearance-none h-[34px] pl-3.5 pr-8 rounded-lg border border-input bg-foreground/[0.04] text-[12.5px] text-text-secondary cursor-pointer hover:border-border-primary/70 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="appearance-none h-[34px] pl-3.5 pr-8 rounded-lg border border-input bg-foreground/[0.04] text-[12.5px] text-text-secondary cursor-pointer hover:border-border-primary/70 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 >
                   {TABS.map(t => (
                     <option key={t.key} value={t.key} className="bg-surface-elevated">

@@ -110,7 +110,7 @@ function CreateCollectionModal({ onClose, onCreated }: CreateCollectionModalProp
               onChange={e => setName(e.target.value)}
               placeholder="My collection"
               autoFocus
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
 
@@ -124,7 +124,7 @@ function CreateCollectionModal({ onClose, onCreated }: CreateCollectionModalProp
               onChange={e => setDescription(e.target.value)}
               placeholder="What this collection is for…"
               rows={3}
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
 
@@ -203,7 +203,7 @@ function RenameModal({ collection, onClose, onRenamed }: RenameModalProps) {
               value={name}
               onChange={e => setName(e.target.value)}
               autoFocus
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
           <div className="space-y-1.5">
@@ -213,7 +213,7 @@ function RenameModal({ collection, onClose, onRenamed }: RenameModalProps) {
               value={description}
               onChange={e => setDescription(e.target.value)}
               rows={2}
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
           {error && <p className="text-xs text-status-error">{error}</p>}
@@ -292,7 +292,7 @@ function CollectionMemories({ collection, onClose }: CollectionMemoriesProps) {
               onChange={e => setSearchQuery(e.target.value)}
               aria-label="Search collection memories"
               placeholder="Search memories…"
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary pl-8 pr-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary pl-8 pr-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
 

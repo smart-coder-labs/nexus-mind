@@ -566,7 +566,7 @@ export default function Tasks() {
                 type="text"
                 value={createForm.title}
                 onChange={e => setCreateForm(f => ({ ...f, title: e.target.value }))}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -577,7 +577,7 @@ export default function Tasks() {
                 id="task-description"
                 value={createForm.description}
                 onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
 
@@ -627,7 +627,7 @@ export default function Tasks() {
                 type="date"
                 value={createForm.due_date}
                 onChange={e => setCreateForm(f => ({ ...f, due_date: e.target.value }))}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
 

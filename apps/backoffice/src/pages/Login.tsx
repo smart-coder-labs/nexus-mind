@@ -60,7 +60,7 @@ export default function Login() {
                 placeholder="sk_..."
                 autoFocus
                 autoComplete="off"
-                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors font-mono"
+                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors font-mono"
               />
               {error && (
                 <p className="text-xs text-status-error animate-fade-in">{error}</p>

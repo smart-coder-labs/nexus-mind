@@ -17,17 +17,17 @@ function StatCard({
   loading: boolean
 }) {
   return (
-    <div className="bg-surface-primary border border-border-primary rounded-xl p-5">
-      <div className="flex items-center gap-3 mb-3">
+    <div className="glass-1 sig-card sig-reveal rounded-2xl p-phi-4">
+      <div className="flex items-center justify-between gap-phi-2 mb-phi-3">
+        <span className="text-[13px] font-medium text-text-tertiary">{label}</span>
         <div className="w-8 h-8 rounded-lg bg-accent-blue-tint flex items-center justify-center">
           <Icon className="w-4 h-4 text-accent-blue" />
         </div>
-        <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">{label}</span>
       </div>
       {loading ? (
         <div className="h-8 w-16 bg-surface-secondary animate-pulse rounded-md" />
       ) : (
-        <p className="text-3xl font-semibold text-text-primary tracking-tight">{value}</p>
+        <p className="text-kpi font-semibold text-text-primary tracking-[-0.03em] tabular-nums">{value}</p>
       )}
     </div>
   )

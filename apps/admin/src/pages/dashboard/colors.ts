@@ -1,7 +1,7 @@
 // Categorical hues stay stable across pages. They are distinct from success,
 // warning, and error so data categories never imply a status accidentally.
 export const DASHBOARD_ACCENTS = [
-  'var(--data-lime)',
+  'var(--data-green)',
   'var(--data-blue)',
   'var(--data-teal)',
   'var(--data-amber)',

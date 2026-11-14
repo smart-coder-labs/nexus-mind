@@ -281,7 +281,7 @@ export default function Policies() {
                 type="text"
                 value={editName}
                 onChange={e => setEditName(e.target.value)}
-                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
 
@@ -300,7 +300,7 @@ export default function Policies() {
                 value={editConfig}
                 onChange={e => setEditConfig(e.target.value)}
                 placeholder={CONFIG_HINTS[editingPolicy.rule_type]}
-                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
 
@@ -367,7 +367,7 @@ export default function Policies() {
                 placeholder="e.g. Production Model Whitelist"
                 value={formName}
                 onChange={e => setFormName(e.target.value)}
-                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -382,7 +382,7 @@ export default function Policies() {
                   setFormRuleType(e.target.value as Policy['rule_type'])
                   setFormConfig('')
                 }}
-                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               >
                 {RULE_TYPES.map(rt => (
                   <option key={rt} value={rt}>{RULE_TYPE_LABELS[rt]}</option>
@@ -398,7 +398,7 @@ export default function Policies() {
                 value={formConfig}
                 onChange={e => setFormConfig(e.target.value)}
                 placeholder={CONFIG_HINTS[formRuleType]}
-                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
               <p className="text-[10px] text-text-quaternary">
                 Example: <code className="text-text-tertiary">{CONFIG_HINTS[formRuleType]}</code>

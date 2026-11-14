@@ -180,7 +180,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                   onChange={set(f.id)}
                   placeholder={f.placeholder}
                   required
-                  className="h-9 w-full bg-transparent dark:bg-input/30 border border-input rounded-md px-3 py-2 text-base md:text-sm text-text-primary placeholder:text-muted-foreground focus:outline-none transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="h-9 w-full bg-transparent dark:bg-input/30 border border-input rounded-md px-3 py-2 text-base md:text-sm text-text-primary placeholder:text-muted-foreground focus:outline-none transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
               </div>
             ))}
@@ -191,7 +191,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                 id="invite-role"
                 value={form.role}
                 onChange={set('role')}
-                className="h-9 w-full bg-transparent dark:bg-input/30 border border-input rounded-md px-3 py-2 text-base md:text-sm text-text-primary focus:outline-none transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="h-9 w-full bg-transparent dark:bg-input/30 border border-input rounded-md px-3 py-2 text-base md:text-sm text-text-primary focus:outline-none transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>

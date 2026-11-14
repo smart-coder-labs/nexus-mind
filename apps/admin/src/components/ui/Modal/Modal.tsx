@@ -115,7 +115,7 @@ export const ModalCloseButton = ({ className }: { className?: string }) => (
   <Dialog.Close
     aria-label="Close"
     data-slot="dialog-close"
-    className={cn('absolute right-4 top-4 z-10 grid size-8 place-items-center rounded-lg border border-transparent text-muted-foreground outline-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none', className)}
+    className={cn('absolute right-4 top-4 z-10 grid size-8 place-items-center rounded-lg border border-transparent text-muted-foreground outline-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none', className)}
   >
     <X className="size-4" />
   </Dialog.Close>

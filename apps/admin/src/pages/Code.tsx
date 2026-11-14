@@ -486,7 +486,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
               value={selectedProject}
               onChange={e => setSelectedProject(e.target.value)}
               required
-              className="w-full bg-transparent border border-input rounded-md px-3 py-2.5 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full bg-transparent border border-input rounded-md px-3 py-2.5 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             >
               <option value="">Select a project…</option>
               {indexedProjects.map(p => (
@@ -604,7 +604,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
                         onChange={e => setSaveName(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleSaveSearch() } if (e.key === 'Escape') setShowSavePopover(false) }}
                         placeholder="Search name…"
-                        className="flex-1 min-w-0 bg-foreground/[0.04] border border-input rounded-md px-2 py-1 text-base sm:text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                        className="flex-1 min-w-0 bg-foreground/[0.04] border border-input rounded-md px-2 py-1 text-base sm:text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                       />
                       <button
                         type="button"
@@ -854,7 +854,7 @@ function ExcludePatternsEditor({
           onKeyDown={handleKeyDown}
           placeholder="e.g. *.lock, node_modules/*"
           disabled={patterns.length >= 20}
-          className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 flex-1 placeholder:text-text-quaternary disabled:opacity-40 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+          className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 flex-1 placeholder:text-text-quaternary disabled:opacity-40 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
         />
         <button
           type="button"
@@ -1094,7 +1094,7 @@ function RepositoriesTab({
                   onChange={e => setSelectedProject(e.target.value)}
                   disabled={indexMut.isPending}
                   required
-                  className="w-full bg-transparent border border-input rounded-md px-3 py-2.5 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="w-full bg-transparent border border-input rounded-md px-3 py-2.5 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 >
                   <option value="">Select a project…</option>
                   {memProjects?.map(p => (
@@ -1311,7 +1311,7 @@ function RepositoriesTab({
                         scheduleMut.mutate({ id: p.id, interval_hours: val === '' ? null : Number(val) })
                       }}
                       disabled={scheduleMut.isPending && scheduleMut.variables?.id === p.id}
-                      className="rounded-md bg-transparent border border-input text-base sm:text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 px-2 py-0.5 cursor-pointer disabled:opacity-50 transition-opacity shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                      className="rounded-md bg-transparent border border-input text-base sm:text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 px-2 py-0.5 cursor-pointer disabled:opacity-50 transition-opacity shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                     >
                       <option value="">No schedule</option>
                       <option value="6">Every 6h</option>

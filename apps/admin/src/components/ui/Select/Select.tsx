@@ -3,7 +3,7 @@ import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import * as Primitive from '../shadcn/select';
 import { Popover, PopoverTrigger, PopoverContent } from '../shadcn/popover';
-const FOCUS_RING = 'focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none';
+const FOCUS_RING = 'focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px] outline-none';
 const encode = (value: string) => `nexus:${value}`;
 export function Select({ value, defaultValue, onValueChange, ...props }: React.ComponentProps<typeof Primitive.Select>) {
   return <Primitive.Select {...props} value={value === undefined ? undefined : encode(value)} defaultValue={defaultValue === undefined ? undefined : encode(defaultValue)} onValueChange={v => onValueChange?.(v.slice(6))} />;

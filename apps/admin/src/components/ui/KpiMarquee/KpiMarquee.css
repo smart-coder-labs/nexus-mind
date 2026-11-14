@@ -1,6 +1,6 @@
 .kpi-marquee-wrapper { min-width:0; container-type:inline-size; }
 .kpi-marquee-track { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); gap:16px; }
-.kpi-marquee-track > * { width:auto; min-width:0; background:var(--card); border:1px solid var(--border); border-radius:calc(var(--radius) + 4px); box-shadow:0 1px 3px #0000001a,0 1px 2px #0000000f; }
+.kpi-marquee-track > * { width:auto; min-width:0; background:var(--glass-1-bg); border:1px solid var(--glass-edge); border-radius:calc(var(--radius) + 4px); box-shadow:var(--glass-shadow); }
 @media (min-width:1280px) { .kpi-marquee-track:not(.kpi-summary-track):has(> :nth-child(6)):not(:has(> :nth-child(7))) { grid-template-columns:repeat(6,minmax(0,1fr)); } }
 @media (min-width:700px) and (max-width:1279px) { .kpi-marquee-track:not(.kpi-summary-track):has(> :nth-child(6)):not(:has(> :nth-child(7))) { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media (max-width:699px) { .kpi-marquee-track { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; } }

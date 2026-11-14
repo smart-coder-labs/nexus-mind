@@ -338,7 +338,7 @@ function ManifestBuilderFields({ builder }: { builder: ManifestBuilder }) {
     <>
       <label className="block space-y-1.5 text-xs text-text-quaternary">
         <span>Format</span>
-        <StyledSelect value={format} onChange={e => setFormat(e.target.value as HarnessFormat)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+        <StyledSelect value={format} onChange={e => setFormat(e.target.value as HarnessFormat)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]">
           {FORMAT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
         </StyledSelect>
       </label>
@@ -355,12 +355,12 @@ function ManifestBuilderFields({ builder }: { builder: ManifestBuilder }) {
       {(format === 'theme' || format === 'claude_code_plugin') && fileEntries.length === 0 && (
         <label className="block space-y-1.5 text-xs text-text-quaternary">
           <span>Plugin or theme JSON content</span>
-          <textarea value={jsonContent} onChange={e => setJsonContent(e.target.value)} rows={4} className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+          <textarea value={jsonContent} onChange={e => setJsonContent(e.target.value)} rows={4} className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
         </label>
       )}
       <label className="block space-y-1.5 text-xs text-text-quaternary">
         <span>{uploadLabelFor(format)}</span>
-        <input aria-label="Upload files" type="file" multiple onChange={e => void handleFiles(e.target.files)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary file:mr-3 file:rounded-md file:border-0 file:bg-action-primary file:px-3 file:py-1 file:text-base sm:text-sm file:text-action-foreground shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+        <input aria-label="Upload files" type="file" multiple onChange={e => void handleFiles(e.target.files)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary file:mr-3 file:rounded-md file:border-0 file:bg-action-primary file:px-3 file:py-1 file:text-base sm:text-sm file:text-action-foreground shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
       </label>
       {fileEntries.length > 0 && (
         <div className="rounded-md border border-border-secondary bg-muted/40 p-3 text-xs text-text-secondary">
@@ -370,7 +370,7 @@ function ManifestBuilderFields({ builder }: { builder: ManifestBuilder }) {
       )}
       <label className="block space-y-1.5 text-xs text-text-quaternary">
         <span>Manifest JSON preview</span>
-        <textarea readOnly value={manifestJson || (isPreparingManifest ? 'Preparing manifest integrity metadata…' : '')} rows={10} className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+        <textarea readOnly value={manifestJson || (isPreparingManifest ? 'Preparing manifest integrity metadata…' : '')} rows={10} className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
       </label>
     </>
   )
@@ -435,22 +435,22 @@ function CreateHarnessModal({ onClose, onFlash }: { onClose: () => void; onFlash
         <form onSubmit={submit} className="space-y-4">
           <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Name</span>
-            <input value={name} onChange={e => setName(e.target.value)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+            <input value={name} onChange={e => setName(e.target.value)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
           </label>
           <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Slug</span>
-            <input value={slug} onChange={e => setSlug(e.target.value)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+            <input value={slug} onChange={e => setSlug(e.target.value)} className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
           </label>
           <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Description</span>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
           </label>
           <div className="rounded-md border border-border-secondary bg-muted/40 p-4">
             <p className="mb-3 text-xs text-text-primary">Initial version</p>
             <p className="mb-3 text-xs text-text-secondary">Choose a format and provide a template, uploaded file, or folder. Leave the version blank to create an empty harness and publish later.</p>
             <label className="mb-4 block space-y-1.5 text-xs text-text-quaternary">
               <span>Version</span>
-              <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+              <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
             </label>
             <div className="space-y-4">
               <ManifestBuilderFields builder={builder} />
@@ -510,7 +510,7 @@ function PublishModal({ harness, onClose, onFlash }: { harness: Harness; onClose
         <form onSubmit={submit} className="space-y-4">
           <label className="block space-y-1.5 text-xs text-text-quaternary">
             <span>Version</span>
-            <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+            <input value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" className="w-full rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
           </label>
           <ManifestBuilderFields builder={builder} />
           {(error ?? builder.uploadError ?? builder.manifestError) && <p className="text-xs text-status-error">{error ?? builder.uploadError ?? builder.manifestError}</p>}
@@ -657,7 +657,7 @@ function ConfigReviewForm({ onFlash }: { onFlash: (flash: Flash) => void }) {
       <form onSubmit={submit} className="grid gap-4 lg:grid-cols-2">
         <label className="block space-y-1.5 text-xs text-text-quaternary lg:col-span-2">
           <span>Paste your Claude config</span>
-          <textarea value={rawConfig} onChange={e => setRawConfig(e.target.value)} rows={10} placeholder='{ "mcpServers": { … }, "env": { … } }' className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+          <textarea value={rawConfig} onChange={e => setRawConfig(e.target.value)} rows={10} placeholder='{ "mcpServers": { … }, "env": { … } }' className="font-mono w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
         </label>
         {parseError && <p className="lg:col-span-2 text-xs text-status-error">{parseError}</p>}
         {redaction && (
@@ -732,7 +732,7 @@ function ConfigReviewComments({ reviewId }: { reviewId: string }) {
       <form onSubmit={submit} className="space-y-2">
         <label className="block space-y-1.5 text-xs text-text-quaternary">
           <span>Add a comment</span>
-          <textarea value={body} onChange={e => setBody(e.target.value)} rows={2} className="w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]" />
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows={2} className="w-full resize-none rounded-md border border-input bg-foreground/[0.04] px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]" />
         </label>
         {error && <p className="text-xs text-status-error">{error}</p>}
         <div className="flex justify-end">
@@ -993,7 +993,7 @@ export default function Harnesses() {
       <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl p-4 ${GLASS_PANEL}`}>
         <div className="space-y-1.5">
         <label className="block text-xs font-medium text-text-secondary" htmlFor="target-filter">Target filter</label>
-        <StyledSelect id="target-filter" value={target} onChange={e => setTarget(e.target.value)} className="w-full h-9 rounded-md border border-input bg-background px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+        <StyledSelect id="target-filter" value={target} onChange={e => setTarget(e.target.value)} className="w-full h-9 rounded-md border border-input bg-background px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]">
           <option value="">All targets</option>
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
@@ -1003,7 +1003,7 @@ export default function Harnesses() {
         </div>
         <div className="space-y-1.5">
         <label className="block text-xs font-medium text-text-secondary" htmlFor="owner-filter">Owner filter</label>
-        <StyledSelect id="owner-filter" value={ownerUserId} onChange={e => setOwnerUserId(e.target.value)} className="w-full h-9 rounded-md border border-input bg-background px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+        <StyledSelect id="owner-filter" value={ownerUserId} onChange={e => setOwnerUserId(e.target.value)} className="w-full h-9 rounded-md border border-input bg-background px-3 py-2 text-base sm:text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]">
           <option value="">All owners</option>
           {Array.from(new Map(harnesses.filter(h => h.owner).map(h => [h.owner_user_id, h.owner!]))).map(([id, owner]) => <option key={id} value={id}>{owner.name}</option>)}
         </StyledSelect>
