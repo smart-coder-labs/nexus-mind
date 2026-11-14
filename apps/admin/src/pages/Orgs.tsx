@@ -46,7 +46,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
                 value={key}
                 onChange={e => setKey(e.target.value)}
                 placeholder="sk_…"
-                className="w-full bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 pr-10 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 pr-10 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 autoFocus
               />
               <button
@@ -131,7 +131,7 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
                 onChange={set(key)}
                 placeholder={placeholder}
                 required
-                className="w-full bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
           ))}

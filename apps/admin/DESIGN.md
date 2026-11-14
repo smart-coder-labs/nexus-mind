@@ -1,39 +1,55 @@
 ---
-name: "NexusMind Admin — Audit1 Lime"
-description: "Audit1 Admin’s shadcn New York system adapted to lime for NexusMind operational workflows."
+name: "NexusMind Admin — Signal (SmartCoder)"
+description: "Signal design language on shadcn New York roles, with the SmartCoder palette: ink structure, forest-green actions, lime as accent only."
 colors:
-  primary: "#c3d82e"
-  primary-foreground: "#1d2409"
-  action-hover: "#cde45a"
-  action-active: "#a6bc1b"
-  brand-link-light: "#5e6c16"
-  brand-link-dark: "#c3d82e"
-  data-blue-light: "#285f91"
-  data-blue-dark: "#9bc8ed"
-  data-teal-light: "#286f68"
-  data-teal-dark: "#82cbbf"
-  data-amber-light: "#805b0d"
-  data-amber-dark: "#e6c16d"
+  ink: "#111114"
+  charcoal: "#101114"
+  primary-light: "#356b26"
+  primary-foreground-light: "#ffffff"
+  primary-hover-light: "#225811"
+  primary-dark: "#7fbe6f"
+  primary-foreground-dark: "#111114"
+  primary-hover-dark: "#91d281"
+  sig: "#c3d82e"
+  sig-hi: "#d6e255"
+  sig-2: "#67bd4b"
+  sig-3: "#02ae63"
+  on-sig: "#151800"
+  sig-text-light: "#677302"
+  pale: "#e7f4d8"
+  mint: "#84e6b0"
+  primary-tint-dark: "#293e28"
+  brand-link-light: "#356b26"
+  brand-link-dark: "#91d281"
+  ring-light: "#677302"
+  ring-dark: "#c3d82e"
+  d1-light: "#356b26"
+  d1-dark: "#91d281"
+  d2-light: "#285f91"
+  d2-dark: "#9bc8ed"
+  d3-light: "#286f68"
+  d3-dark: "#82cbbf"
+  d4-light: "#805b0d"
+  d4-dark: "#e6c16d"
   data-rose-light: "#984c5c"
   data-rose-dark: "#e0a0ad"
-  background-light: "oklch(1 0 0)"
-  foreground-light: "oklch(.145 0 0)"
-  card-light: "oklch(1 0 0)"
-  muted-light: "oklch(.97 0 0)"
-  muted-foreground-light: "oklch(.556 0 0)"
-  secondary-foreground-light: "oklch(.205 0 0)"
-  border-light: "oklch(.922 0 0)"
-  sidebar-light: "oklch(.985 0 0)"
-  topbar-light: "oklch(.985 .002 247.839)"
-  background-dark: "oklch(.145 0 0)"
-  foreground-dark: "oklch(.985 0 0)"
-  card-dark: "oklch(.205 0 0)"
-  muted-dark: "oklch(.269 0 0)"
-  muted-foreground-dark: "oklch(.708 0 0)"
+  background-light: "#ffffff"
+  workspace-light: "#f4f5f7"
+  card-light: "#ffffff"
+  muted-light: "#f4f5f7"
+  muted-foreground-light: "#60636a"
+  secondary-foreground-light: "#26272c"
+  border-light: "#e4e5e9"
+  sidebar-light: "#fafafb"
+  background-dark: "#101114"
+  foreground-dark: "#f2f4f7"
+  workspace-dark: "#0b0c0e"
+  card-dark: "#18191c"
+  muted-dark: "#222326"
+  muted-foreground-dark: "#96989f"
+  sidebar-dark: "#141518"
   border-dark: "oklch(1 0 0 / 10%)"
   input-dark: "oklch(1 0 0 / 15%)"
-  topbar-dark: "#252829"
-  workspace-dark: "#1c1c1c"
   success-light: "#27713f"
   success-dark: "#84e6b0"
   warning-light: "#866200"
@@ -43,156 +59,109 @@ colors:
   info-light: "#2563eb"
   info-dark: "#93c5fd"
 typography:
-  headline:
+  display:
     fontFamily: "Geist Variable, sans-serif"
-    fontSize: "22px"
+    fontSize: "37px"
+    fontWeight: 600
+    lineHeight: 1.08
+  kpi:
+    fontFamily: "Geist Variable, sans-serif"
+    fontSize: "29px"
+    fontWeight: 600
+    lineHeight: 1.1
+    letterSpacing: "-0.03em"
+  title:
+    fontFamily: "Geist Variable, sans-serif"
+    fontSize: "23px"
     fontWeight: 600
     lineHeight: 1.2
-    letterSpacing: "-0.3px"
+  lead:
+    fontFamily: "Geist Variable, sans-serif"
+    fontSize: "18px"
+    fontWeight: 400
+    lineHeight: 1.35
   body:
     fontFamily: "Geist Variable, sans-serif"
     fontSize: "16px"
     fontWeight: 400
     lineHeight: 1.47
-    letterSpacing: "normal"
-  card-title:
-    fontFamily: "Geist Variable, sans-serif"
-    fontSize: "16px"
-    fontWeight: 600
-    lineHeight: 1
   control:
     fontFamily: "Geist Variable, sans-serif"
     fontSize: "14px"
     fontWeight: 500
     lineHeight: 1.428571
-  data:
+  micro:
     fontFamily: "Geist Variable, sans-serif"
-    fontSize: "14px"
+    fontSize: "11px"
     fontWeight: 400
-    lineHeight: 1.5
-  label:
-    fontFamily: "Geist Variable, sans-serif"
-    fontSize: "12px"
-    fontWeight: 400
-    lineHeight: 1.333333
-  metric:
-    fontFamily: "Geist Variable, sans-serif"
-    fontSize: "12px"
-    fontWeight: 600
-    lineHeight: 1.25
+    lineHeight: 1.45
 rounded:
   sm: "6px"
   control: "8px"
   base: "10px"
   card: "14px"
+  stat: "16px"
 spacing:
-  xs: "4px"
-  sm: "8px"
-  control: "12px"
-  md: "16px"
-  page: "20px"
-  lg: "24px"
+  phi-1: "5px"
+  phi-2: "8px"
+  phi-3: "13px"
+  phi-4: "21px"
+  phi-5: "34px"
+  phi-6: "55px"
+  phi-7: "89px"
+motion:
+  ease-signal: "cubic-bezier(0.16, 1, 0.3, 1)"
+  ease-signal-std: "cubic-bezier(0.2, 0.7, 0.2, 1)"
+  sig-reveal: "1.1s ease-signal, 90ms sibling stagger, max 5"
+  sig-bar: "0.8s ease-signal-std on width/height"
+  sig-live: "1.6s ping, only while data streams"
 components:
   button-primary:
-    backgroundColor: "{colors.primary}"
-    textColor: "{colors.primary-foreground}"
+    backgroundColor: "{colors.primary-light}"
+    textColor: "{colors.primary-foreground-light}"
     typography: "{typography.control}"
     rounded: "{rounded.control}"
     padding: "8px 16px"
     height: "36px"
-  button-outline:
-    backgroundColor: "{colors.background-light}"
-    textColor: "{colors.foreground-light}"
-    typography: "{typography.control}"
-    rounded: "{rounded.control}"
-    padding: "8px 16px"
-    height: "36px"
-  button-secondary:
-    backgroundColor: "{colors.muted-light}"
-    textColor: "{colors.secondary-foreground-light}"
-    typography: "{typography.control}"
-    rounded: "{rounded.control}"
-    padding: "8px 16px"
-    height: "36px"
-  button-ghost:
-    textColor: "{colors.foreground-light}"
-    typography: "{typography.control}"
-    rounded: "{rounded.control}"
-    padding: "8px 16px"
-    height: "36px"
-  button-link:
-    textColor: "{colors.brand-link-light}"
-    typography: "{typography.control}"
-    rounded: "{rounded.control}"
-    padding: "8px 16px"
-    height: "36px"
-  button-destructive:
-    backgroundColor: "{colors.destructive-light}"
-    textColor: "#ffffff"
-    typography: "{typography.control}"
-    rounded: "{rounded.control}"
-    padding: "8px 16px"
-    height: "36px"
-  input:
-    textColor: "{colors.foreground-light}"
-    rounded: "{rounded.control}"
-    padding: "4px 12px"
-    height: "36px"
-  navigation-active:
-    textColor: "{colors.brand-link-light}"
-    typography: "{typography.control}"
-    rounded: "{rounded.control}"
-    padding: "8px 12px"
-    height: "32px"
-  badge:
-    rounded: "{rounded.control}"
-    padding: "2px 8px"
+  stat-card:
+    backgroundColor: "glass-1"
+    rounded: "{rounded.stat}"
+    padding: "{spacing.phi-4}"
+    typography: "{typography.kpi}"
   card:
-    backgroundColor: "{colors.card-light}"
-    textColor: "{colors.foreground-light}"
+    backgroundColor: "glass-1"
     rounded: "{rounded.card}"
     padding: "24px"
+  navigation-active:
+    backgroundColor: "{colors.pale}"
+    textColor: "{colors.primary-light}"
+    rounded: "{rounded.control}"
+    height: "32px"
 ---
 
-# Design System: NexusMind Admin — Audit1 Lime
+# Design System: NexusMind Admin — Signal (SmartCoder)
 
 ## Overview
 
-**Creative North Star: "Audit1 operational clarity"**
+**Creative North Star: "Signal over ink"**
 
-NexusMind admin adopts the owner-selected Audit1 Admin visual system: Geist typography, neutral light and dark surfaces, an inset workspace, compact shadcn New York controls, and restrained lime actions. Audit1’s purple brand roles are translated to lime while its neutral material and component geometry remain the reference.
+The admin speaks the Signal design language (glass levels, a fixed data palette, expo-out motion, Fibonacci spacing and a golden type scale) on top of the shadcn New York roles it already used. The palette is SmartCoder's: ink and charcoal neutrals carry the structure, forest green carries primary actions, and lime is the **signal accent only**. Geist stays.
 
-The source authority is Admin-portal-front e9e01b2a and its consumed UI Commons v2.0.670 (47968e54). Local implementation tokens live in src/styles/audit1-theme.css, with compatibility aliases and shell treatments in src/index.css. This system applies to the admin; the landing retains its separately approved identity.
+Runtime authority: `src/styles/signal.css` (theme-independent Signal layer, byte-identical in `apps/backoffice`), `src/styles/signal-theme.css` (light/dark colour roles) and the compatibility aliases and shell treatments in `src/index.css`. This is a re-skin through tokens and shared components; routes, permissions, data and contracts are unchanged.
 
-**Key Characteristics:**
-- Neutral inset shell with a collapsible sidebar and mobile sheet.
-- Self-hosted Geist Variable and compact, readable operational hierarchy.
-- Lime actions with dark ink; independently meaningful semantic statuses.
-- Thin borders, modest shadows, and subtle workspace grid and radial washes.
+### Palette roles
 
-## Colors
+| Role | Light | Dark | Use |
+|---|---|---|---|
+| Structure | ink `#111114`, charcoal `#101114` | foreground `#f2f4f7` on charcoal | text, frame, neutrals |
+| Primary action | forest `#356b26`, white text | `#7fbe6f`, ink text | filled primary buttons, checked controls |
+| Signal accent | lime `#c3d82e` | same | focus ring (dark), live dots, current-page mark, hover edge, gradient ends. About 5% of a screen |
+| Soft fills | pale `#e7f4d8`, mint `#84e6b0` | tint `#293e28` | selected nav, tinted chips |
+| Data d1..d4 | `#356b26` `#285f91` `#286f68` `#805b0d` | `#91d281` `#9bc8ed` `#82cbbf` `#e6c16d` | chart and stat series, fixed order |
 
-### Primary
+Dark values are OKLCH derivations: same hue as the light value, lightness raised into the 0.74–0.82 band the existing dark data set already used. The lime accent block (`--sig`, `--sig-hi`, `--sig-2`, `--sig-3`, `--on-sig`, `--sig-text-light`) is generated by the Signal kit's `rebrand.mjs '#c3d82e'`.
 
-Action Lime supplies primary and complementary filled actions. Deep Lime Ink supplies their foreground. Olive Link is the light-theme text and focus accent; dark surfaces use Action Lime for those roles. The full source lime ramp (50–950) is recorded in the sidecar. The frontmatter resolves semantic aliases to their source CSS color values; CSS remains the runtime theme authority.
-
-The primary shadcn button hovers at 90% complementary opacity. Compatibility action-hover and action-active tokens remain available to older controls, so they are not a replacement for that button’s actual state treatment.
-
-### Neutral
-
-Light mode uses white backgrounds/cards, pale neutral sidebar and topbar surfaces, dark text, and gray borders. Dark mode uses a charcoal background, slightly lifted cards/sidebar, a distinct charcoal topbar, and the workspace-dark canvas. Muted surfaces double as secondary and accent surfaces. Popovers use the card tone in each theme. Sidebar text inherits foreground; navigation is theme-aware.
-
-### Semantic status
-
-Success, warning, destructive, and information colors remain distinct. Compatibility names such as accent-blue, accent-purple, and accent-pink resolve to the brand-link role; information status remains blue. Preserve label meaning alongside color.
-
-### Categorical accents
-
-Lime remains the brand action color. Compact statistics and multi-series charts may use blue, teal, amber, and rose as supporting categorical hues. Keep their tints low on card surfaces, map them in a stable order across routes, and never reuse them to imply success, warning, or error. Each foreground has a theme-specific readable value.
-
-**The Action Ink Rule.** Pair solid lime actions with primary foreground. Use the theme-aware brand-link role for readable text emphasis on neutral surfaces.
-
-**The Semantic Pair Rule.** Choose surface, foreground, border, and focus roles together; theme changes must preserve their relationship.
+**The Lime Rule.** Lime is never a fill for large surfaces and never body text. It measures 1.6:1 on white, so on light surfaces any lime that must be read or seen as a ring uses `--sig-text-light` (`#677302`, 5.2:1). On dark surfaces lime is used as is (11:1+).
 
 ## Typography
 
@@ -203,6 +172,8 @@ The frontmatter captures the implemented dashboard headline, base body, card tit
 
 **The Geist Interface Rule.** Use the self-hosted Geist variable family for interface text. Keep the existing monospace stack for code and identifiers.
 
+**Golden scale.** New work uses the Tailwind utilities `text-micro` (11), `text-sm` (14, body), `text-lead` (18), `text-title` (23), `text-kpi` (29) and `text-display` (37): base 14px, each step ×√φ. Spacing uses `phi-1…phi-7` (5, 8, 13, 21, 34, 55, 89px). Existing route geometry is not rewritten.
+
 ## Layout
 
 The desktop shell uses a 288px expanded sidebar. Its icon-width token is 48px; the inset variant adds 16px to the reserved rail space and 18px to the fixed container width, so the entire collapsed shell must not be measured as a bare 48px rail. Desktop sidebar treatment begins at 768px. Below that, the sidebar is a 288px left sheet. The inset workspace has 8px desktop margins, a rounded outline, and shallow shadow; the Layout adds a 10px bottom margin.
@@ -211,13 +182,13 @@ The sidebar navigation keeps native scrolling. Its scrollbar is hidden in the co
 
 The topbar has a 56px minimum height and 16px horizontal padding. It may wrap on narrow widths. Main content owns vertical scrolling, with a 20px gutter reduced to 16px at widths up to 640px. Route content remains fluid and retains its responsive forms, grids, and tables.
 
-Primary page statistics use a wrapping strip with 8px gaps. Each neutral summary is at least 36px high, with 12px horizontal and 8px vertical padding, an 8px radius and a small value badge. Summaries are static: label, value and supporting caption stay visible, with no chevron, disclosure or hidden detail. Real recent series, when supplied, occupy a compact 96×32px area alongside the caption. At widths up to 480px, summaries occupy full rows to preserve long labels and values. Legacy grids remain only for screens not yet migrated. Tables keep overflow within their own container.
+Primary page statistics use the Signal stat card (`MetricSummary`): glass-1, 16px radius, phi-3/phi-4 padding, a 13px muted label, the value in `text-title` → `text-kpi` with tabular numerals, an icon chip tinted with the card's data hue, the lime hover edge (`sig-card`) and the `sig-reveal` entrance. Cards stay static: label, value and supporting caption stay visible, with no chevron, disclosure or hidden detail. Real recent series, when supplied, occupy a compact 96×32px area alongside the caption. At widths up to 480px, summaries occupy full rows to preserve long labels and values. Legacy grids remain only for screens not yet migrated. Tables keep overflow within their own container.
 
 ## Elevation & Depth
 
-Borders and shallow shadows separate neutral panels. Cards use small ambient shadows; compact metric summaries use borders without shadows; controls use a smaller shadow. Dialogs and sheets use stronger elevation above a half-black scrim. The workspace has low-opacity lime radial washes and a masked 64px grid. These are part of the Audit1 reference material, rather than a prohibition on gradients or grids. Compatibility glass utilities still exist, but shared card variants now resolve to the same ordinary card surface.
+Glass has exactly two levels. **glass-1** is a card on the frame: a 76% card veil (dark: 5% white over 70% card), a hairline edge, a soft shadow and a 22px blur. **glass-2** is the frame itself (topbar) and floating layers: a 55–62% workspace veil and a 40px blur. Shared shadcn cards, the legacy `Card`, `.lima-panel`, KPI tracks and stat cards all use glass-1; the legacy `.glass` / `.glass-dark` utilities map to the two levels. What the glass refracts is the workspace: one faint green haze, one faint cool haze and a masked 55px grid. Dialogs and sheets keep stronger elevation above a half-black scrim. `.sig-hud` is the always-dark immersive surface for a single hero widget.
 
-**The Quiet Depth Rule.** Use borders and shallow shadows for ordinary panels; stronger elevation and scrims belong to overlays.
+**The Quiet Depth Rule.** Two glass levels and overlays; no third level, no lime haze.
 
 ## Shapes
 
@@ -227,7 +198,7 @@ The radius root is 10px. Small elements use 6px, controls/navigation/badges 8px,
 
 ### Buttons
 
-Compact shadcn New York buttons use cva variants and optional Radix Slot composition. Default actions use complementary lime with dark ink, 36px height, and 16px horizontal padding; a direct SVG child reduces horizontal padding to 12px. Small, extra-small, large, and icon sizes are 32px, 20px, 40px, and 36px square respectively. Secondary, outline, ghost, link, and destructive variants retain distinct roles. Default hover reduces fill opacity; link hover underlines. Focus uses the ring color at 50% with a 3px ring. Disabled/loading states disable interaction. Legacy Button maps its existing API onto these variants.
+Compact shadcn New York buttons use cva variants and optional Radix Slot composition. Default actions use the forest-green primary with white text (dark: `#7fbe6f` with ink), 36px height, and 16px horizontal padding; a direct SVG child reduces horizontal padding to 12px. Small, extra-small, large, and icon sizes are 32px, 20px, 40px, and 36px square respectively. Secondary, outline, ghost, link, and destructive variants retain distinct roles. Default hover reduces fill opacity; link hover underlines. Focus uses a solid 3px ring in the ring colour (`#677302` light, lime dark), which clears 3:1 on every surface. Disabled/loading states disable interaction. Legacy Button maps its existing API onto these variants.
 
 ### Inputs / Fields
 
@@ -235,7 +206,7 @@ Fields share the 8px radius, thin input border, 36px standard height, and 12px h
 
 ### Navigation
 
-The neutral sidebar groups permission-filtered routes. Rows use 32px height, 14px text, and SVG icons. Current-page links use a 5% primary tint, 35% primary border, brand-link text/icons, medium weight, and a subtle 1.05 scale in expanded mode. Icon mode removes that scale and shows tooltips. Group labels are sentence case at 12px/500. The sidebar trigger controls the desktop rail or mobile sheet.
+The neutral sidebar groups permission-filtered routes. Rows use 32px height, 14px text, and SVG icons. Current-page links use the pale soft fill (dark: `#293e28`), green text/icons, a 35% primary border, medium weight and a 2px lime signal mark on the left edge (hidden in icon mode; decorative, the fill and weight carry the state). Icon mode shows tooltips. Group labels are sentence case at 12px/500. The sidebar trigger controls the desktop rail or mobile sheet.
 
 ### Chips / Badges
 
@@ -253,7 +224,7 @@ Compact summaries share a responsive grid measured against the available content
 
 ### Charts
 
-Analytical charts use Audit1 UI Commons’ shadcn ChartContainer, ChartTooltipContent and ChartLegendContent on Recharts 2.15.4, matching the consumed reference version. Use theme variables instead of fixed dark-surface colors: chart-1 is lime in both themes, followed by blue, teal, amber, and rose for distinct series. Categorical bars within a single ranked list share one hue rather than assigning status colors to unrelated categories.
+Analytical charts use Audit1 UI Commons’ shadcn ChartContainer, ChartTooltipContent and ChartLegendContent on Recharts 2.15.4, matching the consumed reference version. Use theme variables instead of fixed colors: `--chart-1..4` are `--d1..--d4` (green, blue, teal, amber) in a fixed order that never cycles; `--chart-5` (rose) stays only for existing categorical indicators. A bar whose length is the datum may use `.sig-bar` (green into the lime end). Categorical bars within a single ranked list share one hue rather than assigning status colors to unrelated categories.
 
 Dashboard memory trends, type/project breakdowns, health indicators, usage trends, ranked usage bars and compact metric series share this chart system. Axes use muted labels and quiet gridlines, with shadcn tooltips and keyboard chart navigation. Include an accessible data table for analytical panels. Plot actual zeros without a decorative minimum bar height. Disable decorative chart entry animation. Dashboard charts load behind individual skeleton fallbacks; count sparklines load independently in a compact, always-visible space, so the chart dependency does not block summary navigation. Missing data is unavailable, never invented as zero.
 
@@ -267,12 +238,13 @@ The invitation form retains its existing workflow and native role selector. Its 
 
 ### Theme and motion
 
-The persistent topbar theme control is 36px high and follows the outlined control grammar. Theme choice remains stored under nexusmind-admin-theme. Sidebar geometry transitions over 200ms; existing entrance utilities use 220ms easing, badges 160ms, and sheets 500ms opening/300ms closing. The reduced-motion media query minimizes CSS animation and transition durations, and participating Framer Motion components read the same preference. This does not imply that every third-party animation has been visually validated.
+The persistent topbar theme control is 36px high and follows the outlined control grammar. Theme choice remains stored under nexusmind-admin-theme. Signal motion uses one curve, `--ease-signal` (expo-out, the same curve as the legacy `--ease-apple`): `sig-reveal` (1.1s, 90ms stagger capped at five), `sig-bar` (0.8s data easing), `sig-live` (1.6s ping, only while a run is actually streaming; first use: the Factory step console's "Seguir en vivo") and `sig-card` (0.2s border). Existing utilities keep 220ms entrances, sidebar 200ms, sheets 500/300ms. Under `prefers-reduced-motion: reduce` the Signal animations and transitions are removed and the global guard minimizes the rest; participating Framer Motion components read the same preference. This does not imply that every third-party animation has been visually validated.
 
 ## Do's and Don'ts
 
 ### Do:
-- Do use primary with primary-foreground for filled lime actions.
+- Do use primary with primary-foreground for filled green actions.
+- Do keep lime to accent roles: focus, live data, current-page mark, hover edge, gradient ends.
 - Do preserve separate success, warning, error, and information colors with text labels.
 - Do extend shared shadcn primitives and compatibility wrappers before adding route-specific visual rules.
 - Do preserve keyboard focus, labels, dialog semantics, permission filtering, and reduced-motion support.
@@ -280,6 +252,6 @@ The persistent topbar theme control is 36px high and follows the outlined contro
 
 ### Don't:
 - Don't restore the obsolete Heebo, black-sidebar, or landing-derived admin system.
-- Don't use white text or icons on the lime primary fill.
-- Don't turn every status, panel, or icon into a lime accent.
+- Don't fill large surfaces with lime or set body text in lime; on light surfaces use `--sig-text-light` when lime must be legible.
+- Don't add a second brand colour, cycle d1..d4, or reuse a data hue as a status.
 - Don't assume every domain control is Radix or promote an isolated legacy measurement into a global rule.

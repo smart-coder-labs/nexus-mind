@@ -46,9 +46,9 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             to={href}
             onClick={onNavigate}
             className={cn(
-              'relative group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
+              'relative group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sig',
               isActive
-                ? 'bg-surface-secondary text-text-primary font-medium before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-accent-blue before:rounded-full'
+                ? 'bg-surface-secondary text-text-primary font-medium before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-sig before:rounded-full'
                 : 'text-text-secondary hover:text-text-primary hover:bg-surface-secondary/60 font-normal',
             )}
           >
@@ -103,7 +103,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <div className="px-2 pb-3">
         <button
           onClick={handleLogout}
-          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-status-error hover:bg-surface-secondary/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"
+          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-status-error hover:bg-surface-secondary/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sig"
         >
           <LogOut className="w-[15px] h-[15px] flex-shrink-0 text-text-tertiary" />
           Sign out
@@ -155,7 +155,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Mobile top bar */}
-        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-border-primary bg-bg-primary">
+        <header className="glass-2 sticky top-0 z-20 lg:hidden flex items-center gap-3 px-4 py-3 border-b border-border-primary">
           <button
             onClick={() => setDrawerOpen(true)}
             className="p-1.5 text-text-secondary hover:text-text-primary transition-colors"
@@ -169,7 +169,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto">
+        <main className="bo-workspace flex-1 overflow-auto">
           {children}
         </main>
       </div>

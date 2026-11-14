@@ -10,7 +10,7 @@ const ACTION_COLORS: Record<string, string> = {
   search:   'bg-status-info/15 text-status-info',
   invite:   'bg-accent-blue-tint text-accent-blue',
   revoke:   'bg-status-warning/15 text-status-warning',
-  rotate:   'bg-accent-violet-tint text-accent-violet',
+  rotate:   'bg-data-blue-tint text-data-blue',
 }
 
 function ActionBadge({ action }: { action: string }) {
@@ -109,7 +109,7 @@ export default function AuditLog() {
             onChange={e => setSearch(e.target.value)}
             aria-label="Search the audit log"
             placeholder="Search by action, user, resource…"
-            className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+            className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
           />
           {search && (
             <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-secondary">
@@ -121,7 +121,7 @@ export default function AuditLog() {
           aria-label="Filter by action"
           value={actionFilter}
           onChange={e => setActionFilter(e.target.value)}
-          className="bg-surface-primary border border-border-primary rounded-lg px-3 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+          className="bg-surface-primary border border-border-primary rounded-lg px-3 py-2.5 text-sm text-text-primary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
         >
           <option value="">All actions</option>
           {uniqueActions.map(a => <option key={a} value={a}>{a}</option>)}

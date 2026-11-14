@@ -5,7 +5,7 @@
   overflow: hidden;
   isolation: isolate;
   pointer-events: none;
-  --mesh-color: 72, 105, 25;
+  --mesh-color: 53, 107, 38; /* forest #356b26 */
   background:
     radial-gradient(ellipse at 76% 19%, color-mix(in srgb, var(--primary) 15%, transparent), transparent 36%),
     radial-gradient(ellipse at 10% 86%, color-mix(in srgb, var(--data-teal) 8%, transparent), transparent 42%),
@@ -13,7 +13,7 @@
 }
 
 .dark .login-mesh-layer {
-  --mesh-color: 190, 220, 116;
+  --mesh-color: 145, 210, 129; /* dark green #91d281 */
   background:
     radial-gradient(ellipse at 76% 19%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 38%),
     radial-gradient(ellipse at 10% 86%, color-mix(in srgb, var(--data-teal) 9%, transparent), transparent 44%),

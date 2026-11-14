@@ -682,7 +682,7 @@ export default function Clients() {
                 placeholder="e.g. Acme Corp"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -696,7 +696,7 @@ export default function Clients() {
                 placeholder="e.g. acme-corp"
                 value={effectiveSlug}
                 onChange={e => { setSlug(e.target.value); setSlugTouched(true) }}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary font-mono focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary font-mono focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
               {currentSlugError ? (
                 <p className="text-xs text-status-error/80">{currentSlugError}</p>
@@ -764,7 +764,7 @@ export default function Clients() {
                   type="text"
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
-                  className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   required
                 />
               </div>
@@ -776,7 +776,7 @@ export default function Clients() {
                   value={editingClient.slug}
                   readOnly
                   disabled
-                  className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-quaternary font-mono cursor-not-allowed shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-quaternary font-mono cursor-not-allowed shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
               </div>
 
@@ -810,7 +810,7 @@ export default function Clients() {
                     value={projectFilter}
                     onChange={e => setProjectFilter(e.target.value)}
                     placeholder="Filter projects…"
-                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                 </div>
 

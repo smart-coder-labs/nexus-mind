@@ -82,7 +82,7 @@ function CreateOrgModal({ onClose, onCreated }: CreateOrgModalProps) {
                 onChange={handleNameChange}
                 placeholder="Acme Corp"
                 required
-                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
               />
             </div>
 
@@ -94,7 +94,7 @@ function CreateOrgModal({ onClose, onCreated }: CreateOrgModalProps) {
                 onChange={e => setForm(prev => ({ ...prev, org_slug: e.target.value }))}
                 placeholder="acme-corp"
                 required
-                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary font-mono focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary font-mono focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
               />
             </div>
 
@@ -106,7 +106,7 @@ function CreateOrgModal({ onClose, onCreated }: CreateOrgModalProps) {
                 onChange={e => setForm(prev => ({ ...prev, admin_name: e.target.value }))}
                 placeholder="Jane Doe"
                 required
-                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
               />
             </div>
 
@@ -118,7 +118,7 @@ function CreateOrgModal({ onClose, onCreated }: CreateOrgModalProps) {
                 onChange={e => setForm(prev => ({ ...prev, admin_email: e.target.value }))}
                 placeholder="jane@acme.com"
                 required
-                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+                className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
               />
             </div>
           </div>
@@ -275,7 +275,7 @@ export default function Orgs() {
             onChange={e => setSearch(e.target.value)}
             aria-label="Search organizations"
             placeholder="Search organizations…"
-            className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+            className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
           />
           {search && (
             <button

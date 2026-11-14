@@ -258,7 +258,7 @@ export default function MemoryGraphTab() {
         <StyledSelect
           value={selectedProject}
           onChange={e => setSelectedProject(e.target.value)}
-          className="bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+          className="bg-transparent border border-input rounded-md px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
           aria-label="Select project"
         >
           <option value="">Select project…</option>

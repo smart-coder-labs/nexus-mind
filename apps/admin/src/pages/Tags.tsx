@@ -228,7 +228,7 @@ export default function Tags() {
                         value={renameValue}
                         onChange={(e) => setRenameValue(e.target.value)}
                         onKeyDown={handleRenameKeyDown}
-                        className="bg-transparent border-b border-input text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 min-w-0 w-32 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                        className="bg-transparent border-b border-input text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 min-w-0 w-32 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                       />
                       <button
                         onClick={handleRenameSave}
@@ -257,7 +257,7 @@ export default function Tags() {
                 <td className="px-5 py-3">
                   <div className="h-1 rounded-full bg-foreground/[0.06] overflow-hidden max-w-[140px]">
                     <div
-                      className="h-full rounded-full bg-[var(--chart-1)]"
+                      className="sig-bar h-full rounded-full"
                       style={{ width: `${maxCount > 0 ? Math.round((t.count / maxCount) * 100) : 0}%` }}
                     />
                   </div>
@@ -334,7 +334,7 @@ export default function Tags() {
                 aria-label="Target tag name"
                 placeholder="Target tag name…"
                 list="tag-list"
-                className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
               <datalist id="tag-list">
                 {tags.filter((t) => t.name !== mergingTag).map((t) => (

@@ -1,5 +1,5 @@
 /**
- * NexusMind lime design system — global styles
+ * NexusMind admin — SIGNAL with the SmartCoder palette (green + ink, lime accent)
  * Shared light/dark tokens and compatibility aliases for existing components
  */
 
@@ -8,7 +8,8 @@
 @import "tailwindcss";
 @import "@fontsource-variable/geist";
 @import "tw-animate-css";
-@import "./styles/audit1-theme.css";
+@import "./styles/signal.css";
+@import "./styles/signal-theme.css";
 @variant dark (&:where(.dark, .dark *));
 
 
@@ -18,18 +19,17 @@
 
 /* Compatibility aliases keep existing route semantics on the Audit1 tokens. */
 :root {
- --color-accent-blue:var(--brand-link); --color-accent-blue-hover:var(--lime-800); --color-accent-blue-active:var(--lime-900); --color-accent-blue-tint:color-mix(in srgb,var(--primary) 12%,transparent); --color-accent-on-dark:var(--brand-link);
- --color-action-primary:var(--primary); --color-action-primary-hover:var(--lime-300); --color-action-primary-active:var(--lime-500); --color-action-foreground:var(--primary-foreground);
+ --color-accent-blue:var(--brand-link); --color-accent-blue-hover:var(--primary-hover); --color-accent-blue-active:var(--primary-hover); --color-accent-blue-tint:var(--primary-tint); --color-accent-on-dark:var(--brand-link);
+ --color-action-primary:var(--primary); --color-action-primary-hover:var(--primary-hover); --color-action-primary-active:var(--primary-hover); --color-action-foreground:var(--primary-foreground);
  --color-accent-amber:var(--color-status-warning); --color-accent-red:var(--color-status-error);
  --color-accent-purple:var(--brand-link); --color-accent-pink:var(--brand-link);
  --color-bg-primary:var(--background); --color-bg-secondary:var(--card); --color-bg-tertiary:var(--muted); --color-bg-elevated:var(--popover);
- --color-surface-primary:var(--card); --color-surface-secondary:var(--muted); --color-surface-elevated:var(--popover); --color-surface-glass:var(--card); --color-surface-glass-dark:var(--popover);
+ --color-surface-primary:var(--card); --color-surface-secondary:var(--muted); --color-surface-elevated:var(--popover); --color-surface-glass:var(--glass-1-bg); --color-surface-glass-dark:var(--glass-2-bg);
  --color-text-primary:var(--foreground); --color-text-secondary:var(--foreground); --color-text-tertiary:var(--muted-foreground); --color-text-quaternary:var(--muted-foreground); --color-text-inverse:var(--background); --color-foreground:var(--foreground);
  --color-border-primary:var(--border); --color-border-secondary:var(--border); --color-border-tertiary:var(--input); --color-border-focus:var(--ring); --color-focus-ring:var(--ring);
  --color-status-success:#27713f; --color-status-warning:#866200; --color-status-error:var(--destructive); --color-status-info:#2563eb;
 }
 :root.dark {
- --color-accent-blue-hover:var(--lime-300); --color-accent-blue-active:var(--lime-500);
  --color-status-success:#84e6b0; --color-status-warning:#e2c467; --color-status-info:#93c5fd;
 }
 
@@ -88,7 +88,7 @@
   --font-sans: 'Geist Variable', sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Monaco", "Cascadia Code", monospace;
 
-  /* Motion */
+  /* Motion: --ease-apple is the same curve as --ease-signal (signal.css). */
   --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -159,16 +159,17 @@
    ======================================== */
 
 @layer utilities {
+  /* Legacy names for the two Signal glass levels. */
   .glass {
-    background: var(--color-surface-glass);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    background: var(--glass-1-bg);
+    backdrop-filter: blur(22px) saturate(1.4);
+    -webkit-backdrop-filter: blur(22px) saturate(1.4);
   }
 
   .glass-dark {
-    background: var(--color-surface-glass-dark);
-    backdrop-filter: blur(40px);
-    -webkit-backdrop-filter: blur(40px);
+    background: var(--glass-2-bg);
+    backdrop-filter: blur(40px) saturate(1.5);
+    -webkit-backdrop-filter: blur(40px) saturate(1.5);
   }
 
   .truncate-2 {
@@ -258,7 +259,7 @@
 
 /* Audit1 neutral inset shell, light and dark. */
 html.dark { color-scheme:dark; }
-::selection { background:var(--primary); color:var(--primary-foreground); }
+::selection { background:var(--sig-a30); color:var(--foreground); }
 html { scrollbar-color:var(--muted-foreground) transparent; }
 .audit-sidebar { background:var(--sidebar); color:var(--sidebar-foreground); }
 /* Keep scrolling available without a bright track competing with the icon rail. */
@@ -282,14 +283,18 @@ html { scrollbar-color:var(--muted-foreground) transparent; }
 [data-collapsible=icon] .audit-sidebar-scroll::-webkit-scrollbar { display:none; }
 .audit-sidebar [data-slot="sidebar-menu-button"],
 .audit-sidebar a[aria-current=page] { border-radius:12px; }
-.audit-sidebar a[aria-current=page] { background:color-mix(in srgb,var(--primary) 5%,transparent); color:var(--brand-link); border-color:color-mix(in srgb,var(--primary) 35%,transparent); font-weight:500; transform:none; }
-.audit-sidebar a[aria-current=page] svg { color:var(--brand-link); }
+.audit-sidebar a[aria-current=page] { position:relative; background:var(--primary-tint); color:var(--primary-tint-foreground); border-color:color-mix(in srgb,var(--primary) 35%,transparent); font-weight:500; transform:none; }
+/* Lime highlight: a 2px signal mark on the current page, decorative (the tint and weight carry the state). */
+.audit-sidebar a[aria-current=page]::before { content:''; position:absolute; left:0; top:50%; width:2px; height:16px; transform:translateY(-50%); border-radius:2px; background:var(--sig); }
+[data-collapsible=icon] .audit-sidebar a[aria-current=page]::before { display:none; }
+.audit-sidebar a[aria-current=page] svg { color:var(--primary-tint-foreground); }
 .audit-sidebar nav>div>p { font-size:12px; font-weight:500; letter-spacing:0; text-transform:none; }
-.audit-topbar { background:var(--top-bar-background); border-bottom:1px solid var(--border); }
+.audit-topbar { background:var(--top-bar-background); border-bottom:1px solid var(--border); -webkit-backdrop-filter:blur(40px) saturate(1.5); backdrop-filter:blur(40px) saturate(1.5); }
 .audit-workspace { background:var(--workspace); position:relative; isolation:isolate; }
-.audit-workspace::before { content:''; position:absolute; inset:0; z-index:-1; pointer-events:none; background:radial-gradient(ellipse 60% 40% at 30% 20%,color-mix(in srgb,var(--primary) 6%,transparent),transparent 60%),radial-gradient(ellipse 50% 40% at 70% 60%,color-mix(in srgb,var(--complementary) 5%,transparent),transparent 60%); }
-.audit-workspace::after { content:''; position:absolute; inset:0; z-index:-1; pointer-events:none; background-image:linear-gradient(color-mix(in srgb,var(--foreground) 3%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--foreground) 3%,transparent) 1px,transparent 1px); background-size:64px 64px; mask-image:radial-gradient(ellipse 60% 50% at 50% 30%,#000,transparent); }
-.lima-panel { border:1px solid var(--border); background:var(--card); border-radius:calc(var(--radius) + 4px); }
+/* Signal haze: one green haze and one cool haze behind the glass; deliberately faint. */
+.audit-workspace::before { content:''; position:absolute; inset:0; z-index:-1; pointer-events:none; background:radial-gradient(ellipse 60% 40% at 18% 0%,color-mix(in srgb,var(--primary) 9%,transparent),transparent 62%),radial-gradient(ellipse 50% 40% at 100% 40%,color-mix(in srgb,var(--d2) 7%,transparent),transparent 60%); }
+.audit-workspace::after { content:''; position:absolute; inset:0; z-index:-1; pointer-events:none; background-image:linear-gradient(color-mix(in srgb,var(--foreground) 3%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--foreground) 3%,transparent) 1px,transparent 1px); background-size:55px 55px; mask-image:radial-gradient(ellipse 60% 50% at 50% 30%,#000,transparent); }
+.lima-panel { border:1px solid var(--glass-edge); background:var(--glass-1-bg); box-shadow:var(--glass-shadow); -webkit-backdrop-filter:blur(22px) saturate(1.4); backdrop-filter:blur(22px) saturate(1.4); border-radius:calc(var(--radius) + 4px); }
 .lima-theme-button { display:inline-flex; align-items:center; gap:8px; height:36px; padding:8px 12px; border:1px solid var(--input); border-radius:calc(var(--radius) - 2px); color:var(--foreground); background:var(--background); font-size:14px; box-shadow:0 1px 2px #0000000d; }
 .lima-theme-button.lima-theme-button--compact { width:36px; height:36px; justify-content:center; gap:0; padding:0; }
 .lima-theme-button:hover { background:var(--accent); }

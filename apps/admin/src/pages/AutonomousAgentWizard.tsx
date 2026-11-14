@@ -1062,7 +1062,7 @@ function NativeSelect({
     <StyledSelect
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className="mt-1 block w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+      className="mt-1 block w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
     >
       {children}
     </StyledSelect>

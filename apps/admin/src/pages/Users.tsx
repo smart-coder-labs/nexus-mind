@@ -373,7 +373,7 @@ export default function Users() {
                       setSelectedUsers(e.target.checked ? new Set(filteredUsers.map((u: User) => u.id)) : new Set())
                       setSelectMode(e.target.checked)
                     }}
-                    className="rounded border-input bg-foreground/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="rounded border-input bg-foreground/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                 </th>
               )}
@@ -421,7 +421,7 @@ export default function Users() {
                           setSelectedUsers(next)
                           setSelectMode(next.size > 0)
                         }}
-                        className="rounded border-input bg-foreground/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                        className="rounded border-input bg-foreground/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                       />
                     </td>
                   )}
@@ -810,7 +810,7 @@ function UserNoteSection({
             onBlur={handleSave}
             maxLength={500}
             placeholder="Private admin note…"
-            className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary resize-none w-full p-2 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+            className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary resize-none w-full p-2 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
           />
           <div className="flex items-center justify-between">
             <span className="text-xs text-text-quaternary">{noteInput.length} / 500</span>

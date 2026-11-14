@@ -51,7 +51,7 @@ function UserCard({ user }: { user: User }) {
         </span>
         <span className={cn(
           'text-[10px] font-medium',
-          user.status === 'active' ? 'text-green-400' : 'text-text-quaternary'
+          user.status === 'active' ? 'text-status-success' : 'text-text-quaternary'
         )}>
           {user.status}
         </span>
@@ -134,7 +134,7 @@ export default function Search() {
           onChange={e => setQuery(e.target.value)}
           aria-label="Search organizations and users"
           placeholder="Search organizations and users…"
-          className="w-full rounded-lg border border-border-primary bg-surface-secondary text-sm text-text-primary pl-10 pr-16 py-2.5 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary transition-colors"
+          className="w-full rounded-lg border border-border-primary bg-surface-secondary text-sm text-text-primary pl-10 pr-16 py-2.5 focus:outline-none focus:border-sig placeholder:text-text-quaternary transition-colors"
         />
         <div className="absolute right-4 flex items-center gap-2">
           {query && (
@@ -185,7 +185,7 @@ export default function Search() {
 
       {/* Error */}
       {error && !loading && (
-        <p className="text-sm text-red-400 text-center">{error}</p>
+        <p className="text-sm text-status-error text-center">{error}</p>
       )}
 
       {/* Empty state — no query */}

@@ -1,12 +1,14 @@
 /**
- * NexusMind Backoffice — Design System
- * Superadmin-only panel. Amber accent to distinguish from client admin panel.
+ * NexusMind Backoffice — SIGNAL, SmartCoder palette (dark-only).
+ * Same system as apps/admin: ink/charcoal structure, green primary actions,
+ * lime (--sig) as the accent only. Values are the admin dark-theme derivations.
  */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
 
 @import "tailwindcss";
+@import "./styles/signal.css";
 @variant dark (&:where(.dark, .dark *));
 
 
@@ -15,54 +17,68 @@
    ======================================== */
 
 :root {
-  /* Background */
-  --color-bg-primary: #060509;
-  --color-bg-secondary: #0d0a12;
-  --color-bg-tertiary: #13101a;
-  --color-bg-elevated: #100e16;
+  color-scheme: dark;
+
+  /* Background — charcoal frame, deeper canvas */
+  --color-bg-primary: #0b0c0e;
+  --color-bg-secondary: #101114;
+  --color-bg-tertiary: #222326;
+  --color-bg-elevated: #18191c;
 
   /* Surface */
-  --color-surface-primary: #100e16;
-  --color-surface-secondary: #13101a;
-  --color-surface-glass: rgba(6, 5, 9, 0.72);
-  --color-surface-glass-dark: rgba(6, 5, 9, 0.85);
+  --color-surface-primary: #18191c;
+  --color-surface-secondary: #222326;
+  --color-surface-glass: var(--glass-1-bg);
+  --color-surface-glass-dark: var(--glass-2-bg);
 
-  /* Text — neutral ladder; violet is reserved for links/emphasis (accent-violet).
-     Quaternary carries real information, so it clears 4.5:1 on both the canvas
-     and card surfaces (including #13101a), not just the darkest background. */
-  --color-text-primary: #faf5ff;
-  --color-text-secondary: #b5b0c4;
-  --color-text-tertiary: #8b8698;
-  --color-text-quaternary: #827d8e;
-  --color-text-inverse: #060509;
+  /* Text — neutral ladder. Quaternary carries real information, so it clears
+     4.5:1 on the canvas and on both card surfaces (checked by npm test). */
+  --color-text-primary: #f2f4f7;
+  --color-text-secondary: #c3c8d0;
+  --color-text-tertiary: #a2a4ab;
+  --color-text-quaternary: #96989f;
+  --color-text-inverse: #0b0c0e;
 
-  /* Border */
-  --color-border-primary: rgba(167, 139, 250, 0.12);
-  --color-border-secondary: rgba(167, 139, 250, 0.06);
-  --color-border-focus: rgba(167, 139, 250, 0.5);
+  /* Border — neutral hairlines; the focus ring is the lime signal accent */
+  --color-border-primary: rgba(255, 255, 255, 0.1);
+  --color-border-secondary: rgba(255, 255, 255, 0.06);
+  --color-border-focus: var(--sig);
 
-  /* Accent — amber primary for internal-ops distinction */
-  --color-accent-primary: #f59e0b;
-  --color-accent-primary-hover: #d97706;
-  --color-accent-primary-active: #b45309;
-  --color-accent-primary-tint: rgba(245, 158, 11, 0.12);
+  /* Accent — green primary action (OKLCH dark derivation of forest #356b26) */
+  --color-accent-primary: #7fbe6f;
+  --color-accent-primary-hover: #91d281;
+  --color-accent-primary-active: #6dab5c;
+  --color-accent-primary-tint: #293e28;
 
   /* Deprecated aliases — keep existing `accent-blue` classes working during
-     migration. The accent is amber, not blue; prefer `accent-primary` in new code. */
+     migration. The accent is green, not blue; prefer `accent-primary` in new code. */
   --color-accent-blue: var(--color-accent-primary);
   --color-accent-blue-hover: var(--color-accent-primary-hover);
   --color-accent-blue-active: var(--color-accent-primary-active);
   --color-accent-blue-tint: var(--color-accent-primary-tint);
 
-  /* Secondary accent */
-  --color-accent-violet: #a78bfa;
-  --color-accent-violet-tint: rgba(167, 139, 250, 0.12);
+  /* Data series d1..d4 (fixed order, never cycled) */
+  --d1: #91d281;
+  --d2: #9bc8ed;
+  --d3: #82cbbf;
+  --d4: #e6c16d;
+  --color-data-blue: var(--d2);
+  --color-data-blue-tint: color-mix(in oklab, var(--d2) 14%, transparent);
 
-  /* Status */
-  --color-status-success: #4ade80;
-  --color-status-warning: #f59e0b;
+  /* Status — never borrows the brand */
+  --color-status-success: #84e6b0;
+  --color-status-warning: #e2c467;
   --color-status-error: #f87171;
-  --color-status-info: #a78bfa;
+  --color-status-info: #9bc8ed;
+
+  /* Roles signal.css reads (shared with the admin) */
+  --primary: var(--color-accent-primary);
+  --muted-foreground: var(--color-text-tertiary);
+  --border: var(--color-border-primary);
+  --glass-1-bg: color-mix(in oklab, oklch(1 0 0) 5%, color-mix(in oklab, var(--color-surface-primary) 70%, transparent));
+  --glass-2-bg: color-mix(in oklab, var(--color-bg-primary) 55%, transparent);
+  --glass-edge: oklch(1 0 0 / .1);
+  --glass-shadow: inset 0 1px 0 oklch(1 0 0 / .06), 0 18px 40px -22px rgb(0 0 0 / .75);
 
   /* Shadows */
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
@@ -108,8 +124,13 @@
   --color-accent-blue-active: var(--color-accent-blue-active);
   --color-accent-blue-tint: var(--color-accent-blue-tint);
 
-  --color-accent-violet: var(--color-accent-violet);
-  --color-accent-violet-tint: var(--color-accent-violet-tint);
+  --color-data-blue: var(--color-data-blue);
+  --color-data-blue-tint: var(--color-data-blue-tint);
+  --color-sig: var(--sig);
+  --color-d1: var(--d1);
+  --color-d2: var(--d2);
+  --color-d3: var(--d3);
+  --color-d4: var(--d4);
 
   --color-status-success: var(--color-status-success);
   --color-status-warning: var(--color-status-warning);
@@ -126,6 +147,7 @@
   --font-mono: "JetBrains Mono", "SF Mono", "Monaco", monospace;
 
   --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-signal: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 
@@ -155,8 +177,11 @@
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(167, 139, 250, 0.15); border-radius: 4px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(167, 139, 250, 0.25); }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); }
+
+  :focus-visible { outline: 2px solid var(--sig); outline-offset: 2px; }
+  ::selection { background: var(--sig-a30); color: var(--color-text-primary); }
 
   button, [role="button"] { cursor: pointer; }
 }
@@ -169,8 +194,8 @@
 @layer utilities {
   .glass {
     background: var(--color-surface-glass);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(22px) saturate(1.4);
+    -webkit-backdrop-filter: blur(22px) saturate(1.4);
   }
 
   .truncate-2 {
@@ -224,3 +249,19 @@
     scroll-behavior: auto !important;
   }
 }
+
+
+/* ========================================
+   SIGNAL SHELL
+   ======================================== */
+
+/* One green haze, one cool haze and a faint 55px grid behind the content. */
+.bo-workspace {
+  background:
+    radial-gradient(48rem 26rem at 12% -10%, color-mix(in oklab, var(--primary) 10%, transparent), transparent 62%),
+    radial-gradient(40rem 24rem at 100% 0%, color-mix(in oklab, var(--d2) 8%, transparent), transparent 60%),
+    linear-gradient(rgb(255 255 255 / .025) 1px, transparent 1px) 0 0 / 100% 55px,
+    linear-gradient(90deg, rgb(255 255 255 / .025) 1px, transparent 1px) 0 0 / 55px 100%,
+    var(--color-bg-secondary);
+}
+

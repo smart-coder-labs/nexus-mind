@@ -211,7 +211,7 @@ function CreateMemoryModal({
             <ModalTitle>New memory</ModalTitle>
             <ModalDescription>Save useful context for your workspace and make it easy to find later.</ModalDescription>
           </div>
-          <button aria-label="Close new memory" type="button" onClick={onClose} className="-mr-9 -mt-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+          <button aria-label="Close new memory" type="button" onClick={onClose} className="-mr-9 -mt-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -232,7 +232,7 @@ function CreateMemoryModal({
                 placeholder="Write the context you want your team to remember…"
                 value={content}
                 onChange={e => setContent(e.target.value)}
-                className="min-h-40 w-full resize-y rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed text-foreground shadow-sm outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
+                className="min-h-40 w-full resize-y rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed text-foreground shadow-sm outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring"
                 maxLength={10000}
                 required
               />
@@ -242,7 +242,7 @@ function CreateMemoryModal({
             {/* Tags */}
             <div>
               <label htmlFor="new-memory-tags" className="mb-2 block text-sm font-medium text-foreground">Tags <span className="font-normal text-muted-foreground">· optional</span></label>
-              <div className="flex min-h-11 flex-wrap items-center gap-1.5 rounded-lg border border-input bg-background px-2.5 py-2 shadow-sm transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20">
+              <div className="flex min-h-11 flex-wrap items-center gap-1.5 rounded-lg border border-input bg-background px-2.5 py-2 shadow-sm transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring">
                 {/* "#tag ×" chip — matches the NexusMind UI Kit multi-select's
                     tag chip inside the field exactly. */}
                 {tags.map(tag => (
@@ -276,7 +276,7 @@ function CreateMemoryModal({
               <StyledSelect id="new-memory-project"
                 value={projectId}
                 onChange={e => setProjectId(e.target.value)}
-                className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground shadow-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
+                className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground shadow-sm outline-none transition-[border-color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring"
               >
                 <option value="" data-description="Keep this memory outside a project." data-color="var(--muted-foreground)">No project</option>
                 {projects.filter(p => !p.archived_at).map(p => (
@@ -290,7 +290,7 @@ function CreateMemoryModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 Cancel
               </button>
@@ -437,7 +437,7 @@ function FacetSelect({
         aria-label={label}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="appearance-none w-full max-w-full h-9 rounded-md border border-input bg-surface-primary pl-3.5 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+        className="appearance-none w-full max-w-full h-9 rounded-md border border-input bg-surface-primary pl-3.5 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
       >
         <option value="" data-description={`Include every ${label.replace(/^All /i, '').toLowerCase()} value.`} data-color="var(--muted-foreground)">{label}</option>
         {options.map(o => (
@@ -586,7 +586,7 @@ function AdminNoteEditor({ memoryId, initialNote, client }: { memoryId: string; 
         onChange={e => setNote(e.target.value)}
         placeholder="Internal note visible only to admins…"
         rows={3}
-        className="w-full bg-foreground/[0.04] rounded-md border border-input text-xs text-text-primary placeholder:text-text-quaternary focus:border-accent-blue/60 focus:outline-none resize-none p-2.5 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+        className="w-full bg-foreground/[0.04] rounded-md border border-input text-xs text-text-primary placeholder:text-text-quaternary focus:border-accent-blue/60 focus:outline-none resize-none p-2.5 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
       />
       <div className="flex items-center gap-2">
         <Button
@@ -884,7 +884,7 @@ function MemorySlideOver({
                   <StyledSelect
                     value={collectionId}
                     onChange={e => setCollectionId(e.target.value)}
-                    className="flex-1 bg-foreground/[0.04] rounded-md border border-input text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none px-2 py-1.5 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="flex-1 bg-foreground/[0.04] rounded-md border border-input text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none px-2 py-1.5 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   >
                     <option value="" data-description="Choose where to organize this memory." data-color="var(--muted-foreground)">Select collection…</option>
                     {collections.map((c: Collection) => (
@@ -1912,7 +1912,7 @@ export default function Memories() {
                   onChange={e => setPresetName(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') handleSavePreset(); if (e.key === 'Escape') setSavePresetOpen(false) }}
                   placeholder="e.g. My bugfixes"
-                  className="w-full bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="w-full bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
                 <Button
                   onClick={handleSavePreset}
@@ -2205,7 +2205,7 @@ export default function Memories() {
             onChange={e => setQuery(e.target.value)}
             placeholder="Search memories…"
             aria-label="Search memories"
-            className="w-full bg-foreground/[0.04] border border-input rounded-md pl-10 pr-4 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+            className="w-full bg-foreground/[0.04] border border-input rounded-md pl-10 pr-4 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
           />
           {query && (
             <button
@@ -2262,7 +2262,7 @@ export default function Memories() {
               <StyledSelect
                 value={filterCollection}
                 onChange={e => setFilterCollection(e.target.value)}
-                className="appearance-none w-full max-w-full h-9 rounded-md border border-input bg-surface-primary pl-3.5 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="appearance-none w-full max-w-full h-9 rounded-md border border-input bg-surface-primary pl-3.5 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 aria-label="Filter by collection"
               >
                 <option value="" data-description="Show memories regardless of collection." data-color="var(--muted-foreground)">All collections</option>
@@ -2303,7 +2303,7 @@ export default function Memories() {
             <StyledSelect
               value={sortBy}
               onChange={e => setSortBy(e.target.value as SortBy)}
-              className="appearance-none h-9 rounded-md border border-input bg-surface-primary pl-8 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="appearance-none h-9 rounded-md border border-input bg-surface-primary pl-8 pr-7 text-sm text-text-tertiary hover:border-border-primary hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               aria-label="Sort memories"
             >
               <option value="newest">Newest first</option>
@@ -2412,7 +2412,7 @@ export default function Memories() {
                         setSelectedIds(new Set())
                       }
                     }}
-                    className="rounded border-input accent-accent-blue cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="rounded border-input accent-accent-blue cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                 )}
               </th>
@@ -2467,7 +2467,7 @@ export default function Memories() {
                         aria-label={`Select memory ${mem.id}`}
                         checked={isChecked}
                         onChange={() => toggleRow(mem.id)}
-                        className="absolute top-3 left-3 w-4 h-4 rounded border border-input bg-foreground/[0.04] accent-accent-blue cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                        className="absolute top-3 left-3 w-4 h-4 rounded border border-input bg-foreground/[0.04] accent-accent-blue cursor-pointer shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                       />
                     )}
                   </td>
@@ -2608,7 +2608,7 @@ export default function Memories() {
                                   }}
                                   placeholder="Add admin note…"
                                   maxLength={500}
-                                  className="bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-secondary resize-none w-full h-16 focus:border-accent-blue/60 focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                                  className="bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-xs text-text-secondary resize-none w-full h-16 focus:border-accent-blue/60 focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                                 />
                                 <span className="text-xs text-text-quaternary mt-0.5">
                                   {noteInput.length} / 500
@@ -2782,7 +2782,7 @@ export default function Memories() {
                                   const val = e.target.value || null
                                   scheduleDeleteMut.mutate({ id: mem.id, deleteAfter: val })
                                 }}
-                                className="w-full rounded-md bg-foreground/[0.04] border border-input text-xs text-text-primary px-2 py-1.5 focus:border-accent-blue/60 focus:outline-none [color-scheme:dark] shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                                className="w-full rounded-md bg-foreground/[0.04] border border-input text-xs text-text-primary px-2 py-1.5 focus:border-accent-blue/60 focus:outline-none [color-scheme:dark] shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                               />
                               {mem.delete_after && (
                                 <button
@@ -2962,7 +2962,7 @@ export default function Memories() {
                               setRenameValue('')
                             }
                           }}
-                          className="bg-foreground/[0.04] border border-input rounded-md px-2 py-0.5 text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                          className="bg-foreground/[0.04] border border-input rounded-md px-2 py-0.5 text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                           aria-label={`Rename tag ${tag.name}`}
                         />
                         <button
@@ -3042,14 +3042,14 @@ export default function Memories() {
                   onChange={e => setNewCollectionName(e.target.value)}
                   placeholder="Collection name"
                   aria-label="Collection name"
-                  className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
                 <input
                   value={newCollectionDesc}
                   onChange={e => setNewCollectionDesc(e.target.value)}
                   placeholder="Description (optional)"
                   aria-label="Collection description"
-                  className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
                 <Button
                   onClick={() => {

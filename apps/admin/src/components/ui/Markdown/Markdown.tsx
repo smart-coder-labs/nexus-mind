@@ -67,7 +67,7 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className }) => {
               checked={Boolean(checked)}
               disabled
               readOnly
-              className="mt-1 shrink-0 h-3 w-3 rounded-[3px] border border-input accent-accent-blue cursor-default shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="mt-1 shrink-0 h-3 w-3 rounded-[3px] border border-input accent-accent-blue cursor-default shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           ) : null,
         strong: ({ children }) => (

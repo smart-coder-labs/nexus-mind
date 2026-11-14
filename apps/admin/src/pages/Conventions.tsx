@@ -223,7 +223,7 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
         </p>
 
         <textarea
-          className="w-full h-48 rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm font-mono text-text-primary px-3 py-2.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+          className="w-full h-48 rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm font-mono text-text-primary px-3 py-2.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
           value={mdText}
           onChange={e => { setMdText(e.target.value); setMdParsed([]); setImportProgress(0) }}
           placeholder={"# Architecture\n\n## Clean Architecture layers\nStrict layer separation...\n\n## REST API naming\nUse nouns, not verbs..."}
@@ -370,7 +370,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
           <div>
             <label className="block text-xs text-text-tertiary mb-1.5">Title</label>
             <input
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               value={title}
               onChange={e => setTitle(e.target.value)}
               placeholder="Use snake_case for variable names"
@@ -381,7 +381,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
           <div>
             <label className="block text-xs text-text-tertiary mb-1.5">Category</label>
             <StyledSelect
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               value={category}
               onChange={e => setCategory(e.target.value)}
             >
@@ -397,7 +397,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
             </label>
             <input
               type="number"
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               value={weight}
               onChange={e => setWeight(e.target.value)}
               min={1}
@@ -408,7 +408,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
           <div>
             <label className="block text-xs text-text-tertiary mb-1.5">Content</label>
             <textarea
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none min-h-[120px] shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none min-h-[120px] shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               value={content}
               onChange={e => setContent(e.target.value)}
               placeholder="Describe the convention in detail. Agents will receive this as an authoritative rule."
@@ -421,7 +421,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
               Tags <span className="text-text-quaternary">(comma-separated)</span>
             </label>
             <input
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-base md:text-sm text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               value={tagsRaw}
               onChange={e => setTagsRaw(e.target.value)}
               placeholder="frontend, typescript, naming"
@@ -579,7 +579,7 @@ function ConventionCard({
                   if (e.key === 'Enter') handleWeightSave(editingWeight)
                   if (e.key === 'Escape') setEditingWeight(null)
                 }}
-                className="w-12 bg-foreground/[0.04] rounded-sm text-xs font-mono text-text-primary focus:outline-none focus:border-accent-blue/60 border border-input text-center shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-12 bg-foreground/[0.04] rounded-sm text-xs font-mono text-text-primary focus:outline-none focus:border-accent-blue/60 border border-input text-center shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             ) : (
               <span
@@ -663,7 +663,7 @@ function ConventionCard({
             <StyledSelect
               value={editCategory}
               onChange={e => setEditCategory(e.target.value)}
-              className="rounded-sm border border-input bg-foreground/[0.04] text-xs text-text-secondary px-1.5 py-1 focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="rounded-sm border border-input bg-foreground/[0.04] text-xs text-text-secondary px-1.5 py-1 focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             >
               {CATEGORIES.filter(c => c.value !== 'all').map(c => (
                 <option key={c.value} value={c.value}>{c.label}</option>
@@ -676,14 +676,14 @@ function ConventionCard({
               onChange={e => setEditWeight(e.target.value)}
               min={1}
               max={10000}
-              className="rounded-sm border border-input bg-foreground/[0.04] text-xs text-text-secondary px-1.5 py-1 focus:outline-none w-16 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="rounded-sm border border-input bg-foreground/[0.04] text-xs text-text-secondary px-1.5 py-1 focus:outline-none w-16 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
             <label className="text-xs text-text-tertiary">Project</label>
             <StyledSelect
               value={editProjectId}
               onChange={e => setEditProjectId(e.target.value)}
               aria-label="Convention project"
-              className="rounded-sm border border-input bg-foreground/[0.04] text-xs text-text-secondary px-1.5 py-1 focus:outline-none max-w-[160px] shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="rounded-sm border border-input bg-foreground/[0.04] text-xs text-text-secondary px-1.5 py-1 focus:outline-none max-w-[160px] shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             >
               {/* Named rather than blank: an empty first option reads as "not
                   chosen yet", and org-wide is a real, common choice. */}
@@ -698,7 +698,7 @@ function ConventionCard({
           <textarea
             value={editContent}
             onChange={e => setEditContent(e.target.value)}
-            className="rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary p-2.5 focus:outline-none focus:border-accent-blue/60 resize-none min-h-[80px] w-full mt-2 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+            className="rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary p-2.5 focus:outline-none focus:border-accent-blue/60 resize-none min-h-[80px] w-full mt-2 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
           />
 
           {/* Save / Cancel */}

@@ -5,7 +5,7 @@ import type { KpiMarqueeProps } from './KpiMarquee.types'
 import './KpiMarquee.css'
 
 type MetricSummaryItem = { label: string; value: string; accent?: string }
-const FALLBACK_ACCENTS = ['var(--data-lime)', 'var(--data-blue)', 'var(--data-teal)', 'var(--data-amber)', 'var(--data-rose)']
+const FALLBACK_ACCENTS = ['var(--data-green)', 'var(--data-blue)', 'var(--data-teal)', 'var(--data-amber)', 'var(--data-rose)']
 
 function getMetricItems(children: ReactNode): MetricSummaryItem[] {
   const items: MetricSummaryItem[] = []

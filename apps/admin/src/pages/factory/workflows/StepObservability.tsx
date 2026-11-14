@@ -275,7 +275,7 @@ function Console({ events, live, older, hasOlder }: { events: WorkflowEvent[]; l
         </label>
         <input aria-label="Buscar en la consola" placeholder="Buscar…" className="rounded border border-border bg-background px-2 py-0.5" value={query} onChange={(e) => setQuery(e.target.value)} />
         <label className="flex items-center gap-1"><input type="checkbox" checked={withControl} onChange={(e) => setWithControl(e.target.checked)} />Eventos del runtime</label>
-        {live && <label className="flex items-center gap-1"><input type="checkbox" checked={following} onChange={(e) => setFollowing(e.target.checked)} />Seguir en vivo</label>}
+        {live && <label className="flex items-center gap-1"><input type="checkbox" checked={following} onChange={(e) => setFollowing(e.target.checked)} /><span aria-hidden="true" className="sig-live size-1.5" />Seguir en vivo</label>}
         {hasOlder && <button type="button" className="underline" onClick={() => { setFollowing(false); older() }}>Cargar anteriores</button>}
       </div>
       {shown.length ? (

@@ -196,7 +196,7 @@ export default function AuditLog() {
           placeholder="Search actions, resources…"
           value={searchRaw}
           onChange={e => setSearchRaw(e.target.value)}
-          className="bg-foreground/[0.04] border border-input rounded-md text-xs text-text-primary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+          className="bg-foreground/[0.04] border border-input rounded-md text-xs text-text-primary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
         />
         <SelectWrapper>
           <StyledSelect value={draft.user_id} onChange={setField('user_id')} className={selectCls}>

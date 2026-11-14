@@ -1,0 +1,86 @@
+/* NexusMind admin: SIGNAL, SmartCoder palette, on shadcn New York roles.
+   Ink/charcoal carry structure, forest green carries primary actions, lime
+   (--sig, see signal.css) is the accent only: focus ring, live data, highlights,
+   gradient ends. Dark values are OKLCH derivations of the light ones (same hue,
+   L raised to the 0.74-0.82 band of the existing dark data set). Every text pair
+   below is checked in the PR contrast table. */
+:root {
+  --radius:0.625rem;
+  --background:#ffffff; --foreground:var(--ink);
+  --workspace:#f4f5f7;
+  --card:#ffffff; --card-foreground:var(--foreground);
+  --popover:#ffffff; --popover-foreground:var(--foreground);
+  --primary:var(--forest); --primary-foreground:#ffffff;
+  --primary-hover:#225811;
+  --complementary:var(--primary); --complementary-foreground:var(--primary-foreground);
+  --secondary:#f4f5f7; --secondary-foreground:#26272c;
+  --muted:#f4f5f7; --muted-foreground:#60636a;
+  --accent:#f4f5f7; --accent-foreground:#26272c;
+  --destructive:oklch(.577 .245 27.325);
+  --border:#e4e5e9; --input:#e4e5e9;
+  --ring:var(--sig-text-light);
+  --sidebar:#fafafb; --sidebar-foreground:var(--foreground);
+  --sidebar-primary:var(--primary); --sidebar-primary-foreground:var(--primary-foreground);
+  --sidebar-accent:#f4f5f7; --sidebar-accent-foreground:#26272c;
+  --sidebar-border:var(--border); --sidebar-ring:var(--ring);
+  --brand-link:var(--forest);
+  /* Soft fill: pale for selected/tinted surfaces (mint is --mint, signal.css). */
+  --primary-tint:var(--pale); --primary-tint-foreground:var(--forest);
+  /* Data series: fixed order d1..d4, never cycled. Single series uses d1. */
+  --d1:var(--forest); --d2:#285f91; --d3:#286f68; --d4:#805b0d;
+  --data-green:var(--d1); --data-blue:var(--d2); --data-teal:var(--d3);
+  --data-amber:var(--d4); --data-rose:#984c5c;
+  --chart-1:var(--d1); --chart-2:var(--d2); --chart-3:var(--d3);
+  --chart-4:var(--d4); --chart-5:var(--data-rose);
+  /* Glass levels (see signal.css). */
+  --glass-1-bg:color-mix(in oklab,var(--card) 76%,transparent);
+  --glass-2-bg:color-mix(in oklab,var(--workspace) 62%,transparent);
+  --glass-edge:color-mix(in oklab,var(--border) 90%,transparent);
+  --glass-shadow:0 1px 1px rgb(16 24 40 / .03),0 8px 24px -12px rgb(16 24 40 / .12);
+  --top-bar-background:var(--glass-2-bg);
+}
+:root.dark {
+  --background:var(--charcoal); --foreground:#f2f4f7;
+  --workspace:#0b0c0e;
+  --card:#18191c; --popover:#18191c;
+  --primary:#7fbe6f; --primary-foreground:var(--ink);
+  --primary-hover:#91d281;
+  --secondary:#222326; --secondary-foreground:#f2f4f7;
+  --muted:#222326; --muted-foreground:#96989f;
+  --accent:#222326; --accent-foreground:#f2f4f7;
+  --destructive:oklch(.704 .191 22.216);
+  --border:oklch(1 0 0 / 10%); --input:oklch(1 0 0 / 15%);
+  --ring:var(--sig);
+  --sidebar:#141518; --sidebar-accent:#222326;
+  --sidebar-accent-foreground:#f2f4f7;
+  --brand-link:#91d281;
+  --primary-tint:#293e28; --primary-tint-foreground:#91d281;
+  --d1:#91d281; --d2:#9bc8ed; --d3:#82cbbf; --d4:#e6c16d; --data-rose:#e0a0ad;
+  /* Dark glass: a veil lighter than what is behind it, bright hairline edge. */
+  --glass-1-bg:color-mix(in oklab,oklch(1 0 0) 5%,color-mix(in oklab,var(--card) 70%,transparent));
+  --glass-2-bg:color-mix(in oklab,var(--workspace) 55%,transparent);
+  --glass-edge:oklch(1 0 0 / .1);
+  --glass-shadow:inset 0 1px 0 oklch(1 0 0 / .06),0 18px 40px -22px rgb(0 0 0 / .75);
+}
+@theme inline {
+  --color-background:var(--background); --color-foreground:var(--foreground);
+  --color-card:var(--card); --color-card-foreground:var(--card-foreground);
+  --color-popover:var(--popover); --color-popover-foreground:var(--popover-foreground);
+  --color-primary:var(--primary); --color-primary-foreground:var(--primary-foreground);
+  --color-primary-tint:var(--primary-tint); --color-primary-tint-foreground:var(--primary-tint-foreground);
+  --color-complementary:var(--complementary); --color-complementary-foreground:var(--complementary-foreground);
+  --color-secondary:var(--secondary); --color-secondary-foreground:var(--secondary-foreground);
+  --color-muted:var(--muted); --color-muted-foreground:var(--muted-foreground);
+  --color-accent:var(--accent); --color-accent-foreground:var(--accent-foreground);
+  --color-destructive:var(--destructive); --color-border:var(--border);
+  --color-input:var(--input); --color-ring:var(--ring);
+  --color-sidebar:var(--sidebar); --color-sidebar-foreground:var(--sidebar-foreground);
+  --color-sidebar-primary:var(--sidebar-primary); --color-sidebar-primary-foreground:var(--sidebar-primary-foreground);
+  --color-sidebar-accent:var(--sidebar-accent); --color-sidebar-accent-foreground:var(--sidebar-accent-foreground);
+  --color-sidebar-border:var(--sidebar-border); --color-sidebar-ring:var(--sidebar-ring);
+  --color-sig:var(--sig); --color-on-sig:var(--on-sig);
+  --color-d1:var(--d1); --color-d2:var(--d2); --color-d3:var(--d3); --color-d4:var(--d4);
+  --radius-sm:calc(var(--radius) - 4px); --radius-md:calc(var(--radius) - 2px);
+  --radius-lg:var(--radius); --radius-xl:calc(var(--radius) + 4px);
+  --font-sans:'Geist Variable', sans-serif;
+}

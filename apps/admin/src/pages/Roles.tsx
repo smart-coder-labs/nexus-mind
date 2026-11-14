@@ -481,7 +481,7 @@ export default function Roles() {
                 placeholder="e.g. security-officer"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary font-mono focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary font-mono focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -493,7 +493,7 @@ export default function Roles() {
                 placeholder="e.g. Security Officer"
                 value={displayName}
                 onChange={e => setDisplayName(e.target.value)}
-                className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -505,7 +505,7 @@ export default function Roles() {
               placeholder="What is this role for?"
               value={description}
               onChange={e => setDescription(e.target.value)}
-              className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 transition-colors h-16 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full bg-foreground/[0.02] border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 transition-colors h-16 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
 
@@ -605,7 +605,7 @@ export default function Roles() {
                     placeholder="Filter members…"
                     value={memberSearch}
                     onChange={e => setMemberSearch(e.target.value)}
-                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-1.5 text-base sm:text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-1.5 text-base sm:text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                 </div>
 
@@ -665,7 +665,7 @@ export default function Roles() {
                     placeholder="Search users to assign…"
                     value={addSearch}
                     onChange={e => setAddSearch(e.target.value)}
-                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-1.5 text-base sm:text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="w-full bg-foreground/[0.04] border border-input rounded-md pl-7 pr-3 py-1.5 text-base sm:text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                 </div>
                 {addSearch.trim() && (
@@ -745,7 +745,7 @@ export default function Roles() {
                         prev.includes(perm.key) ? prev.filter(p => p !== perm.key) : [...prev, perm.key]
                       )
                     }
-                    className="mt-0.5 rounded border-input text-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="mt-0.5 rounded border-input text-accent-blue focus:outline-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                   <div>
                     <div className="font-semibold text-text-secondary text-xs">{perm.name}</div>

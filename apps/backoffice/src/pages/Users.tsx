@@ -107,7 +107,7 @@ export default function UsersPage() {
           onChange={e => setSearch(e.target.value)}
           aria-label="Search users"
           placeholder="Search by name, email, or organization…"
-          className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
+          className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-sig focus:ring-2 focus:ring-sig/20 transition-colors"
         />
         {search && (
           <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-secondary">

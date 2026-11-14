@@ -324,7 +324,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 type="text"
                 value={editForm.title}
                 onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -335,7 +335,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 id="task-detail-description"
                 value={editForm.description}
                 onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
 
@@ -371,7 +371,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 type="date"
                 value={editForm.due_date}
                 onChange={e => setEditForm(f => ({ ...f, due_date: e.target.value }))}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
           </form>
@@ -501,7 +501,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               value={labelInput}
               onChange={e => setLabelInput(e.target.value)}
               placeholder="New label…"
-              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
             <Button
               type="submit"
@@ -541,7 +541,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               value={subtaskTitle}
               onChange={e => setSubtaskTitle(e.target.value)}
               placeholder="New subtask title…"
-              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
             <Button
               type="submit"
@@ -664,7 +664,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               value={commentBody}
               onChange={e => setCommentBody(e.target.value)}
               placeholder="Add a comment…"
-              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="flex-1 bg-transparent border border-input rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
             <Button
               type="submit"

@@ -11,7 +11,7 @@ const Card: React.ForwardRefExoticComponent<React.ComponentProps<"div"> & React.
 				ref={ref}
 				data-slot="card"
 				className={cn(
-					"bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm",
+					"glass-1 text-card-foreground flex flex-col gap-6 rounded-xl py-6",
 					className,
 				)}
 				{...props}

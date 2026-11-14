@@ -369,7 +369,7 @@ function MembersPanel({
               value={bulkInput}
               onChange={e => { setBulkInput(e.target.value); setBulkResult(null) }}
               placeholder={"Paste user IDs, one per line…"}
-              className="bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-base sm:text-sm text-text-secondary resize-none w-full h-20 focus:border-accent-blue/60 focus:outline-none placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="bg-foreground/[0.04] border border-input rounded-md px-3 py-2 text-base sm:text-sm text-text-secondary resize-none w-full h-20 focus:border-accent-blue/60 focus:outline-none placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
             <div className="flex items-center gap-2">
               {/* Role select for bulk */}
@@ -1204,7 +1204,7 @@ export default function Projects() {
                 placeholder="e.g. core-payments"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 required
               />
             </div>
@@ -1215,7 +1215,7 @@ export default function Projects() {
                 placeholder="What is this scope about?"
                 value={description}
                 onChange={e => setDescription(e.target.value)}
-                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full bg-transparent border border-input rounded-md px-3 py-2 text-text-primary focus:border-accent-blue/60 h-20 resize-none shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
             </div>
 
@@ -1306,7 +1306,7 @@ export default function Projects() {
                   value={settingsDescription}
                   onChange={e => setSettingsDescription(e.target.value)}
                   placeholder="Project description…"
-                  className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary p-3 resize-none h-20 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary p-3 resize-none h-20 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
               </div>
 
@@ -1317,7 +1317,7 @@ export default function Projects() {
                   value={settingsCustomInstructions}
                   onChange={e => setSettingsCustomInstructions(e.target.value)}
                   placeholder="Instructions injected into agent context for this project…"
-                  className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary p-3 resize-none h-28 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary p-3 resize-none h-28 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
               </div>
 
@@ -1330,7 +1330,7 @@ export default function Projects() {
                   value={settingsRetentionDays}
                   onChange={e => setSettingsRetentionDays(e.target.value === '' ? '' : Number(e.target.value))}
                   placeholder="Inherit from org (leave blank)"
-                  className="w-full rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-3 py-2.5 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  className="w-full rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-3 py-2.5 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                 />
               </div>
 
@@ -1422,7 +1422,7 @@ export default function Projects() {
                       setAddChildQuery(e.target.value)
                       setAddChildOpen(true)
                     }}
-                    className="w-full rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary disabled:opacity-40 shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="w-full rounded-md border border-input bg-foreground/[0.04] text-base sm:text-sm text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary disabled:opacity-40 shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                   {addChildOpen && filteredChildCandidates.length > 0 && (
                     <>

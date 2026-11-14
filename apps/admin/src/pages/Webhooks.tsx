@@ -118,7 +118,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
               value={url}
               onChange={e => setUrl(e.target.value)}
               placeholder="https://example.com/webhook"
-              className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+              className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
             />
           </div>
 
@@ -131,7 +131,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
                     type="checkbox"
                     checked={selectedEvents.has(event)}
                     onChange={() => toggleEvent(event)}
-                    className="accent-accent-blue w-3.5 h-3.5 rounded border-input shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className="accent-accent-blue w-3.5 h-3.5 rounded border-input shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
                   />
                   <span className="text-xs text-text-secondary">{event}</span>
                 </label>
@@ -149,7 +149,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
                 value={secret}
                 onChange={e => setSecret(e.target.value)}
                 placeholder="Signing secret"
-                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-3 py-2 pr-8 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                className="w-full rounded-md border border-input bg-foreground/[0.04] text-xs text-text-primary px-3 py-2 pr-8 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary shadow-xs focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px]"
               />
               <button
                 type="button"
