@@ -2,7 +2,8 @@
 # Injects recent NexusMind memories as a system-reminder at session start.
 # Called by the Claude Code SessionStart hook.
 
-BASE_URL="${NEXUSMIND_BASE_URL:-http://localhost:8080}"
+# Same default as .mcp.json, so the injected context and the MCP tools read the same backend.
+BASE_URL="${NEXUSMIND_BASE_URL:-https://api.nexusmind.smartcoderlabs.com}"
 API_KEY="${NEXUSMIND_API_KEY:-}"
 
 if [[ -z "$API_KEY" ]]; then
@@ -55,9 +56,9 @@ echo "- User confirms or rejects an approach"
 echo ""
 echo "### HOW TO SEARCH (important):"
 echo "- To load a project's context: get_context(project='...') or list_memories(project='...')."
-echo "- search_memory is SEMANTIC: pass a query describing what you actually need"
+echo "- search_memories is SEMANTIC: pass a query describing what you actually need"
 echo "  (e.g. 'how auth tokens are validated', 'deploy pipeline config')."
-echo "- NEVER pass a bare project/repo name as the search_memory query — it returns noise,"
+echo "- NEVER pass a bare project/repo name as the search_memories query — it returns noise,"
 echo "  not that project's context. Use get_context/list_memories for that."
 echo ""
-echo "Use: store_memory(tool='claude-code', project='nexusmind', content='...')"
+echo "Use: store_memory(tool='claude-code', project='nexus-mind', title='...', type='...', content='...')"

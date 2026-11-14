@@ -1,180 +1,57 @@
-# NexusMind — Claude Code MANDATORY PROTOCOL
+# nexus-mind
 
-NexusMind is the single source of truth for this codebase. Before guessing, check it. Before finishing, save to it.
+NexusMind is an open-source AI control plane: AI coding tools share a team memory, code index, SDD artifacts, tasks and harnesses over MCP, and the **Factory** turns issues into verified PRs under policy, audit and human approval. Monorepo: `apps/backend` (Rust/Axum + SQLite, the authority), `apps/admin` (org admin, React 19 + Vite + Tailwind 4), `apps/backoffice` (platform superadmin), `apps/landing` (Astro), `apps/nexus-cli` and `apps/migrator-tui` (Rust TUIs). The MCP server lives in another repo (`nexusmind-mcp`). Load `nexus-mind-business` before deciding anything a user or an AI tool would notice.
 
-This protocol is MANDATORY and ALWAYS ACTIVE in this repository. It is not a suggestion. If you skip it, the next session starts blind.
+## Rules
 
-## In this repository
+Each one exists because breaking it costs real users.
 
-- Default `project` for every call: `nexus-mind`
-- Alternates for cross-repo work: `nexusmind-backend`, `nexusmind-admin`, `nexusmind-mcp`, `nexusmind-landing`
-- Default `tool`: `claude-code`
+- **Tenant from auth, never from input.** `org_id` comes from the auth middleware; every query filters by it and checks project membership. A cross-org read is the worst bug this product can have, so every data change ships with a cross-tenant test.
+- **The backend enforces; the UI only hides.** `AdminRoute` and the sidebar are conveniences. Permissions are checked in `apps/backend/src/api/helpers.rs`, so put the rule there first.
+- **Writes are audited.** The `audit` middleware covers protected mutations. If a handler logs its own entry, register it in `AUDIT_SKIP_PATTERNS`. The audit trail is part of what customers buy.
+- **Secrets never leave encrypted.** Use `crypto.rs` (AES-GCM) and keep workspace secrets write-only. Never return, log or put a token into a prompt, fixture or PR. If there is no key, don't persist the secret.
+- **Never edit a shipped migration.** Add the next `run_vN` in `apps/backend/src/db/migrations.rs` (guarded by `PRAGMA user_version`). Production already ran the old ones.
+- **`/v1/*` responses change additively.** The MCP server, plugins and CLI depend on them, and they release separately.
+- **Factory gates stay closed.** These include per-revision human approval, the merge risk floor, credential-free publication and PII redaction (see `invariants.md` in the business skill). Never loosen one to make a run pass.
+- **Design tokens only, per app.** Admin uses Audit1 Lime, backoffice uses amber, landing uses SmartCoder lime. Lime fills take dark ink, and status is not category. Follow `nexus-mind-design`; the `design-guard` hook flags new raw colours.
+- **Merging is deploying.** A push to `main` deploys the backend to Oracle k3s and the web apps to Cloudflare Pages. Humans merge, never an agent.
 
-## Available MCP tools
+## Conventions the code won't teach
 
-Call these DIRECTLY by full name — no ToolSearch.
+- **SDD:** `openspec/` holds changes and specs. `openspec/config.yaml` sets `artifact_store: nexusmind` (files *and* `save_sdd_artifact`) and strict TDD for backend and admin. The `sdd-*` skills are user-level, not in this repo.
+- **Admin profiles:** `VITE_ADMIN_PROFILE=full|only-context`. A new route goes in `App.tsx`, the `Layout.tsx` nav (with `requiredPermission`) and `config/disabled-sections.ts`.
+- **Admin components:** prefer the `components/ui/<Capitalized>` adapters, which wrap `components/ui/shadcn/*`. Classes go through `cn()`, imports through `@/`.
+- **npm, not pnpm:** CI runs `npm ci` on `package-lock.json`; the `pnpm-lock.yaml` files are unused.
+- **Demo data:** `scripts/reset-demo.sh` seeds `apps/backend/data/nexusmind.db`. Keys like `nm_demo_acme_admin` / `nm_demo_acme_sarah` / `nm_demo_techstartup_admin` are public seed values from `apps/backend/src/bin/seed.rs`.
+- **Stale entry points:** `make mcp-build` / `mcp-inspect` point at a non-existent `apps/mcp/`. Don't follow them.
 
-| Tool | When to use |
-|------|-------------|
-| `mcp__nexusmind__store_memory` | Save a decision, bug fix, convention, discovery — PROACTIVELY |
-| `mcp__nexusmind__search_memory` | First action on any prompt that references prior work |
-| `mcp__nexusmind__list_memories` | Browse recent memories (utility) |
-| `mcp__nexusmind__get_context` | Bootstrap a significant session — all team knowledge grouped by type |
-| `mcp__nexusmind__get_memory` | Fetch FULL untruncated content by id (previews are not enough) |
-| `mcp__nexusmind__delete_memory` | Remove a memory — ONLY when the user explicitly asks |
+## NexusMind memory (we dogfood it)
 
-## PROACTIVE SAVE TRIGGERS
+The MCP server comes from `.mcp.json` (needs `NEXUSMIND_API_KEY` in your shell) or the NexusMind plugin. Tool names are `store_memory`, `search_memories`, `get_context`, `get_memory`, `list_memories`; the prefix depends on how it is loaded. The project is **`nexus-mind`** (children: `nexusmind-backend`, `nexusmind-admin`, `nexusmind-mcp`, `nexus-cli`). `scripts/nm-context.sh` (SessionStart) injects recent memories.
 
-Call `store_memory` IMMEDIATELY and WITHOUT BEING ASKED after any of these:
+- **Before** non-trivial work, call `get_context(project="nexus-mind")`. For specifics, use `search_memories` with a real question, never a bare project name.
+- **After** a decision, a bug fix (with its root cause), a convention or a gotcha, call `store_memory` with `title`, `type` (decision, bugfix, discovery, pattern, config, architecture, feature, session_summary…), `project`, and `content` (What / Why / Where / Learned). Use `topic_key` only for topics that evolve. It upserts **org-wide**, so namespace it (`nexus-mind/auth-model`).
+- **Before saying done** on a multi-step task, store a `session_summary`. Deleting memories happens only when the user asks.
 
-- Architecture or design decision made
-- Convention documented or established
-- Bug fix completed (include root cause)
-- Feature implemented with non-obvious approach
-- Tool or library choice made with tradeoffs
-- Configuration or environment change
-- Non-obvious discovery about the codebase
-- Gotcha, edge case, or unexpected behavior
-- Pattern established (naming, structure)
-- User preference or constraint learned
+## Where to read more
 
-Self-check after EVERY task: "Did I make a decision, fix a bug, learn something non-obvious, or establish a convention? If yes, call store_memory NOW."
+| Need | Read |
+|---|---|
+| Domain, roles, invariants, glossary, KPIs, gaps | skill `nexus-mind-business` |
+| Design tokens, components, rules, audit script | skill `nexus-mind-design`; `apps/admin/DESIGN.md`, `apps/landing/DESIGN.md` |
+| Exact CI steps per app, machine quirks | skill `nexus-mind-verify` |
+| Screenshots, e2e smoke, acceptance stories | skill `nexus-mind-qa` |
+| Investigating a bug | skill `nexus-mind-triage` |
+| Backend layout and patterns | `apps/backend/AGENTS.md`, `docs/ARCHITECTURE.md` (partly aspirational) |
+| Admin specifics | `apps/admin/CLAUDE.md`, `apps/admin/PRODUCT.md`, `apps/admin/dev/README.md` |
+| Running locally | `docs/RUNNING.md`, `QUICKSTART.md` |
+| API surface | `apps/backend/src/api/router.rs` (authoritative), `docs/API_SPEC.md` |
+| Factory | `docs/factory/` (mostly Spanish), `apps/backend/src/factory/` |
 
-## Required fields on every `store_memory` call
+## Working here
 
-- `title` — verb + what, 5-10 words ("Fixed N+1 in memory listing")
-- `type` — pick from the glossary below
-- `project` — always `nexus-mind` in this repo
-- `content` — structured: **What**, **Why**, **Where**, **Learned**
-- `topic_key` (recommended for evolving topics) — see topic_key section
-
-## Type glossary
-
-| Type | Use for |
-|------|---------|
-| `architecture` | System design, component relationships, infrastructure decisions |
-| `bugfix` | Root cause + fix. Always include WHAT broke and WHY |
-| `decision` | Explicit choices made between alternatives |
-| `discovery` | Non-obvious findings about code, APIs, or behavior |
-| `pattern` | Established conventions — naming, structure, approach |
-| `config` | Environment setup, tool config, credentials schema |
-| `preference` | User working style, code style, tool preferences |
-| `project` | Goals, stakeholders, milestones, business context |
-| `session_summary` | End-of-session state — always save before saying "done" |
-| `feature` | Implemented feature with approach and rationale |
-| `refactoring` | What changed, why, what to watch for |
-| `feedback` | Corrections and confirmations from the user |
-| `manual` | Ad hoc save not fitting another type |
-
-## topic_key guidance
-
-USE `topic_key` for topics that EVOLVE — saving again with the same key UPDATES the existing memory instead of creating a duplicate.
-
-- Examples: `architecture/auth-model`, `config/deploy-pipeline`, `pattern/repo-naming`, `convention/commit-style`
-- Use it when you expect to revise the same decision later
-- DO NOT use it for one-shot records (a single bug fix, a single session summary)
-
-If unsure of the right key, search first — if a similar topic exists, reuse its key.
-
-## WHEN TO SEARCH
-
-Call `search_memory` PROACTIVELY when:
-
-- The user's FIRST message of a session references a project, feature, bug, or module → search BEFORE responding
-- Starting work on something that might have been done before
-- The user uses words like "remember", "recall", "we did", "how did we" — search every time
-- You are about to make a non-trivial decision — check whether one already exists
-
-If unsure whether to search — search.
-
-### HOW to search (avoid lazy project-name queries)
-
-- To load a **project's** context, use `get_context(project=…)` or `list_memories(project=…)` — NOT `search_memory`.
-- `search_memory` is a **semantic** search: pass a query describing the specific thing you need (e.g. `"how auth tokens are validated"`, `"deploy pipeline config"`, `"why we chose SQLite"`).
-- NEVER pass a bare project/repo name (e.g. `"nexus-mind"`) as the `search_memory` query — a semantic engine returns noise for that, not the project's context. Use `get_context`/`list_memories` for whole-project loading.
-
-## SESSION CLOSE (MANDATORY)
-
-Before saying "done", "that's it", "finished" (or the equivalent in any language), call:
-
-```
-store_memory({
-  type: "session_summary",
-  title: "Session: <one-line>",
-  project: "nexus-mind",
-  content: """
-  ## Goal
-  <what we were working on>
-
-  ## Accomplished
-  - <completed items with key details>
-
-  ## Discoveries
-  - <technical findings, gotchas>
-
-  ## Next Steps
-  - <what remains>
-
-  ## Relevant Files
-  - path/to/file — <what changed>
-  """
-})
-```
-
-This is NOT optional. If you skip this, the next session starts blind.
-
-## AFTER COMPACTION
-
-If you see a compaction message or "FIRST ACTION REQUIRED":
-
-1. IMMEDIATELY call `store_memory` with `type: "session_summary"` and the compacted summary content — this persists what was done before compaction.
-2. Call `search_memory(query: "nexus-mind")` to recover broader context.
-3. Only THEN continue working.
-
-Do not skip step 1. Without it, everything done before compaction is lost from memory.
-
-## Configuration
-
-The repo's `.mcp.json` uses an environment placeholder `${NEXUSMIND_API_KEY}` — set this in your shell before launching Claude Code:
-
-```bash
-export NEXUSMIND_API_KEY=<your-key>
-```
-
-The MCP server is launched via `npx -y @smart-coder-labs/nexusmind-mcp` — no local checkout required.
-
----
-
-## Quick start
-
-```bash
-# 1. Start the backend
-make backend   # or: cd apps/backend && cargo run
-
-# 2. Seed demo data (first time or to reset)
-./scripts/reset-demo.sh
-
-# 3. Build the MCP server (only needed for local dev)
-make mcp-build
-
-# 4. Set your API key
-export NEXUSMIND_API_KEY=<your-key>
-
-# 5. Open Claude Code — the MCP server and hooks connect automatically
-```
-
-Full setup guide: [docs/RUNNING.md](docs/RUNNING.md)
-
----
-
-## Demo keys (after reset-demo.sh)
-
-| User | Key |
-|------|-----|
-| Acme Corp — admin | `nm_demo_acme_admin` |
-| Acme Corp — Sarah Chen | `nm_demo_acme_sarah` |
-| TechStartup — admin | `nm_demo_techstartup_admin` |
-
----
-
-NexusMind is the single source of truth for this codebase. Before guessing, check it. Before finishing, save to it.
+- **Before the first edit:** `git fetch origin`, then work in your own worktree from `origin/main`. The sibling clones (`nexus-mind-*`) sit on old branches with other people's uncommitted work, so don't touch them.
+- **Prove it works:** run the `nexus-mind-verify` steps for every app you touched, plus `nexus-mind-qa` for anything visible. This box has no Rust toolchain: say so, and rely on the CI Backend job.
+- **Ship:** conventional commits with a scope (`fix(factory): …`, `feat(admin): …`). The PR body uses Problem / Change / verification, and visible admin changes include screenshots, because the owner reviews the admin before it ships. `main` needs one approving review.
+- **Autonomous work:** `/nexus-mind-evolve`, which picks a `status:approved` issue, builds it, verifies it and opens a PR. Humans approve issues and merge.
+- **Harness changes** go in their own `chore(harness): …` PR. Replace stale text instead of adding next to it.
