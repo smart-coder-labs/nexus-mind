@@ -1,12 +1,39 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(cargo build --manifest-path apps/backend/Cargo.toml)",
+      "Bash(cargo build --release --manifest-path apps/backend/Cargo.toml)",
+      "Bash(cargo test --manifest-path apps/backend/Cargo.toml *)",
+      "Bash(cargo clippy --manifest-path apps/backend/Cargo.toml -- -D warnings)",
+      "Bash(cargo test --manifest-path apps/nexus-cli/Cargo.toml *)",
+      "Bash(cargo clippy --manifest-path apps/nexus-cli/Cargo.toml -- -D warnings)",
+      "Bash(npm ci)",
+      "Bash(npm run build)",
+      "Bash(npm run test)",
+      "Bash(npm test)",
+      "Bash(npx vitest run *)",
+      "Bash(mise exec node@20 -- npm *)",
+      "Bash(./scripts/test-mcp.sh)",
+      "Bash(./scripts/test-e2e.sh)",
+      "Bash(node .claude/skills/nexus-mind-design/scripts/design-audit.mjs *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "bash scripts/nm-context.sh"
-          }
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/nm-context.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/design-guard.js" }
         ]
       }
     ]

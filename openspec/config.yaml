@@ -5,14 +5,14 @@ project: nexus-mind
 
 context: |
   Monorepo: Rust/Axum backend, React 19/Vite admin panel, React/Vite backoffice, Astro landing page.
-  Active branch: feat/code-knowledge-graph (Phase 1 complete — tree-sitter AST chunker landed).
-  Architecture: Clean/Hexagonal. Multi-tenant: every table scoped by org_id.
-  Backend: Rust 2021/stable, Axum 0.7, rusqlite 0.31 bundled, fastembed 4 (nomic-embed-text 768-dim),
-    tree-sitter 0.26 + grammars (rust/ts/js/py/go). SQLite migrations via PRAGMA user_version.
-  Indexing pipeline: src/indexer/ (walker.rs, chunker.rs, tree_sitter_chunker.rs, mod.rs).
-  Code API: src/api/code.rs — routes /v1/code/index, /search, /status/:project, /context.
+  Architecture: multi-tenant, every table scoped by org_id (tenant always from the auth context).
+  Backend: Rust 2021/stable, Axum 0.7, rusqlite 0.32 bundled, fastembed 4 (nomic-embed-text 768-dim),
+    tree-sitter 0.26 + grammars. SQLite migrations: run_vN guarded by PRAGMA user_version (src/db/migrations.rs).
+  Indexing pipeline: src/indexer/; code API: src/api/code.rs. Factory: src/factory/, src/automation/.
   Frontend admin: React 19, TailwindCSS 4, TanStack Query v5, Vitest 2 + Testing Library.
-  Deploy: backend → Fly.io; admin/backoffice → Cloudflare Pages. CI in .github/workflows/ci.yml.
+  Deploy (on push to main): backend -> Oracle Cloud k3s (deploy/oracle/k8s, Fly kept as manual rollback);
+    admin/backoffice/landing -> Cloudflare Pages. CI in .github/workflows/ci.yml.
+  Harness: CLAUDE.md and the nexus-mind-* skills in .claude/skills/.
 
 strict_tdd: true
 tdd_scope: backend_and_admin
@@ -55,15 +55,15 @@ testing:
 
   backoffice:
     strict_tdd: false
-    test_command: null
-    framework: null
+    test_command: "cd apps/backoffice && npm test"
+    framework: "node:assert accessibility script (scripts/check-accessibility.mjs)"
     layers:
       unit: false
       integration: false
       e2e: false
     quality:
       build: "cd apps/backoffice && npm run build"
-      notes: "No test runner — Standard Mode"
+      notes: "No unit-test runner; npm test checks contrast, reduced motion and search labels — Standard Mode"
 
   landing:
     strict_tdd: false
