@@ -3,6 +3,13 @@
 `base_moved_reverify` is a valid publication hold, not a source-code failure.
 Do not bypass the base check or reuse passing evidence for a different base.
 
+A default branch that only **advanced** does not hold publication when GitHub's
+compare (`verified...current`) is `ahead` and none of the new commits touch a
+path the change edits: the verified commits merge without conflicts and the
+product CI validates the combination on the PR. Overlapping paths, divergence or
+an unreadable/truncated compare (300+ files) still raise `base_moved_reverify`,
+so the change is re-implemented on current sources (conflicts are resolved there).
+
 When the first `policy-publisher` attempt reports that hold, and no repository
 publication has started, recovery can atomically retire the old run and queue
 another run of the **same definition and task** with fresh sources. It happens
