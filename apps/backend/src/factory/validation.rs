@@ -185,6 +185,27 @@ pub fn scope_from_classification(classified: &Value) -> Option<&'static str> {
     (classified["task_class"] == "docs" && confident).then_some("documentation")
 }
 
+/// Fast lane: a confident, small, at most medium-risk task skips investigation
+/// and test authoring; the implementer investigates and writes the regression
+/// test itself. Verification, QA, the gate and review are never skipped.
+pub const FAST_LANE_CLASSES: [&str; 3] = ["bugfix", "ui", "docs"];
+pub const FAST_LANE_CONFIDENCE: f64 = 0.9;
+/// Jev's normalized risk: Low 0, Medium 1/3, High 2/3, Critical 1.
+pub const FAST_LANE_MAX_RISK: f64 = 0.5;
+
+/// Whether to skip this (first) attempt of investigation or test authoring.
+pub fn fast_lane(classified: &Value, adapter: &str, attempt: u64, definition: &Value) -> bool {
+    let small = FAST_LANE_CLASSES.iter().any(|c| classified["task_class"] == *c)
+        && classified["class_confidence"].as_f64().is_some_and(|c| c >= FAST_LANE_CONFIDENCE)
+        && classified["risk"].as_f64().is_some_and(|r| (0.0..=FAST_LANE_MAX_RISK).contains(&r));
+    // Skipping only makes sense when a writing implementer follows. A retried
+    // phase (repair or manual retry) always runs.
+    let implementer = definition["steps"].as_array().is_some_and(|steps| steps.iter().any(|s| {
+        s["adapter"] == "isolated-implementer" && s["write_repositories"].as_array().is_some_and(|w| !w.is_empty())
+    }));
+    small && implementer && attempt == 1 && matches!(adapter, "isolated-investigator" | "isolated-test-author")
+}
+
 /// Failures no phase can fix by running again: re-running only spends the
 /// repair budget. They block immediately with their reason.
 pub const INFRASTRUCTURE_FAILURES: [&str; 2] = ["model_unavailable", "node_dependency_install_failed"];
@@ -335,6 +356,27 @@ mod tests {
         assert_eq!(scope_from_classification(&json!({"task_class": "docs", "class_confidence": 0.5})), None);
         assert_eq!(scope_from_classification(&json!({"task_class": "backend", "class_confidence": 0.99})), None);
         assert_eq!(scope_from_classification(&json!({"error": "jev_http_500"})), None);
+    }
+
+    #[test]
+    fn fast_lane_skips_only_first_preparatory_attempts_of_small_tasks() {
+        let d = json!({"steps": [{"adapter": "isolated-implementer", "write_repositories": ["app"]}]});
+        let small = json!({"task_class": "bugfix", "class_confidence": 0.91, "risk": 0.40});
+        assert!(fast_lane(&small, "isolated-investigator", 1, &d));
+        assert!(fast_lane(&small, "isolated-test-author", 1, &d));
+        assert!(!fast_lane(&small, "isolated-test-author", 2, &d));
+        assert!(!fast_lane(&small, "isolated-implementer", 1, &d));
+        assert!(!fast_lane(&small, "isolated-verification", 1, &d));
+        assert!(!fast_lane(&small, "isolated-investigator", 1, &json!({"steps": [{"adapter": "isolated-implementer", "write_repositories": []}]})));
+        for other in [
+            json!({"task_class": "bugfix", "class_confidence": 0.89, "risk": 0.1}),
+            json!({"task_class": "bugfix", "class_confidence": 0.95, "risk": 0.67}),
+            json!({"task_class": "security", "class_confidence": 0.99, "risk": 0.0}),
+            json!({"task_class": "bugfix", "class_confidence": 0.99}),
+            json!({"error": "jev_http_500"}),
+        ] {
+            assert!(!fast_lane(&other, "isolated-investigator", 1, &d));
+        }
     }
 
     #[test]

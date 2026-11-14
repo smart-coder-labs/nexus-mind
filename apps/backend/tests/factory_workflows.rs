@@ -992,3 +992,19 @@ fn intake_starts_new_work_beside_blocked_runs_bounded_and_without_duplicates() {
         .unwrap();
     assert_eq!(status, "blocked");
 }
+
+#[test]
+fn qa_only_claims_fill_extra_slots_with_read_only_qa_checks() {
+    let (c, org, user, runner, workspace) = setup();
+    let mut functional = step("functional", &[], StepKind::Check);
+    functional.adapter = "isolated-functional-qa".into();
+    functional.options = json!({"required_checks": ["functional"]});
+    let d = define(&c, &org, &user, &workspace, vec![step("build", &[], StepKind::Check), functional]);
+    run(&c, &org, &d);
+    let caps = vec!["adapter:test".to_string(), "adapter:isolated-functional-qa".to_string()];
+    let qa = db::claim_where(&c, &org, &runner, &caps, 100, true).unwrap().unwrap();
+    assert_eq!(qa["step"]["id"], "functional");
+    // The pending build is never handed to a QA-only slot.
+    assert!(db::claim_where(&c, &org, &runner, &caps, 101, true).unwrap().is_none());
+    assert_eq!(db::claim(&c, &org, &runner, &caps, 102).unwrap().unwrap()["step"]["id"], "build");
+}

@@ -368,6 +368,11 @@ def node_build(config, job, work, run_root, name, service, api):
     if context.exists(): shutil.rmtree(context)
     context.mkdir(mode=0o700)
     copy_source(root, context / 'app')
+    from execution import verified_build
+    prebuilt = verified_build(config, job, service['_root'])
+    if prebuilt:
+        # Verify built these exact heads with the same `npm run build`.
+        shutil.copytree(prebuilt, context / 'app' / '.next', symlinks=True)
     repositories = {path: {'npmrc': entry['npmrc']} for path, entry in repo_secrets(api, job).items() if entry.get('npmrc')}
     service['_redactions'].extend(secret_values(repositories))
     dependencies(work, [{'cwd': service['_root']}], context / 'packages', Path(config['state_dir']) / '.node-cache',

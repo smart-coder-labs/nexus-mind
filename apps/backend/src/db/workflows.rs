@@ -591,6 +591,19 @@ pub fn claim(
     capabilities: &[String],
     now: i64,
 ) -> Result<Option<Value>> {
+    claim_where(conn, org, runner, capabilities, now, false)
+}
+
+/// `qa_only` lets a runner fill extra slots with read-only QA checks only, so
+/// parallel QA never pulls a build, writer or publication in next to them.
+pub fn claim_where(
+    conn: &Connection,
+    org: &str,
+    runner: &str,
+    capabilities: &[String],
+    now: i64,
+    qa_only: bool,
+) -> Result<Option<Value>> {
     if capabilities.len() > 128 || capabilities.iter().any(|s| s.len() > 100) {
         bail!("invalid_capabilities");
     }
@@ -676,6 +689,9 @@ pub fn claim(
                     .iter()
                     .all(|dep| states.iter().any(|s| &s.0 == dep && s.1 == "succeeded"))
             {
+                continue;
+            }
+            if qa_only && step.qa_check().is_none() {
                 continue;
             }
             if !step.capabilities.iter().all(|c| capabilities.contains(c))

@@ -414,6 +414,8 @@ pub(crate) fn runner_contract_supported(capabilities: &[String]) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Claim {
     capabilities: Vec<String>,
+    #[serde(default)]
+    qa_only: bool,
 }
 pub async fn claim(
     State(store): State<SqliteStore>,
@@ -428,13 +430,21 @@ pub async fn claim(
         if !runner_contract_supported(&b.capabilities) {
             return Err(fail(anyhow::anyhow!("runner_version_unsupported")));
         }
-        let job = json!(db::claim(&conn, &org, &runner, &b.capabilities, chrono::Utc::now().timestamp()).map_err(fail)?);
+        let job = json!(db::claim_where(&conn, &org, &runner, &b.capabilities, chrono::Utc::now().timestamp(), b.qa_only).map_err(fail)?);
         (org, job)
     };
     if job["step"]["kind"] == "agent" {
         if let Some(run) = job["run_id"].as_str().map(str::to_string) {
-            if let Some(scope) = super::workflow_validation::task_scope(&store, &org, &run, &job["task"]).await {
-                job["task_scope"] = json!(scope);
+            if let Some(classified) = super::workflow_validation::task_classification(&store, &org, &run, &job["task"]).await {
+                if let Some(scope) = crate::factory::validation::scope_from_classification(&classified) {
+                    job["task_scope"] = json!(scope);
+                }
+                let adapter = job["step"]["adapter"].as_str().unwrap_or_default();
+                let attempt = job["attempt"].as_u64().unwrap_or(0);
+                if crate::factory::validation::fast_lane(&classified, adapter, attempt, &job["snapshot"]["definition"]) {
+                    // The runner completes the phase as not applicable without starting an agent.
+                    job["fast_lane"] = json!({"skip": true, "classification": classified});
+                }
             }
         }
     }

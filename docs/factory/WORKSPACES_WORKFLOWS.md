@@ -23,6 +23,12 @@ Linear / Slack / Sentry / manual task
 
 Every run snapshots an immutable definition and authorized workspace inventory. Each step has a new process/container/session, explicit dependencies, timeout, attempts, write scope and adapter. Read-only checks can fan out; writers are serialized against all other steps. A completion carries its input revision, fenced lease, exact resulting heads and stored evidence digests. Stale results cannot advance a run. Changed heads invalidate previous verification/approvals. Review sees code/diffs, task and QA/publication evidence, not the implementer's conversation or rationale.
 
+**Speed.** Three rules keep small tasks short without dropping a check:
+
+- *Fast lane.* When Jev classifies the task as `bugfix`, `ui` or `docs` with confidence ≥ 0.9 and risk ≤ 0.5 (Low/Medium), and the definition has a writing implementer, the first attempt of investigation and of test authoring completes as not applicable (`fast-lane.json`, no agent). The implementer then finds the root cause and writes the regression test with the fix. Verification, QA, the gate and review always run. Without a Jev key, or after a retry, every phase runs.
+- *Parallel QA.* The runner fills up to `max_parallel_qa` slots (default 3; `1` serializes) with functional/design/security QA (`qa_only` claims), never with builds, writers or publication. It polls again right after finishing a step instead of waiting 10 s.
+- *One build per revision.* When `npm run build` passes in verification, the runner keeps its `.next` (without `cache`) for those exact heads and revision. The integrated environment reuses it instead of building again; any other revision builds as before. npm and Next caches are removed before the image layer is exported.
+
 Repairs preserve heads, feedback and cumulative cost. They invalidate affected descendants and reuse stable PR branches, but never exceed configured cycles/attempts. Infrastructure/configuration failures hold for an operator instead of triggering code repairs. Cancellation invalidates results and is polled during container execution; it cannot undo an already-completed external write.
 
 ## 1. Register your folders

@@ -31,6 +31,7 @@ CONFIG_LIMIT = 65536
 # A completion journal holds up to 100 evidence items, each with every
 # repository head; on large workspaces it is far above the config limit.
 JOURNAL_LIMIT = 16 * 1024 * 1024
+QA_ADAPTERS = ('isolated-functional-qa', 'isolated-design-qa', 'isolated-security-qa')
 
 
 def private_file(path, limit=CONFIG_LIMIT):
@@ -344,7 +345,7 @@ class API:
 def reconcile(config, api):
     from execution import cleanup
     state = Path(config['state_dir'])
-    for journal in state.glob('*/pending-completion.json'):
+    for journal in state.glob('*/pending-completion*.json'):
         saved = json.loads(private_file(journal, JOURNAL_LIMIT))
         run = api.call('/runs/' + saved['run_id'])
         step = next(s for s in run['steps'] if s['id'] == saved['step_id'])
@@ -420,7 +421,7 @@ def prune_checkouts(config, api, now=None):
         root = manifest.parent
         if root.is_symlink() or root.parent != state or not safe_id(root.name):
             continue
-        if any((root / name).exists() for name in ('pending-completion.json', 'services.json', 'application-images.json')):
+        if any(root.glob('pending-completion*.json')) or any((root / name).exists() for name in ('services.json', 'application-images.json')):
             continue
         try:
             owned = json.loads(manifest.read_text()).get('run_id') == root.name
@@ -541,7 +542,49 @@ def tick_locked(config, roots):
     capabilities += config.get('capabilities', []) + remote_capabilities
     job = api.call('/claim', {'capabilities': capabilities})['job']
     if not job:
-        return
+        return False
+    jobs = [job]
+    # Read-only QA checks of an environment are independent: fill the remaining
+    # slots with QA only, so no build, writer or publication runs beside them.
+    while job['step']['adapter'] in QA_ADAPTERS and len(jobs) < int(config.get('max_parallel_qa', 3)):
+        try:
+            extra = api.call('/claim', {'capabilities': capabilities, 'qa_only': True})['job']
+        except ControlPlaneError:
+            break  # A backend without qa_only claims (or a blip): run what is held.
+        if not extra:
+            break
+        jobs.append(extra)
+    if len(jobs) == 1:
+        finished = [execute(config, roots, api, job)]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        # One API client per job: connectivity incidents are reported per step.
+        with ThreadPoolExecutor(len(jobs)) as pool:
+            finished = list(pool.map(lambda j: execute(config, roots, API(config['api_url'], config['runner_token']), j), jobs))
+    # Siblings may still use a run's checkout and services: clean only after all.
+    for run, status in finished:
+        if status in ('succeeded', 'cancelled', 'blocked'):
+            cleanup(config, run, config['state_dir'])
+    return True
+
+
+def fast_lane_skip(api, job):
+    """Complete a backend-selected fast-lane phase as not applicable, without an agent."""
+    from execution import upload
+    reason = ('Fast lane: Jev classified this task as small (' + str(job['fast_lane']['classification'].get('task_class'))
+              + '); the implementer investigates and writes the regression test.')
+    report = {'fast_lane': True, 'step': job['step']['id'], 'classification': job['fast_lane']['classification']}
+    artifact = upload(api, job, 'fast-lane.json', 'application/json', json.dumps(report, sort_keys=True).encode())
+    output = {'success': True, 'fast_lane': True, 'not_applicable_reason': reason, 'summary': reason,
+              'verdict': 'accept', 'findings': [], 'cost_usd': 0}
+    evidence = [{'check': job['step']['id'], 'status': 'not_applicable', 'commits': job['execution']['heads'], 'artifact_digest': artifact['digest']}]
+    return True, evidence, {'input_revision': job['execution']['revision'], 'heads': job['execution']['heads'], 'output': output, 'cost_usd': 0}
+
+
+def execute(config, roots, api, job):
+    from execution import isolated_adapter, cleanup, upload, WorkspaceOutputError
+    from delivery import services, validate_services, gate, publish
+    from runtime_settings import for_job, suite
     evidence, success = [], False
     outcome = {'input_revision': job['execution']['revision'], 'heads': job['execution']['heads'], 'output': {}, 'cost_usd': 0}
     api.incidents = []
@@ -574,6 +617,9 @@ def tick_locked(config, roots):
         elif adapter == 'policy-publisher':
             job['_trace']['stage'] = 'publication'
             success, evidence, outcome = publish(config, job, api, git)
+        elif (job.get('fast_lane') or {}).get('skip') is True and job['step']['kind'] == 'agent':
+            job['_trace']['stage'] = 'fast_lane'
+            success, evidence, outcome = fast_lane_skip(api, job)
         else:
             profile = config.get('adapters',{})[adapter]
             job['_trace']['stage'] = 'isolated_adapter'
@@ -607,7 +653,7 @@ def tick_locked(config, roots):
                {k: v for k, v in outcome['output'].items() if k in ('error', 'code', 'stage', 'exception_type', 'http_status', 'request', 'request_id', 'retryable', 'backend_code', 'path')})
     report_connectivity(config, api, job)
     body = {'lease_token': job['lease_token'], 'success': success, 'evidence': evidence, 'outcome': outcome}
-    journal = Path(config['state_dir']) / job['run_id'] / 'pending-completion.json'
+    journal = Path(config['state_dir']) / job['run_id'] / ('pending-completion-' + job['step']['id'] + '.json')
     journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(journal, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:
@@ -615,8 +661,7 @@ def tick_locked(config, roots):
         stream.flush(); os.fsync(stream.fileno())
     response = api.call('/runs/' + job['run_id'] + '/steps/' + job['step']['id'] + '/complete', body)
     journal.unlink()
-    if response.get('status') in ('succeeded', 'cancelled', 'blocked'):
-        cleanup(config, job['run_id'], config['state_dir'])
+    return job['run_id'], response.get('status')
 
 
 def tick(config):
@@ -628,7 +673,7 @@ def tick(config):
     if state.stat().st_uid != os.getuid() or state.stat().st_mode & 0o077: raise ValueError('State must be private')
     with (state / 'runner.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        tick_locked(config, roots)
+        return tick_locked(config, roots)
 
 
 def main():
@@ -638,8 +683,9 @@ def main():
     args = parser.parse_args()
     config = json.loads(private_file(args.config))
     while True:
+        worked = False
         try:
-            tick(config)
+            worked = tick(config)
         except (ValueError, OSError, urllib.error.URLError, subprocess.TimeoutExpired) as error:
             if isinstance(error, ControlPlaneError) and error.status == 401:
                 from execution import cleanup
@@ -652,7 +698,9 @@ def main():
                 raise SystemExit(1)
         if args.once:
             break
-        time.sleep(10)
+        # Poll again at once after a step: the next one is usually ready.
+        if not worked:
+            time.sleep(10)
 
 
 if __name__ == "__main__":
