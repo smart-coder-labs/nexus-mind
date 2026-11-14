@@ -13,7 +13,7 @@ Each one exists because breaking it costs real users.
 - **Never edit a shipped migration.** Add the next `run_vN` in `apps/backend/src/db/migrations.rs` (guarded by `PRAGMA user_version`). Production already ran the old ones.
 - **`/v1/*` responses change additively.** The MCP server, plugins and CLI depend on them, and they release separately.
 - **Factory gates stay closed.** These include per-revision human approval, the merge risk floor, credential-free publication and PII redaction (see `invariants.md` in the business skill). Never loosen one to make a run pass.
-- **Design tokens only, per app.** Admin uses Audit1 Lime, backoffice uses amber, landing uses SmartCoder lime. Lime fills take dark ink, and status is not category. Follow `nexus-mind-design`; the `design-guard` hook flags new raw colours.
+- **Design tokens only, per app.** Admin and backoffice use Signal with the SmartCoder palette (from PR #464): ink structure, green actions, and lime as the accent only, never a large fill or body text. Landing uses SmartCoder lime. Status is not category. Follow `nexus-mind-design`; the `design-guard` hook flags new raw colours.
 - **Merging is deploying.** A push to `main` deploys the backend to Oracle k3s and the web apps to Cloudflare Pages. Humans merge, never an agent.
 
 ## Conventions the code won't teach
