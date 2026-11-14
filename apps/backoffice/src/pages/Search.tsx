@@ -185,7 +185,7 @@ export default function Search() {
 
       {/* Error */}
       {error && !loading && (
-        <p className="text-sm text-red-400 text-center">{error}</p>
+        <p className="text-sm text-status-error text-center">{error}</p>
       )}
 
       {/* Empty state — no query */}

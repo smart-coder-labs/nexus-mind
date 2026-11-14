@@ -14,7 +14,7 @@ import { CountChart } from '@/components/ui/CountChart'
 import { Checkbox } from '@/components/ui/shadcn/checkbox'
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from '@/components/ui/shadcn/table'
 // Signal roles with the SmartCoder palette. Swatches read the live tokens, so they follow the theme.
-const roles:[string,string,string][]=[['Estructura','--foreground','Tinta #111114 · carbón #101114'],['Acción primaria','--primary','Verde bosque #356b26'],['Acento Signal','--sig','Lima #c3d82e · solo acento'],['Relleno suave','--primary-tint','Pálido #e7f4d8'],['Relleno suave','--mint','Menta #84e6b0'],['Serie d1','--d1','Verde'],['Serie d2','--d2','Azul'],['Serie d3','--d3','Verde azulado'],['Serie d4','--d4','Ámbar']]
+const roles:[string,string,string][]=[['Estructura','--foreground','Tinta y carbón'],['Acción primaria','--primary','Verde bosque'],['Acento Signal','--sig','Lima · solo acento'],['Relleno suave','--primary-tint','Pálido'],['Relleno suave','--mint','Menta'],['Serie d1','--d1','Verde'],['Serie d2','--d2','Azul'],['Serie d3','--d3','Verde azulado'],['Serie d4','--d4','Ámbar']]
 export default function DesignSystem(){
  const [project,setProject]=useState(''); const [enabled,setEnabled]=useState(true); const [open,setOpen]=useState(false)
  return <div className="min-h-dvh bg-background text-foreground px-5 py-8 sm:px-8"><div className="mx-auto max-w-6xl space-y-8">
