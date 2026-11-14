@@ -54,6 +54,8 @@ struct Remote {
     body_updates: u32,
     conclusion: Option<String>,
     login: Option<String>,
+    /// Advanced default-branch head and the paths its new commits touched.
+    advanced: Option<(String, Vec<&'static str>)>,
 }
 async fn github(
     State(state): State<Arc<Mutex<Remote>>>,
@@ -69,7 +71,14 @@ async fn github(
     } else if path == "/repos/acme/api" {
         json!({"default_branch":"main","permissions":{"push":true}})
     } else if path.ends_with("/branches/main") {
-        json!({"commit":{"sha":"a".repeat(40)}})
+        let head = remote
+            .advanced
+            .as_ref()
+            .map_or("a".repeat(40), |(sha, _)| sha.clone());
+        json!({"commit":{"sha":head}})
+    } else if path.contains("/compare/") {
+        let (_, files) = remote.advanced.as_ref().unwrap();
+        json!({"status":"ahead","files":files.iter().map(|f| json!({"filename":f})).collect::<Vec<_>>()})
     } else if path.contains("/git/commits/") {
         json!({"tree":{"sha":"c".repeat(40)}})
     } else if path.ends_with("/git/blobs") {
@@ -250,6 +259,18 @@ async fn exercise_publication(backend: bool) {
         assert_eq!(state.lock().unwrap().prs, 0);
         state.lock().unwrap().login = None;
     }
+    // Main advanced over a file this change also edits: re-verify on fresh sources.
+    state.lock().unwrap().advanced = Some(("b".repeat(40), vec!["docs.md", "code.txt"]));
+    assert_eq!(
+        publish_using(&store, &org.id, rid, id, "publish", &request, &client)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "base_moved_reverify"
+    );
+    assert_eq!(state.lock().unwrap().prs, 0);
+    // Disjoint advance: the verified commits still publish.
+    state.lock().unwrap().advanced = Some(("b".repeat(40), vec!["docs.md"]));
     let result = publish_using(&store, &org.id, rid, id, "publish", &request, &client)
         .await
         .unwrap();

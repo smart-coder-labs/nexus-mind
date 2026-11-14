@@ -379,6 +379,41 @@ impl Github {
         self.call(reqwest::Method::POST, p, Some(b)).await
     }
 }
+/// True when `current` only adds commits on top of the verified base and none of
+/// them touch a path the export changes: the verified commits then merge without
+/// conflicts and the product CI validates the combination on the PR. Anything
+/// uncertain (diverged, truncated or unreadable compare) keeps the fresh-source
+/// reverification.
+async fn base_advance_is_disjoint(
+    github: &Github,
+    prefix: &str,
+    verified: &str,
+    current: &str,
+    export: &Export,
+) -> bool {
+    let Ok(compare) = github
+        .get(&format!("{prefix}/compare/{verified}...{current}"))
+        .await
+    else {
+        return false;
+    };
+    let Some(files) = compare["files"].as_array() else { return false };
+    // GitHub lists at most 300 files per compare.
+    if compare["status"] != "ahead" || files.len() >= 300 {
+        return false;
+    }
+    let changed: std::collections::BTreeSet<&str> = export
+        .commits
+        .iter()
+        .flat_map(|c| c.files.iter().map(|f| f.path.as_str()))
+        .collect();
+    !files.iter().any(|f| {
+        ["filename", "previous_filename"]
+            .iter()
+            .any(|k| f[*k].as_str().is_some_and(|p| changed.contains(p)))
+    })
+}
+
 async fn required_ci(
     github: &Github,
     prefix: &str,
@@ -561,7 +596,12 @@ async fn publish_using(
             bail!("unsupported_base_branch")
         }
         let branch = github.get(&format!("{prefix}/branches/{default}")).await?;
-        if branch["commit"]["sha"] != repo.head_sha {
+        let current = branch["commit"]["sha"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("github_repository_unavailable"))?;
+        if current != repo.head_sha
+            && !base_advance_is_disjoint(github, &prefix, &repo.head_sha, current, export).await
+        {
             bail!("base_moved_reverify")
         }
         for commit in &export.commits {
