@@ -13,7 +13,7 @@ Work in this order:
 2. Open every screenshot with Read. If none were given but a URL was, capture 1440×900 and 390×844, light and dark (admin theme = `localStorage['nexusmind-admin-theme']`), with the Playwright recipe in `.claude/skills/nexus-mind-qa/SKILL.md`, saved outside the repo.
 3. Go through the QA list in `references/rules.md` image by image. Compare density and hierarchy with an existing screen of the same kind (dashboard: `apps/admin/src/pages/Dashboard.tsx`; list + table: `pages/Memories.tsx`; form in a modal: `components/InviteUserModal.tsx`).
 4. Reuse: did the change add a stat tile, empty state, modal, table or chart wrapper that `components.md` already lists?
-5. Honesty: invented or client-computed numbers, missing values shown as 0, sample data without a label, lime used for status, white text on lime.
+5. Honesty: invented or client-computed numbers, missing values shown as 0, sample data without a label, lime used for status, lime as a large fill or as text (lime is the accent only), a hard `text-white` on the primary fill instead of `text-primary-foreground`.
 6. Accessibility: contrast in both themes, icon-only buttons without names, focus visibility, reduced motion.
 
 Return:
