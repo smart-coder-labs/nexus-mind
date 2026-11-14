@@ -16,6 +16,13 @@ class NodeBootstrapTests(unittest.TestCase):
             self.assertIn('never skip a required review', prompt)
             self.assertIn('unavailable services as inapplicability', prompt)
 
+    def test_fast_lane_implementer_owns_the_regression_test(self):
+        skipped = {'tests': {'output': {'fast_lane': True}}}
+        step = {'id': 'implement', 'kind': 'agent'}
+        self.assertIn('Fast lane', entry.agent_prompt({'step': step, 'dependency_results': skipped}, {'role': 'implementation'}))
+        self.assertNotIn('Fast lane', entry.agent_prompt({'step': step, 'dependency_results': {'tests': {'output': {}}}}, {'role': 'implementation'}))
+        self.assertNotIn('Fast lane', entry.agent_prompt({'step': {'id': 'review', 'kind': 'review'}, 'dependency_results': skipped}, {'role': 'reviewer'}))
+
     def test_install_uses_disk_scratch_not_bounded_tmpfs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

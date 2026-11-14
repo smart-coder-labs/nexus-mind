@@ -126,6 +126,10 @@ def agent_prompt(context, adapter):
         instructions += ('npm dependencies of context.node_dependencies are already installed from the lockfile. '
                          'There is no network: never run npm install/ci (npm ci deletes node_modules first); '
                          'run tests with the installed tools, e.g. npx jest or npm test. ')
+    if role == 'implementation' and any(isinstance(r, dict) and isinstance(r.get('output'), dict) and r['output'].get('fast_lane') is True
+                                        for r in (context.get('dependency_results') or {}).values()):
+        instructions += ('Fast lane: investigation and test authoring were skipped for this small task. '
+                         'Find the root cause yourself and, with the fix, add a focused regression test that fails without it. ')
     if context.get('task_scope') == 'documentation' and role in ('implementation', 'test_author'):
         # The backend's decision model classified this task as documentation-only.
         instructions += ('This task is documentation-only. Edit only documentation (Markdown and docs/ files). '

@@ -101,7 +101,7 @@ pub async fn plan(
 
 /// Jev classifies the task once per run (`task.classified`). A confident
 /// `docs` class tells agents the change is documentation-only.
-pub async fn task_scope(store: &SqliteStore, org: &str, run: &str, task: &Value) -> Option<&'static str> {
+pub async fn task_classification(store: &SqliteStore, org: &str, run: &str, task: &Value) -> Option<Value> {
     let key = v::decision_key(org)?;
     let cached: Option<String> = {
         let h = store.conn();
@@ -133,7 +133,7 @@ pub async fn task_scope(store: &SqliteStore, org: &str, run: &str, task: &Value)
             payload
         }
     };
-    v::scope_from_classification(&classified)
+    Some(classified)
 }
 
 /// After a step blocks: ask Jev which phase can resolve it and re-queue it.

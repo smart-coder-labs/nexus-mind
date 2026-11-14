@@ -3,6 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
+import shutil
 import subprocess
 
 
@@ -13,9 +14,15 @@ def main():
     # Registry credentials stay on the host. Dependency lifecycle downloads must
     # not run in the offline build; the declared application build still runs.
     subprocess.run(['npm', 'ci', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--cache', cache], check=True)
+    # Caches removed in this same layer never reach the exported image.
+    shutil.rmtree(cache, ignore_errors=True)
     package = json.loads(Path('package.json').read_text())
-    if 'build' in package.get('scripts', {}):
+    if Path('.next/BUILD_ID').is_file():
+        # Only the runner places a verified build here; sources never carry .next.
+        print('NexusMind: reusing the verified build of these heads', flush=True)
+    elif 'build' in package.get('scripts', {}):
         subprocess.run(['npm', 'run', 'build'], check=True)
+    shutil.rmtree('.next/cache', ignore_errors=True)
 
 
 if __name__ == '__main__':

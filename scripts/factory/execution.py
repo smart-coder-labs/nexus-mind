@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 
@@ -228,7 +229,17 @@ def remove_tree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
+# Parallel QA steps share a run's checkouts: `git clean` in one must not race
+# another step's copy of the same checkout.
+SOURCES_LOCK = threading.Lock()
+
+
 def stage_sources(job, state_dir, git):
+    with SOURCES_LOCK:
+        return _stage_sources(job, state_dir, git)
+
+
+def _stage_sources(job, state_dir, git):
     run_root = Path(state_dir) / job['run_id']
     if not run_root.is_dir() or run_root.is_symlink():
         raise ValueError('Committed run checkouts are missing')
@@ -670,9 +681,45 @@ def staged_adapter(config, job, adapter, roots, api, git, private_file, working,
             result['error'] = 'missing_check_results'
         for check in checks:
             evidence.append({'check': check['name'], 'status': 'not_applicable' if check.get('status')=='not_applicable' else ('pass' if check.get('exit_code') == 0 else 'fail'), 'commits': heads, 'artifact_digest': artifact['digest']})
+        if adapter.get('export_build'):
+            export_build(config, job, work, adapter['export_build'], checks)
     else:
         evidence.append({'check': job['step']['id'], 'status': 'not_applicable' if result.get('not_applicable_reason') else ('pass' if result['success'] else 'fail'), 'commits': heads, 'artifact_digest': artifact['digest']})
     return result['success'], evidence, {'input_revision': job['execution']['revision'], 'heads': heads, 'output': result, 'cost_usd': result.get('cost_usd', 0)}
+
+
+def verified_build_dir(config, job, cwd):
+    return Path(config['state_dir']) / job['run_id'] / '.nexusmind-verified-build' / hashlib.sha256(cwd.encode()).hexdigest()[:16]
+
+
+def export_build(config, job, work, export, checks):
+    """Keep a passing `npm run build` output of these exact heads, so the
+    integrated environment does not build the same commit again. Best effort:
+    any problem only means the environment builds it itself."""
+    built = work / export['cwd'] / '.next'
+    if not any(c.get('name') == export['check'] and c.get('exit_code') == 0 for c in checks) \
+            or built.is_symlink() or not (built / 'BUILD_ID').is_file():
+        return
+    target = verified_build_dir(config, job, export['cwd'])
+    try:
+        remove_tree(target)
+        target.mkdir(mode=0o700, parents=True)
+        shutil.copytree(built, target / '.next', symlinks=True, ignore=lambda d, names: ['cache'] if Path(d) == built else [])
+        check_tree(target)
+        (target / 'manifest.json').write_text(json.dumps({'cwd': export['cwd'], 'heads': job['execution']['heads'], 'revision': job['execution']['revision']}))
+    except (OSError, WorkspaceOutputError):
+        remove_tree(target)
+
+
+def verified_build(config, job, cwd):
+    """The exported `.next` for this exact change revision, if any."""
+    target = verified_build_dir(config, job, cwd)
+    try:
+        manifest = json.loads((target / 'manifest.json').read_text())
+    except (OSError, ValueError):
+        return None
+    current = {'cwd': cwd, 'heads': job['execution']['heads'], 'revision': job['execution']['revision']}
+    return target / '.next' if manifest == current and (target / '.next' / 'BUILD_ID').is_file() else None
 
 
 def adopt_changes(config, job, work, git, secrets):

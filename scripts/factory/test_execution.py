@@ -394,6 +394,68 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(execution.isolated_adapter(self.config,self.job,adapter,[self.root],self.api,runner.git,runner.private_file), (True, [], {}))
         self.assertEqual(list(run_root.glob('step-*')), [])
 
+    def test_verified_build_is_reused_only_for_the_same_change_revision(self):
+        work = self.base / 'work'
+        built = work / 'web' / '.next'
+        (built / 'cache').mkdir(parents=True)
+        (built / 'BUILD_ID').write_text('b1'); (built / 'cache' / 'big').write_text('x')
+        export = {'check': 'build-0', 'cwd': 'web'}
+        execution.export_build(self.config, self.job, work, export, [{'name': 'build-0', 'exit_code': 1}])
+        self.assertIsNone(execution.verified_build(self.config, self.job, 'web'))
+        execution.export_build(self.config, self.job, work, export, [{'name': 'build-0', 'exit_code': 0}])
+        reused = execution.verified_build(self.config, self.job, 'web')
+        self.assertEqual((reused / 'BUILD_ID').read_text(), 'b1')
+        self.assertFalse((reused / 'cache').exists())
+        self.assertIsNone(execution.verified_build(self.config, self.job, 'api'))
+        moved = dict(self.job, execution=dict(self.job['execution'], revision=1))
+        self.assertIsNone(execution.verified_build(self.config, moved, 'web'))
+
+    def test_fast_lane_completes_selected_phase_without_an_agent(self):
+        job = dict(self.job, fast_lane={'skip': True, 'classification': {'task_class': 'bugfix', 'risk': 0.4}})
+        job['step'] = dict(job['step'], id='tests', adapter='agent')
+        api = Mock()
+        api.call.side_effect = lambda path, data=None: ({'workspaces': []} if path == '/workspaces' else {'job': job} if path == '/claim'
+                                                        else {'digest': 'a' * 64} if path.endswith('/artifacts') else {})
+        config = {**self.config, 'api_url': 'http://localhost', 'adapters': {'agent': {}}}
+        with patch.object(runner, 'API', return_value=api), patch.object(runner, 'reconcile'), patch.object(execution, 'isolated_adapter') as agent:
+            self.assertTrue(runner.tick_locked(config, [self.root]))
+        agent.assert_not_called()
+        completion = next(call.args[1] for call in api.call.call_args_list if call.args[0].endswith('/complete'))
+        self.assertTrue(completion['success'])
+        self.assertEqual(completion['evidence'][0]['status'], 'not_applicable')
+        self.assertTrue(completion['outcome']['output']['fast_lane'])
+        self.assertTrue(completion['outcome']['output']['not_applicable_reason'])
+        self.assertEqual(completion['outcome']['heads'], job['execution']['heads'])
+
+    def test_qa_checks_run_in_parallel_and_extra_slots_claim_only_qa(self):
+        import threading
+        jobs = []
+        for step in ('functional', 'design', 'security'):
+            job = dict(self.job, lease_token=step)
+            job['step'] = {'id': step, 'kind': 'check', 'adapter': 'isolated-' + step + '-qa', 'write_repositories': [], 'timeout_seconds': 60}
+            jobs.append(job)
+        queue = list(jobs)
+        claims = []
+        def call(path, data=None):
+            if path == '/workspaces': return {'workspaces': []}
+            if path == '/claim':
+                claims.append(data)
+                return {'job': queue.pop(0) if queue else None}
+            return {'status': 'running'} if path.endswith('/complete') else {}
+        api = Mock(); api.call.side_effect = call
+        together = threading.Barrier(3, timeout=10)
+        def adapter(config, job, *rest):
+            together.wait()  # Fails (BrokenBarrierError) unless all three run at once.
+            return True, [], {'input_revision': 0, 'heads': job['execution']['heads'], 'output': {}, 'cost_usd': 0}
+        config = {**self.config, 'api_url': 'http://localhost', 'adapters': {j['step']['adapter']: {} for j in jobs}}
+        with patch.object(runner, 'API', return_value=api), patch.object(runner, 'reconcile'), patch.object(execution, 'isolated_adapter', side_effect=adapter):
+            runner.tick_locked(config, [self.root])
+        self.assertEqual([c.get('qa_only', False) for c in claims], [False, True, True])
+        completed = sorted(call.args[0].split('/')[-2] for call in api.call.call_args_list if call.args[0].endswith('/complete'))
+        self.assertEqual(completed, ['design', 'functional', 'security'])
+        run_root = Path(self.config['state_dir']) / self.job['run_id']
+        self.assertEqual(list(run_root.glob('pending-completion*.json')), [])
+
     def test_api_contract_rejections_hold_instead_of_exhausting_attempts(self):
         # Every control-plane failure holds: hold=false on a check/review step queues
         # an agent repair, which an unavailable backend must never trigger.

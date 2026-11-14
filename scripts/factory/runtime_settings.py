@@ -230,6 +230,9 @@ def suite(config,job,profile,roots,api,git,private_file):
         child['step']['timeout_seconds']=max(1,int(job['step']['timeout_seconds']-(time.monotonic()-start)))
         adapter={'kind':'checks','image':check['image'],'environment_refs':check.get('environment_refs',[]),'checks':[{'name':name,'cwd':c['cwd'],'command':c['command']} for name,c in checks.items()]}
         if node_bootstrap_image(config, check['image']):adapter['node_bootstrap']=True
+        # The environment reuses this exact build instead of repeating it.
+        built=next((name for name,c in checks.items() if c['name']=='build' and c['command']==['npm','run','build']),None)
+        if built:adapter['export_build']={'check':built,'cwd':check['cwd']}
         if isolation(group[0])[-1]:adapter['network']='services';validate_services(config,job)
         class NamedArtifacts:
             def call(self,path,data=None):
