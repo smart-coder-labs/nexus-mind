@@ -198,6 +198,10 @@ pub fn validate(config: &RuntimeConfig, repos: &[String]) -> Result<()> {
         {
             bail!("invalid_runtime_agent")
         }
+        // The backend model relay only serves Codex-subscription models (see workflow_model).
+        if a.model_connection == "backend" && !a.model.starts_with("gpt-") {
+            bail!("runtime_backend_model_not_supported")
+        }
     }
     let mut names = std::collections::BTreeSet::new();
     for c in &config.checks {
@@ -600,6 +604,12 @@ mod tests {
         assert_eq!(resolved.agents[0].network, "none");
         assert_eq!(resolved.agents[0].model_connection, "backend");
         validate(&resolved, &[]).unwrap();
+        let mut unsupported = resolved.clone();
+        unsupported.agents[0].model = "claude-opus-5".into();
+        assert_eq!(
+            validate(&unsupported, &[]).unwrap_err().to_string(),
+            "runtime_backend_model_not_supported"
+        );
         config.agents[0].model_connection = "custom".into();
         assert!(managed_defaults(config, &report).agents[0].image.is_empty());
     }
