@@ -109,6 +109,7 @@ pub(crate) async fn run_step(
                 verification: &[],
                 receipts: &receipts,
                 qa: None,
+                qa_checkpoint: None,
                 slot: &slot,
                 writes: sink,
             },
@@ -133,6 +134,7 @@ pub(crate) async fn run_step(
                 env.org_id,
                 env.run_id,
                 env.secret_values,
+                None,
                 seq_base,
             ),
         )

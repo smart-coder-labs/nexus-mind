@@ -12,7 +12,7 @@ use crate::api::{
     admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
     clients, code, context, conventions, docs, factory, github_auth, harnesses, health, internal, memory,
     middleware as api_mw, migrations as migrations_api, policy, rate_limit, sdd, search, sessions,
-    tasks, usage, users, webhooks,
+    tasks, usage, users, webhooks, workflows, workflow_execution, github_review_hooks,
 };
 use crate::config::Config;
 use crate::email::EmailConfig;
@@ -205,6 +205,24 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(factory::list_policies).put(factory::put_policy),
         )
         .route("/v1/factory/policies/:id", delete(factory::delete_policy))
+        .route("/v1/factory/workflow-catalog", get(workflows::catalog))
+        .route("/v1/autonomous-agents/github/review-hooks", get(github_review_hooks::list).post(github_review_hooks::register))
+        .route("/v1/autonomous-agents/github/review-hooks/:id", delete(github_review_hooks::disconnect))
+        .route("/v1/factory/runners", post(workflows::register_runner))
+        .route("/v1/factory/runners/:id", delete(workflows::revoke_runner))
+        .route("/v1/factory/runners/:id/rotate", post(workflow_execution::rotate_runner))
+        .route("/v1/factory/workspaces", post(workflows::create_workspace))
+        .route("/v1/factory/workspaces/:id/confirm", post(workflows::confirm_workspace))
+        .route("/v1/factory/workflows", post(workflows::create_definition))
+        .route("/v1/factory/workflows/:id/linear-next", post(workflows::linear_next))
+        .route("/v1/factory/workflow-runs", post(workflows::start_run))
+        .route("/v1/factory/workflow-runs/:id", get(workflows::get_run))
+        .route("/v1/factory/workflow-runs/:id/control", post(workflows::control_run))
+        .route("/v1/factory/workflow-runs/:id/approve", post(workflow_execution::approve))
+        .route("/v1/factory/workflow-artifacts/:id", get(workflow_execution::get_artifact))
+        .route("/v1/factory/workflow-intakes", post(workflow_execution::create_intake))
+        .route("/v1/factory/workflow-intakes/:id", delete(workflow_execution::delete_intake))
+        .route("/v1/factory/workflow-intakes/poll", post(workflow_execution::poll_intakes))
         .route("/v1/factory/digest", get(factory::human_digest))
         .route("/v1/factory/economics", get(factory::economics))
         .route("/v1/factory/decisions", post(factory::record_human_decision))
@@ -654,6 +672,18 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(autonomous_agents::list_targets).post(autonomous_agents::put_target),
         )
         .route(
+            "/v1/autonomous-agents/:id/qa-coverage",
+            get(autonomous_agents::list_agent_qa_coverage),
+        )
+        .route(
+            "/v1/projects/:project_id/qa-repositories",
+            get(autonomous_agents::list_qa_repository_grants).post(autonomous_agents::put_qa_repository_grant),
+        )
+        .route(
+            "/v1/projects/:project_id/qa-repositories/:repository",
+            axum::routing::delete(autonomous_agents::delete_qa_repository_grant),
+        )
+        .route(
             "/v1/autonomous-agent-runs",
             get(autonomous_agents::list_runs),
         )
@@ -664,6 +694,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/autonomous-agent-runs/:id/verification-reports",
             get(autonomous_agents::list_run_verification_reports),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id/qa-coverage",
+            get(autonomous_agents::list_run_qa_coverage),
         )
         .route(
             "/v1/autonomous-agent-runs/:id/cancel",
@@ -704,6 +738,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/autonomous-agent-findings/:id",
             patch(autonomous_agents::patch_finding),
+        )
+        .route(
+            "/v1/autonomous-agent-findings/:id/issue-repositories",
+            get(autonomous_agents::list_finding_issue_repositories),
         )
         .route(
             "/v1/autonomous-agent-findings/:id/github-issue",
@@ -856,6 +894,18 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
 
     let router = Router::new()
         .route("/v1/health", get(health::handler))
+        .route("/v1/autonomous-agents/github/webhook/:connector", post(autonomous_webhooks::github_cli_webhook))
+        .route("/v1/factory/runner/workspaces", get(workflows::runner_workspaces))
+        .route("/v1/factory/runner/workspaces/:id/inventory", post(workflows::report_inventory))
+        .route("/v1/factory/runner/claim", post(workflows::claim))
+        .route("/v1/factory/runner/poll-intakes", post(workflow_execution::runner_poll_intakes))
+        .route("/v1/factory/runner/runs", get(workflow_execution::runner_runs))
+        .route("/v1/factory/runner/runs/:run", get(workflow_execution::runner_run))
+        .route("/v1/factory/runner/runs/:run/steps/:step/publish", post(workflow_execution::publish))
+        .route("/v1/factory/runner/runs/:run/steps/:step/artifacts", post(workflow_execution::put_artifact))
+        .route("/v1/factory/runner/runs/:run/steps/:step/events", post(workflow_execution::event))
+        .route("/v1/factory/runner/runs/:run/steps/:step/lease", post(workflow_execution::lease))
+        .route("/v1/factory/runner/runs/:run/steps/:step/complete", post(workflows::complete))
         .route("/v1/orgs", get(admin::list_orgs).post(admin::create_org))
         .route("/v1/orgs/:id/users", get(admin::list_org_users))
         .route("/v1/admin/auth/login", post(auth::login))

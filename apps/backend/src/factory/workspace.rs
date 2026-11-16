@@ -300,6 +300,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_archive_carries_selected_read_only_qa_context() {
+        let dir=repo().await;
+        let context=dir.path().join(".qa-context/acme-backend");
+        std::fs::create_dir_all(&context).unwrap();
+        std::fs::write(context.join("README.md"),"authorized context").unwrap();
+        let entries=list(&pack_workspace(dir.path(),&[]).await.unwrap()).await;
+        assert!(entries.iter().any(|entry|entry==".qa-context/acme-backend/README.md"),"{entries:?}");
+    }
+
+    #[tokio::test]
     async fn an_archive_containing_a_secret_is_refused() {
         let dir = repo().await;
         std::fs::write(

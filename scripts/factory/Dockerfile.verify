@@ -1,0 +1,18 @@
+# Optional native-worker verification image. Build from your reviewed backend
+# image (same Debian release) and configure FACTORY_SANDBOX_IMAGE with its digest.
+ARG BACKEND_IMAGE
+FROM rust:1.98-slim-bookworm AS toolchain
+RUN rustup component add rustfmt clippy
+FROM ${BACKEND_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+COPY --from=toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=toolchain /usr/local/cargo/bin /usr/local/cargo/bin
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/tmp/cargo
+ENV PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin
+# A verification image must not inherit the backend/agent entrypoint.
+ENTRYPOINT []
+CMD ["sh"]
+USER 65532:65532
+# The Kubernetes task pod also enforces a non-root UID and read-only rootfs.

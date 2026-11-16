@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import { Archive, ArchiveRestore, CheckCircle2, ExternalLink, FilePlus2, RefreshCw, Send, Wand2 } from 'lucide-react'
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
@@ -21,7 +21,11 @@ export type FindingDetailProps = {
   connectedDestinations: Set<string>
   can: (permission: string) => boolean
   onResolveWithAgent: (target: { findingId: string; title: string; finding: Dict; issue?: { repository: string; number: number } }) => void
-  onCreateIssue: (findingId: string) => void
+  issueRepositories?:string[]
+  issueRepositoriesLoading?:boolean
+  issueRepository?:string
+  onIssueRepositoryChange?:(repository:string)=>void
+  onCreateIssue: (findingId: string,repository?:string) => void
   creatingIssue: boolean
   onMarkResolved: (findingId: string) => void
   onArchive: (findingId: string) => void
@@ -138,7 +142,7 @@ export function FindingDetail(props: FindingDetailProps) {
     primary = <Button size="sm" variant="primary" leftIcon={<Send className="h-3.5 w-3.5" />} loading={props.publishing} onClick={() => setConfirmPublish(publishDest)}>Publish to LinkedIn</Button>
   }
   const secondary: ReactNode[] = []
-  if (!archived && canRun && resolvable && !issueDelivery) secondary.push(<Button key="issue" size="sm" variant="secondary" leftIcon={<FilePlus2 className="h-3.5 w-3.5" />} loading={props.creatingIssue} onClick={() => props.onCreateIssue(finding.id)}>Create issue</Button>)
+  if (!archived && canRun && resolvable && (!issueDelivery || (props.issueRepositories?.length ?? 0)>0)) secondary.push(<Fragment key="issue">{(props.issueRepositories?.length ?? 0)>0 && <label className="text-xs text-text-secondary">Authorized issue repository <select aria-label="Authorized issue repository" className="ml-2 rounded-md border border-border-primary bg-surface-primary px-2 py-1" value={props.issueRepository ?? ''} onChange={event=>props.onIssueRepositoryChange?.(event.target.value)}><option value="">Choose repository</option>{props.issueRepositories!.map(repository=><option key={repository} value={repository}>{repository}</option>)}</select></label>}<Button size="sm" variant="secondary" leftIcon={<FilePlus2 className="h-3.5 w-3.5" />} loading={props.creatingIssue} disabled={props.issueRepositoriesLoading || ((props.issueRepositories?.length ?? 0)>0 && !props.issueRepository)} onClick={() => props.onCreateIssue(finding.id,props.issueRepository || undefined)}>{issueDelivery ? 'Create related issue' : 'Create issue'}</Button></Fragment>)
   if (canUpdate && finding.status === 'open') secondary.push(<Button key="resolve" size="sm" variant="secondary" leftIcon={<CheckCircle2 className="h-3.5 w-3.5" />} onClick={() => props.onMarkResolved(finding.id)}>Mark resolved</Button>)
   if (canUpdate && !archived) secondary.push(<Button key="archive" size="sm" variant="ghost" leftIcon={<Archive className="h-3.5 w-3.5" />} onClick={() => props.onArchive(finding.id)}>Archive</Button>)
   if (canUpdate && archived) secondary.push(<Button key="restore" size="sm" variant="secondary" leftIcon={<ArchiveRestore className="h-3.5 w-3.5" />} onClick={() => props.onRestore(finding.id)}>Restore</Button>)

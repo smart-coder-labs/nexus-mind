@@ -3,7 +3,7 @@ import { AlertTriangle, Archive, ArchiveRestore, Ban, Camera, CheckCircle2, Circ
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmModal } from '../../../components/ConfirmModal'
-import type { AutonomousAgentEvent, AutonomousAgentRun, StoredVerificationReport } from '../../../types'
+import type { AutonomousAgentEvent, AutonomousAgentRun, QAScenarioResult, StoredVerificationReport } from '../../../types'
 import { VerificationReports } from '../VerificationReports'
 import {
   CONTINUABLE_RUN_STATUSES, RESULT_CODE, SANDBOX_FAILURE_CODES, asArr, asDict, asNum, asStr, dur, fmtDateTime, fmtTime, humanize,
@@ -145,6 +145,9 @@ export type RunDetailProps = {
   events: AutonomousAgentEvent[]
   transcript: AutonomousAgentEvent[]
   verificationReports?: StoredVerificationReport[]
+  qaCoverage?: QAScenarioResult[]
+  qaPlans?: import('../../../types').QABatchPlan[]
+  qaCoverageError?: boolean
   agentName?: string
   templateKey?: string
   onOpenFindings?: () => void
@@ -157,7 +160,7 @@ export type RunDetailProps = {
 }
 
 /** The run's story: header, outcome sentence, stages, budget, evidence, conversation, raw payload last. */
-export function RunDetail({ run, events, transcript, verificationReports = [], agentName, templateKey, onOpenFindings, onContinue, continuing, onCancel, cancelling, onArchive, onRestore }: RunDetailProps) {
+export function RunDetail({ run, events, transcript, verificationReports = [], qaCoverage = [], qaPlans = [], qaCoverageError = false, agentName, templateKey, onOpenFindings, onContinue, continuing, onCancel, cancelling, onArchive, onRestore }: RunDetailProps) {
   const [confirmCancel, setConfirmCancel] = useState(false)
   const active = isActiveRun(run.status)
   const canContinue = Boolean(onContinue) && CONTINUABLE_RUN_STATUSES.includes(run.status)
@@ -271,6 +274,23 @@ export function RunDetail({ run, events, transcript, verificationReports = [], a
         <section aria-label="Budget used" className="space-y-3">
           <p className={label}>Budget used</p>
           <div className="grid gap-5 sm:grid-cols-3">{meters}</div>
+        </section>
+      )}
+
+      {templateKey === 'qa' && (
+        <section aria-labelledby="run-qa-coverage" className="space-y-2">
+          <SectionTitle id="run-qa-coverage">QA coverage history</SectionTitle>
+          {qaCoverageError ? <p role="alert" className="text-sm text-status-error">Could not load scenario results for this run.</p> : qaCoverage.length === 0 && qaPlans.length === 0 ? <p className="text-sm text-text-tertiary">No durable scenario results for this run yet.</p> : (
+            <>
+            {qaPlans.length > 0 && <><h3 className="font-medium text-text-primary">Plan vs executed</h3><ul className="space-y-2">{qaPlans.map((plan,index)=><li key={`${plan.attempt_id}:${plan.key}:${index}`} className="rounded-md border border-border-primary p-3 text-sm"><strong>{plan.status}</strong> · {plan.description}<p className="text-xs text-text-tertiary">{plan.reason} · attempt {plan.attempt_id.slice(0,8)}</p></li>)}</ul></>}
+            <ul className="divide-y divide-border-secondary rounded-xl border border-border-primary">
+              {qaCoverage.map((scenario, index) => <li key={`${scenario.run_id}:${scenario.key}:${index}`} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
+                <span className="min-w-0"><span className="font-medium text-text-primary">{scenario.description}</span><span className="ml-2 font-mono text-xs text-text-tertiary">{scenario.key}</span><span className="ml-2 text-xs text-text-tertiary">{scenario.application} · {scenario.environment} · attempt {scenario.attempt_id?.slice(0,8)}{scenario.checkpoint ? ' · checkpoint' : ' · finalized'}</span>{Array.isArray(scenario.evidence) && scenario.evidence.length > 0 && <span className="mt-1 block text-xs text-text-secondary">{scenario.evidence.map(String).join(' · ')}</span>}</span>
+                <span className={`text-xs font-semibold ${scenario.status === 'passed' ? 'text-status-success' : scenario.status === 'failed' ? 'text-status-error' : 'text-status-warning'}`}>{scenario.status}</span>
+              </li>)}
+            </ul>
+            </>
+          )}
         </section>
       )}
 

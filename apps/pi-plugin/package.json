@@ -1,0 +1,22 @@
+{
+  "name": "@smart-coder-labs/nexusmind-pi",
+  "version": "0.1.0",
+  "description": "NexusMind profiles and lifecycle hooks for Pi",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "nexusmind"],
+  "files": ["index.ts", "README.md"],
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": {
+    "test": "node --experimental-strip-types --test index.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "engines": { "node": ">=22.19.0" },
+  "dependencies": { "@smart-coder-labs/nexusmind-mcp": "0.20.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.4.0" },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

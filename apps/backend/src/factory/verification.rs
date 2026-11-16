@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::contracts::{CheckResult, CheckStatus, SchemaV1, VerificationReport};
 
 /// Programs a verification command may start with.
-const ALLOWED_PROGRAMS: &[&str] = &["npm", "npx", "pnpm", "yarn", "bun", "cargo"];
+const ALLOWED_PROGRAMS: &[&str] = &["npm", "npx", "pnpm", "yarn", "bun", "cargo", "python3", "python", "go", "flutter", "dart", "./gradlew", "gradle", "swift", "xcodebuild", "dotnet", "mvn", "./mvnw", "make"];
 const MAX_COMMANDS: usize = 8;
 /// Per-command limit inside the pod.
 pub const COMMAND_TIMEOUT_SECS: u64 = 300;
@@ -95,7 +95,7 @@ pub fn build_report(
             return CheckStatus::Error;
         }
         match run.get("conclusion").and_then(Value::as_str) {
-            Some("success" | "neutral" | "skipped") => CheckStatus::Pass,
+            Some("success") => CheckStatus::Pass,
             _ => CheckStatus::Fail,
         }
     };
@@ -308,7 +308,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(report.passed);
+        assert!(!report.passed, "a skipped CI check is not evidence that it passed");
         assert_eq!(report.checks.len(), 2);
     }
 

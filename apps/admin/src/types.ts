@@ -70,6 +70,11 @@ export interface AutonomousAgentRevision { id:string; definition_id:string; revi
 export interface AutonomousAgentDetail extends AutonomousAgentDefinition { revision: AutonomousAgentRevision }
 export interface AutonomousAgentSchedule { id:string; definition_id:string; kind:'manual'|'daily'|'interval'; expression:string|null; timezone:string; misfire_policy:'run_once'|'skip'; next_run_at:string|null; enabled:boolean; created_at:string; updated_at:string }
 export interface AutonomousAgentRun { id:string; definition_id:string; revision_id:string; trigger_kind:string; occurrence_key:string; scheduled_for:string|null; snapshot_sha:string|null; status:string; budget:Record<string,unknown>; started_at:string|null; finished_at:string|null; created_at:string; archived_at:string|null }
+export interface QAScenarioResult { project_id:string|null; application:string; environment:string; run_id:string; attempt_id?:string; key:string; description:string; status:'passed'|'failed'|'blocked'; evidence:unknown; tested_at:string; checkpoint?:boolean }
+export interface QABatchPlan { run_id?:string;attempt_id:string;key:string;description:string;reason:string;status:string;planned_at:string }
+export interface QAScenarioInventory {project_id:string|null;application:string;environment:string;module:string;key:string;description:string;critical:boolean;last_status:'passed'|'failed'|'blocked'|null;last_tested_at:string|null;blocker_changed:boolean}
+export interface QAScenarioInventorySummary {application:string;environment:string;total:number;never_tested:number;passed:number;failed:number;blocked:number;blocker_changed:number}
+export interface QACoveragePage { scenarios: QAScenarioResult[]; checkpoints: QAScenarioResult[]; plans: QABatchPlan[]; inventory:QAScenarioInventory[]; inventory_summary:QAScenarioInventorySummary[]; next_cursor: string | null; next_checkpoint_cursor:string|null; next_plan_cursor:string|null; next_inventory_cursor:string|null }
 export interface AutonomousRuntimeHealth { status:'ready'|'degraded'|'reauth_required'|'unavailable'; reason_code:string|null; claude_version:string|null; checked_at:string|null; last_success_at:string|null; last_failure_at:string|null }
 export interface AutonomousAgentConnector { id:string; kind:'github_app'|'slack'|'target_secret'; name:string; metadata:Record<string,unknown>; scopes:string[]; health:string; revocation_generation:number; secret_configured:boolean; created_at:string; updated_at:string }
 export interface AutonomousAgentFinding { id:string;definition_id:string;run_id:string;fingerprint:string;title:string;severity:string;status:string;summary:string;evidence:Record<string,unknown>;occurrence_count:number;created_at:string;updated_at:string }
@@ -80,6 +85,8 @@ export interface VerificationCheck { name:string;status:'PASS'|'FAIL'|'SKIP'|'ER
 export interface VerificationReport { schema_version:number;task_id:string;head_sha:string;passed:boolean;checks:VerificationCheck[];blocking_failures:string[];eligible_for_merge:boolean;human_approval_required:boolean }
 export interface StoredVerificationReport { head_sha:string;created_at:string;report:VerificationReport }
 export interface AutonomousAgentTarget { id:string;definition_id:string;kind:string;name:string;config:Record<string,unknown>;credential_connector_id:string|null;enabled:boolean;created_at:string;updated_at:string }
+export interface QaRepositoryGrant { repository:string;can_read:boolean;can_publish:boolean }
+export interface QaProjectRepositories { candidates:string[];grants:QaRepositoryGrant[] }
 export interface AutonomousAgentOrgSettings { enabled:boolean;retention_days:number }
 export interface AutonomousAgentMetrics { queued:number;running:number;blocked:number;open_findings:number;failed_deliveries:number;dead_letters:number;estimated_cost_usd:number }
 
@@ -809,6 +816,21 @@ export interface HarnessVersionSummary {
 }
 
 export type HarnessFormat = 'agent' | 'skill' | 'command' | 'hook' | 'output_style' | 'claude_code_plugin' | 'theme'
+export interface AgentRuntimeComponent {
+  id: string
+  kind: 'skill' | 'script' | 'plugin' | 'extension' | 'prompt_template' | 'mcp'
+  enabled?: boolean
+  tools?: string[]
+  files?: Record<string, string>
+  server?: { command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string> }
+}
+export interface AgentRuntimeConfig {
+  nexusmind_profile?: string
+  acknowledge_executable?: boolean
+  harnesses?: { id: string; version: string; manifest_hash: string; components: string[] }[]
+  components?: AgentRuntimeComponent[]
+}
+
 export type HarnessComponentKind = 'file' | 'folder' | 'plugin_marketplace' | 'theme_json'
 
 export interface HarnessOwner {
@@ -838,7 +860,7 @@ export interface HarnessManifestComponent {
 
 export interface HarnessManifest {
   schema_version: '1.1'
-  targets: Array<'claude' | 'codex' | 'cursor'>
+  targets: Array<'claude' | 'codex' | 'cursor' | 'pi'>
   format: HarnessFormat
   components: HarnessManifestComponent[]
   provenance: { source: string }

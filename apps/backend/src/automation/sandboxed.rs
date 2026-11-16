@@ -47,6 +47,7 @@ pub(crate) struct SandboxedRun<'a> {
     pub receipts: &'a std::sync::Mutex<Vec<crate::factory::verification::VerificationReceipt>>,
     /// Browser-driven templates (QA, judge): target hosts and where screenshots go.
     pub qa: Option<QaSandbox<'a>>,
+    pub qa_checkpoint: Option<&'a super::worker::QaCheckpointContext>,
     /// The pod slot within the run (`main`, or `issue-<n>` in a resolver fanout).
     pub slot: &'a str,
     /// Code-writing templates: every diff of the agent's work, periodic and
@@ -332,6 +333,7 @@ async fn run_commands(
         );
         job.files.push((path.to_string(), proxy.into_bytes()));
     }
+    crate::factory::resolver_checks::bind_proxy_integrity(&mut job.files,&mut job.verification)?;
     let mut runs = run_in_sandbox(prepared.runtime.clone(), &job, &mut |_: &[u8]| {})
         .await?
         .verification;
@@ -564,6 +566,11 @@ pub(crate) async fn run_claude_sandboxed(
     };
     let run_token = prepared.token(run.org_id, &token_run_id, agent_life, hosts)?;
     // Everything a transcript or error could echo that is still live: redact it.
+    if let Some(context)=run.qa_checkpoint {
+        if let Ok(mut discovered)=context.sandbox_secrets.lock() {
+            if !discovered.contains(&run_token) { discovered.push(run_token.clone()); }
+        }
+    }
     let secrets: Vec<String> = run
         .secret_values
         .iter()
@@ -602,15 +609,38 @@ pub(crate) async fn run_claude_sandboxed(
         )];
         agent_job.collect_dir = Some(crate::factory::sandbox::QA_OUTPUT_DIR.to_string());
     }
+    let runtime_config = {
+        let db = run.store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("storage_unavailable"))?;
+        let text: String = conn.query_row("SELECT r.config_json FROM autonomous_agent_runs a JOIN autonomous_agent_revisions r ON r.id=a.revision_id WHERE a.id=?1 AND a.org_id=?2", rusqlite::params![run.run_id, run.org_id], |row| row.get(0))?;
+        serde_json::from_str::<serde_json::Value>(&text)?
+    };
+    let runtime = super::agent_runtime::runtime_from_config(&runtime_config)?;
+    // Task pods never inherit host secrets. Scoped MCP credentials need a proxy route.
+    anyhow::ensure!(runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).all(|s| s.env.is_empty() && s.headers.is_empty()), "runtime_mcp_credentials_require_sandbox_proxy");
+    let executor = if codex { "codex" } else { "claude" };
+    let root = if codex { crate::factory::sandbox::CODEX_HOME } else { "/tmp/agent-runtime" };
+    let nexus: serde_json::Value = serde_json::from_str(&crate::factory::sandbox::nexusmind_mcp())?;
+    let mut nexus = nexus["mcpServers"]["plugin_nexusmind_nexusmind"].clone();
+    nexus["env"]["NEXUSMIND_BASE_URL"] = serde_json::json!(format!("http://{}/r/{run_token}/nexusmind", crate::factory::sandbox::PROXY_AUTHORITY));
+    let plan = super::agent_runtime::plan(&runtime, executor, root, nexus)?;
+    for (path, content) in plan.files {
+        if codex && path.ends_with("/runtime.toml") {
+            let (_, bytes) = agent_job.files.iter_mut().find(|(path, _)| path == crate::factory::sandbox::CODEX_CONFIG_PATH).ok_or_else(|| anyhow::anyhow!("codex_config_missing"))?;
+            // Replace the old MCP section; the provider/proxy configuration is retained.
+            let base = String::from_utf8(bytes.clone())?;
+            *bytes = format!("{}{}", base.split("\n[mcp_servers.").next().unwrap_or(&base), content).into_bytes();
+        } else { agent_job.files.push((path, content.into_bytes())); }
+    }
+    if !codex {
+        let base = argv.windows(2).find(|a| a[0] == "--allowedTools").map(|a| a[1].clone()).unwrap_or_default();
+        let tools = plan.mcp_names.iter().map(|n| format!("mcp__{n}__*")).collect::<Vec<_>>().join(",");
+        argv.extend(["--setting-sources".into(), "".into(), "--allowedTools".into(), format!("{base},{tools}")]);
+    }
+    argv.extend(plan.args);
     // Checkpoint diffs from the executor are forwarded in order; the forwarder
     // ends (its channel closes with the job) before the final diff is sent.
     let forwarder = run.writes.as_ref().map(|sink| {
-        if !codex {
-            argv.extend([
-                "--mcp-config".to_string(),
-                crate::factory::sandbox::nexusmind_mcp(),
-            ]);
-        }
         agent_job.collect_diff = true;
         let (inner, mut received) = tokio::sync::mpsc::unbounded_channel();
         agent_job.checkpoints = Some(crate::factory::sandbox_exec::Checkpoints {
@@ -638,6 +668,7 @@ pub(crate) async fn run_claude_sandboxed(
                 org_id,
                 run_id,
                 secrets_ref,
+                run.qa_checkpoint,
                 &mut sequence,
                 line,
             )
@@ -681,10 +712,17 @@ pub(crate) async fn run_claude_sandboxed(
             *slot = runs.iter().map(|run| run.receipt()).collect();
         }
     }
+    let redact_output = |bytes: Vec<u8>| {
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        for secret in secrets.iter().filter(|value| !value.is_empty()) {
+            text = text.replace(secret, "[REDACTED]");
+        }
+        text.into_bytes()
+    };
     Ok(std::process::Output {
         status: exit_status(output.exit_code),
-        stdout: output.stdout,
-        stderr: output.stderr,
+        stdout: redact_output(output.stdout),
+        stderr: redact_output(output.stderr),
     })
 }
 

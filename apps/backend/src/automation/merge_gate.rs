@@ -88,7 +88,7 @@ pub fn required_checks_verdict(
         run.get("status").and_then(|s| s.as_str()) == Some("completed")
             && matches!(
                 run.get("conclusion").and_then(|c| c.as_str()),
-                Some("success" | "neutral" | "skipped")
+                Some("success")
             )
     };
     if required.is_empty() {
@@ -753,10 +753,13 @@ mod tests {
         );
         let both = [
             run("ci", "completed", Some("success")),
-            run("security", "completed", Some("skipped")),
+            run("security", "completed", Some("success")),
             run("lint", "completed", Some("failure")),
         ];
         assert_eq!(required_checks_verdict(&required, &both), Ok(()));
+        for conclusion in ["skipped","neutral"] {
+            assert!(required_checks_verdict(&required,&[run("ci","completed",Some("success")),run("security","completed",Some(conclusion))]).is_err());
+        }
         let pending = [
             run("ci", "completed", Some("success")),
             run("security", "in_progress", None),

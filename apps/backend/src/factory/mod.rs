@@ -1,5 +1,9 @@
 //! Software factory domain (see docs/factory/PLAN.md).
 
+pub mod workflows;
+pub mod workflow_policy;
+pub mod workflow_publication;
+pub mod linear;
 pub mod contracts;
 pub mod egress;
 pub mod egress_server;
@@ -15,4 +19,5 @@ pub mod sandbox_exec;
 pub mod specialists;
 pub mod telemetry;
 pub mod verification;
+pub mod resolver_checks;
 pub mod workspace;

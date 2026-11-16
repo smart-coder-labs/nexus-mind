@@ -9,7 +9,9 @@ import { Button } from '../components/ui/Button'
 import { Input, Textarea } from '../components/ui/Input'
 import { Switch } from '../components/ui/Switch'
 import { Badge } from '../components/ui/Badge'
-import type { AutonomousAgentDetail, AutonomousAgentTemplate, AutonomousAgentTemplateKey } from '../types'
+import type { AutonomousAgentDetail, AutonomousAgentTemplate, AutonomousAgentTemplateKey, Project } from '../types'
+import { AgentRuntimeEditor, runtimeKinds } from './factory/AgentRuntimeEditor'
+import type { AgentRuntimeConfig } from '../types'
 import { codexSupported, isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
 
 /**
@@ -47,7 +49,9 @@ interface FormState {
   name: string
   description: string
   template: AutonomousAgentTemplateKey
-  executor: 'claude' | 'nexus' | 'codex'
+  executor: 'claude' | 'nexus' | 'codex' | 'pi'
+  runtime: AgentRuntimeConfig
+  runtimeValid: boolean
   // execution isolation (software factory sandbox)
   isolation: IsolationChoice
   allowedHosts: string
@@ -65,8 +69,10 @@ interface FormState {
   onSuccessTriggerAgentId: string
   onSuccessTriggerDelaySeconds: string
   testAdapter: 'playwright' | 'allowlisted_command'
+  qaLevel: 'basic' | 'standard' | 'deep'
   testCommand: string
   qaInstructions: string
+  qaProjectId: string
   customInstructions: string
   // lead generation
   product: string
@@ -99,6 +105,8 @@ interface FormState {
   // judge
   repositories: string // comma-separated owner/repo the judge may target
   publishComment: boolean
+  triggerWorkflow: string
+  slackChannel: string
   // login credentials (qa/judge — used to authenticate into the live app)
   loginUser: string
   loginPassword: string
@@ -130,6 +138,8 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     description: '',
     template,
     executor: 'claude',
+    runtime: { nexusmind_profile: 'essential', harnesses: [], components: [] },
+    runtimeValid: true,
     isolation: 'default',
     allowedHosts: '',
     targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' || template === 'ai_content_manager' ? 'none' : 'repository',
@@ -142,8 +152,10 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     onSuccessTriggerAgentId: '',
     onSuccessTriggerDelaySeconds: '',
     testAdapter: 'playwright',
+    qaLevel: 'standard',
     testCommand: '',
     qaInstructions: '',
+    qaProjectId: '',
     customInstructions: '',
     product: '',
     icp: '',
@@ -172,6 +184,8 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     dsLogoUrl: '',
     repositories: '',
     publishComment: false,
+    triggerWorkflow: '',
+    slackChannel: '',
     loginUser: '',
     loginPassword: '',
     loginUrl: '',
@@ -204,7 +218,8 @@ function buildConfig(state: FormState): Record<string, unknown> {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
     if (state.outputGithubIssue) outputs.push('github_issue')
-    config = { outputs, test_adapter: state.testAdapter }
+    config = { outputs, test_adapter: state.testAdapter, qa_level: state.qaLevel }
+    if (state.qaProjectId) config.project_id = state.qaProjectId
     if (state.testAdapter === 'allowlisted_command') {
       // Deterministic mode: the worker runs this argv as a subprocess.
       config.test_commands = [csvArgv(state.testCommand)]
@@ -214,6 +229,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
       config.qa_instructions = state.qaInstructions.trim()
     }
     if (state.repository.trim()) config.repository = state.repository.trim()
+    if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (state.assignIssuesToSelf) config.assign_issues_to_self = true
   } else if (state.template === 'github_issue_resolver') {
     config = { github_auth: 'server_gh_cli', base_branch: state.baseBranch.trim() || 'main' }
@@ -237,6 +253,8 @@ function buildConfig(state: FormState): Record<string, unknown> {
       repositories: csv(state.repositories),
       publish: state.publishComment ? 'comment' : 'none',
     }
+    if (state.triggerWorkflow.trim()) config.trigger_workflow = state.triggerWorkflow.trim()
+    if (state.outputSlack && state.slackChannel.trim()) config.slack_channel = state.slackChannel.trim()
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else if (state.template === 'ai_content_manager') {
     const outputs = ['nexusmind']
@@ -295,7 +313,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (state.onSuccessTriggerDelaySeconds.trim()) config.on_success_trigger_delay_seconds = Math.max(0, Number(state.onSuccessTriggerDelaySeconds) || 0)
   }
   const extra = parseJsonObject(state.extraConfig)
-  return { ...config, ...(extra ?? {}), ...isolationConfig(state, state.template), executor: state.executor }
+  return { ...config, ...(extra ?? {}), ...isolationConfig(state, state.template), executor: state.executor, runtime: state.runtime }
 }
 
 /** Split a shell-like command string into argv (whitespace, no shell). */
@@ -327,19 +345,24 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     ...base,
     name: agent.name,
     description: agent.description ?? '',
-    executor: config.executor === 'nexus' || config.executor === 'codex' ? config.executor : 'claude',
+    executor: config.executor === 'nexus' || config.executor === 'codex' || config.executor === 'pi' ? config.executor : 'claude',
+    runtime: (config.runtime ?? base.runtime) as AgentRuntimeConfig,
     ...isolationFromConfig(config),
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
     testAdapter: config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
+    qaLevel: config.qa_level === 'basic' || config.qa_level === 'deep' ? config.qa_level : 'standard',
     testCommand: firstCommand,
     qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
+    qaProjectId: typeof config.project_id === 'string' ? config.project_id : '',
     customInstructions: typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
     product: typeof config.product === 'string' ? config.product : '',
     icp: typeof config.icp === 'string' ? config.icp : '',
     leadCount: typeof config.count === 'number' ? String(config.count) : '10',
     repositories: Array.isArray(config.repositories) ? (config.repositories as string[]).join(', ') : '',
     publishComment: config.publish === 'comment',
+    triggerWorkflow: typeof config.trigger_workflow === 'string' ? config.trigger_workflow : '',
+    slackChannel: typeof config.slack_channel === 'string' ? config.slack_channel : '',
     repository: typeof config.repository === 'string' ? config.repository : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
     contextRepos: Array.isArray(config.context_repos) ? (config.context_repos as string[]).join(', ') : '',
@@ -385,6 +408,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
   const isEdit = Boolean(editing)
 
   const [state, setState] = useState<FormState>(() => defaultState(templates[0]?.key ?? 'qa'))
+  const projects = useQuery({ queryKey: ['wizard-projects'], queryFn: () => client.listProjects(), enabled: open && state.template === 'qa' })
   const [stepIndex, setStepIndex] = useState(0)
   const [error, setError] = useState('')
 
@@ -505,7 +529,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
           <StepTarget state={state} set={set} />
         )}
         {step.id === 'config' && (
-          <StepConfig state={state} set={set} template={state.template} extraError={Boolean(extraError)} config={buildConfig(state)} />
+          <StepConfig state={state} set={set} template={state.template} extraError={Boolean(extraError)} config={buildConfig(state)} projects={projects.data ?? []} />
         )}
         {step.id === 'schedule' && (
           <StepSchedule state={state} set={set} />
@@ -541,10 +565,12 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'template': return Boolean(state.template)
     case 'target': return true // target is optional
     case 'config':
+      if (!state.runtimeValid || state.runtime.components?.some(c => c.enabled !== false && !runtimeKinds[state.executor]?.includes(c.kind))) return false
       if ('error' in parseAllowedHosts(state.allowedHosts)) return false
       if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor)) return false
       if (state.executor === 'codex' && (!codexSupported(state.template) || state.isolation === 'local')) return false
-      if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
+      if (state.executor === 'pi' && (!codexSupported(state.template) || state.isolation === 'sandbox')) return false
+      if (state.template === 'qa') return state.testAdapter === 'playwright' || (csvArgv(state.testCommand).length > 0 && Boolean(state.repository.trim()))
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
       if (state.template === 'ai_content_manager') {
@@ -660,9 +686,11 @@ function StepTarget({ state, set }: { state: FormState; set: <K extends keyof Fo
   )
 }
 
-function StepConfig({ state, set, template, extraError, config }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey; extraError: boolean; config: Record<string, unknown> }) {
+function StepConfig({ state, set, template, extraError, config, projects }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey; extraError: boolean; config: Record<string, unknown>; projects: Project[] }) {
   const client = useMemo(() => createClient(), [])
   const judgesQuery = useQuery({ queryKey: ['wizard-agents'], queryFn: () => client.listAutonomousAgents(), enabled: ['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template) })
+  const qaRepositoriesQuery = useQuery({ queryKey:['wizard-qa-repositories',state.qaProjectId],queryFn:()=>client.listQaProjectRepositories(state.qaProjectId),enabled:template==='qa'&&Boolean(state.qaProjectId) })
+  const eligibleQaRepositories = [...new Set((qaRepositoriesQuery.data?.grants ?? []).filter(grant=>grant.can_read&&qaRepositoriesQuery.data?.candidates.includes(grant.repository)).map(grant=>grant.repository))].sort()
   const judges = (judgesQuery.data ?? []).filter(agent => agent.template_key === 'judge')
   const chainAgents = (judgesQuery.data ?? []).filter(agent => agent.status === 'enabled')
   const linkedinQuery = useQuery({ queryKey: ['wizard-linkedin'], queryFn: () => client.listLinkedinConnections(), enabled: template === 'ai_content_manager' })
@@ -701,17 +729,21 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   }
   return (
     <div className="space-y-5">
-      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers.">
+      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers. Pi uses the worker's ChatGPT login and runs locally (unsafe: worker credentials are accessible), for issue resolvers and PR reviewers.">
         <NativeSelect
           value={state.executor}
           onChange={value => {
             set('executor', value as FormState['executor'])
             // Codex never runs in the worker: drop a local choice instead of leaving an invalid form.
             if (value === 'codex' && state.isolation === 'local') set('isolation', 'default')
+            if (value === 'pi') set('isolation', 'local')
           }}
         >
           <option value="claude">Claude pure</option>
           <option value="nexus">Nexus harness (OpenShell)</option>
+          {(codexSupported(template) || state.executor === 'pi') && (
+            <option value="pi" disabled={!codexSupported(template)}>Pi (ChatGPT account, local worker)</option>
+          )}
           {(codexSupported(template) || state.executor === 'codex') && (
             <option value="codex" disabled={!codexSupported(template)}>Codex (OpenAI API key, sandbox only)</option>
           )}
@@ -720,6 +752,10 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
       {state.executor === 'codex' && !codexSupported(template) && (
         <p role="alert" className="text-[12px] text-text-primary">Codex runs only issue resolvers and PR reviewers. Choose another executor.</p>
       )}
+      {state.executor === 'pi' && !codexSupported(template) && (
+        <p role="alert" className="text-[12px] text-text-primary">Pi runs only issue resolvers and PR reviewers. Choose another executor.</p>
+      )}
+      <AgentRuntimeEditor value={state.runtime} executor={state.executor} onChange={value => set('runtime', value)} onValidityChange={valid => set('runtimeValid', valid)} />
       <IsolationFields state={state} set={set} template={template} />
       {template === 'qa' && (
         <>
@@ -730,17 +766,43 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </NativeSelect>
           </Field>
           {state.testAdapter === 'playwright' ? (
+            <>
+            <Field label="QA depth" hint="Deeper levels spend more browser turns covering broader flows and edge cases.">
+              <NativeSelect value={state.qaLevel} onChange={value => set('qaLevel', value as FormState['qaLevel'])}>
+                <option value="basic">Basic — smoke checks (120 turns)</option>
+                <option value="standard">Standard — key flows and regressions (250 turns)</option>
+                <option value="deep">Deep — edge cases and cross-flow checks (400 turns)</option>
+              </NativeSelect>
+            </Field>
             <Field label="What should the agent test? (optional)" hint="Claude drives the browser against the target and reports findings. Leave notes on flows or checks to prioritise; blank means general exploratory QA.">
               <Textarea className="text-sm" rows={3} value={state.qaInstructions} onChange={event => set('qaInstructions', event.target.value)} placeholder="e.g. Sign in, add an item to the cart, and verify checkout totals." />
             </Field>
+            </>
           ) : (
             <Field label="Test command" hint="Executed as argv (no shell), e.g. npx playwright test.">
               <Input inputSize="sm" value={state.testCommand} onChange={event => set('testCommand', event.target.value)} placeholder={DEFAULT_TEST_COMMAND} />
             </Field>
           )}
-          <Field label="Repository to check out (owner/repo)" hint="Optional. Needed if the agent should inspect or run the codebase; the target URL is enough for pure browser QA.">
-            <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
+          <Field label="Project" hint="Optional project scope for coverage history. The web application target above remains the URL the agent tests.">
+            <NativeSelect value={state.qaProjectId} onChange={value => set('qaProjectId', value)}>
+              <option value="">Select a project…</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </NativeSelect>
           </Field>
+          {state.testAdapter === 'allowlisted_command' ? (
+            <Field label="Repository to check out" hint="Choose a repository explicitly granted to this project; the command runs in this checkout.">
+              <NativeSelect value={state.repository} onChange={value=>set('repository',value)}><option value="">Select an eligible repository…</option>{eligibleQaRepositories.map(repository=><option key={repository} value={repository}>{repository}</option>)}</NativeSelect>
+            </Field>
+          ) : (
+            <Field label="Repository to check out (owner/repo)" hint="Optional primary repository. The target URL is enough for pure browser QA.">
+              <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
+            </Field>
+          )}
+          {state.qaProjectId && <fieldset className="block">
+            <legend className="text-xs font-medium text-text-secondary">Authorized context repositories</legend>
+            <p className="mt-1 text-[11px] text-text-tertiary">Select project-linked repositories granted read access. They are cloned read-only for diagnosis.</p>
+            {eligibleQaRepositories.length ? <div className="mt-2 space-y-1">{eligibleQaRepositories.map(repository=>{const selected=csv(state.contextRepos).includes(repository);return <label key={repository} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selected} onChange={event=>{const next=new Set(csv(state.contextRepos));event.target.checked?next.add(repository):next.delete(repository);set('contextRepos',[...next].join(', '))}} />{repository}</label>})}</div> : <p className="mt-2 text-xs text-text-tertiary">No project-linked repositories have an active read grant.</p>}
+          </fieldset>}
           <div className="rounded-xl border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
             <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind is always the canonical output. Slack/GitHub delivery uses the server-side integrations in Claude Code.</p>
@@ -827,6 +889,9 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Repositories (owner/repo, comma-separated)" hint="The repos this judge may target. The specific PRs/issues are chosen each time you run it. Set the live app URL in the Target step.">
             <Input inputSize="sm" value={state.repositories} onChange={event => set('repositories', event.target.value)} placeholder="acme/web, acme/api" />
           </Field>
+          <Field label="Run after this workflow on the default branch (optional)" hint="Workflow name, e.g. Deploy. When it finishes after a merge, the Judge checks the merged PRs and fully verifies the issues they close. Subscribe the GitHub webhook to “Workflow runs”.">
+            <Input inputSize="sm" value={state.triggerWorkflow} onChange={event => set('triggerWorkflow', event.target.value)} placeholder="Deploy" />
+          </Field>
           <Field label="Custom instructions (optional)" hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch.">
             <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Pay special attention to the checkout totals and the empty-cart state." />
           </Field>
@@ -835,7 +900,10 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind always records findings with evidence. Publishing a verdict comment on each PR/issue is opt-in.</p>
             <div className="mt-3 space-y-2.5">
               <Switch checked disabled size="sm" label="NexusMind (canonical)" />
-              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
+              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Notify the people responsible on Slack when a claim fails" />
+              {state.outputSlack && (
+                <Input inputSize="sm" value={state.slackChannel} onChange={event => set('slackChannel', event.target.value)} placeholder="#deploys (optional — empty sends a DM)" />
+              )}
               <Switch checked={state.publishComment} onCheckedChange={value => set('publishComment', value)} size="sm" label="Comment the verdict on GitHub" />
             </div>
           </div>
@@ -1189,7 +1257,7 @@ function StepReview({ state, set, template, isEdit, budgetsError }: { state: For
         </Field>
       </div>
       <div className="rounded-xl border border-border-primary bg-foreground/[0.02] p-3 text-[12px] text-text-secondary">
-        Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : state.executor === 'codex' ? 'Codex (sandbox)' : 'Claude pure'}</span>
+        Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : state.executor === 'codex' ? 'Codex (sandbox)' : state.executor === 'pi' ? 'Pi (ChatGPT, local worker)' : 'Claude pure'}</span>
         {' · '}Isolation: <span className="font-medium text-text-primary">{state.isolation === 'sandbox' ? 'Sandbox' : state.isolation === 'local' ? 'Local worker (unsafe)' : 'Server default'}</span>
       </div>
       <Field label="Budgets (JSON)" hint="Defaults come from the template; adjust wall-time, attempts, cost, concurrency.">
