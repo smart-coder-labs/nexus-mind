@@ -1723,6 +1723,44 @@ fn target_environment(
     Ok(environment)
 }
 
+/// Issue numbers a PR closes (GitHub's "Closes #N" links). GraphQL because the
+/// image's apt `gh` predates `pr view --json closingIssuesReferences`.
+/// shortcut: same-repository issues only; cross-repo closes need the allowlist here.
+async fn pr_closing_issues(repository: &str, number: u64, token: Option<&str>) -> Vec<u64> {
+    let Some((owner, name)) = repository.split_once('/') else {
+        return Vec::new();
+    };
+    let mut command = Command::new("gh");
+    restrict_claude_environment(&mut command);
+    if let Some(token) = token {
+        command.env("GH_TOKEN", token);
+    }
+    let query = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){closingIssuesReferences(first:20){nodes{number repository{nameWithOwner}}}}}}";
+    let output = timeout(
+        Duration::from_secs(20),
+        command
+            .args(["api", "graphql", "-f", &format!("query={query}")])
+            .args(["-f", &format!("o={owner}"), "-f", &format!("r={name}"), "-F", &format!("n={number}")])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let Ok(Ok(out)) = output else { return Vec::new() };
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    value
+        .pointer("/data/repository/pullRequest/closingIssuesReferences/nodes")
+        .and_then(|nodes| nodes.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|node| {
+            node.pointer("/repository/nameWithOwner")
+                .and_then(|v| v.as_str())
+                .is_some_and(|r| r.eq_ignore_ascii_case(repository))
+        })
+        .filter_map(|node| node["number"].as_u64())
+        .collect()
+}
+
 /// Resolve the judge's PR/issue targets to their live claim (title, body, changed
 /// files) via `gh`, so the agent can scope what it verifies to what each target
 /// actually touched. Best-effort per target: a target that cannot be fetched is
@@ -1815,7 +1853,12 @@ async fn resolve_judge_targets(
     token: Option<&str>,
 ) -> Vec<serde_json::Value> {
     let mut resolved = Vec::new();
-    for target in targets.iter().take(50) {
+    // A queue, so the issues a PR closes are judged too (appended as they are found).
+    let mut queue: Vec<serde_json::Value> = targets.iter().take(50).cloned().collect();
+    let mut index = 0;
+    while index < queue.len() {
+        let target = queue[index].clone();
+        index += 1;
         let kind = target.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let Some(repository) = target.get("repository").and_then(|v| v.as_str()) else {
             continue;
@@ -1824,8 +1867,8 @@ async fn resolve_judge_targets(
             continue;
         };
         let (subcommand, fields) = match kind {
-            "pr" => ("pr", "number,title,body,files,url,state"),
-            "issue" => ("issue", "number,title,body,labels,url,state"),
+            "pr" => ("pr", "number,title,body,files,url,state,author"),
+            "issue" => ("issue", "number,title,body,labels,url,state,assignees"),
             _ => continue,
         };
         let reference = format!(
@@ -1873,7 +1916,24 @@ async fn resolve_judge_targets(
                         value["ref"] = json!(reference);
                         value["type"] = json!(kind);
                         value["repository"] = json!(repository);
+                        if let Some(pr) = target.get("closed_by_pr") {
+                            value["closed_by_pr"] = pr.clone();
+                        }
                         resolved.push(value);
+                        if kind == "pr" {
+                            for issue in pr_closing_issues(repository, number, token).await {
+                                let queued = queue.iter().any(|t| {
+                                    t["type"] == "issue"
+                                        && t["number"].as_u64() == Some(issue)
+                                        && t["repository"]
+                                            .as_str()
+                                            .is_some_and(|r| r.eq_ignore_ascii_case(repository))
+                                });
+                                if !queued && queue.len() < 50 {
+                                    queue.push(json!({"type":"issue","repository":repository,"number":issue,"closed_by_pr":number}));
+                                }
+                            }
+                        }
                     }
                     Err(_) => resolved.push(
                         json!({"ref":reference,"type":kind,"repository":repository,"number":number,"error":"gh_parse_failed"}),
@@ -4152,6 +4212,20 @@ let login_clause = " AUTHENTICATION: if the target requires a login, the configu
             let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target ref + specific point, e.g. 'PR #123: login button unresponsive'>\",\"target_number\":<the PR/issue number this finding is about>,\"kind\":\"bug|feedback\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<for a bug: exactly what you tested, observed vs expected, and why it's wrong; for feedback: what works or is done well>\",\"fingerprint\":\"<stable-kebab-case id from target+point, e.g. pr-123-login-unresponsive>\",\"screenshot\":\"<evidence filename>.png\"}]}. Rules: emit ONE finding per SPECIFIC point (do NOT collapse a target into a single verdict). Every finding MUST set \"target_number\" to the exact number of the PR/issue it refers to, and its \"title\" MUST also contain that \"#<number>\". For each target, report every concrete problem you find as its own finding with kind \"bug\" (severity low|medium|high|critical scaled to impact), AND at least one finding with kind \"feedback\" and severity \"info\" describing what the change got right. If the claim is fully met with nothing wrong, emit ONLY a single \"feedback\" finding for that target stating it is met and NO \"bug\" finding (a target with zero \"bug\" findings is treated as VERIFIED). Never return an empty findings array. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
             // The browser starts from a fresh, in-memory profile each run, so any
             // stale content is the app's own service worker / CDN, not the agent.
+            // Closing issues are appended to the targets (`closed_by_pr`) and must be
+            // fully resolved, not just touched.
+            let issue_clause = " For an issue target (including those with `closed_by_pr`, which the PR claims to close), the claim is the WHOLE issue: verify every requirement, acceptance criterion and reproduction step in its body. If any part is still missing or broken, report it as a \"bug\" finding on that issue stating exactly what remains unresolved.";
+            let deploy_clause = if config.get("deploy_workflow").is_some() {
+                " This run started after the merge to the default branch, once the workflow in the configuration `deploy_workflow` finished (see its `conclusion`). If that conclusion is not `success` the change may not be live: still verify, and report any claim you cannot observe in the live app as a \"bug\"."
+            } else {
+                ""
+            };
+            // Only a judge with Slack output notifies the people responsible, and only on failure.
+            let slack_clause = if slack_delivery {
+                " After judging, IF AND ONLY IF there is at least one \"bug\" finding, send ONE Slack message through the server-configured `slack` MCP (mcp__slack__*) to the people responsible: the PR author (`author.login`) and the assignees of each issue that is not fully resolved. Look each of them up with the Slack user search (by GitHub login and name) and @-mention the ones you find. Post it in the channel named in the configuration `slack_channel` when set; otherwise send it as a direct message to each person found. The message lists, per failing target, its link and what is missing or broken. If everything is verified, send nothing. Use Slack for nothing else and do not publish anywhere else."
+            } else {
+                slack_clause
+            };
             let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
             let code_review = "For each PR target the worker saved its unified diff at the path in its `diff_file` field (relative to your working directory; `diff_truncated` marks a cut diff, `diff_error` a diff that could not be fetched) and cloned its repository read-only at `repository_dir` (for a merged PR that default branch already contains the change). For each target: read its title, body and changed files, derive the concrete claim, then read the diff and the surrounding code to verify that the change implements that claim correctly and completely; check edge cases, error paths, regressions in callers, and whether tests cover the change. For an issue target, find the code that should resolve it and judge whether it does. Support every finding with file:line evidence from the diff or the repository; never guess, and never report something you did not read. Do NOT modify anything.";
             // judgment-day style harnesses ask for blind, parallel judges; the code
@@ -4159,13 +4233,13 @@ let login_clause = " AUTHENTICATION: if the target requires a login, the configu
             let blind_clause = " If the assigned harness guidance asks for independent, blind or parallel judges, that is required, not optional: launch each judge as its own Task subagent with the same target, diff path and checklist but without the other judges' output, wait for all of them, then reconcile their findings (keep what a judge supports with file:line evidence, drop what none can support) and say in the summary how many independent judges ran.";
             match config["judge_mode_effective"].as_str().unwrap_or("live") {
                 "code" => format!(
-                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, by reviewing their CODE; no live application is used in this run. {code_review}{blind_clause} You have ONLY Read/Grep/Glob plus Task for parallel subagents (useful for independent, blind reviews of the same change); Bash, shell commands, browsers and WebFetch are unavailable, so never attempt them. Code review has no screenshots: set each finding's \"screenshot\" to an empty string.{turn_budget}{slack_clause}{custom_clause}{judge_contract}"
+                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, by reviewing their CODE; no live application is used in this run. {code_review}{blind_clause} You have ONLY Read/Grep/Glob plus Task for parallel subagents (useful for independent, blind reviews of the same change); Bash, shell commands, browsers and WebFetch are unavailable, so never attempt them. Code review has no screenshots: set each finding's \"screenshot\" to an empty string.{turn_budget}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
                 ),
                 "both" => format!(
-                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, in TWO ways, and you must complete both. (1) LIVE: verify each claim against the target application (use `app_base_url` when present, otherwise the configured target's url) through the server-configured `playwright` MCP browser tools, checking ONLY that claim plus an immediate regression check of the adjacent flow, with a screenshot (short unique .png filename in the finding's \"screenshot\" field) for every live finding. (2) CODE: {code_review}{blind_clause} Put `[live]` or `[code]` right after the target reference in every finding title. An unreachable or login-blocked app stops only the live part: report it as one `[live]` finding and still complete the code review. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob and Task; Bash, shell commands and WebFetch are unavailable, so never attempt them. Code findings have no screenshot: use an empty string.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
+                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, in TWO ways, and you must complete both. (1) LIVE: verify each claim against the target application (use `app_base_url` when present, otherwise the configured target's url) through the server-configured `playwright` MCP browser tools, checking ONLY that claim plus an immediate regression check of the adjacent flow, with a screenshot (short unique .png filename in the finding's \"screenshot\" field) for every live finding. (2) CODE: {code_review}{blind_clause} Put `[live]` or `[code]` right after the target reference in every finding title. An unreachable or login-blocked app stops only the live part: report it as one `[live]` finding and still complete the code review. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob and Task; Bash, shell commands and WebFetch are unavailable, so never attempt them. Code findings have no screenshot: use an empty string.{login_clause}{turn_budget}{cache_clause}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
                 ),
                 _ => format!(
-                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's url). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
+                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's url). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
                 ),
             }
         }

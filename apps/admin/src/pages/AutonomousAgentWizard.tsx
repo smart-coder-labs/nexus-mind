@@ -146,6 +146,8 @@ interface FormState {
   // judge
   repositories: string // comma-separated owner/repo the judge may target
   publishComment: boolean
+  triggerWorkflow: string
+  slackChannel: string
   // login credentials (qa/judge — used to authenticate into the live app)
   loginUser: string
   loginPassword: string
@@ -234,6 +236,8 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     dsLogoUrl: '',
     repositories: '',
     publishComment: false,
+    triggerWorkflow: '',
+    slackChannel: '',
     loginUser: '',
     loginPassword: '',
     loginUrl: '',
@@ -388,6 +392,8 @@ export function buildConfig(state: FormState): Record<string, unknown> {
       repositories: csv(state.repositories),
       publish: state.publishComment ? 'comment' : 'none',
     }
+    if (state.triggerWorkflow.trim()) config.trigger_workflow = state.triggerWorkflow.trim()
+    if (state.outputSlack && state.slackChannel.trim()) config.slack_channel = state.slackChannel.trim()
     if (state.customInstructions.trim())
       config.custom_instructions = state.customInstructions.trim()
   } else if (state.template === 'ai_content_manager') {
@@ -549,6 +555,8 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
       ? (config.repositories as string[]).join(', ')
       : '',
     publishComment: config.publish === 'comment',
+    triggerWorkflow: typeof config.trigger_workflow === 'string' ? config.trigger_workflow : '',
+    slackChannel: typeof config.slack_channel === 'string' ? config.slack_channel : '',
     repository: typeof config.repository === 'string' ? config.repository : '',
     githubPublicationConnectorId: typeof config.github_publication_connector_id === 'string' ? config.github_publication_connector_id : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
@@ -1651,6 +1659,17 @@ function StepConfig({
             />
           </Field>
           <Field
+            label="Run after this workflow on the default branch (optional)"
+            hint="Workflow name, e.g. Deploy. When it finishes after a merge, the Judge checks the merged PRs and fully verifies the issues they close. Subscribe the GitHub webhook to “Workflow runs”."
+          >
+            <Input
+              inputSize="sm"
+              value={state.triggerWorkflow}
+              onChange={(event) => set('triggerWorkflow', event.target.value)}
+              placeholder="Deploy"
+            />
+          </Field>
+          <Field
             label="Custom instructions (optional)"
             hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch."
           >
@@ -1674,8 +1693,16 @@ function StepConfig({
                 checked={state.outputSlack}
                 onCheckedChange={(value) => set('outputSlack', value)}
                 size="sm"
-                label="Slack summary"
+                label="Notify the people responsible on Slack when a claim fails"
               />
+              {state.outputSlack && (
+                <Input
+                  inputSize="sm"
+                  value={state.slackChannel}
+                  onChange={(event) => set('slackChannel', event.target.value)}
+                  placeholder="#deploys (optional — empty sends a DM)"
+                />
+              )}
               <Switch
                 checked={state.publishComment}
                 onCheckedChange={(value) => set('publishComment', value)}
