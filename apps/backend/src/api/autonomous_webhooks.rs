@@ -663,7 +663,7 @@ mod tests {
         crate::db::migrations::run(&c).unwrap();
         let (o, u, _) = queries::bootstrap(&c, "Org", "org", "owner@test.com", "Owner").unwrap();
         for (id, workflow) in [("judge", "Deploy"), ("other", "CI")] {
-            c.execute("INSERT INTO autonomous_agent_definitions(id,org_id,template_key,template_version,name,status,current_revision,created_by) VALUES (?1,?2,'judge',1,'Judge','enabled',1,?3)",rusqlite::params![id,o.id,u.id]).unwrap();
+            c.execute("INSERT INTO autonomous_agent_definitions(id,org_id,template_key,template_version,name,status,current_revision,created_by) VALUES (?1,?2,'judge',1,?1,'enabled',1,?3)",rusqlite::params![id,o.id,u.id]).unwrap();
             let config = json!({"repositories":["Acme/API"],"trigger_workflow":workflow,"outputs":["nexusmind"]}).to_string();
             c.execute("INSERT INTO autonomous_agent_revisions(id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by) VALUES (?1,?1,1,?2,'hash','[]','{}','valid',?3)",rusqlite::params![id,config,u.id]).unwrap();
         }
