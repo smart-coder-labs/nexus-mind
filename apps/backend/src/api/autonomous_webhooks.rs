@@ -666,7 +666,9 @@ mod tests {
             c.execute("INSERT INTO autonomous_agent_definitions(id,org_id,template_key,template_version,name,status,current_revision,created_by) VALUES (?1,?2,'judge',1,?1,'enabled',1,?3)",rusqlite::params![id,o.id,u.id]).unwrap();
             let config = json!({"repositories":["Acme/API"],"trigger_workflow":workflow,"outputs":["nexusmind"]}).to_string();
             c.execute("INSERT INTO autonomous_agent_revisions(id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by) VALUES (?1,?1,1,?2,'hash','[]','{}','valid',?3)",rusqlite::params![id,config,u.id]).unwrap();
+            c.execute("INSERT INTO autonomous_agent_validations(id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by) VALUES (?1||'-valid',?2,?1,?1,'hash','valid','{}',?3)",rusqlite::params![id,o.id,u.id]).unwrap();
         }
+        c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES ('hook',?1,'target_secret','Hook','ready','{}',?2)",rusqlite::params![o.id,u.id]).unwrap();
         let mut p = json!({"action":"completed","repository":{"full_name":"acme/api","default_branch":"main"},"workflow_run":{"id":77,"run_attempt":1,"name":"Deploy","event":"push","head_branch":"main","conclusion":"success","head_sha":"a".repeat(40),"html_url":"https://github.com/acme/api/actions/runs/77"}});
         assert!(finished_default_branch_run(&p).is_some());
         for (delivery, prs) in [("d1", vec![12]), ("d2", vec![12])] {
