@@ -24,6 +24,7 @@ import type {
   StoredVerificationReport,
 } from '../../../types'
 import { VerificationReports } from '../VerificationReports'
+import { RunScreenshots } from './RunScreenshots'
 import {
   CONTINUABLE_RUN_STATUSES,
   RESULT_CODE,
@@ -624,41 +625,7 @@ export function RunDetail({
               )}
             </div>
             {screenshots && (
-              <div className="flex flex-wrap gap-2.5">
-                {Object.entries(screenshots)
-                  .slice(0, 6)
-                  .map(([name, url]) => {
-                    // Prefer the stable re-signing endpoint (durable) over the raw
-                    // presigned URL baked into the result, which expires after 7 days.
-                    const src = run.id
-                      ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(run.id)}/${encodeURIComponent(name)}`
-                      : typeof url === 'string'
-                        ? url
-                        : undefined
-                    return (
-                      <a
-                        key={name}
-                        href={src}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="w-28 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
-                      >
-                        {src ? (
-                          <img
-                            src={src}
-                            alt={`Screenshot ${name}`}
-                            className="h-[70px] w-full rounded-md border border-border-primary object-cover"
-                          />
-                        ) : (
-                          <div className="h-[70px] rounded-md border border-border-primary bg-foreground/[0.03]" />
-                        )}
-                        <div className="mt-1 truncate text-center text-[11px] text-text-tertiary">
-                          {name}
-                        </div>
-                      </a>
-                    )
-                  })}
-              </div>
+              <RunScreenshots runId={run.id} screenshots={screenshots} findings={findings} />
             )}
             {onOpenFindings && (
               <button type="button" onClick={onOpenFindings} className={`mt-3 ${TEXT_LINK}`}>
