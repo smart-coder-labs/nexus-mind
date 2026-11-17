@@ -8954,6 +8954,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             config.autonomous_agent_poll_seconds.max(5),
         ));
         let mut ticks: u64 = 0;
+        // Runs executed at once by this worker; per-agent/repo/org budgets still apply on claim.
+        let slots = std::env::var("AUTONOMOUS_WORKER_SLOTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).clamp(1, 8);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(slots));
         loop {
             ticker.tick().await;
             ticks = ticks.wrapping_add(1);
@@ -8993,6 +8996,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             // Admin-launched frozen specialist evals use the same worker and
             // persistent runner volume as the previous Oracle cron handoff.
             super::factory_evals::spawn_one(store.clone());
+            let Ok(permit) = semaphore.clone().try_acquire_owned() else {
+                continue;
+            };
             let claim = {
                 let db = store.conn();
                 let Ok(conn) = db.lock() else {
@@ -9010,148 +9016,154 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                 }
             };
             let Some(claim) = claim else {
+                drop(permit);
                 continue;
             };
-            let db = store.conn();
-            if let Ok(conn) = db.lock() {
-                if !queries::start_autonomous_agent_run(
-                    &conn,
-                    &claim.org_id,
-                    &claim.run.id,
-                    &claim.attempt_id,
-                    &claim.claim_token,
-                )
-                .unwrap_or(false)
-                {
-                    continue;
-                }
-                let _ = queries::append_redacted_autonomous_agent_event(
-                    &conn,
-                    &claim.org_id,
-                    &claim.run.id,
-                    "run.started",
-                    &json!({"worker":"local","executor":queries::autonomous_executor(&claim.config).unwrap_or("invalid")}),
-                );
-            }
-            let mut secret_values = Vec::new();
-            let (mut status, mut result) = execute_claim(&store, &config, &claim, &mut secret_values).await;
-            if status == "succeeded" && claim.template_key == "qa" {
-                let structured = structured_result(&result);
-                let coverage = store.conn().lock().map_err(|_| anyhow::anyhow!("database_lock"))
-                    .and_then(|conn| crate::db::qa_coverage::persist_result(&conn, &claim.org_id, &claim.run.definition_id, &claim.run.id, &claim.attempt_id, &claim.config, &structured, &secret_values));
-                if let Err(error) = coverage {
-                    tracing::warn!(run_id = %claim.run.id, error = %error, "QA coverage persistence failed; skipping external delivery");
-                    status = "failed".into();
-                    result = json!({"code":"qa_coverage_persistence_failed"});
-                }
-            }
-            if status == "succeeded" {
-                let persisted = deliver_findings(&store, &config, &claim, &result).await;
-                // Auto-publish runs only after the drafts are safely persisted, so a
-                // post that reaches LinkedIn always has a finding behind it to audit
-                // and a delivery row to stop it going out twice.
-                let published = auto_publish_posts(&store, &claim, &persisted).await;
-                if !published.is_null() {
-                    result["auto_published"] = published;
-                }
-                let db = store.conn();
-                if let Ok(conn) = db.lock() {
-                    if queries::autonomous_agent_run_has_failed_deliveries(
-                        &conn,
-                        &claim.org_id,
-                        &claim.run.id,
-                    )
-                    .unwrap_or(true)
-                    {
-                        status = "partial".into();
-                    }
-                };
-            } else if status == "budget_exhausted" {
-                // A partial QA finding is durable only when its executed scenarios are too.
-                let coverage_ready = if claim.template_key == "qa" {
-                    let structured = structured_result(&result);
-                    let valid = evaluate_structured_result("qa", &result).is_ok();
-                    if valid {
-                        let db = store.conn();
-                        db.lock().map_err(|_| anyhow::anyhow!("database_lock"))
-                            .and_then(|conn| crate::db::qa_coverage::persist_result(&conn, &claim.org_id, &claim.run.definition_id, &claim.run.id, &claim.attempt_id, &claim.config, &structured, &secret_values).map(|_| ()))
-                            .map_err(|error| {
-                                tracing::warn!(run_id = %claim.run.id, error = %error, "partial QA coverage persistence failed; skipping delivery");
-                                error
-                            }).is_ok()
-                    } else { false }
-                } else { true };
-                if coverage_ready {
-                    // No auto-publish for a run that exhausted its budget.
-                    let _ = deliver_findings(&store, &config, &claim, &result).await;
-                }
-            }
-            if status == "blocked_runtime"
-                && matches!(
-                    result.get("code").and_then(|v| v.as_str()),
-                    Some("claude_auth_required" | "claude_runtime_unavailable")
-                )
-            {
-                let auth_required =
-                    result.get("code").and_then(|v| v.as_str()) == Some("claude_auth_required");
-                let health = super::runtime::RuntimeHealth {
-                    status: if auth_required {
-                        "reauth_required".into()
-                    } else {
-                        "unavailable".into()
-                    },
-                    reason_code: result
-                        .get("code")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string),
-                    claude_version: None,
-                    checked_at: None,
-                    last_success_at: None,
-                    last_failure_at: None,
-                };
-                let db = store.conn();
-                if let Ok(conn) = db.lock() {
-                    let _ = queries::save_autonomous_runtime_health(&conn, &health);
-                    let _ = queries::requeue_autonomous_agent_run_without_attempt(
-                        &conn,
-                        &claim.org_id,
-                        &claim.run.id,
-                        &claim.attempt_id,
-                        result
-                            .get("code")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("runtime_unavailable"),
-                    );
-                };
-                continue;
-            }
-            let db = store.conn();
-            if let Ok(conn) = db.lock() {
-                if claim.template_key=="qa" {let _=crate::db::qa_coverage::finalize_attempt_plan(&conn,&claim.org_id,&claim.run.id,&claim.attempt_id);}
-                match queries::finish_redacted_autonomous_agent_run(
-                    &conn,
-                    &claim.org_id,
-                    &claim.run.id,
-                    &claim.attempt_id,
-                    &status,
-                    &result,
-                ) {
-                    // Only the attempt that actually finished the run records its
-                    // telemetry; a stale attempt must not overwrite it.
-                    Ok(()) => record_run_telemetry(&conn, &claim, &status, &result),
-                    Err(error) => tracing::error!(
-                        "Failed to finish autonomous run {}: {error:#}",
-                        claim.run.id
-                    ),
-                }
-            };
-            // Agent-to-agent chaining: on a successful run, optionally enqueue the
-            // next agent on the same PR (Resolver → Reviewer → Judge).
-            if matches!(status.as_str(), "succeeded" | "partial") {
-                maybe_trigger_next_agent(&store, &claim, &result).await;
-            }
+            tokio::spawn(run_claim(store.clone(), config.clone(), claim, permit));
         }
     })
+}
+
+/// Runs one claimed agent run to completion; `_permit` holds its worker slot.
+async fn run_claim(store: SqliteStore, config: Arc<Config>, claim: queries::ClaimedAutonomousRun, _permit: tokio::sync::OwnedSemaphorePermit) {
+    let db = store.conn();
+    if let Ok(conn) = db.lock() {
+        if !queries::start_autonomous_agent_run(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            &claim.attempt_id,
+            &claim.claim_token,
+        )
+        .unwrap_or(false)
+        {
+            return;
+        }
+        let _ = queries::append_redacted_autonomous_agent_event(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            "run.started",
+            &json!({"worker":"local","executor":queries::autonomous_executor(&claim.config).unwrap_or("invalid")}),
+        );
+    }
+    let mut secret_values = Vec::new();
+    let (mut status, mut result) = execute_claim(&store, &config, &claim, &mut secret_values).await;
+    if status == "succeeded" && claim.template_key == "qa" {
+        let structured = structured_result(&result);
+        let coverage = store.conn().lock().map_err(|_| anyhow::anyhow!("database_lock"))
+            .and_then(|conn| crate::db::qa_coverage::persist_result(&conn, &claim.org_id, &claim.run.definition_id, &claim.run.id, &claim.attempt_id, &claim.config, &structured, &secret_values));
+        if let Err(error) = coverage {
+            tracing::warn!(run_id = %claim.run.id, error = %error, "QA coverage persistence failed; skipping external delivery");
+            status = "failed".into();
+            result = json!({"code":"qa_coverage_persistence_failed"});
+        }
+    }
+    if status == "succeeded" {
+        let persisted = deliver_findings(&store, &config, &claim, &result).await;
+        // Auto-publish runs only after the drafts are safely persisted, so a
+        // post that reaches LinkedIn always has a finding behind it to audit
+        // and a delivery row to stop it going out twice.
+        let published = auto_publish_posts(&store, &claim, &persisted).await;
+        if !published.is_null() {
+            result["auto_published"] = published;
+        }
+        let db = store.conn();
+        if let Ok(conn) = db.lock() {
+            if queries::autonomous_agent_run_has_failed_deliveries(
+                &conn,
+                &claim.org_id,
+                &claim.run.id,
+            )
+            .unwrap_or(true)
+            {
+                status = "partial".into();
+            }
+        };
+    } else if status == "budget_exhausted" {
+        // A partial QA finding is durable only when its executed scenarios are too.
+        let coverage_ready = if claim.template_key == "qa" {
+            let structured = structured_result(&result);
+            let valid = evaluate_structured_result("qa", &result).is_ok();
+            if valid {
+                let db = store.conn();
+                db.lock().map_err(|_| anyhow::anyhow!("database_lock"))
+                    .and_then(|conn| crate::db::qa_coverage::persist_result(&conn, &claim.org_id, &claim.run.definition_id, &claim.run.id, &claim.attempt_id, &claim.config, &structured, &secret_values).map(|_| ()))
+                    .map_err(|error| {
+                        tracing::warn!(run_id = %claim.run.id, error = %error, "partial QA coverage persistence failed; skipping delivery");
+                        error
+                    }).is_ok()
+            } else { false }
+        } else { true };
+        if coverage_ready {
+            // No auto-publish for a run that exhausted its budget.
+            let _ = deliver_findings(&store, &config, &claim, &result).await;
+        }
+    }
+    if status == "blocked_runtime"
+        && matches!(
+            result.get("code").and_then(|v| v.as_str()),
+            Some("claude_auth_required" | "claude_runtime_unavailable")
+        )
+    {
+        let auth_required =
+            result.get("code").and_then(|v| v.as_str()) == Some("claude_auth_required");
+        let health = super::runtime::RuntimeHealth {
+            status: if auth_required {
+                "reauth_required".into()
+            } else {
+                "unavailable".into()
+            },
+            reason_code: result
+                .get("code")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            claude_version: None,
+            checked_at: None,
+            last_success_at: None,
+            last_failure_at: None,
+        };
+        let db = store.conn();
+        if let Ok(conn) = db.lock() {
+            let _ = queries::save_autonomous_runtime_health(&conn, &health);
+            let _ = queries::requeue_autonomous_agent_run_without_attempt(
+                &conn,
+                &claim.org_id,
+                &claim.run.id,
+                &claim.attempt_id,
+                result
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("runtime_unavailable"),
+            );
+        };
+        return;
+    }
+    let db = store.conn();
+    if let Ok(conn) = db.lock() {
+        if claim.template_key=="qa" {let _=crate::db::qa_coverage::finalize_attempt_plan(&conn,&claim.org_id,&claim.run.id,&claim.attempt_id);}
+        match queries::finish_redacted_autonomous_agent_run(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            &claim.attempt_id,
+            &status,
+            &result,
+        ) {
+            // Only the attempt that actually finished the run records its
+            // telemetry; a stale attempt must not overwrite it.
+            Ok(()) => record_run_telemetry(&conn, &claim, &status, &result),
+            Err(error) => tracing::error!(
+                "Failed to finish autonomous run {}: {error:#}",
+                claim.run.id
+            ),
+        }
+    };
+    // Agent-to-agent chaining: on a successful run, optionally enqueue the
+    // next agent on the same PR (Resolver → Reviewer → Judge).
+    if matches!(status.as_str(), "succeeded" | "partial") {
+        maybe_trigger_next_agent(&store, &claim, &result).await;
+    }
 }
 
 /// Best-effort run telemetry (plan §7 F0): cost, cache and latency of every
