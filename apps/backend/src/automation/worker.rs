@@ -1769,6 +1769,14 @@ async fn pr_closing_issues(repository: &str, number: u64, token: Option<&str>) -
 /// reviews the diffs and repositories, `both` does the two. `auto` (the default)
 /// uses the live app when this run has one (an `app_base_url` or an enabled web
 /// target with a URL) and the code otherwise.
+/// Admin link to a judge run's findings and screenshots, so Slack gets a link
+/// instead of the evidence itself. `APP_BASE_URL` is the admin's public URL.
+fn judge_run_url(app_base_url: Option<&str>, run_id: &str) -> Option<String> {
+    let base = app_base_url?.trim().trim_end_matches('/');
+    base.starts_with("http")
+        .then(|| format!("{base}/factory/runs?kind=agent&agent_run={run_id}"))
+}
+
 fn judge_mode(config: &serde_json::Value) -> &'static str {
     let url = |value: &serde_json::Value| value.as_str().is_some_and(|url| url.trim().starts_with("http"));
     let live_available = url(&config["app_base_url"])
@@ -4222,7 +4230,7 @@ let login_clause = " AUTHENTICATION: if the target requires a login, the configu
             };
             // Only a judge with Slack output notifies the people responsible, and only on failure.
             let slack_clause = if slack_delivery {
-                " After judging, IF AND ONLY IF there is at least one \"bug\" finding, send ONE Slack message through the server-configured `slack` MCP (mcp__slack__*) to the people responsible: the PR author (`author.login`) and the assignees of each issue that is not fully resolved. Look each of them up with the Slack user search (by GitHub login and name) and @-mention the ones you find. Post it in the channel named in the configuration `slack_channel` when set; otherwise send it as a direct message to each person found. The message lists, per failing target, its link and what is missing or broken. If everything is verified, send nothing. Use Slack for nothing else and do not publish anywhere else."
+                " After judging, IF AND ONLY IF there is at least one \"bug\" finding, send ONE Slack message through the server-configured `slack` MCP (mcp__slack__*) to the people responsible: the PR author (`author.login`) and the assignees of each issue that is not fully resolved. Look each of them up with the Slack user search (by GitHub login and name) and @-mention the ones you find. Post it in the channel named in the configuration `slack_channel` when set; otherwise send it as a direct message to each person found. The message lists, per failing target, its link and what is missing or broken, in one short line each. Never paste screenshots, logs or long evidence into Slack: when the configuration has `run_url`, end the message with that link, where the full findings and screenshots are. If everything is verified, send nothing. Use Slack for nothing else and do not publish anywhere else."
             } else {
                 slack_clause
             };
@@ -6203,6 +6211,13 @@ async fn execute_claim(
         };
         if let Some(config) = runtime_config.as_object_mut() {
             config.insert("qa_coverage_history".into(), json!(history));
+        }
+    }
+    if claim.template_key == "judge" {
+        if let Some(url) = judge_run_url(std::env::var("APP_BASE_URL").ok().as_deref(), &claim.run.id) {
+            if let Some(config) = runtime_config.as_object_mut() {
+                config.insert("run_url".into(), json!(url));
+            }
         }
     }
     let prompt = match fixed_prompt(&claim.template_key, &runtime_config, max_turns_num) {
@@ -10000,6 +10015,18 @@ mod tests {
         assert_eq!(judge_mode(&json!({"judge_mode":"both"})), "both");
         assert_eq!(judge_mode(&json!({"judge_mode":"live"})), "live");
         assert_eq!(judge_mode(&json!({"judge_mode":"code","app_base_url":"https://x.example.com"})), "code");
+    }
+    #[test]
+    fn judge_slack_message_links_the_run_instead_of_evidence() {
+        assert_eq!(
+            judge_run_url(Some("https://admin.example.com/ "), "run-1").as_deref(),
+            Some("https://admin.example.com/factory/runs?kind=agent&agent_run=run-1")
+        );
+        assert_eq!(judge_run_url(None, "run-1"), None);
+        assert_eq!(judge_run_url(Some(""), "run-1"), None);
+        let config = json!({"repositories":["acme/api"],"judge_targets_resolved":[],"outputs":["nexusmind","slack"]});
+        let prompt = fixed_prompt("judge", &config, 50).unwrap();
+        assert!(prompt.contains("`run_url`") && prompt.contains("Never paste screenshots"));
     }
     #[test]
     fn judge_prompt_follows_the_effective_mode() {
