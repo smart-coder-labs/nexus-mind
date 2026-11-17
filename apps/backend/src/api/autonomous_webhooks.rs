@@ -66,6 +66,34 @@ fn github_trigger<'a>(
         _ => None,
     }
 }
+/// A finished run of a workflow pushed to the default branch (i.e. after a
+/// merge): (workflow name, run id, attempt, head sha, conclusion).
+fn finished_default_branch_run(
+    payload: &serde_json::Value,
+) -> Option<(&str, i64, i64, &str, &str)> {
+    let run = &payload["workflow_run"];
+    if payload["action"] != "completed" || run["event"] != "push" {
+        return None;
+    }
+    if run["head_branch"].as_str()? != payload.pointer("/repository/default_branch")?.as_str()? {
+        return None;
+    }
+    let conclusion = run["conclusion"].as_str()?;
+    // Cancelled/skipped: superseded by a newer run (concurrency), which judges instead.
+    if matches!(conclusion, "cancelled" | "skipped") {
+        return None;
+    }
+    let sha = run["head_sha"]
+        .as_str()
+        .filter(|sha| crate::factory::workflows::valid_sha(sha))?;
+    Some((
+        run["name"].as_str()?,
+        run["id"].as_i64()?,
+        run["run_attempt"].as_i64().unwrap_or(1),
+        sha,
+        conclusion,
+    ))
+}
 fn closed_issue_status(payload: &serde_json::Value) -> Option<&'static str> {
     if payload["action"] != "closed" || payload["issue"]["state"] != "closed" { return None }
     match payload["issue"]["state_reason"].as_str() {
@@ -131,6 +159,7 @@ async fn handle(
         "issues",
         "pull_request",
         "pull_request_review",
+        "workflow_run",
         "installation",
         "installation_repositories",
     ]
@@ -166,7 +195,10 @@ async fn handle(
             {
                 return Err(reject(StatusCode::FORBIDDEN, "webhook_repository_scope"));
             }
-            if event != "pull_request" && !(event == "issues" && payload["action"] == "closed") {
+            if event != "pull_request"
+                && event != "workflow_run"
+                && !(event == "issues" && payload["action"] == "closed")
+            {
                 return Ok(StatusCode::ACCEPTED);
             }
             (org, id, secret.clone(), secret)
@@ -199,6 +231,7 @@ async fn handle(
     if !verify_signature(&secret, &body, signature) {
         return Err(reject(StatusCode::UNAUTHORIZED, "invalid_signature"));
     }
+    let mut merged_prs: Vec<i64> = Vec::new();
     let (reviewer, stale) = if event == "pull_request" {
         let repo =
             repository.ok_or_else(|| reject(StatusCode::BAD_REQUEST, "repository_missing"))?;
@@ -234,6 +267,38 @@ async fn handle(
         let live = crate::automation::connectors::get_github_issue(&token, repo, number).await
             .map_err(|_| reject(StatusCode::SERVICE_UNAVAILABLE, "github_issue_unavailable"))?;
         (None, stale_issue_event(&payload, &live))
+    } else if let Some((workflow, .., sha, _)) = finished_default_branch_run(&payload) {
+        let repo =
+            repository.ok_or_else(|| reject(StatusCode::BAD_REQUEST, "repository_missing"))?;
+        crate::automation::connectors::validate_repository(repo)
+            .map_err(|_| reject(StatusCode::BAD_REQUEST, "invalid_repository"))?;
+        // Every workflow on every push lands here: only call GitHub when a Judge watches it.
+        let watched = {
+            let h = store.conn();
+            let c = h
+                .lock()
+                .map_err(|_| reject(StatusCode::INTERNAL_SERVER_ERROR, "database_lock"))?;
+            !queries::judges_for_workflow(&c, &org, repo, workflow)
+                .map_err(|_| reject(StatusCode::INTERNAL_SERVER_ERROR, "database_error"))?
+                .is_empty()
+        };
+        if watched {
+            let token = crate::automation::worker::server_github_token()
+                .await
+                .map_err(|_| reject(StatusCode::SERVICE_UNAVAILABLE, "github_cli_unavailable"))?;
+            let pulls = crate::automation::connectors::list_github_commit_pulls(&token, repo, sha)
+                .await
+                .map_err(|_| reject(StatusCode::SERVICE_UNAVAILABLE, "github_pulls_unavailable"))?;
+            let default_branch = payload.pointer("/repository/default_branch");
+            merged_prs = pulls
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|pr| !pr["merged_at"].is_null() && pr.pointer("/base/ref") == default_branch)
+                .filter_map(|pr| pr["number"].as_i64())
+                .collect();
+        }
+        (None, false)
     } else {
         (None, false)
     };
@@ -267,6 +332,7 @@ async fn handle(
         reviewer.as_deref(),
         &payload_hash,
         !stale,
+        &merged_prs,
     )
     .map_err(|e| {
         if e.to_string() == "github_delivery_payload_mismatch" {
@@ -290,6 +356,7 @@ fn process_delivery(
     reviewer: Option<&str>,
     hash: &str,
     current: bool,
+    merged_prs: &[i64],
 ) -> anyhow::Result<()> {
     let repository = payload
         .pointer("/repository/full_name")
@@ -314,6 +381,30 @@ fn process_delivery(
             // Derive the delivery URL from the repository already scoped to the signed connector.
             queries::close_findings_for_github_issue(c, org, &format!("https://github.com/{repo}/issues/{number}"), status)?;
         }
+    }
+    if event == "workflow_run" && !merged_prs.is_empty() {
+        if let Some((workflow, run_id, attempt, _, conclusion)) = finished_default_branch_run(payload) {
+            for (definition, configured_repo) in queries::judges_for_workflow(c, org, repo, workflow)? {
+                let targets: Vec<_> = merged_prs
+                    .iter()
+                    .map(|n| serde_json::json!({"type":"pr","repository":configured_repo,"number":n}))
+                    .collect();
+                let input = serde_json::json!({
+                    "judge_targets": targets,
+                    "deploy_workflow": {"name": workflow, "conclusion": conclusion, "url": payload["workflow_run"]["html_url"]},
+                });
+                let occurrence = format!("workflow_run:{definition}:{run_id}:{attempt}");
+                match queries::enqueue_autonomous_agent_run(
+                    c, org, &definition, "github_webhook", &occurrence, None, Some(&input),
+                ) {
+                    Err(error) if !error.to_string().contains("UNIQUE constraint failed") => {
+                        return Err(error)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        return Ok(());
     }
     if event == "pull_request" {
         let Some(login) = reviewer else { return Ok(()) };
@@ -367,6 +458,7 @@ mod tests {
                 Some("cli-user"),
                 &hash,
                 current,
+                &[],
             )?;
             tx.commit()?;
             Ok::<(), anyhow::Error>(())
@@ -517,7 +609,7 @@ mod tests {
         let close=|delivery:&str,payload:&serde_json::Value,current:bool|{
             let tx=rusqlite::Transaction::new_unchecked(&c,rusqlite::TransactionBehavior::Immediate).unwrap();
             let hash=hex::encode(Sha256::digest(serde_json::to_vec(payload).unwrap()));
-            process_delivery(&tx,&o.id,"hook",delivery,"issues",payload,None,&hash,current)?;
+            process_delivery(&tx,&o.id,"hook",delivery,"issues",payload,None,&hash,current,&[])?;
             tx.commit()?;
             Ok::<(),anyhow::Error>(())
         };
@@ -564,6 +656,41 @@ mod tests {
         assert!(stale_review_event(&payload, &live, "cli"));
         payload["action"] = json!("closed");
         assert!(!stale_review_event(&payload, &live, "cli"));
+    }
+    #[test]
+    fn finished_deploy_on_default_branch_enqueues_watching_judges_once() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (o, u, _) = queries::bootstrap(&c, "Org", "org", "owner@test.com", "Owner").unwrap();
+        for (id, workflow) in [("judge", "Deploy"), ("other", "CI")] {
+            c.execute("INSERT INTO autonomous_agent_definitions(id,org_id,template_key,template_version,name,status,current_revision,created_by) VALUES (?1,?2,'judge',1,?1,'enabled',1,?3)",rusqlite::params![id,o.id,u.id]).unwrap();
+            let config = json!({"repositories":["Acme/API"],"trigger_workflow":workflow,"outputs":["nexusmind"]}).to_string();
+            c.execute("INSERT INTO autonomous_agent_revisions(id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,validation_status,created_by) VALUES (?1,?1,1,?2,'hash','[]','{}','valid',?3)",rusqlite::params![id,config,u.id]).unwrap();
+            c.execute("INSERT INTO autonomous_agent_validations(id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by) VALUES (?1||'-valid',?2,?1,?1,'hash','valid','{}',?3)",rusqlite::params![id,o.id,u.id]).unwrap();
+        }
+        c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES ('hook',?1,'target_secret','Hook','ready','{}',?2)",rusqlite::params![o.id,u.id]).unwrap();
+        let mut p = json!({"action":"completed","repository":{"full_name":"acme/api","default_branch":"main"},"workflow_run":{"id":77,"run_attempt":1,"name":"Deploy","event":"push","head_branch":"main","conclusion":"success","head_sha":"a".repeat(40),"html_url":"https://github.com/acme/api/actions/runs/77"}});
+        assert!(finished_default_branch_run(&p).is_some());
+        for (delivery, prs) in [("d1", vec![12]), ("d2", vec![12])] {
+            process_delivery(&c, &o.id, "hook", delivery, "workflow_run", &p, None, "h", true, &prs).unwrap();
+        }
+        let inputs: Vec<(String, String)> = c
+            .prepare("SELECT definition_id,input_json FROM autonomous_agent_runs").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(inputs.len(), 1, "only the judge watching Deploy, once per workflow run");
+        let input: serde_json::Value = serde_json::from_str(&inputs[0].1).unwrap();
+        assert_eq!(inputs[0].0, "judge");
+        assert_eq!(input["judge_targets"], json!([{"type":"pr","repository":"Acme/API","number":12}]));
+        assert_eq!(input["deploy_workflow"]["conclusion"], "success");
+        p["workflow_run"]["head_branch"] = json!("feature");
+        assert!(finished_default_branch_run(&p).is_none());
+        p["workflow_run"]["head_branch"] = json!("main");
+        p["workflow_run"]["conclusion"] = json!("cancelled");
+        assert!(finished_default_branch_run(&p).is_none());
+        p["workflow_run"]["conclusion"] = json!("success");
+        p["workflow_run"]["event"] = json!("pull_request");
+        assert!(finished_default_branch_run(&p).is_none());
     }
     #[test]
     fn github_hmac_rejects_tampering() {

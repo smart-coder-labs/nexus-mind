@@ -295,6 +295,16 @@ pub async fn get_github_pull(token: &str, repository: &str, number: i64) -> Resu
     github_get(token, &format!("/repos/{owner}/{repo}/pulls/{number}")).await
 }
 
+/// Pull requests associated with a commit (for a merge/squash commit on the
+/// default branch: the PR it merged).
+pub async fn list_github_commit_pulls(token: &str, repository: &str, sha: &str) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    if !crate::factory::workflows::valid_sha(sha) {
+        anyhow::bail!("invalid_commit_sha")
+    }
+    github_get(token, &format!("/repos/{owner}/{repo}/commits/{sha}/pulls")).await
+}
+
 /// Merge a pull request with the given method ("squash" | "merge" | "rebase"),
 /// keeping the branch. Used by the PR reviewer's opt-in auto-merge; a failed
 /// merge (e.g. not mergeable, protected branch) surfaces GitHub's message.

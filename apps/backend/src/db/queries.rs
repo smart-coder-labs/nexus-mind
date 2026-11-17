@@ -17923,7 +17923,7 @@ pub struct ClaimedAutonomousRun {
 }
 
 /// Keys a run's input may set over the agent config for that run.
-const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url"];
+const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url", "deploy_workflow"];
 
 pub fn claim_next_autonomous_agent_run(
     conn: &Connection,
@@ -18813,6 +18813,31 @@ pub fn enqueue_github_webhook_agents(
         created += 1;
     }
     Ok(created)
+}
+
+/// Enabled, valid Judge agents that watch `workflow` finishing on `repository`
+/// (`trigger_workflow` in their config), with the repository spelled as the
+/// agent configured it (the worker matches targets against that list exactly).
+pub fn judges_for_workflow(
+    conn: &Connection,
+    org_id: &str,
+    repository: &str,
+    workflow: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.id, repo.value FROM autonomous_agent_definitions d
+         JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
+         JOIN json_each(r.config_json,'$.repositories') repo
+         WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key='judge' AND r.validation_status='valid'
+           AND lower(trim(json_extract(r.config_json,'$.trigger_workflow')))=lower(?3)
+           AND lower(repo.value)=lower(?2)",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![org_id, repository, workflow.trim()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 #[derive(Debug)]
