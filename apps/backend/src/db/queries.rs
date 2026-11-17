@@ -17661,6 +17661,33 @@ pub fn enqueue_autonomous_agent_run_as(
     get_autonomous_agent_run(conn, org_id, &run_id)
 }
 
+/// Input for a Continue of `run_id`: the prior run's input plus its webhook
+/// trigger (the reviewer's PR), so the new run works on the same target.
+pub fn autonomous_continue_input(conn: &Connection, org_id: &str, run_id: &str) -> Result<serde_json::Value> {
+    let raw: Option<String> = conn
+        .query_row("SELECT input_json FROM autonomous_agent_runs WHERE id=?1 AND org_id=?2", [run_id, org_id], |row| row.get(0))
+        .optional()?
+        .flatten();
+    let mut input = raw
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    if input.get("trigger").is_none() {
+        let work: Option<(String, String, i64, Option<String>)> = conn
+            .query_row(
+                "SELECT repository,kind,external_number,head_sha FROM autonomous_agent_work_items WHERE run_id=?1 AND org_id=?2",
+                [run_id, org_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        if let Some((repository, kind, number, head_sha)) = work {
+            input["trigger"] = serde_json::json!({"repository":repository,"kind":kind,"number":number,"head_sha":head_sha});
+        }
+    }
+    input["continue_from_run_id"] = serde_json::json!(run_id);
+    Ok(input)
+}
+
 pub fn get_autonomous_agent_run(
     conn: &Connection,
     org_id: &str,
