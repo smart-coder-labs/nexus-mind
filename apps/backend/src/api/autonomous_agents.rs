@@ -902,7 +902,7 @@ pub async fn continue_run(
         ));
     }
     let occurrence = format!("continue:{run_id}:{}", uuid::Uuid::new_v4());
-    let input = serde_json::json!({ "continue_from_run_id": run_id });
+    let input = queries::autonomous_continue_input(&conn, &auth.org_id, &run_id).map_err(store_error)?;
     let run = queries::enqueue_autonomous_agent_run_as(
         &conn,
         &auth.org_id,
@@ -2538,6 +2538,33 @@ mod tests {
             .unwrap();
         assert_eq!(claim.config["continue_from_run_id"], "prev-run");
         assert_ne!(claim.config["isolation"], "none");
+    }
+
+    #[test]
+    fn continue_keeps_the_webhook_trigger_within_the_org() {
+        let (conn, org_id, user_id) = fixture();
+        let created =
+            queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &request())
+                .unwrap();
+        let def = created.definition.id;
+        queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &def).unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &def, "enabled").unwrap();
+        let prev = queries::enqueue_autonomous_agent_run(&conn, &org_id, &def, "github_webhook", "wh-1", None, None)
+            .unwrap()
+            .unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_work_items(id,org_id,definition_id,run_id,repository,kind,external_number,head_sha,payload_hash,eligibility) VALUES('w1',?1,?2,?3,'acme/app','github_pr',7,'abc','h','eligible')",
+            rusqlite::params![org_id, def, prev.id],
+        )
+        .unwrap();
+
+        let input = queries::autonomous_continue_input(&conn, &org_id, &prev.id).unwrap();
+        assert_eq!(input["continue_from_run_id"], prev.id.as_str());
+        assert_eq!(input["trigger"]["repository"], "acme/app");
+        assert_eq!(input["trigger"]["number"], 7);
+
+        let other = queries::autonomous_continue_input(&conn, "other-org", &prev.id).unwrap();
+        assert!(other.get("trigger").is_none());
     }
 
     #[test]
