@@ -44,4 +44,15 @@ describe('agent configuration preservation', () => {
       ),
     ).toEqual({ mcp_profile_ref: 'approved-ref' })
   })
+  it('lets the judge choose live, code or both verification and omits auto', () => {
+    const state = defaultState('judge')
+    state.repositories = 'acme/web'
+    expect(state.judgeMode).toBe('auto')
+    expect(buildConfig(state)).not.toHaveProperty('judge_mode')
+    for (const mode of ['live', 'code', 'both'] as const) {
+      state.judgeMode = mode
+      expect(buildConfig(state)).toMatchObject({ judge_mode: mode })
+    }
+    expect(preservedConfig({ judge_mode: 'both' }, 'judge')).toEqual({})
+  })
 })

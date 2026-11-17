@@ -146,6 +146,7 @@ interface FormState {
   // judge
   repositories: string // comma-separated owner/repo the judge may target
   publishComment: boolean
+  judgeMode: 'auto' | 'live' | 'code' | 'both'
   triggerWorkflow: string
   slackChannel: string
   // login credentials (qa/judge — used to authenticate into the live app)
@@ -236,6 +237,7 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     dsLogoUrl: '',
     repositories: '',
     publishComment: false,
+    judgeMode: 'auto',
     triggerWorkflow: '',
     slackChannel: '',
     loginUser: '',
@@ -318,6 +320,7 @@ export function preservedConfig(config: Record<string, unknown>, template: strin
       'publish',
       'custom_instructions',
       'sandbox_allowed_hosts',
+      'judge_mode',
     ],
     lead_generation: ['outputs', 'product', 'icp', 'count', 'custom_instructions'],
     ai_content_manager: [
@@ -392,6 +395,7 @@ export function buildConfig(state: FormState): Record<string, unknown> {
       repositories: csv(state.repositories),
       publish: state.publishComment ? 'comment' : 'none',
     }
+    if (state.judgeMode !== 'auto') config.judge_mode = state.judgeMode
     if (state.scheduleKind === 'event' && state.triggerWorkflow.trim())
       config.trigger_workflow = state.triggerWorkflow.trim()
     if (state.outputSlack && state.slackChannel.trim()) config.slack_channel = state.slackChannel.trim()
@@ -556,6 +560,7 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
       ? (config.repositories as string[]).join(', ')
       : '',
     publishComment: config.publish === 'comment',
+    judgeMode: (['live', 'code', 'both'] as const).find((mode) => mode === config.judge_mode) ?? 'auto',
     triggerWorkflow: typeof config.trigger_workflow === 'string' ? config.trigger_workflow : '',
     slackChannel: typeof config.slack_channel === 'string' ? config.slack_channel : '',
     repository: typeof config.repository === 'string' ? config.repository : '',
@@ -1662,6 +1667,20 @@ function StepConfig({
             />
           </Field>
           <Field
+            label="Verification"
+            hint="Auto uses the live app when the run has an app URL, otherwise the code."
+          >
+            <NativeSelect
+              value={state.judgeMode}
+              onChange={(value) => set('judgeMode', value as FormState['judgeMode'])}
+            >
+              <option value="auto">Auto</option>
+              <option value="live">Live app (Playwright)</option>
+              <option value="code">Code review (diff + repository)</option>
+              <option value="both">Both — live app and code</option>
+            </NativeSelect>
+          </Field>
+          <Field
             label="Custom instructions (optional)"
             hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch."
           >
@@ -1704,8 +1723,7 @@ function StepConfig({
             </div>
           </div>
           <p className="text-[11px] text-text-tertiary">
-            Verifies only what the PRs/issues touch against the live app — never approves, merges,
-            or pushes.
+            Verifies only what the PRs/issues touch — never approves, merges, or pushes.
           </p>
         </div>
       )}
