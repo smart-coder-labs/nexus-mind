@@ -6239,7 +6239,11 @@ async fn execute_claim(
                 "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
             )
         }
-        ("judge", _) if runtime_config["judge_mode_effective"] == "code" => {
+        // The code-judge prompt carries the same Slack-notify clause, so it needs the tools too.
+        ("judge", true) if runtime_config["judge_mode_effective"] == "code" => {
+            ("default", "Read,Grep,Glob,Skill,Task,mcp__slack__*")
+        }
+        ("judge", false) if runtime_config["judge_mode_effective"] == "code" => {
             ("default", "Read,Grep,Glob,Skill,Task")
         }
         ("qa" | "judge", true) => (
