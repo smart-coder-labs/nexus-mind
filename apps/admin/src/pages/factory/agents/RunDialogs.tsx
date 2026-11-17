@@ -58,7 +58,8 @@ export function ReviewerRunDialog({ agent, pending, onClose, onRun }: { agent: A
 export function JudgeRunDialog({ agent, pending, onClose, onRun }: { agent: AutonomousAgentDefinition; pending: boolean; onClose: () => void; onRun: (targets: RunTarget[]) => void }) {
   const client = useMemo(() => createClient(), [])
   const detail = useQuery({ queryKey: ['autonomous-agent-detail', agent.id], queryFn: () => client.getAutonomousAgent(agent.id) })
-  const repos = (Array.isArray(detail.data?.revision?.config?.repositories) ? detail.data?.revision?.config?.repositories : []) as string[]
+  // The backend's allowlist: configured repositories plus those linked to the project target.
+  const repos = (detail.data?.judge_repositories ?? (Array.isArray(detail.data?.revision?.config?.repositories) ? detail.data?.revision?.config?.repositories : [])) as string[]
   const [repository, setRepository] = useState('')
   const [type, setType] = useState<'pr' | 'issue'>('pr')
   const [number, setNumber] = useState('')
@@ -80,7 +81,7 @@ export function JudgeRunDialog({ agent, pending, onClose, onRun }: { agent: Auto
       </ModalHeader>
       <ModalContent className="space-y-4">
         <p className="text-sm text-text-secondary">Choose the pull requests or issues to judge this run. Each is verified against the live app, scoped to what it touches.</p>
-        {repos.length === 0 && !detail.isLoading && <p className="text-[12px] text-status-warning">This agent has no configured repositories. Edit it to add some first.</p>}
+        {repos.length === 0 && !detail.isLoading && <p className="text-[12px] text-status-warning">This agent has no repositories. Add some to its configuration or link them to its project in Code.</p>}
         <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
           <label className="block">
             <span className="text-[12px] font-medium text-text-secondary">Repository</span>

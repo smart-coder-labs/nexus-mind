@@ -1826,6 +1826,9 @@ pub struct AutonomousAgentDetail {
     #[serde(flatten)]
     pub definition: AutonomousAgentDefinition,
     pub revision: AutonomousAgentRevision,
+    /// Judge only: repositories a run may target (configured + project-linked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_repositories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
