@@ -2750,6 +2750,11 @@ async fn clone_repositories(repositories: &[String], token: Option<&str>, base_d
 /// code the agent reads — and it works whether or not the trigger carried a
 /// `head_sha` (manual runs do not). `base` mirrors the previous local behavior:
 /// the base commit resolved from the PR before cloning, never a global main/develop guess.
+/// A draft pull request is reviewed only when the agent opts in with `include_drafts`.
+fn draft_excluded(pull: &serde_json::Value, config: &serde_json::Value) -> bool {
+    pull["draft"].as_bool() == Some(true) && config["include_drafts"].as_bool() != Some(true)
+}
+
 async fn bounded_review_diff(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
@@ -3395,13 +3400,7 @@ async fn publish_template_output_verified(
                 if current.pointer("/head/sha").and_then(|v| v.as_str()) != Some(expected) {
                     anyhow::bail!("stale_pull_request_head")
                 }
-                if current.get("draft").and_then(|v| v.as_bool()) == Some(true)
-                    && !claim
-                        .config
-                        .get("include_drafts")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                {
+                if draft_excluded(&current, &claim.config) {
                     anyhow::bail!("draft_pull_request_excluded")
                 }
             }
@@ -5893,6 +5892,8 @@ async fn execute_claim(
                 let actor=github_identity_for_token(&token).await?;
                 let pull=super::connectors::get_github_pull(&token,repository,number).await?;
                 if pull["state"]!="open" || pull["user"]["login"].as_str().is_some_and(|s|s.eq_ignore_ascii_case(&actor)){anyhow::bail!("review_not_requested_for_cli_account")}
+                // Fail before the model runs: publish would reject it anyway after a full review.
+                if draft_excluded(&pull,&runtime_config){anyhow::bail!("draft_pull_request_excluded")}
                 let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
                 if !crate::db::github_review_hooks::explicitly_requested(&pull,&actor) && !crate::db::github_review_hooks::subscribed(&conn,&claim.org_id,repository,number,&actor)?{anyhow::bail!("review_not_requested_for_cli_account")}
                 Ok::<(),anyhow::Error>(())
@@ -10027,6 +10028,14 @@ mod tests {
         let config = json!({"repositories":["acme/api"],"judge_targets_resolved":[],"outputs":["nexusmind","slack"]});
         let prompt = fixed_prompt("judge", &config, 50).unwrap();
         assert!(prompt.contains("`run_url`") && prompt.contains("Never paste screenshots"));
+    }
+    #[test]
+    fn drafts_are_excluded_unless_the_agent_opts_in() {
+        let draft = json!({"draft": true});
+        assert!(draft_excluded(&draft, &json!({})));
+        assert!(draft_excluded(&draft, &json!({"include_drafts": false})));
+        assert!(!draft_excluded(&draft, &json!({"include_drafts": true})));
+        assert!(!draft_excluded(&json!({"draft": false}), &json!({})));
     }
     #[test]
     fn judge_prompt_follows_the_effective_mode() {
