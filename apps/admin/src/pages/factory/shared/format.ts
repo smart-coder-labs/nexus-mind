@@ -339,3 +339,10 @@ export function runDurationSeconds(run: {
 }
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+/** Badge colour by what a capability can do: read-only, write inside NexusMind, or act outside it. */
+export function capabilityVariant(cap: string): 'info' | 'purple' | 'warning' {
+  if (cap.startsWith('github:') || cap === 'delivery:write' || cap === 'scan:active') return 'warning'
+  if (cap.endsWith(':read') || cap === 'web:search') return 'info'
+  return 'purple'
+}

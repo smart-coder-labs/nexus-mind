@@ -15,7 +15,7 @@ import {
 import { Skeleton } from '../../../components/ui/Skeleton'
 import AutonomousAgentWizard from '../../AutonomousAgentWizard'
 import type { AutonomousAgentTemplate } from '../../../types'
-import { dur, humanize, stepName, usd } from '../shared/format'
+import { capabilityVariant, dur, humanize, stepName, usd } from '../shared/format'
 import { FieldLabel, InlineError, PageHeader, RawJson, TEXT_LINK, useFactory } from '../shared/ui'
 
 const BUDGET_LABELS: Record<string, { label: string; format?: (n: number) => string }> = {
@@ -155,7 +155,7 @@ export default function TemplatesPage() {
                     <Badge
                       key={cap}
                       size="sm"
-                      variant="default"
+                      variant={capabilityVariant(cap)}
                       className="max-w-full whitespace-normal break-all font-mono"
                     >
                       {cap}
@@ -211,7 +211,7 @@ export default function TemplatesPage() {
                     <Badge
                       key={cap}
                       size="sm"
-                      variant="default"
+                      variant={capabilityVariant(cap)}
                       className="max-w-full whitespace-normal break-all font-mono"
                     >
                       {cap}

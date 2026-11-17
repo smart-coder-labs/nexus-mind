@@ -26,6 +26,7 @@ import { Button } from '../components/ui/Button'
 import { Input, Textarea } from '../components/ui/Input'
 import { Switch } from '../components/ui/Switch'
 import { Badge } from '../components/ui/Badge'
+import { capabilityVariant } from './factory/shared/format'
 import type {
   AutonomousAgentDetail,
   AutonomousAgentTemplate,
@@ -1032,7 +1033,7 @@ function StepTemplate({
                   <Badge
                     key={cap}
                     size="sm"
-                    variant="default"
+                    variant={capabilityVariant(cap)}
                     className="max-w-full whitespace-normal break-all"
                   >
                     {cap}
@@ -2551,7 +2552,7 @@ function StepReview({
           <p className="font-medium text-text-primary">Authority envelope</p>
           <div className="mt-2 flex flex-wrap gap-1">
             {template.capabilities.map((cap) => (
-              <Badge key={cap} size="sm" variant="info">
+              <Badge key={cap} size="sm" variant={capabilityVariant(cap)}>
                 {cap}
               </Badge>
             ))}
