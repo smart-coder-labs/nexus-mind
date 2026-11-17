@@ -10,7 +10,8 @@ vi.mock('./factory/AgentRuntimeEditor', () => ({ AgentRuntimeEditor: () => null,
 vi.mock('../components/ui/Select/StyledSelect', () => ({ StyledSelect: (props: any) => <select {...props} /> }))
 afterEach(cleanup)
 
-function fixtureWizard(editing?: any) {
+const qaTemplate = { key: 'qa', name: 'QA', description: 'QA', capabilities: [], default_budgets: {}, config_schema: {}, workflow: [] }
+function fixtureWizard(editing?: any, templates: any[] = [qaTemplate]) {
   const client = {
     listProjects: vi.fn().mockResolvedValue([{ id: 'p', name: 'QA Project' }]),
     listQaProjectRepositories: vi.fn().mockResolvedValue({ candidates: ['acme/web', 'acme/api', 'acme/index-only'], grants: [{ repository: 'acme/web', can_read: true }, { repository: 'acme/api', can_read: true }, { repository: 'acme/index-only', can_read: false }, { repository: 'foreign/repo', can_read: true }] }),
@@ -23,7 +24,7 @@ function fixtureWizard(editing?: any) {
   }
   fixture.client = client
   const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={query}><Wizard open onClose={() => {}} editing={editing} templates={[{ key: 'qa', name: 'QA', description: 'QA', capabilities: [], default_budgets: {}, config_schema: {}, workflow: [] } as any]} /></QueryClientProvider>)
+  render(<QueryClientProvider client={query}><Wizard open onClose={() => {}} editing={editing} templates={templates} /></QueryClientProvider>)
   return client
 }
 const next = () => fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -65,4 +66,23 @@ it('creates project and URL without a primary repo while preserving selected dia
   expect(config).toMatchObject({ project_id: 'p', context_repos: ['acme/api', 'acme/web'] })
   expect(config.repository).toBeUndefined()
   expect(client.putAutonomousAgentTarget).toHaveBeenCalledWith('a', expect.objectContaining({ config: expect.objectContaining({ url: 'https://app.invalid' }) }))
+})
+
+it('runs a judge on a GitHub event: shows the webhook it needs and saves no timed schedule', async () => {
+  const client = fixtureWizard(undefined, [{ ...qaTemplate, key: 'judge', name: 'Judge' }])
+  next()
+  fireEvent.change(screen.getByPlaceholderText('https://staging.example.com'), { target: { value: 'https://app.invalid' } })
+  next()
+  fireEvent.change(screen.getByPlaceholderText('acme/web, acme/api'), { target: { value: 'acme/web' } })
+  next()
+  fireEvent.change(screen.getByLabelText(/^Cadence/), { target: { value: 'event' } })
+  expect(screen.getByText('Workflow runs')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+  fireEvent.change(screen.getByPlaceholderText('Deploy'), { target: { value: 'Deploy' } })
+  next()
+  fireEvent.change(screen.getByPlaceholderText('Nightly QA'), { target: { value: 'Post-deploy judge' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create (disabled)' }))
+  await waitFor(() => expect(client.createAutonomousAgent).toHaveBeenCalled())
+  expect(client.createAutonomousAgent.mock.calls[0][0].config.trigger_workflow).toBe('Deploy')
+  expect(client.putAutonomousAgentSchedule).not.toHaveBeenCalled()
 })

@@ -207,7 +207,10 @@ RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
 
 # MCP config wired into QA runs via `claude --mcp-config`. --no-sandbox is
 # required because chromium runs as root inside the container.
-RUN printf '%s' '{"mcpServers":{"playwright":{"command":"mcp-server-playwright","args":["--headless","--isolated","--no-sandbox","--browser","chromium"]}}}' > /app/qa-mcp.json
+# `slack` is Slack's hosted MCP (the same OAuth client as Claude's Slack plugin). It
+# only works after a one-time login in the worker's persistent HOME; until then the
+# Judge/QA simply cannot notify (see docs/factory/JUDGE_POST_DEPLOY.md).
+RUN printf '%s' '{"mcpServers":{"playwright":{"command":"mcp-server-playwright","args":["--headless","--isolated","--no-sandbox","--browser","chromium"]},"slack":{"type":"http","url":"https://mcp.slack.com/mcp","oauth":{"clientId":"1601185624273.8899143856786","callbackPort":3118}}}}' > /app/qa-mcp.json
 
 # MCP config wired into the issue-resolver / lead-generation runs via
 # `claude --mcp-config`. The server is named `plugin_nexusmind_nexusmind` so its

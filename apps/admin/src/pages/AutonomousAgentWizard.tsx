@@ -392,7 +392,8 @@ export function buildConfig(state: FormState): Record<string, unknown> {
       repositories: csv(state.repositories),
       publish: state.publishComment ? 'comment' : 'none',
     }
-    if (state.triggerWorkflow.trim()) config.trigger_workflow = state.triggerWorkflow.trim()
+    if (state.scheduleKind === 'event' && state.triggerWorkflow.trim())
+      config.trigger_workflow = state.triggerWorkflow.trim()
     if (state.outputSlack && state.slackChannel.trim()) config.slack_channel = state.slackChannel.trim()
     if (state.customInstructions.trim())
       config.custom_instructions = state.customInstructions.trim()
@@ -659,7 +660,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
               : null
           setState((prev) => ({
             ...prev,
-            scheduleKind: editing.template_key === 'github_pr_reviewer' && typeof editing.revision.config.project_id === 'string' ? 'manual' : schedule.kind,
+            scheduleKind: editing.template_key === 'github_pr_reviewer' && typeof editing.revision.config.project_id === 'string' ? 'manual' : schedule.kind === 'manual' && reactsToEvents(editing.template_key, editing.revision.config) ? 'event' : schedule.kind,
             scheduleExpression: iv ? iv.value : (schedule.expression ?? prev.scheduleExpression),
             scheduleUnit: iv ? iv.unit : prev.scheduleUnit,
             timezone: schedule.timezone || prev.timezone,
@@ -749,7 +750,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
           enabled: true,
         })
       }
-      if (state.scheduleKind !== 'manual') {
+      if (state.scheduleKind !== 'manual' && state.scheduleKind !== 'event') {
         const expression =
           state.scheduleKind === 'interval'
             ? String(intervalToMinutes(state.scheduleExpression, state.scheduleUnit))
@@ -958,6 +959,8 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'schedule':
       if (state.template === 'github_pr_reviewer' && state.targetKind === 'project') return state.scheduleKind === 'manual'
       if (state.scheduleKind === 'manual') return true
+      if (state.scheduleKind === 'event')
+        return state.template !== 'judge' || state.triggerWorkflow.trim().length > 0
       if (state.scheduleKind === 'interval')
         return intervalToMinutes(state.scheduleExpression, state.scheduleUnit) >= 15
       return state.scheduleExpression.trim().length > 0
@@ -1659,17 +1662,6 @@ function StepConfig({
             />
           </Field>
           <Field
-            label="Run after this workflow on the default branch (optional)"
-            hint="Workflow name, e.g. Deploy. When it finishes after a merge, the Judge checks the merged PRs and fully verifies the issues they close. Subscribe the GitHub webhook to “Workflow runs”."
-          >
-            <Input
-              inputSize="sm"
-              value={state.triggerWorkflow}
-              onChange={(event) => set('triggerWorkflow', event.target.value)}
-              placeholder="Deploy"
-            />
-          </Field>
-          <Field
             label="Custom instructions (optional)"
             hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch."
           >
@@ -2340,7 +2332,9 @@ function StepSchedule({
   set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
 }) {
   if (state.template === 'github_pr_reviewer' && state.targetKind === 'project') return <p className="text-sm text-text-secondary">Project reviewers run for a specific PR, through Run now or requested-review webhooks and reconciliation. Timed generic runs are not supported.</p>
-  const manual = state.scheduleKind === 'manual'
+  const githubEvent = GITHUB_EVENTS[state.template]
+  const onEvent = Boolean(githubEvent) && state.scheduleKind === 'event'
+  const manual = state.scheduleKind === 'manual' || onEvent
   const interval = state.scheduleKind === 'interval'
   const intervalMinutes = interval
     ? intervalToMinutes(state.scheduleExpression, state.scheduleUnit)
@@ -2364,11 +2358,12 @@ function StepSchedule({
             }}
           >
             <option value="manual">Manual only</option>
+            {githubEvent && <option value="event">On GitHub event</option>}
             <option value="daily">Daily</option>
             <option value="interval">Interval</option>
           </NativeSelect>
         </Field>
-        {interval ? (
+        {onEvent ? null : interval ? (
           <Field
             label="Every"
             hint={
@@ -2409,17 +2404,62 @@ function StepSchedule({
             />
           </Field>
         )}
-        <Field label="Timezone">
+        {!onEvent && <Field label="Timezone">
           <Input
             inputSize="sm"
             disabled={manual}
             value={state.timezone}
             onChange={(event) => set('timezone', event.target.value)}
           />
-        </Field>
+        </Field>}
       </div>
+      {onEvent && githubEvent && (
+        <div className="space-y-3 rounded-xl border border-border-primary p-3">
+          {state.template === 'judge' && (
+            <Field
+              label="Workflow to wait for"
+              hint="Exact name of the GitHub Actions workflow. When it finishes on the default branch after a merge, the Judge checks the merged PRs and fully verifies the issues they close."
+            >
+              <Input
+                inputSize="sm"
+                value={state.triggerWorkflow}
+                onChange={(e) => set('triggerWorkflow', e.target.value)}
+                placeholder="Deploy"
+              />
+            </Field>
+          )}
+          <div className="space-y-1.5 text-[12px] text-text-secondary">
+            <p className="text-xs font-medium text-text-primary">GitHub webhook</p>
+            <p>{githubEvent.when}</p>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              <dt className="text-text-tertiary">Events</dt>
+              <dd>{githubEvent.events}</dd>
+              <dt className="text-text-tertiary">Content type</dt>
+              <dd>application/json, signed with the webhook secret</dd>
+            </dl>
+            <p className="text-text-tertiary">
+              Connect the repository in{' '}
+              <a className="text-text-primary underline underline-offset-2" href="/factory/settings?tab=integrations">
+                Factory settings → Integrations
+              </a>
+              . A webhook connected before this option existed must be reconnected so GitHub also sends {githubEvent.events}.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
+}
+
+// Templates the GitHub webhook starts on its own; "On GitHub event" saves a manual schedule.
+const GITHUB_EVENTS: Partial<Record<string, { events: string; when: string }>> = {
+  judge: { events: 'Workflow runs', when: 'Runs when that workflow finishes on the default branch after a merge.' },
+  github_issue_resolver: { events: 'Issues', when: 'Runs when an issue in the repository is opened, reopened or labeled.' },
+  github_pr_reviewer: { events: 'Pull requests', when: 'Runs when a pull request is opened, updated, marked ready or its review is requested.' },
+}
+
+function reactsToEvents(template: string, config: Record<string, unknown>) {
+  return template === 'judge' ? typeof config.trigger_workflow === 'string' : Boolean(GITHUB_EVENTS[template])
 }
 
 function StepReview({

@@ -274,7 +274,7 @@ pub async fn register(
             .iter()
             .find(|h| h["config"]["url"] == url)
             .and_then(|h| h["id"].as_i64());
-        let payload = json!({"name":"web","active":true,"events":["pull_request","issues"],"config":{"url":url,"content_type":"json","secret":secret,"insecure_ssl":"0"}});
+        let payload = json!({"name":"web","active":true,"events":["pull_request","issues","workflow_run"],"config":{"url":url,"content_type":"json","secret":secret,"insecure_ssl":"0"}});
         let hook = if let Some(hook) = existing {
             connectors::github_patch(setup_token, &format!("{prefix}/{hook}"), payload).await
         } else {
