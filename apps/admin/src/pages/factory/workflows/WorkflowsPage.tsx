@@ -23,6 +23,9 @@ import {
   type WorkflowEventQuery,
 } from './types'
 
+/** Statuses listed by default: finished successfully or still in progress. */
+const VISIBLE_RUN_STATUSES = ['succeeded', 'running', 'queued']
+
 const select =
   'h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring'
 const panel = 'rounded-xl border border-border bg-card p-5 sm:p-6'
@@ -68,6 +71,7 @@ export default function WorkflowsPage({
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showAllRuns, setShowAllRuns] = useState(false)
   const [runnerName, setRunnerName] = useState('')
   const [runnerId, setRunnerId] = useState('')
   const [token, setToken] = useState<string | null>(null)
@@ -153,8 +157,11 @@ export default function WorkflowsPage({
   const definitions =
     catalog.data?.definitions.filter((d) => d.definition.workspace_id === workspace?.id) ?? []
   const selectedDefinition = definitions.find((d) => d.id === definitionId)
-  const runs =
+  const allRuns =
     catalog.data?.runs.filter((r) => definitions.some((d) => d.id === r.definition_id)) ?? []
+  // Cancelled and blocked runs stay in the database; they are only hidden here.
+  const runs = showAllRuns ? allRuns : allRuns.filter((r) => VISIBLE_RUN_STATUSES.includes(r.status))
+  const hiddenRuns = allRuns.length - runs.length
   const publisherConnectors =
     connectors.data?.filter(
       (c) =>
@@ -983,8 +990,15 @@ export default function WorkflowsPage({
             </form>
           </section>
           <section className={`${panel} space-y-4`}>
-            <h2 className="text-base font-semibold">Ejecuciones del workspace</h2>
-            {!runs.length ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-base font-semibold">Ejecuciones del workspace</h2>
+              {(hiddenRuns > 0 || showAllRuns) && (
+                <Button size="sm" variant="ghost" onClick={() => setShowAllRuns(!showAllRuns)}>
+                  {showAllRuns ? 'Ocultar canceladas y bloqueadas' : `Mostrar ${hiddenRuns} canceladas o bloqueadas`}
+                </Button>
+              )}
+            </div>
+            {!runs.length && !hiddenRuns ? (
               <p className="text-sm text-muted-foreground">
                 Todavía no hay ejecuciones. Empieza con una prueba de preparación para comprobar el
                 runner sin consumir modelos.

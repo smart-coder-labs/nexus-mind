@@ -307,6 +307,24 @@ describe('guided workspace workflows', () => {
       ).not.toBeInTheDocument(),
     )
   })
+  it('lists only successful and active runs until cancelled or blocked ones are requested', async () => {
+    const run = (id: string, status: string) => ({ id, status, source_key: 'manual:' + id, definition_id: 'd', created_at: '2026-01-01' })
+    api.getWorkflowCatalog.mockResolvedValue({
+      runners: [{ id: 'r', name: 'Local', revoked: false, capabilities: [], last_seen: null }],
+      workspaces: [workspace],
+      definitions: [{ id: 'd', definition }],
+      runs: [run('ok', 'succeeded'), run('live', 'running'), run('stop', 'cancelled'), run('held', 'blocked')],
+    })
+    show(read, '/factory/workflows?tab=runs')
+    const user = userEvent.setup()
+    expect(await screen.findByRole('link', { name: /manual:ok/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /manual:live/ })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /manual:stop/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /manual:held/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Mostrar 2 canceladas o bloqueadas' }))
+    expect(screen.getByRole('link', { name: /manual:stop/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /manual:held/ })).toBeInTheDocument()
+  })
   it('loads a deep-linked execution without clicking its list entry', async () => {
     show(read, '/factory/workflows?run=run1')
     expect(await screen.findByRole('region', { name: 'Detalle de ejecución' })).toBeInTheDocument()
