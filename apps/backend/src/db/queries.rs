@@ -17934,7 +17934,9 @@ pub struct ClaimedAutonomousRun {
 }
 
 /// Keys a run's input may set over the agent config for that run.
-const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url", "deploy_workflow"];
+// `continue_from_run_id` is set only by continue_run; it lets the resolver resume
+// its WIP branches instead of starting over.
+const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url", "deploy_workflow", "continue_from_run_id"];
 
 pub fn claim_next_autonomous_agent_run(
     conn: &Connection,

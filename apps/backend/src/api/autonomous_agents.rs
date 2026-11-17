@@ -2500,6 +2500,47 @@ mod tests {
     }
 
     #[test]
+    fn continue_run_input_reaches_the_worker_config() {
+        let (conn, org_id, user_id) = fixture();
+        let created =
+            queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &request())
+                .unwrap();
+        queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &created.definition.id)
+            .unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &created.definition.id, "enabled")
+            .unwrap();
+        // Same input shape continue_run enqueues, plus a key run input must never override.
+        let input = serde_json::json!({"continue_from_run_id": "prev-run", "isolation": "none"});
+        queries::enqueue_autonomous_agent_run(
+            &conn,
+            &org_id,
+            &created.definition.id,
+            "manual",
+            "continue-test",
+            None,
+            Some(&input),
+        )
+        .unwrap();
+        queries::save_autonomous_runtime_health(
+            &conn,
+            &crate::automation::runtime::RuntimeHealth {
+                status: "ready".into(),
+                reason_code: None,
+                claude_version: Some("test".into()),
+                checked_at: None,
+                last_success_at: None,
+                last_failure_at: None,
+            },
+        )
+        .unwrap();
+        let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.config["continue_from_run_id"], "prev-run");
+        assert_ne!(claim.config["isolation"], "none");
+    }
+
+    #[test]
     fn lease_token_binds_start_and_heartbeat() {
         let (conn, org_id, user_id) = fixture();
         let created =
