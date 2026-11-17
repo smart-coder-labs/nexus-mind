@@ -157,6 +157,22 @@ mod tests {
         file.into_temp_path()
     }
 
+    /// A concurrent test's fork can still hold the script's write fd until its
+    /// own exec (ETXTBSY), so retry only that transient spawn failure.
+    async fn probe_script(path: &std::path::Path) -> RuntimeHealth {
+        for _ in 0..20 {
+            let health = probe_claude(path.to_str().unwrap()).await;
+            if !matches!(
+                health.reason_code.as_deref(),
+                Some("claude_spawn_failed" | "claude_auth_probe_failed")
+            ) {
+                return health;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        probe_claude(path.to_str().unwrap()).await
+    }
+
     #[tokio::test]
     async fn missing_absolute_binary_is_unavailable_without_shelling_out() {
         let health = probe_claude("/definitely/missing/nexusmind-claude").await;
@@ -168,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn unsupported_binary_and_malformed_auth_status_fail_closed() {
         let unsupported = executable("#!/bin/sh\necho 'not claude'\n");
-        let health = probe_claude(unsupported.to_str().unwrap()).await;
+        let health = probe_script(&unsupported).await;
         assert_eq!(
             health.reason_code.as_deref(),
             Some("claude_version_unsupported")
@@ -177,7 +193,7 @@ mod tests {
         let malformed = executable(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.0 (Claude Code)'; else echo 'not-json'; fi\n",
         );
-        let health = probe_claude(malformed.to_str().unwrap()).await;
+        let health = probe_script(&malformed).await;
         assert_eq!(
             health.reason_code.as_deref(),
             Some("claude_auth_status_malformed")
@@ -190,7 +206,7 @@ mod tests {
         let binary = executable(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.0 (Claude Code)'; else echo '{\"loggedIn\":true}'; fi\n",
         );
-        let health = probe_claude(binary.to_str().unwrap()).await;
+        let health = probe_script(&binary).await;
         assert_eq!(health.status, "ready");
     }
 }

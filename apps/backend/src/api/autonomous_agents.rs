@@ -715,24 +715,20 @@ pub async fn run_now(
             queries::get_autonomous_agent_revision(&conn, &id, definition.current_revision)
                 .map_err(store_error)?
                 .ok_or_else(not_found)?;
-        let allowed: Vec<String> = revision
-            .config
-            .get("repositories")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let allowed = crate::db::autonomous_scope::judge_repositories(
+            &conn,
+            &auth.org_id,
+            &id,
+            &revision.config,
+        )
+        .map_err(store_error)?;
         let mut resolved = Vec::new();
         for target in targets {
-            if !allowed.iter().any(|repo| repo == &target.repository) {
+            if !allowed.iter().any(|repo| repo.eq_ignore_ascii_case(&target.repository)) {
                 return Err(error(
                     StatusCode::BAD_REQUEST,
                     "repository_not_allowed",
-                    "A target repository is not in the agent's configured repositories.",
+                    "A target repository is not in the agent's configured or project repositories.",
                 ));
             }
             if !matches!(target.kind.as_str(), "pr" | "issue") || target.number == 0 {

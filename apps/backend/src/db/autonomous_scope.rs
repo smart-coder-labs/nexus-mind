@@ -56,6 +56,35 @@ pub fn reviewer_repositories(conn: &Connection, org: &str, config: &Value) -> Re
     Ok(vec![repo.to_ascii_lowercase()])
 }
 
+/// Repositories a Judge may target: its configured `repositories` plus the
+/// GitHub repositories linked in Code to the project of each enabled project target.
+pub fn judge_repositories(
+    conn: &Connection,
+    org: &str,
+    definition_id: &str,
+    config: &Value,
+) -> Result<Vec<String>> {
+    let mut repos: Vec<String> = config["repositories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|repo| repo.as_str().map(str::to_string))
+        .collect();
+    for target in super::queries::list_autonomous_agent_targets(conn, org, definition_id)? {
+        if !target.enabled || target.kind != "project" {
+            continue;
+        }
+        let scope = serde_json::json!({ "project_id": target.config["project_id"] });
+        // An archived, foreign or unlinked project adds nothing (fails closed).
+        for repo in reviewer_repositories(conn, org, &scope).unwrap_or_default() {
+            if !repos.iter().any(|known| known.eq_ignore_ascii_case(&repo)) {
+                repos.push(repo);
+            }
+        }
+    }
+    Ok(repos)
+}
+
 pub fn authorize_review(
     conn: &Connection,
     org: &str,
@@ -300,5 +329,50 @@ mod tests {
             reviewer_repositories(&conn, &org.id, &json!({"repository":"acme/api"})).unwrap(),
             ["acme/api"]
         );
+    }
+
+    #[test]
+    fn judge_repositories_add_project_links_within_the_org_only() {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, user, _) =
+            queries::bootstrap(&conn, "Acme", "acme", "judge@acme.test", "Judge").unwrap();
+        let (other, _, _) =
+            queries::create_org(&conn, "Other", "other", "judge@other.test", "Other").unwrap();
+        conn.execute("INSERT INTO projects(id,org_id,name) VALUES ('kas',?1,'Kas')", [&org.id]).unwrap();
+        conn.execute("INSERT INTO code_projects(org_id,name,root_path,project_id,repo_url) VALUES (?1,'ui','/ui','kas','https://github.com/acme/ui.git'),(?1,'api','/api','kas','https://github.com/acme/api.git')", [&org.id]).unwrap();
+        let config = json!({"repositories":["acme/ui"]});
+        let agent = queries::create_autonomous_agent_definition(
+            &conn,
+            &org.id,
+            &user.id,
+            &CreateAutonomousAgentRequest {
+                name: "Judge".into(),
+                description: None,
+                template_key: "judge".into(),
+                config: config.clone(),
+                budgets: json!({}),
+            },
+        )
+        .unwrap();
+        let id = agent.definition.id;
+        assert_eq!(judge_repositories(&conn, &org.id, &id, &config).unwrap(), ["acme/ui"]);
+        let mut target = PutAutonomousAgentTargetRequest {
+            kind: "project".into(),
+            name: "Kas".into(),
+            config: json!({"project_id":"kas"}),
+            credential_connector_id: None,
+            enabled: true,
+        };
+        queries::put_autonomous_agent_target(&conn, &org.id, &id, &target).unwrap();
+        assert_eq!(
+            judge_repositories(&conn, &org.id, &id, &config).unwrap(),
+            ["acme/ui", "acme/api"]
+        );
+        // Another org never sees this agent's project links.
+        assert_eq!(judge_repositories(&conn, &other.id, &id, &config).unwrap(), ["acme/ui"]);
+        target.enabled = false;
+        queries::put_autonomous_agent_target(&conn, &org.id, &id, &target).unwrap();
+        assert_eq!(judge_repositories(&conn, &org.id, &id, &config).unwrap(), ["acme/ui"]);
     }
 }

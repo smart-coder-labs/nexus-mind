@@ -5955,17 +5955,23 @@ async fn execute_claim(
     }
     if claim.template_key == "judge" {
         // Targets are chosen per run (merged into the config from the run input);
-        // each carries its own repository, constrained to the agent's allowlist.
-        let allowed: Vec<String> = runtime_config
-            .get("repositories")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(str::to_string))
-                    .collect()
+        // each carries its own repository, constrained to the agent's allowlist
+        // (configured repositories plus those linked to its project target).
+        // Fails closed: a lock or query error leaves no allowed repository.
+        let allowed: Vec<String> = {
+            let db = store.conn();
+            let conn = db.lock().ok();
+            conn.and_then(|conn| {
+                crate::db::autonomous_scope::judge_repositories(
+                    &conn,
+                    &claim.org_id,
+                    &claim.run.definition_id,
+                    &runtime_config,
+                )
+                .ok()
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+        };
         let targets: Vec<serde_json::Value> = runtime_config
             .get("judge_targets")
             .and_then(|value| value.as_array())
@@ -5976,7 +5982,7 @@ async fn execute_claim(
                         target
                             .get("repository")
                             .and_then(|value| value.as_str())
-                            .is_some_and(|repo| allowed.iter().any(|allowed| allowed == repo))
+                            .is_some_and(|repo| allowed.iter().any(|allowed| allowed.eq_ignore_ascii_case(repo)))
                     })
                     .cloned()
                     .collect()

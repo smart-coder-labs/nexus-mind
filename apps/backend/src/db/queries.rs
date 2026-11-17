@@ -16791,9 +16791,20 @@ pub fn get_autonomous_agent_detail(
     };
     let revision = get_autonomous_agent_revision(conn, id, definition.current_revision)?
         .ok_or_else(|| anyhow::anyhow!("autonomous_agent_revision_missing"))?;
+    let judge_repositories = if definition.template_key == "judge" {
+        Some(crate::db::autonomous_scope::judge_repositories(
+            conn,
+            org_id,
+            id,
+            &revision.config,
+        )?)
+    } else {
+        None
+    };
     Ok(Some(AutonomousAgentDetail {
         definition,
         revision,
+        judge_repositories,
     }))
 }
 
@@ -18825,18 +18836,25 @@ pub fn judges_for_workflow(
     workflow: &str,
 ) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT d.id, repo.value FROM autonomous_agent_definitions d
+        "SELECT d.id, r.config_json FROM autonomous_agent_definitions d
          JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
-         JOIN json_each(r.config_json,'$.repositories') repo
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key='judge' AND r.validation_status='valid'
-           AND lower(trim(json_extract(r.config_json,'$.trigger_workflow')))=lower(?3)
-           AND lower(repo.value)=lower(?2)",
+           AND lower(trim(json_extract(r.config_json,'$.trigger_workflow')))=lower(?2)",
     )?;
-    let rows = stmt
-        .query_map(rusqlite::params![org_id, repository, workflow.trim()], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+    let judges = stmt
+        .query_map(rusqlite::params![org_id, workflow.trim()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // The allowlist includes the repositories linked to the judge's project target.
+    let mut rows = Vec::new();
+    for (id, config) in judges {
+        let config: serde_json::Value = serde_json::from_str(&config)?;
+        let allowed = crate::db::autonomous_scope::judge_repositories(conn, org_id, &id, &config)?;
+        if let Some(repo) = allowed.into_iter().find(|repo| repo.eq_ignore_ascii_case(repository)) {
+            rows.push((id, repo));
+        }
+    }
     Ok(rows)
 }
 
