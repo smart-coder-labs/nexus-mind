@@ -242,8 +242,15 @@ pub struct Economics {
     /// Pull requests the factory opened.
     pub proposed_changes: i64,
     pub cost_per_proposed_change: Option<f64>,
-    /// Whether accepted (merged) changes are measured yet; they are not, so
-    /// cost per accepted change is not reported.
+    /// Of those pull requests, the ones a merge was recorded for: what the org
+    /// actually accepted. Counted by the proposal's window, so it pairs with
+    /// `proposed_changes`.
+    pub accepted_changes: i64,
+    /// `None` while nothing was accepted in the window.
+    pub cost_per_accepted_change: Option<f64>,
+    /// Whether accepted (merged) changes are measured. They are since the
+    /// `merged_at` column, but merges that happened before it was added were
+    /// never observed, so an old window can under-report.
     pub accepted_changes_tracked: bool,
 }
 
@@ -275,11 +282,13 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
     let frontier: i64 = tier_choices.iter().filter(|(t, _)| t == "frontier").map(|(_, n)| n).sum();
     let frontier_avoidance = (tiered > 0).then(|| (tiered - frontier) as f64 / tiered as f64);
 
-    let proposed_changes: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM autonomous_agent_output_links
+    // Both counted over the window the change was *proposed* in, so the share
+    // accepted is of the same set of pull requests and never exceeds 1.
+    let (proposed_changes, accepted_changes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(merged_at IS NOT NULL), 0) FROM autonomous_agent_output_links
          WHERE org_id = ?1 AND kind IN ('draft_pr','pull_request') AND created_at >= datetime('now', ?2)",
         params![org_id, since],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     Ok(Economics {
         days,
@@ -290,7 +299,9 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
         frontier_avoidance,
         proposed_changes,
         cost_per_proposed_change: (proposed_changes > 0).then(|| cost_usd / proposed_changes as f64),
-        accepted_changes_tracked: false,
+        accepted_changes,
+        cost_per_accepted_change: (accepted_changes > 0).then(|| cost_usd / accepted_changes as f64),
+        accepted_changes_tracked: true,
     })
 }
 
@@ -466,6 +477,57 @@ mod tests {
         assert_eq!(e.by_model[0].model.as_deref(), Some("claude-opus-5"));
         assert_eq!(e.frontier_avoidance, Some(0.75));
         assert_eq!(e.cost_per_proposed_change, Some(1.5));
-        assert!(!e.accepted_changes_tracked);
+        // Nothing merged yet: accepted changes are measured, there are just none.
+        assert!(e.accepted_changes_tracked);
+        assert_eq!((e.accepted_changes, e.cost_per_accepted_change), (0, None));
+    }
+
+    #[test]
+    fn economics_counts_only_merged_changes_as_accepted() {
+        let (conn, org, _) = setup();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO factory_run_metrics (id, org_id, run_id, template_key, provider, model, cost_usd, outcome)
+             VALUES ('m1', ?1, 'r1', 'github_issue_resolver', 'claude-code', 'claude-opus-5', 2.0, 'succeeded')",
+            [&org],
+        )
+        .unwrap();
+        for (id, run, number, merged) in [("l1", "r1", "12", true), ("l2", "r2", "13", false)] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, merged_at)
+                 VALUES (?1, ?2, ?3, 'draft_pr', ?4, ?5)",
+                params![id, org, run, number, merged.then(|| "2026-11-18 09:00:00")],
+            )
+            .unwrap();
+        }
+        let e = economics(&conn, &org, 30).unwrap();
+        assert_eq!((e.proposed_changes, e.accepted_changes), (2, 1));
+        assert_eq!(e.cost_per_proposed_change, Some(1.0));
+        assert_eq!(e.cost_per_accepted_change, Some(2.0));
+        assert!(e.accepted_changes_tracked);
+    }
+
+    #[test]
+    fn economics_never_counts_another_orgs_accepted_change() {
+        let (conn, org, _) = setup();
+        let (other, ..) = queries::create_org(&conn, "Other", "other", "b@other.com", "B").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id) VALUES ('mine', ?1, 'r1', 'draft_pr', '12')",
+            [&org],
+        )
+        .unwrap();
+        // Same pull request number, a different tenant, and merged.
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, merged_at)
+             VALUES ('theirs', ?1, 'r9', 'draft_pr', '12', '2026-11-18 09:00:00')",
+            [&other.id],
+        )
+        .unwrap();
+        let mine = economics(&conn, &org, 30).unwrap();
+        assert_eq!((mine.proposed_changes, mine.accepted_changes), (1, 0));
+        assert_eq!(mine.cost_per_accepted_change, None);
+        let theirs = economics(&conn, &other.id, 30).unwrap();
+        assert_eq!((theirs.proposed_changes, theirs.accepted_changes), (1, 1));
     }
 }

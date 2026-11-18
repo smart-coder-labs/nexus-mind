@@ -3952,6 +3952,30 @@ fn decide_merge(
     Ok(verdict)
 }
 
+/// Record that a change the factory proposed was accepted, when the factory is
+/// the one that merged it (a human merge arrives as a `pull_request` webhook
+/// instead). Best effort and never a reason to fail: the merge already happened,
+/// and this only writes the outcome economics counts.
+fn record_factory_merge(
+    store: &SqliteStore,
+    org_id: &str,
+    run_id: &str,
+    number: i64,
+    detail: &serde_json::Value,
+) {
+    let sha = detail.get("sha").and_then(|v| v.as_str());
+    let db = store.conn();
+    let conn = match db.lock() {
+        Ok(conn) => conn,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Err(error) =
+        queries::mark_autonomous_output_link_merged_for_run(&conn, org_id, run_id, number, sha)
+    {
+        tracing::warn!("accepted change not recorded for run {run_id} pull {number}: {error:#}");
+    }
+}
+
 /// Decide whether a reviewed PR may be auto-merged. Every deterministic gate runs
 /// on the exact reviewed commit, then the per-action policy engine decides. An
 /// `allow` does not merge yet: it starts the soak window, and the worker merges
@@ -3995,7 +4019,10 @@ async fn auto_merge_pull(
         // The owner opted this agent out of the risk floor, sandbox verification,
         // merge policy and soak: a clean review plus green CI merges.
         return Ok(match super::connectors::merge_github_pull(token, repository, number, "squash", Some(reviewed_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_factory_merge(store, &claim.org_id, &claim.run.id, number, &detail);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4102,7 +4129,10 @@ async fn merge_after_soak(
             return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
         }
         return Ok(match super::connectors::merge_github_pull(&token, &soak.repository, soak.pull_number, "squash", Some(&soak.head_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_factory_merge(store, &soak.org_id, &soak.run_id, soak.pull_number, &detail);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4147,7 +4177,10 @@ async fn merge_after_soak(
     )
     .await
     {
-        Ok(result) => Ok(json!({"merged": true, "detail": result})),
+        Ok(result) => {
+            record_factory_merge(store, &soak.org_id, &soak.run_id, soak.pull_number, &result);
+            Ok(json!({"merged": true, "detail": result}))
+        }
         Err(error) => {
             Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
         }
@@ -10092,6 +10125,41 @@ mod tests {
         assert_eq!(resolver_branch_issue("nexusmind/run-0123456789ab-finding"), None);
         assert_eq!(resolver_branch_issue("feature/42"), None);
         assert_eq!(resolver_branch_issue("nexusmind/run-x-0"), None);
+    }
+
+    /// A merge the factory performs is the other half of the accepted-change
+    /// signal: no webhook reports it as a human merge, so the worker records it.
+    #[test]
+    fn a_merge_the_factory_performs_records_the_accepted_change() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        let (org, ..) = queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        let (other, ..) = queries::create_org(&conn, "Other", "other", "b@other.com", "B").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        for (id, owner, run, number) in [
+            ("mine", &org.id, "run-1", "7"),
+            ("another-run", &org.id, "run-2", "7"),
+            ("other-org", &other.id, "run-1", "7"),
+        ] {
+            conn.execute("INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id) VALUES(?1,?2,?3,'draft_pr',?4)",rusqlite::params![id,owner,run,number]).unwrap();
+        }
+        let store = SqliteStore::new(conn);
+        record_factory_merge(&store, &org.id, "run-1", 7, &json!({"sha":"c".repeat(40),"merged":true}));
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let merged = |id: &str| {
+            conn.query_row(
+                "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id=?1",
+                [id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap()
+        };
+        let (at, sha) = merged("mine");
+        assert!(at.is_some(), "the run's own pull request link is stamped");
+        assert_eq!(sha, Some("c".repeat(40)));
+        assert_eq!(merged("another-run"), (None, None), "only the run that merged is stamped");
+        assert_eq!(merged("other-org"), (None, None), "never another tenant's link");
     }
 
     /// A person may lift a policy HOLD on a head, never a policy `never` (deny).

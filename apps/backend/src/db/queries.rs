@@ -19146,6 +19146,50 @@ pub fn create_autonomous_output_link(
     Ok(())
 }
 
+/// Record that a proposed change was accepted: stamp `merged_at` on the pull
+/// request link of this org whose `external_url` is `url`. Matching on the URL
+/// and not the number is deliberate — links store the bare PR number, which
+/// repeats across repositories under `UNIQUE(org_id, kind, external_id)`. The
+/// `org_id` filter keeps one tenant's merge from ever touching another's link.
+/// Idempotent: the first merge wins, so a replayed webhook never moves the date.
+/// `merged_at` is GitHub's ISO timestamp, normalised through `datetime()` so it
+/// compares with every other date in the schema, and falls back to now when the
+/// payload has none. Returns how many links were stamped (0 when the pull
+/// request is not a factory one).
+pub fn mark_autonomous_output_link_merged_by_url(
+    conn: &Connection,
+    org_id: &str,
+    url: &str,
+    merged_at: Option<&str>,
+    merge_sha: Option<&str>,
+) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE autonomous_agent_output_links
+         SET merged_at=COALESCE(datetime(?3), datetime('now')), merge_sha=?4
+         WHERE org_id=?1 AND kind IN ('draft_pr','pull_request') AND external_url=?2 AND merged_at IS NULL",
+        rusqlite::params![org_id, url, merged_at, merge_sha],
+    )?)
+}
+
+/// [`mark_autonomous_output_link_merged_by_url`] for a merge the factory
+/// performed itself: the run is known, so the link is found by run and PR
+/// number instead of by URL (the run may predate stored URLs).
+pub fn mark_autonomous_output_link_merged_for_run(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    number: i64,
+    merge_sha: Option<&str>,
+) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE autonomous_agent_output_links
+         SET merged_at=datetime('now'), merge_sha=?4
+         WHERE org_id=?1 AND run_id=?2 AND kind IN ('draft_pr','pull_request')
+           AND external_id=?3 AND merged_at IS NULL",
+        rusqlite::params![org_id, run_id, number.to_string(), merge_sha],
+    )?)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_autonomous_agent_finding(
     conn: &Connection,

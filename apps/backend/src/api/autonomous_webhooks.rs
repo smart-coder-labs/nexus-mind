@@ -407,6 +407,20 @@ fn process_delivery(
         return Ok(());
     }
     if event == "pull_request" {
+        // A merge is the only moment the backend learns a proposed change was
+        // accepted, so record it before any routing decision can return early.
+        // This only writes down an outcome: it never approves or performs a merge.
+        if action == Some("closed") && payload.pointer("/pull_request/merged") == Some(&serde_json::Value::Bool(true)) {
+            if let Some(url) = payload.pointer("/pull_request/html_url").and_then(|v| v.as_str()) {
+                queries::mark_autonomous_output_link_merged_by_url(
+                    c,
+                    org,
+                    url,
+                    payload.pointer("/pull_request/merged_at").and_then(|v| v.as_str()),
+                    payload.pointer("/pull_request/merge_commit_sha").and_then(|v| v.as_str()),
+                )?;
+            }
+        }
         let Some(login) = reviewer else { return Ok(()) };
         if !github_review_hooks::route(c, org, repo, payload, login)? {
             return Ok(());
@@ -622,6 +636,52 @@ mod tests {
         issue["issue"]["state_reason"]=serde_json::Value::Null;
         close("unknown-close",&issue,true).unwrap();assert_eq!(status("linked"),"ignored");
         for id in ["other-org","other-issue","other-repo","not-issue"] {assert_eq!(status(id),"open");}
+    }
+    #[test]
+    fn a_merged_pull_request_stamps_only_the_matching_orgs_link() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (o, u, _) = queries::bootstrap(&c, "Org", "org", "owner@test.com", "Owner").unwrap();
+        let (other, ..) = queries::create_org(&c, "Other", "other", "other@test.com", "Owner").unwrap();
+        c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES ('hook',?1,'target_secret','Hook','ready','{}',?2)",rusqlite::params![o.id,u.id]).unwrap();
+        c.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        // Links store the bare pull request number, so two tenants legitimately
+        // hold a link numbered 12: the URL is what identifies the merge.
+        for (id, org, number, url) in [
+            ("mine", &o.id, "12", "https://github.com/acme/api/pull/12"),
+            ("same-number-other-org", &other.id, "12", "https://github.com/acme/api/pull/12"),
+            ("other-pull", &o.id, "13", "https://github.com/acme/api/pull/13"),
+        ] {
+            c.execute("INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id,external_url) VALUES(?1,?2,'r1','draft_pr',?3,?4)",rusqlite::params![id,org,number,url]).unwrap();
+        }
+        let merged = |id: &str| {
+            c.query_row(
+                "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id=?1",
+                [id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap()
+        };
+        let deliver = |delivery: &str, payload: &serde_json::Value| {
+            let tx = rusqlite::Transaction::new_unchecked(&c, rusqlite::TransactionBehavior::Immediate).unwrap();
+            let hash = hex::encode(Sha256::digest(serde_json::to_vec(payload).unwrap()));
+            process_delivery(&tx, &o.id, "hook", delivery, "pull_request", payload, None, &hash, true, &[]).unwrap();
+            tx.commit().unwrap();
+        };
+        let mut p = json!({"action":"closed","repository":{"full_name":"acme/api"},"pull_request":{"number":12,"merged":false,"state":"closed","html_url":"https://github.com/acme/api/pull/12"}});
+        deliver("closed-unmerged", &p);
+        assert_eq!(merged("mine"), (None, None), "a closed but unmerged pull request was not accepted");
+        p["pull_request"]["merged"] = json!(true);
+        p["pull_request"]["merged_at"] = json!("2026-11-18T09:00:00Z");
+        p["pull_request"]["merge_commit_sha"] = json!("f".repeat(40));
+        deliver("merged", &p);
+        assert_eq!(merged("mine"), (Some("2026-11-18 09:00:00".to_string()), Some("f".repeat(40))));
+        assert_eq!(merged("same-number-other-org"), (None, None), "a merge never stamps another tenant's link");
+        assert_eq!(merged("other-pull"), (None, None));
+        // A re-delivered merge must not move the date already recorded.
+        p["pull_request"]["merged_at"] = json!("2026-11-19T09:00:00Z");
+        deliver("merged-again", &p);
+        assert_eq!(merged("mine").0.as_deref(), Some("2026-11-18 09:00:00"));
     }
     #[test]
     fn issue_close_reason_and_live_state_are_required() {
