@@ -658,6 +658,27 @@ mod tests {
         assert!(!stale_review_event(&payload, &live, "cli"));
     }
     #[test]
+    fn judges_validated_through_the_api_watch_their_workflow() {
+        // Production revisions keep validation_status='pending'; validation is a separate row.
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (o, u, _) = queries::bootstrap(&c, "Org", "org", "owner@test.com", "Owner").unwrap();
+        let created = queries::create_autonomous_agent_definition(&c, &o.id, &u.id, &crate::models::types::CreateAutonomousAgentRequest {
+            name: "Judge".into(),
+            description: None,
+            template_key: "judge".into(),
+            config: json!({"repositories":["acme/api"],"trigger_workflow":"Deploy * to GCP Beta","outputs":["nexusmind"]}),
+            budgets: json!({"wall_time_seconds": 300}),
+        }).unwrap();
+        let id = created.definition.id;
+        queries::validate_autonomous_agent_definition(&c, &o.id, &u.id, &id).unwrap();
+        queries::set_autonomous_agent_status(&c, &o.id, &id, "enabled").unwrap();
+        let judges = queries::judges_for_workflow(&c, &o.id, "acme/api", "Deploy Backoffice to GCP Beta").unwrap();
+        assert_eq!(judges.len(), 1);
+        assert!(queries::judges_for_workflow(&c, "other-org", "acme/api", "Deploy Backoffice to GCP Beta").unwrap().is_empty());
+    }
+
+    #[test]
     fn finished_deploy_on_default_branch_enqueues_watching_judges_once() {
         let c = crate::db::connection::connect(":memory:").unwrap();
         crate::db::migrations::run(&c).unwrap();
