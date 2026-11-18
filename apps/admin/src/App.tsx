@@ -29,7 +29,6 @@ const FactoryInputs = lazy(() => import('./pages/factory/FactoryInputs'))
 const FactoryConfiguration = lazy(() => import('./pages/factory/FactoryConfiguration'))
 const FactoryLaboratory = lazy(() => import('./pages/factory/FactoryLaboratory'))
 const FactoryDigest = lazy(() => import('./pages/FactoryDigest'))
-const WorkflowsPage = lazy(() => import('./pages/factory/workflows/WorkflowsPage'))
 const Policies = lazy(() => import('./pages/Policies'))
 const Conventions = lazy(() => import('./pages/Conventions'))
 const Webhooks = lazy(() => import('./pages/Webhooks'))
@@ -182,14 +181,7 @@ function AppRoutes() {
                     </MaybeDisabled>
                   }
                 />
-                <Route
-                  path="/factory/workflows"
-                  element={
-                    <MaybeDisabled href="/factory/workflows">
-                      <WorkflowsPage />
-                    </MaybeDisabled>
-                  }
-                />
+                <Route path="/factory/workflows" element={<Navigate to="/factory" replace />} />
                 <Route
                   path="/factory/runs"
                   element={

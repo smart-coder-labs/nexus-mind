@@ -1,10 +1,8 @@
 import { Link, useSearchParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
 import { InlineError, PageHeader, useFactory } from './shared/ui'
 import FactorySettings from './FactorySettings'
 import FactoryPolicies from '../FactoryPolicies'
-import WorkflowsPage from './workflows/WorkflowsPage'
-import { GithubReviewHooks } from './workflows/GithubReviewHooks'
+import { GithubReviewHooks } from './GithubReviewHooks'
 const tabs = [
   ['infrastructure', 'Infraestructura'],
   ['execution', 'Agentes, harnesses y modelos'],
@@ -12,13 +10,7 @@ const tabs = [
   ['permissions', 'Permisos y aprobaciones'],
 ] as const
 export default function FactoryConfiguration() {
-  const { can, client } = useFactory()
-  const capabilities = useQuery({
-    queryKey: ['workflow-catalog'],
-    queryFn: () => client.getWorkflowCatalog(),
-    enabled: can('factory_policy:read'),
-    refetchInterval: 5000,
-  })
+  const { can } = useFactory()
   const [params, setParams] = useSearchParams()
   const tab = tabs.some(([id]) => id === params.get('tab')) ? params.get('tab')! : 'infrastructure'
   if (!can('factory_policy:read') && !can('autonomous_agent:read'))
@@ -31,7 +23,7 @@ export default function FactoryConfiguration() {
     <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6 md:p-8">
       <PageHeader
         title="Configuración de Factory"
-        subtitle="Infraestructura, identidades y límites. Las tareas y sus evidencias se gestionan desde Workflows y Ejecuciones."
+        subtitle="Infraestructura, identidades y límites. Las tareas y sus evidencias se gestionan desde Ejecuciones."
       />
       <nav
         aria-label="Secciones de configuración de Factory"
@@ -57,29 +49,7 @@ export default function FactoryConfiguration() {
       </nav>
       {tab === 'infrastructure' && (
         <div className="space-y-8">
-          {can('autonomous_agent:read') && (
-            <FactorySettings
-              embedded
-              sharedPauseReady={typeof capabilities.data?.factory_enabled === 'boolean'}
-            />
-          )}
-          <section className="space-y-4 border-t border-border pt-6">
-            <div>
-              <h2 className="text-lg font-semibold">Runners y carpetas</h2>
-              <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-                El worker del backend y los runners remotos son máquinas distintas. Una sesión de Pi
-                o Claude en una no autentica automáticamente la otra. La pausa de Factory detiene
-                nuevos inicios en ambos motores y revoca las fases activas.
-              </p>
-            </div>
-            {can('factory_policy:read') ? (
-              <WorkflowsPage embedded area="connections" />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Necesitas factory_policy:read para consultar runners remotos.
-              </p>
-            )}
-          </section>
+          {can('autonomous_agent:read') && <FactorySettings embedded />}
         </div>
       )}
       {tab === 'execution' && (
@@ -87,9 +57,7 @@ export default function FactoryConfiguration() {
           <div>
             <h2 className="text-lg font-semibold">Una configuración efectiva por ejecución</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              El agente guarda su perfil y modelo por defecto. El workflow asigna un perfil
-              compatible y un harness a cada fase; permite heredar el modelo o elegir uno explícito.
-              El backend fija revisión, modelo e instrucciones al iniciar el trabajo.
+              El agente guarda su perfil y modelo por defecto. El backend fija revisión, modelo e instrucciones al iniciar el trabajo.
             </p>
           </div>
           <ol className="divide-y divide-border rounded-xl border border-border bg-card">
@@ -98,21 +66,7 @@ export default function FactoryConfiguration() {
                 Crear o editar un agente
               </Link>
               <p className="text-sm text-muted-foreground">
-                Su plantilla completa se ejecuta como tarea individual. Solo los perfiles
-                compatibles se pueden reutilizar en una fase de código.
-              </p>
-            </li>
-            <li className="space-y-2 p-5">
-              <Link
-                className="font-medium underline underline-offset-4"
-                to="/factory/workflows?tab=settings&section=agents"
-              >
-                Asignar agentes y harnesses por fase
-              </Link>
-              <p className="text-sm text-muted-foreground">
-                Pi, Codex, Claude Code y otros adaptadores deben estar instalados y autorizados
-                donde se ejecutan. No hay cambio silencioso a otro harness ni copia de sesiones
-                OAuth.
+                Su plantilla completa se ejecuta como tarea individual.
               </p>
             </li>
             <li className="space-y-2 p-5">
@@ -148,13 +102,12 @@ export default function FactoryConfiguration() {
               <Link className="underline underline-offset-4" to="/factory/intake">
                 Entradas
               </Link>
-              ; el conector de publicación se selecciona en el workflow.
+              .
             </p>
           </section>
           <p className="max-w-3xl text-sm text-muted-foreground">
             Las reviews solicitadas en GitHub usan la cuenta del backend y no dependen del runner.
-            GitHub no admite autoaprobación del autor; un workflow puede hacer una revisión interna
-            independiente sin confundirla con una aprobación formal.
+            GitHub no admite autoaprobación del autor.
           </p>
           <GithubReviewHooks />
         </div>

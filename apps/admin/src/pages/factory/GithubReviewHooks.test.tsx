@@ -12,8 +12,8 @@ const api = vi.hoisted(() => ({
   revokeAutonomousAgentConnector: vi.fn(),
 }))
 const auth = vi.hoisted(() => ({ permissions: [] as string[] }))
-vi.mock('../../../api/client', () => ({ createClient: () => api }))
-vi.mock('../../../auth/AuthContext', () => ({
+vi.mock('../../api/client', () => ({ createClient: () => api }))
+vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({ session: { user: { permissions: auth.permissions } } }),
 }))
 function show(permissions: string[]) {

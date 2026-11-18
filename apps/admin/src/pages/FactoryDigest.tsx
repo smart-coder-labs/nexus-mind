@@ -1,4 +1,3 @@
-import { WorkflowPendingList } from './factory/WorkflowPendingList'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -50,13 +49,6 @@ export default function FactoryDigest() {
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
 
-  const workflows = useQuery({
-    queryKey: ['workflow-catalog'],
-    queryFn: () => client.getWorkflowCatalog(),
-    enabled: canRead,
-    refetchInterval: 5000,
-  })
-  const workflowPending = workflows.data?.pending_runs ?? []
   const digest = useQuery({
     queryKey: ['factory-digest'],
     queryFn: () => client.getFactoryDigest(),
@@ -104,9 +96,6 @@ export default function FactoryDigest() {
   const nothingWaiting =
     data &&
     feedback.isSuccess &&
-    workflows.isSuccess &&
-    workflows.data.pending_runs !== undefined &&
-    !workflowPending.length &&
     !data.held_merges.length &&
     !data.approved_merges.length &&
     !blocked.length &&
@@ -114,10 +103,9 @@ export default function FactoryDigest() {
     !reviewItems.length
   const failedSubject = decide.isError ? decide.variables?.subject : undefined
   const waiting =
-    workflowPending.length +
-    (data
+    data
       ? data.held_merges.length + blocked.length + data.factory_tasks.length + reviewItems.length
-      : 0)
+      : 0
 
   return (
     <div className="p-6 md:p-8 min-w-0 max-w-7xl mx-auto space-y-6">
@@ -130,21 +118,9 @@ export default function FactoryDigest() {
             </Badge>
           ) : undefined
         }
-        subtitle="Bloqueos y decisiones de workflows y agentes individuales. Revisa la evidencia antes de autorizar; no todo bloqueo se resuelve con una aprobación."
+        subtitle="Bloqueos y decisiones de agentes individuales. Revisa la evidencia antes de autorizar; no todo bloqueo se resuelve con una aprobación."
       />
 
-      <WorkflowPendingList items={workflowPending} />
-      {workflows.isError && (
-        <InlineAlert onRetry={() => workflows.refetch()}>
-          No se pudieron cargar los pendientes de workflows. La bandeja no está completa.
-        </InlineAlert>
-      )}
-      {workflows.isSuccess && workflows.data.pending_runs === undefined && (
-        <InlineAlert>
-          Este backend aún no publica los pendientes de workflows. Consulta su detalle en
-          Ejecuciones.
-        </InlineAlert>
-      )}
       {digest.isError && (
         <InlineAlert onRetry={() => digest.refetch()}>Could not load what is waiting.</InlineAlert>
       )}

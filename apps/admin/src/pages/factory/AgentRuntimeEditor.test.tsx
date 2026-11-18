@@ -4,10 +4,9 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AgentRuntimeEditor } from './AgentRuntimeEditor'
-import { WorkflowEditor } from './workflows/WorkflowEditor'
 import type { AgentRuntimeConfig } from '../../types'
 
-const api = vi.hoisted(() => ({ listHarnesses: vi.fn(), getHarnessVersion: vi.fn(), approveHarnessInstall: vi.fn(), listAutonomousAgents: vi.fn(), getAutonomousAgent: vi.fn() }))
+const api = vi.hoisted(() => ({ listHarnesses: vi.fn(), getHarnessVersion: vi.fn(), approveHarnessInstall: vi.fn(), listAutonomousAgents: vi.fn() }))
 vi.mock('../../api/client', () => ({ createClient: () => api }))
 
 function Editor({ executor = 'pi', initial = {} }: { executor?: string; initial?: AgentRuntimeConfig }) {
@@ -19,28 +18,6 @@ beforeEach(() => {
   api.listHarnesses.mockResolvedValue([])
   api.listAutonomousAgents.mockResolvedValue([])
   api.approveHarnessInstall.mockResolvedValue({})
-})
-
-function WorkflowDraft() {
-  const [value, setValue] = useState(JSON.stringify({ name: 'Review', workspace_id: 'w', steps: [{ id: 'review', name: 'Review', kind: 'review', adapter: 'pi-reviewer', depends_on: [], write_repositories: [], options: {} }] }))
-  return <WorkflowEditor value={value} onChange={setValue} adapters={['pi-reviewer']} repositories={[]} />
-}
-
-it('inherits an agent runtime and scopes edits to the workflow step', async () => {
-  const original = { executor: 'pi', runtime: { nexusmind_profile: 'essential', components: [] } }
-  api.listAutonomousAgents.mockResolvedValue([{ id: 'agent1', name: 'Backend reviewer', status: 'enabled' }])
-  api.getAutonomousAgent.mockResolvedValue({ revision: { config: original } })
-  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><WorkflowDraft /></QueryClientProvider>)
-  const user = userEvent.setup()
-  await screen.findByRole('option', { name: 'Backend reviewer' })
-  await user.selectOptions(screen.getByLabelText('Agent configuration'), 'agent1')
-  await waitFor(() => expect(screen.getByLabelText('Runtime executor')).toHaveValue('pi'))
-  await user.click(screen.getByLabelText('Customize runtime for this step'))
-  await user.selectOptions(screen.getByLabelText('NexusMind profile (always connected)'), 'only_context')
-  const draft = JSON.parse((screen.getByLabelText('Definición JSON') as HTMLTextAreaElement).value)
-  expect(draft.steps[0].options.agent_id).toBe('agent1')
-  expect(draft.steps[0].options.runtime.nexusmind_profile).toBe('only_context')
-  expect(original.runtime.nexusmind_profile).toBe('essential')
 })
 
 it('keeps NexusMind mandatory and offers only native executor resources', async () => {

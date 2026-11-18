@@ -56,10 +56,8 @@ const RETENTION_MAX = 3650
 /** /factory/settings — runtime health, pause all agents, retention and the sandbox bot. */
 export default function FactorySettings({
   embedded = false,
-  sharedPauseReady = true,
 }: {
   embedded?: boolean
-  sharedPauseReady?: boolean
 }) {
   const { can, client, invalidate } = useFactory()
   const { runtime, check } = useRuntimeHealth()
@@ -256,18 +254,13 @@ export default function FactorySettings({
             <Badge size="md" variant={settings.data?.enabled ? 'success' : 'warning'} dot>
               {settings.data?.enabled ? 'Inicio de trabajo habilitado' : 'Factory pausada'}
             </Badge>
-            {canManage && can('factory_policy:write') && sharedPauseReady ? (
+            {canManage && can('factory_policy:write') ? (
               <PauseAllControl
                 enabled={Boolean(settings.data?.enabled)}
                 pending={toggle.isPending}
                 onToggle={(value) => toggle.mutate(value)}
                 error={toggle.error ?? undefined}
               />
-            ) : !sharedPauseReady ? (
-              <p className="text-xs text-muted-foreground">
-                No se ha confirmado el soporte de pausa compartida. Comprueba el backend y los
-                permisos de lectura antes de usar una parada global.
-              </p>
             ) : (
               <PermissionNote
                 permission={canManage ? 'factory_policy:write' : 'autonomous_agent:enable'}
