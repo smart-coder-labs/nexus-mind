@@ -2541,6 +2541,28 @@ mod tests {
     }
 
     #[test]
+    fn skip_dangerous_merge_follows_the_current_revision_within_the_org() {
+        let (conn, org_id, user_id) = fixture();
+        let mut req = request();
+        req.config = serde_json::json!({"outputs": ["nexusmind"], "skip_dangerous_merge": true});
+        let created = queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &req).unwrap();
+        let def = created.definition.id;
+        queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &def).unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &def, "enabled").unwrap();
+        let run = queries::enqueue_autonomous_agent_run(&conn, &org_id, &def, "manual", "skip-1", None, None)
+            .unwrap()
+            .unwrap();
+        assert!(queries::autonomous_run_skips_dangerous_merge(&conn, &org_id, &run.id).unwrap());
+        assert!(!queries::autonomous_run_skips_dangerous_merge(&conn, "other-org", &run.id).unwrap());
+        conn.execute(
+            "UPDATE autonomous_agent_revisions SET config_json=json_set(config_json,'$.skip_dangerous_merge',json('false')) WHERE definition_id=?1",
+            [&def],
+        )
+        .unwrap();
+        assert!(!queries::autonomous_run_skips_dangerous_merge(&conn, &org_id, &run.id).unwrap());
+    }
+
+    #[test]
     fn continue_keeps_the_webhook_trigger_within_the_org() {
         let (conn, org_id, user_id) = fixture();
         let created =

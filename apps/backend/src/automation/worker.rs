@@ -3726,6 +3726,11 @@ fn select_model(
     choice
 }
 
+/// Owner opt-out of the merge risk floor for one agent (`skip_dangerous_merge`).
+fn skip_dangerous_merge(config: &serde_json::Value) -> bool {
+    config.get("skip_dangerous_merge").and_then(|v| v.as_bool()) == Some(true)
+}
+
 /// Soak window between "every gate passed" and the merge (plan D17).
 const MERGE_SOAK_SECONDS: i64 = 600;
 
@@ -3747,6 +3752,7 @@ async fn merge_gates(
     number: i64,
     reviewed_sha: &str,
     required: &[String],
+    skip_risk_floor: bool,
 ) -> anyhow::Result<Result<MergeEvidence, serde_json::Value>> {
     let pull = super::connectors::get_github_pull(token, repository, number).await?;
     if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
@@ -3768,8 +3774,10 @@ async fn merge_gates(
         }
     };
     let title = pull.get("title").and_then(|v| v.as_str()).unwrap_or_default();
-    if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files, title) {
-        return Ok(Err(json!({"merged": false, "reason": reason})));
+    if !skip_risk_floor {
+        if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files, title) {
+            return Ok(Err(json!({"merged": false, "reason": reason})));
+        }
     }
     // Every check-run page plus commit statuses; a partial or unreadable list declines.
     let runs = match super::connectors::list_commit_ci_runs(token, repository, reviewed_sha).await {
@@ -3780,8 +3788,21 @@ async fn merge_gates(
             ))
         }
     };
+    // skip_dangerous_merge waits for CI instead of declining, and counts skipped
+    // or neutral checks as passing (as GitHub branch protection does).
+    let judged: Vec<serde_json::Value> = if skip_risk_floor {
+        if runs.iter().any(|run| run.get("status").and_then(|v| v.as_str()) != Some("completed")) {
+            return Ok(Err(json!({"merged": false, "reason": "checks_pending"})));
+        }
+        runs.iter()
+            .filter(|run| !matches!(run.get("conclusion").and_then(|v| v.as_str()), Some("skipped" | "neutral")))
+            .cloned()
+            .collect()
+    } else {
+        runs.clone()
+    };
     // A required check that never reported is a decline, not a pass.
-    if let Err(reason) = super::merge_gate::required_checks_verdict(required, &runs) {
+    if let Err(reason) = super::merge_gate::required_checks_verdict(required, &judged) {
         return Ok(Err(json!({"merged": false, "reason": reason})));
     }
     let head_ref = pull
@@ -3950,11 +3971,27 @@ async fn auto_merge_pull(
     let Some(reviewed_sha) = super::merge_gate::reviewed_head_sha(&claim.config) else {
         return Ok(json!({"merged": false, "reason": "reviewed_head_unknown"}));
     };
-    let evidence = match merge_gates(token, repository, number, reviewed_sha, &required).await? {
+    let skip = skip_dangerous_merge(&claim.config);
+    let evidence = match merge_gates(token, repository, number, reviewed_sha, &required, skip).await? {
         Ok(evidence) => evidence,
+        Err(declined) if skip && declined["reason"] == "checks_pending" => {
+            require_publish_authority(store, claim)?;
+            let db = store.conn();
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+            let soak = crate::db::factory_queries::start_merge_soak(&conn, &claim.org_id, &claim.run.id, repository, number, reviewed_sha, &required, MERGE_SOAK_SECONDS)?;
+            return Ok(json!({"merged": false, "reason": "soak_pending", "waiting_for": "checks", "due_at": soak.due_at}));
+        }
         Err(declined) => return Ok(declined),
     };
     require_publish_authority(store, claim)?;
+    if skip {
+        // The owner opted this agent out of the risk floor, sandbox verification,
+        // merge policy and soak: a clean review plus green CI merges.
+        return Ok(match super::connectors::merge_github_pull(token, repository, number, "squash", Some(reviewed_sha)).await {
+            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
+        });
+    }
     // F1 §5: a passing verification report for this exact head, produced in the
     // sandbox, is required. It is stored either way for the timeline and the soak.
     let sandboxed = crate::factory::sandbox::autonomous_isolation(
@@ -4022,18 +4059,46 @@ async fn merge_after_soak(
     soak: &crate::db::factory_queries::MergeSoak,
 ) -> anyhow::Result<serde_json::Value> {
     let token = server_gh_token().await?;
+    let skip = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        queries::autonomous_run_skips_dangerous_merge(&conn, &soak.org_id, &soak.run_id)?
+    };
     let (files, head_ref) = match merge_gates(
         &token,
         &soak.repository,
         soak.pull_number,
         &soak.head_sha,
         &soak.required_checks,
+        skip,
     )
     .await?
     {
         Ok(evidence) => (evidence.files, evidence.head_ref),
+        Err(declined) if skip && declined["reason"] == "checks_pending" => {
+            // CI still running: wait another window (a new push ends it via head_changed).
+            let db = store.conn();
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+            if !queries::autonomous_agent_run_publish_authorized(&conn, &soak.org_id, &soak.run_id)? {
+                return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
+            }
+            let next = crate::db::factory_queries::start_merge_soak(&conn, &soak.org_id, &soak.run_id, &soak.repository, soak.pull_number, &soak.head_sha, &soak.required_checks, MERGE_SOAK_SECONDS)?;
+            return Ok(json!({"merged": false, "reason": "soak_pending", "waiting_for": "checks", "due_at": next.due_at}));
+        }
         Err(declined) => return Ok(declined),
     };
+    if skip {
+        let db = store.conn();
+        let authorized = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))
+            .and_then(|conn| queries::autonomous_agent_run_publish_authorized(&conn, &soak.org_id, &soak.run_id))?;
+        if !authorized {
+            return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
+        }
+        return Ok(match super::connectors::merge_github_pull(&token, &soak.repository, soak.pull_number, "squash", Some(&soak.head_sha)).await {
+            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
+        });
+    }
     {
         let db = store.conn();
         let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
