@@ -30,7 +30,7 @@ Each one exists because breaking it costs real users.
 The MCP server comes from `.mcp.json` (needs `NEXUSMIND_API_KEY` in your shell) or the NexusMind plugin. Tool names are `store_memory`, `search_memories`, `get_context`, `get_memory`, `list_memories`; the prefix depends on how it is loaded. The project is **`nexus-mind`** (children: `nexusmind-backend`, `nexusmind-admin`, `nexusmind-mcp`, `nexus-cli`). `scripts/nm-context.sh` (SessionStart) injects recent memories.
 
 - **Before** non-trivial work, call `get_context(project="nexus-mind")`. For specifics, use `search_memories` with a real question, never a bare project name.
-- **After** a decision, a bug fix (with its root cause), a convention or a gotcha, call `store_memory` with `title`, `type` (decision, bugfix, discovery, pattern, config, architecture, feature, session_summary…), `project`, and `content` (What / Why / Where / Learned). Use `topic_key` only for topics that evolve. It upserts **org-wide**, so namespace it (`nexus-mind/auth-model`).
+- **After** a decision, a bug fix (with its root cause), a convention or a gotcha, call `store_memory` with `title`, `type` (decision, bugfix, discovery, pattern, config, architecture, feature, session_summary…), `project`, and `content` (What / Why / Where / Learned). Use `topic_key` only for topics that evolve. It upserts **per project** (and, when no project is given, within the org-shared bucket), so still namespace it (`nexus-mind/auth-model`) to keep keys readable and collision-free inside a project.
 - **Before saying done** on a multi-step task, store a `session_summary`. Deleting memories happens only when the user asks.
 
 ## Where to read more

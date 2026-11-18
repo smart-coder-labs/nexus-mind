@@ -2923,8 +2923,12 @@ pub fn store_memory_with_audit(
 }
 
 /// Stores a memory with upsert semantics when `topic_key` is provided.
-/// - With `topic_key`: SELECT existing row for `(org_id, topic_key)`.
-///   If found, UPDATE content/title/type/scope/hash and increment `revision_count`.
+/// - With `topic_key`: SELECT existing row for `(org_id, topic_key, project_id)`.
+///   The org-shared bucket (`project_id IS NULL`) is its own namespace and never
+///   matches a project-scoped row, so two projects in one org can reuse a
+///   `topic_key` without overwriting each other.
+///   If found, UPDATE content/title/type/scope/hash and increment `revision_count`;
+///   the row keeps its original project.
 ///   If not found, INSERT with `revision_count = 1`.
 /// - Without `topic_key`: always INSERT.
 pub fn upsert_memory(
@@ -2954,10 +2958,13 @@ pub fn upsert_memory(
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     if let Some(topic_key) = &req.topic_key {
-        // Try to find existing row for this (org_id, topic_key)
+        // Try to find existing row for this (org_id, topic_key, project_id). COALESCE makes
+        // the comparison NULL-safe: the org-shared bucket (project_id NULL) is its own
+        // namespace and never matches a project-scoped row.
         let existing = conn.query_row(
-            "SELECT id, revision_count, created_at FROM memories WHERE org_id = ?1 AND topic_key = ?2",
-            rusqlite::params![org_id, topic_key],
+            "SELECT id, revision_count, created_at FROM memories
+             WHERE org_id = ?1 AND topic_key = ?2 AND COALESCE(project_id, '') = COALESCE(?3, '')",
+            rusqlite::params![org_id, topic_key, &project_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
         );
 
@@ -2966,9 +2973,11 @@ pub fn upsert_memory(
                 // UPDATE the existing row
                 let new_revision = revision_count + 1;
                 conn.execute(
+                    // project_id is deliberately not updated: the lookup already matched on
+                    // it, and an existing row must never move project.
                     "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
-                     normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8
-                     WHERE id = ?9",
+                     normalized_hash = ?5, revision_count = ?6, tags = ?7
+                     WHERE id = ?8",
                     rusqlite::params![
                         req.content,
                         req.title,
@@ -2977,7 +2986,6 @@ pub fn upsert_memory(
                         normalized_hash,
                         new_revision,
                         tags_json,
-                        &project_id,
                         existing_id
                     ],
                 )?;
@@ -10539,6 +10547,103 @@ mod tests {
         );
         assert_eq!(mem1.revision_count, 1);
         assert_eq!(mem2.revision_count, 1);
+    }
+
+    /// Helper for the project-scoped upsert tests below.
+    fn topic_req(project: Option<&str>, content: &str) -> crate::models::types::StoreMemoryRequest {
+        crate::models::types::StoreMemoryRequest {
+            project: project.map(str::to_string),
+            tool: "claude".into(),
+            content: content.into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: Some("arch/auth-model".into()),
+            session_id: None,
+        }
+    }
+
+    fn stored_content(conn: &Connection, id: &str) -> String {
+        conn.query_row("SELECT content FROM memories WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn upsert_memory_topic_key_is_scoped_per_project() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        get_or_create_project(&conn, &org.id, "alpha").unwrap();
+        get_or_create_project(&conn, &org.id, "beta").unwrap();
+
+        let mem1 = upsert_memory(&conn, &org.id, &user.id, &topic_req(Some("alpha"), "alpha v1"))
+            .unwrap();
+        let mem2 =
+            upsert_memory(&conn, &org.id, &user.id, &topic_req(Some("beta"), "beta v1")).unwrap();
+
+        assert_ne!(
+            mem1.id, mem2.id,
+            "different projects must get different rows for the same topic_key"
+        );
+        assert_eq!(mem1.revision_count, 1);
+        assert_eq!(mem2.revision_count, 1);
+        assert_eq!(
+            stored_content(&conn, &mem1.id),
+            "alpha v1",
+            "the first project's content must survive the second project's upsert"
+        );
+        assert_eq!(stored_content(&conn, &mem2.id), "beta v1");
+    }
+
+    #[test]
+    fn upsert_memory_same_project_same_topic_key_updates_in_place() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project_id = get_or_create_project(&conn, &org.id, "alpha").unwrap();
+
+        let mem1 = upsert_memory(&conn, &org.id, &user.id, &topic_req(Some("alpha"), "v1")).unwrap();
+        let mem2 = upsert_memory(&conn, &org.id, &user.id, &topic_req(Some("alpha"), "v2")).unwrap();
+
+        assert_eq!(mem2.id, mem1.id, "upsert must reuse the existing row id");
+        assert_eq!(mem2.revision_count, 2);
+        assert_eq!(stored_content(&conn, &mem1.id), "v2");
+        let row_project: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM memories WHERE id = ?1",
+                [&mem1.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            row_project.as_deref(),
+            Some(project_id.as_str()),
+            "the row must stay in its original project"
+        );
+    }
+
+    #[test]
+    fn upsert_memory_org_shared_bucket_does_not_match_project_row() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        get_or_create_project(&conn, &org.id, "alpha").unwrap();
+
+        let scoped =
+            upsert_memory(&conn, &org.id, &user.id, &topic_req(Some("alpha"), "scoped")).unwrap();
+        let shared = upsert_memory(&conn, &org.id, &user.id, &topic_req(None, "shared")).unwrap();
+
+        assert_ne!(
+            scoped.id, shared.id,
+            "the org-shared bucket must not overwrite a project-scoped row"
+        );
+        assert_eq!(scoped.revision_count, 1);
+        assert_eq!(shared.revision_count, 1);
+        assert!(
+            shared.project_id.is_none(),
+            "an absent project stays in the NULL bucket"
+        );
+        assert_eq!(stored_content(&conn, &scoped.id), "scoped");
     }
 
     #[test]

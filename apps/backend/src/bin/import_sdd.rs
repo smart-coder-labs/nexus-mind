@@ -2050,8 +2050,13 @@ mod tests {
     fn import_legacy_memories_replays_the_memories_oldest_first() {
         let (conn, org, _user) = setup();
         // Two revisions of the SAME artifact, seeded newest-row-first to prove the
-        // ORDER BY does the work rather than the insertion order.
+        // ORDER BY does the work rather than the insertion order. They sit in two
+        // different project buckets because v113 allows one row per
+        // (org, topic_key, project); the importer reads the whole org regardless.
+        let project_id = queries::get_or_create_project(&conn, &org, "legacy").unwrap();
         seed_memory(&conn, "m-new", "sdd/demo/design", "v2", "2026-02-01T00:00:00Z");
+        conn.execute("UPDATE memories SET project_id = ?1 WHERE id = 'm-new'", [&project_id])
+            .unwrap();
         seed_memory(&conn, "m-old", "sdd/demo/design", "v1", "2026-01-01T00:00:00Z");
 
         import_legacy_memories(&conn, &org, "nexus-mind", false).unwrap();

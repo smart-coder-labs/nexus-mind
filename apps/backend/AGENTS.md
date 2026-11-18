@@ -25,7 +25,7 @@ The NexusMind API and Factory control plane: Rust 2021 (stable toolchain), Axum,
 - Tenant is `AuthContext.org_id`, never request input. Every new query takes `org_id`; project-scoped reads check membership with the helpers. Return `hidden_resource_not_found` (404, audited) for rows outside the caller's scope: a 403 would confirm they exist.
 - Permission checks go in the handler before any read or write: `require_permission` (privileged roles bypass it) or `require_explicit_permission` for `autonomous_agent:*` / `factory_policy:*` (no bypass, fails closed).
 - Mutations are audited by the middleware. If you log your own audit row, add the route to `AUDIT_SKIP_PATTERNS` so it isn't logged twice.
-- Schema: add `run_v112` (next number) and call it from `run_all`; make it transactional; to change a CHECK constraint, rebuild the table (`*_v111` pattern). Never edit an existing `run_vN`.
+- Schema: add `run_v114` (next number) and call it from `run_all`; make it transactional; to change a CHECK constraint, rebuild the table (`*_v111` pattern). Never edit an existing `run_vN`.
 - Use `AppJson`/`JsonBody` instead of `axum::Json` for request bodies, to keep the error model consistent.
 - Secrets go through `crypto.rs`; never log them or include them in `ApiError` messages.
 - Clippy runs with `-D warnings` in CI (without `--all-targets`, so test code isn't linted, but keep it clean anyway).
