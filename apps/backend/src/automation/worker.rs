@@ -3945,6 +3945,42 @@ fn decide_merge(
     Ok(verdict)
 }
 
+/// Bookkeeping for a merge that already happened: stamps `merged_at`/`merge_sha`
+/// on the output link the factory created for this PR, so an accepted change can
+/// be told apart from a merely proposed one.
+///
+/// This records an outcome and nothing else — it never approves, performs or
+/// unblocks a merge, and it runs only after GitHub confirmed the merge. A missing
+/// link (or an unreadable database) is logged and ignored: bookkeeping must not
+/// turn a completed merge into a failed run.
+fn record_merged_output_link(
+    store: &SqliteStore,
+    org_id: &str,
+    repository: &str,
+    number: i64,
+    merge_sha: Option<&str>,
+) {
+    // Links store GitHub's canonical PR URL, which is what the stamp matches on.
+    let url = format!("https://github.com/{repository}/pull/{number}");
+    let db = store.conn();
+    match db.lock() {
+        Ok(conn) => match queries::mark_autonomous_output_link_merged(&conn, org_id, &url, merge_sha) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(repository, number, "no output link to stamp as merged")
+            }
+            Err(error) => {
+                tracing::warn!(repository, number, "merge outcome not recorded: {error:#}")
+            }
+        },
+        Err(_) => tracing::warn!(
+            repository,
+            number,
+            "merge outcome not recorded: database lock poisoned"
+        ),
+    }
+}
+
 /// Decide whether a reviewed PR may be auto-merged. Every deterministic gate runs
 /// on the exact reviewed commit, then the per-action policy engine decides. An
 /// `allow` does not merge yet: it starts the soak window, and the worker merges
@@ -3988,7 +4024,10 @@ async fn auto_merge_pull(
         // The owner opted this agent out of the risk floor, sandbox verification,
         // merge policy and soak: a clean review plus green CI merges.
         return Ok(match super::connectors::merge_github_pull(token, repository, number, "squash", Some(reviewed_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_merged_output_link(store, &claim.org_id, repository, number, detail.get("sha").and_then(|v| v.as_str()));
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4095,7 +4134,10 @@ async fn merge_after_soak(
             return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
         }
         return Ok(match super::connectors::merge_github_pull(&token, &soak.repository, soak.pull_number, "squash", Some(&soak.head_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_merged_output_link(store, &soak.org_id, &soak.repository, soak.pull_number, detail.get("sha").and_then(|v| v.as_str()));
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4140,7 +4182,16 @@ async fn merge_after_soak(
     )
     .await
     {
-        Ok(result) => Ok(json!({"merged": true, "detail": result})),
+        Ok(result) => {
+            record_merged_output_link(
+                store,
+                &soak.org_id,
+                &soak.repository,
+                soak.pull_number,
+                result.get("sha").and_then(|v| v.as_str()),
+            );
+            Ok(json!({"merged": true, "detail": result}))
+        }
         Err(error) => {
             Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
         }
@@ -9562,6 +9613,40 @@ mod tests {
         assert_eq!(candidates,vec!["acme/web","acme/api"]);
         let body=super::append_candidate_issue_links("API responsibility".to_string(),&[("acme/web".into(),serde_json::json!({"number":5,"html_url":"https://github.com/acme/web/issues/5"}))]);
         assert!(body.contains("[acme/web#5](https://github.com/acme/web/issues/5)"));
+    }
+
+    /// The merge calls themselves need live GitHub, but the bookkeeping the
+    /// factory runs after a confirmed merge is the same function on both paths.
+    #[test]
+    fn a_factory_merge_records_the_outcome_on_its_own_orgs_link_only() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        // The links' run/work-item parents are irrelevant to the merge stamp.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        for (id, org, url) in [
+            ("mine", "org-a", "https://github.com/acme/api/pull/12"),
+            ("theirs", "org-b", "https://github.com/acme/api/pull/12"),
+        ] {
+            conn.execute("INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id,external_url) VALUES(?1,?2,'run-1','draft_pr','12',?3)",rusqlite::params![id,org,url]).unwrap();
+        }
+        let store = crate::store::sqlite::SqliteStore::new(conn);
+        super::record_merged_output_link(&store, "org-a", "acme/api", 12, Some("abc123"));
+        // A PR with no link must not panic or fail the merge.
+        super::record_merged_output_link(&store, "org-a", "acme/api", 999, None);
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let stamp = |id: &str| {
+            conn.query_row(
+                "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id=?1",
+                [id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap()
+        };
+        let (merged_at, merge_sha) = stamp("mine");
+        assert!(merged_at.is_some());
+        assert_eq!(merge_sha.as_deref(), Some("abc123"));
+        assert_eq!(stamp("theirs"), (None, None), "another org's identical PR URL is untouched");
     }
 
     #[test]

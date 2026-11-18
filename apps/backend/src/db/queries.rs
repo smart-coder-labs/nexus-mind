@@ -19016,6 +19016,102 @@ pub fn create_autonomous_output_link(
     Ok(())
 }
 
+/// Records that the change behind an output link was merged. This only *writes
+/// down* an outcome GitHub (or the factory's own completed merge) already
+/// reported; it never approves, performs or unblocks a merge.
+///
+/// Matched on the canonical PR URL, not `external_id`: links store the bare PR
+/// number under `UNIQUE(org_id, kind, external_id)`, and numbers repeat across
+/// repositories. `org_id` comes from the caller's authenticated tenant, so a
+/// merge in one org can never stamp another's link. Idempotent — a second merge
+/// event keeps the first `merged_at` and the first known `merge_sha`. Returns
+/// whether a link for that URL exists in this org.
+pub fn mark_autonomous_output_link_merged(
+    conn: &Connection,
+    org_id: &str,
+    external_url: &str,
+    merge_sha: Option<&str>,
+) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE autonomous_agent_output_links
+            SET merged_at = COALESCE(merged_at, datetime('now')),
+                merge_sha = COALESCE(merge_sha, ?3)
+          WHERE org_id = ?1
+            AND kind IN ('draft_pr','pull_request')
+            AND external_url IS NOT NULL
+            AND lower(external_url) = lower(?2)",
+        rusqlite::params![org_id, external_url, merge_sha],
+    )?;
+    Ok(affected > 0)
+}
+
+#[cfg(test)]
+mod output_link_merge_tests {
+    use super::*;
+
+    fn setup() -> Connection {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        // Only the link rows matter here; their run/work-item parents do not.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        for (id, org, number, url) in [
+            ("a-link", "org-a", "12", "https://github.com/acme/api/pull/12"),
+            ("b-link", "org-b", "12", "https://github.com/other/web/pull/12"),
+        ] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id,external_url) VALUES(?1,?2,'run-1','draft_pr',?3,?4)",
+                rusqlite::params![id, org, number, url],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn stamp(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn marking_a_link_merged_matches_the_url_and_is_idempotent() {
+        let conn = setup();
+        assert!(mark_autonomous_output_link_merged(
+            &conn,
+            "org-a",
+            "https://GITHUB.com/acme/API/pull/12",
+            Some("abc123"),
+        )
+        .unwrap());
+        let (first, sha) = stamp(&conn, "a-link");
+        assert!(first.is_some());
+        assert_eq!(sha.as_deref(), Some("abc123"));
+
+        // A redelivery keeps the original timestamp and the first known sha.
+        conn.execute("UPDATE autonomous_agent_output_links SET merged_at='2000-01-01 00:00:00' WHERE id='a-link'", []).unwrap();
+        assert!(mark_autonomous_output_link_merged(&conn, "org-a", "https://github.com/acme/api/pull/12", Some("zzz999")).unwrap());
+        assert_eq!(
+            stamp(&conn, "a-link"),
+            (Some("2000-01-01 00:00:00".into()), Some("abc123".into()))
+        );
+
+        // An unknown URL stamps nothing and is reported as a miss.
+        assert!(!mark_autonomous_output_link_merged(&conn, "org-a", "https://github.com/acme/api/pull/99", None).unwrap());
+    }
+
+    #[test]
+    fn marking_a_link_merged_never_crosses_tenants() {
+        let conn = setup();
+        // Same PR *number* in both orgs; org A's merge must not touch org B.
+        assert!(!mark_autonomous_output_link_merged(&conn, "org-a", "https://github.com/other/web/pull/12", Some("abc123")).unwrap());
+        assert!(mark_autonomous_output_link_merged(&conn, "org-a", "https://github.com/acme/api/pull/12", Some("abc123")).unwrap());
+        assert_eq!(stamp(&conn, "b-link"), (None, None));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_autonomous_agent_finding(
     conn: &Connection,

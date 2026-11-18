@@ -75,7 +75,18 @@ const economics: FactoryEconomics = {
   frontier_avoidance: 0.75,
   proposed_changes: 4,
   cost_per_proposed_change: 0.8,
-  accepted_changes_tracked: false,
+  accepted_changes: 3,
+  cost_per_accepted_change: 1.0667,
+  accepted_changes_tracked: true,
+}
+
+/** The economics tile whose label matches, so a value is read from its own card. */
+function economicsTile(card: HTMLElement, label: string): HTMLElement {
+  const tile = within(card)
+    .getAllByRole('listitem')
+    .find((item) => within(item).queryByText(label) !== null)
+  if (!tile) throw new Error(`no economics tile labelled "${label}"`)
+  return tile
 }
 
 function renderPage(permissions: string[]) {
@@ -258,11 +269,36 @@ describe('FactoryDigest', () => {
     )
   })
 
-  it('shows spend and says accepted changes are not measured yet', async () => {
+  it('shows spend and the cost per accepted change once accepted changes are tracked', async () => {
     renderPage(['factory_policy:read'])
     const card = await screen.findByRole('region', { name: /economics/i })
     expect(within(card).getByText('75%')).toBeInTheDocument()
     expect(within(card).getByText('$0.800')).toBeInTheDocument()
+    expect(
+      within(economicsTile(card, 'Cost per accepted change')).getByText('$1.07'),
+    ).toBeInTheDocument()
+    expect(
+      within(economicsTile(card, 'Cost per accepted change')).getByText(
+        '3 of 4 proposed changes merged',
+      ),
+    ).toBeInTheDocument()
+    expect(within(card).queryByText(/not measured yet/i)).not.toBeInTheDocument()
+  })
+
+  it('shows spend and says accepted changes are not measured yet', async () => {
+    api.getFactoryEconomics.mockResolvedValue({
+      ...economics,
+      accepted_changes: 0,
+      cost_per_accepted_change: null,
+      accepted_changes_tracked: false,
+    })
+    renderPage(['factory_policy:read'])
+    const card = await screen.findByRole('region', { name: /economics/i })
+    expect(within(card).getByText('75%')).toBeInTheDocument()
+    expect(within(card).getByText('$0.800')).toBeInTheDocument()
+    expect(
+      within(economicsTile(card, 'Cost per accepted change')).getByText('—'),
+    ).toBeInTheDocument()
     expect(within(card).getByText(/not measured yet/i)).toBeInTheDocument()
   })
 

@@ -382,6 +382,29 @@ fn process_delivery(
             queries::close_findings_for_github_issue(c, org, &format!("https://github.com/{repo}/issues/{number}"), status)?;
         }
     }
+    // A merged PR is recorded, never caused: this only stamps the outcome on the
+    // output link the factory already created. `org` is the signed connector's
+    // tenant, never the payload's, and the link is matched by GitHub's canonical
+    // PR URL. Placed before the reviewer-routing returns below so a merge of a PR
+    // nobody re-reviewed is still counted.
+    if event == "pull_request"
+        && action == Some("closed")
+        && payload.pointer("/pull_request/merged").and_then(|v| v.as_bool()) == Some(true)
+    {
+        if let Some(url) = payload
+            .pointer("/pull_request/html_url")
+            .and_then(|v| v.as_str())
+        {
+            queries::mark_autonomous_output_link_merged(
+                c,
+                org,
+                url,
+                payload
+                    .pointer("/pull_request/merge_commit_sha")
+                    .and_then(|v| v.as_str()),
+            )?;
+        }
+    }
     if event == "workflow_run" && !merged_prs.is_empty() {
         if let Some((workflow, run_id, attempt, _, conclusion)) = finished_default_branch_run(payload) {
             for (definition, configured_repo) in queries::judges_for_workflow(c, org, repo, workflow)? {
@@ -712,6 +735,57 @@ mod tests {
         p["workflow_run"]["conclusion"] = json!("success");
         p["workflow_run"]["event"] = json!("pull_request");
         assert!(finished_default_branch_run(&p).is_none());
+    }
+    #[test]
+    fn a_merged_pull_request_stamps_only_its_own_orgs_output_link() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (o, u, _) = queries::bootstrap(&c, "Org", "org", "owner@test.com", "Owner").unwrap();
+        let (other, _, _) = queries::create_org(&c, "Other", "other", "other@test.com", "Owner").unwrap();
+        for (connector, org) in [("hook", &o.id), ("hook-other", &other.id)] {
+            c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES (?1,?2,'target_secret','Hook','ready','{}',?3)",rusqlite::params![connector,org,u.id]).unwrap();
+        }
+        // The links' run/work-item parents are irrelevant to the merge stamp.
+        c.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        // Both orgs hold a PR numbered 12: same number, different repository.
+        for (id, org, number, url) in [
+            ("mine", &o.id, "12", "https://github.com/acme/api/pull/12"),
+            ("theirs", &other.id, "12", "https://github.com/other/web/pull/12"),
+            ("unmerged", &o.id, "13", "https://github.com/acme/api/pull/13"),
+        ] {
+            c.execute("INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id,external_url) VALUES(?1,?2,'run-1','draft_pr',?3,?4)",rusqlite::params![id,org,number,url]).unwrap();
+        }
+        let stamp = |id: &str| {
+            c.query_row(
+                "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id=?1",
+                [id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap()
+        };
+        let sha = "d".repeat(40);
+        let merged = json!({"action":"closed","repository":{"full_name":"acme/api"},"pull_request":{"number":12,"state":"closed","merged":true,"html_url":"https://github.com/acme/api/pull/12","merge_commit_sha":sha.clone()}});
+
+        // The same payload delivered to the *other* tenant's connector must not
+        // reach this org's link: the org comes from the connector, not the payload.
+        process_delivery(&c, &other.id, "hook-other", "cross-tenant", "pull_request", &merged, None, "h0", true, &[]).unwrap();
+        assert_eq!(stamp("mine"), (None, None), "another org's delivery must never stamp this org's link");
+        assert_eq!(stamp("theirs"), (None, None), "the URL belongs to no link in that org");
+
+        // A stale (superseded) delivery records nothing either.
+        process_delivery(&c, &o.id, "hook", "stale", "pull_request", &merged, None, "h1", false, &[]).unwrap();
+        assert_eq!(stamp("mine"), (None, None));
+
+        process_delivery(&c, &o.id, "hook", "merged-12", "pull_request", &merged, None, "h2", true, &[]).unwrap();
+        let (merged_at, merge_sha) = stamp("mine");
+        assert!(merged_at.is_some(), "a merged PR stamps the link with that URL");
+        assert_eq!(merge_sha, Some(sha));
+        assert_eq!(stamp("theirs"), (None, None), "the other org's PR #12 is untouched");
+
+        // Closed without a merge leaves the outcome unrecorded.
+        let closed = json!({"action":"closed","repository":{"full_name":"acme/api"},"pull_request":{"number":13,"state":"closed","merged":false,"html_url":"https://github.com/acme/api/pull/13"}});
+        process_delivery(&c, &o.id, "hook", "closed-13", "pull_request", &closed, None, "h3", true, &[]).unwrap();
+        assert_eq!(stamp("unmerged"), (None, None));
     }
     #[test]
     fn github_hmac_rejects_tampering() {
