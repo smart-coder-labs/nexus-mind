@@ -18888,7 +18888,11 @@ pub fn judges_for_workflow(
     let mut stmt = conn.prepare(
         "SELECT d.id, r.config_json FROM autonomous_agent_definitions d
          JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
-         WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key='judge' AND r.validation_status='valid'
+         WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key='judge'
+           -- revisions.validation_status is frozen at 'pending' (append-only trigger);
+           -- the latest row in autonomous_agent_validations is the real state.
+           AND (SELECT val.status FROM autonomous_agent_validations val WHERE val.revision_id=r.id
+                ORDER BY val.created_at DESC, val.id DESC LIMIT 1)='valid'
            AND json_extract(r.config_json,'$.trigger_workflow') IS NOT NULL",
     )?;
     let judges = stmt
