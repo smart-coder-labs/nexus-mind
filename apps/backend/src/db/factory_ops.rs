@@ -242,9 +242,14 @@ pub struct Economics {
     /// Pull requests the factory opened.
     pub proposed_changes: i64,
     pub cost_per_proposed_change: Option<f64>,
-    /// Whether accepted (merged) changes are measured yet; they are not, so
-    /// cost per accepted change is not reported.
+    /// Whether accepted (merged) changes are measured. True since the merge
+    /// outcome is recorded (migration v114); merges from before it are not
+    /// counted, so an old window can read 0.
     pub accepted_changes_tracked: bool,
+    /// Those of `proposed_changes` a person merged.
+    pub accepted_changes: i64,
+    /// `None` while nothing was accepted yet, rather than a division by zero.
+    pub cost_per_accepted_change: Option<f64>,
 }
 
 pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics> {
@@ -275,11 +280,14 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
     let frontier: i64 = tier_choices.iter().filter(|(t, _)| t == "frontier").map(|(_, n)| n).sum();
     let frontier_avoidance = (tiered > 0).then(|| (tiered - frontier) as f64 / tiered as f64);
 
-    let proposed_changes: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM autonomous_agent_output_links
+    // Accepted is a subset of proposed over the same window — both are dated by
+    // when the change was proposed, so the two counts are comparable even when a
+    // merge lands later.
+    let (proposed_changes, accepted_changes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(merged_at IS NOT NULL), 0) FROM autonomous_agent_output_links
          WHERE org_id = ?1 AND kind IN ('draft_pr','pull_request') AND created_at >= datetime('now', ?2)",
         params![org_id, since],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     Ok(Economics {
         days,
@@ -290,7 +298,9 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
         frontier_avoidance,
         proposed_changes,
         cost_per_proposed_change: (proposed_changes > 0).then(|| cost_usd / proposed_changes as f64),
-        accepted_changes_tracked: false,
+        accepted_changes_tracked: true,
+        accepted_changes,
+        cost_per_accepted_change: (accepted_changes > 0).then(|| cost_usd / accepted_changes as f64),
     })
 }
 
@@ -466,6 +476,43 @@ mod tests {
         assert_eq!(e.by_model[0].model.as_deref(), Some("claude-opus-5"));
         assert_eq!(e.frontier_avoidance, Some(0.75));
         assert_eq!(e.cost_per_proposed_change, Some(1.5));
-        assert!(!e.accepted_changes_tracked);
+        // Proposed but not merged yet: measured, and nothing accepted.
+        assert!(e.accepted_changes_tracked);
+        assert_eq!((e.accepted_changes, e.cost_per_accepted_change), (0, None));
+    }
+
+    #[test]
+    fn accepted_changes_count_only_merged_links_of_this_org() {
+        let (conn, org, _) = setup();
+        let (other, ..) = queries::bootstrap(&conn, "Other", "other", "o@other.com", "O").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO factory_run_metrics (id, org_id, run_id, template_key, provider, model, cost_usd, outcome)
+             VALUES ('m1', ?1, 'r1', 'github_issue_resolver', 'claude-code', 'claude-opus-5', 2.0, 'succeeded')",
+            [&org],
+        )
+        .unwrap();
+        // Two proposals, one of them merged; the other org's merged PR is invisible.
+        for (id, owner, run, number, merged) in [
+            ("l1", &org, "r1", "12", Some("2026-11-18 10:00:00")),
+            ("l2", &org, "r2", "13", None),
+            ("l3", &other.id, "r3", "14", Some("2026-11-18 10:00:00")),
+        ] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, merged_at)
+                 VALUES (?1, ?2, ?3, 'draft_pr', ?4, ?5)",
+                params![id, owner, run, number, merged],
+            )
+            .unwrap();
+        }
+        let e = economics(&conn, &org, 30).unwrap();
+        assert_eq!((e.proposed_changes, e.accepted_changes), (2, 1));
+        assert_eq!(e.cost_per_accepted_change, Some(2.0));
+        assert_eq!(e.cost_per_proposed_change, Some(1.0));
+        // The other org sees its own accepted change and none of this org's spend.
+        let theirs = economics(&conn, &other.id, 30).unwrap();
+        assert_eq!((theirs.proposed_changes, theirs.accepted_changes), (1, 1));
+        assert_eq!(theirs.cost_usd, 0.0, "another org's spend never leaks");
+        assert_eq!(theirs.cost_per_accepted_change, Some(0.0));
     }
 }

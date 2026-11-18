@@ -19146,6 +19146,57 @@ pub fn create_autonomous_output_link(
     Ok(())
 }
 
+/// Output-link kinds that stand for a pull request the factory proposed. Only
+/// these can be accepted (merged); `economics` counts the same set.
+pub const PULL_REQUEST_LINK_KINDS: &str = "'draft_pr','pull_request'";
+
+/// Records that the pull request behind an output link was merged, so cost per
+/// accepted change can be reported. Matching is by `external_url`, not by
+/// number: links keep the bare PR number under `UNIQUE(org_id,kind,external_id)`
+/// and numbers repeat across repositories. `merged_at` is GitHub's merge time
+/// when it parses, else now. Already-merged links are left alone (a redelivered
+/// webhook must not move the timestamp), and the write is org-scoped: a merge in
+/// one tenant can never stamp another's link. Returns whether a link was stamped.
+pub fn mark_output_link_merged_by_url(
+    conn: &Connection,
+    org_id: &str,
+    external_url: &str,
+    merged_at: Option<&str>,
+    merge_sha: Option<&str>,
+) -> Result<bool> {
+    let updated = conn.execute(
+        &format!(
+            "UPDATE autonomous_agent_output_links
+             SET merged_at=COALESCE(datetime(?3), datetime('now')), merge_sha=?4
+             WHERE org_id=?1 AND kind IN ({PULL_REQUEST_LINK_KINDS})
+               AND external_url=?2 AND merged_at IS NULL"
+        ),
+        rusqlite::params![org_id, external_url, merged_at, merge_sha],
+    )?;
+    Ok(updated > 0)
+}
+
+/// Same as [`mark_output_link_merged_by_url`] for a merge the factory performed
+/// itself: the run is known, so its own pull-request link is stamped by number.
+pub fn mark_output_link_merged_for_run(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    pull_number: i64,
+    merge_sha: Option<&str>,
+) -> Result<bool> {
+    let updated = conn.execute(
+        &format!(
+            "UPDATE autonomous_agent_output_links
+             SET merged_at=datetime('now'), merge_sha=?4
+             WHERE org_id=?1 AND run_id=?2 AND kind IN ({PULL_REQUEST_LINK_KINDS})
+               AND external_id=?3 AND merged_at IS NULL"
+        ),
+        rusqlite::params![org_id, run_id, pull_number.to_string(), merge_sha],
+    )?;
+    Ok(updated > 0)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_autonomous_agent_finding(
     conn: &Connection,

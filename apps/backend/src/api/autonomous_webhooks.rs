@@ -94,6 +94,22 @@ fn finished_default_branch_run(
         conclusion,
     ))
 }
+/// A `pull_request` delivery that reports a merge: the pull request's URL, when
+/// GitHub merged it and the commit it landed as. `closed` with `merged: false`
+/// is not a merge. The URL must be the one of this delivery's repository and
+/// number, so a payload can only ever name its own pull request.
+fn merged_pull_request(payload: &serde_json::Value, repo: &str) -> Option<(String, Option<&str>, Option<&str>)> {
+    let pull = &payload["pull_request"];
+    if payload["action"] != "closed" || pull["merged"] != true {
+        return None;
+    }
+    let number = pull["number"].as_i64().filter(|n| *n > 0)?;
+    let url = pull["html_url"].as_str()?;
+    let expected = format!("/{repo}/pull/{number}");
+    url.to_ascii_lowercase()
+        .ends_with(&expected.to_ascii_lowercase())
+        .then(|| (url.to_string(), pull["merged_at"].as_str(), pull["merge_commit_sha"].as_str()))
+}
 fn closed_issue_status(payload: &serde_json::Value) -> Option<&'static str> {
     if payload["action"] != "closed" || payload["issue"]["state"] != "closed" { return None }
     match payload["issue"]["state_reason"].as_str() {
@@ -407,6 +423,13 @@ fn process_delivery(
         return Ok(());
     }
     if event == "pull_request" {
+        // A merge is the only acceptance of a proposed change the backend can
+        // observe, and it is recorded before any early return below. This only
+        // notes an outcome a person already decided: it never approves,
+        // performs or unblocks a merge.
+        if let Some((url, merged_at, sha)) = merged_pull_request(payload, repo) {
+            queries::mark_output_link_merged_by_url(c, org, &url, merged_at, sha)?;
+        }
         let Some(login) = reviewer else { return Ok(()) };
         if !github_review_hooks::route(c, org, repo, payload, login)? {
             return Ok(());
