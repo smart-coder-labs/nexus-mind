@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 112;
+pub const LATEST_USER_VERSION: i32 = 113;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -115,6 +115,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v110(conn)?;
     run_v111(conn)?;
     run_v112(conn)?;
+    run_v113(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -236,6 +237,28 @@ pub fn run_v112(conn: &Connection) -> Result<()> {
 
         PRAGMA foreign_keys = ON;
         PRAGMA user_version = 112;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v113: make the memory `topic_key` upsert key project-scoped. Two
+/// projects in one org may now evolve the same `topic_key` without overwriting
+/// each other; `project_id IS NULL` (the org-shared bucket) is its own namespace,
+/// hence `COALESCE(project_id, '')`. This cannot collide with existing data: the
+/// old behaviour keyed on `(org_id, topic_key)` alone, so a database can hold at
+/// most one row per `(org_id, topic_key)` already.
+pub fn run_v113(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 113 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_org_topic_project
+            ON memories(org_id, topic_key, COALESCE(project_id, '')) WHERE topic_key IS NOT NULL;
+
+        PRAGMA user_version = 113;
         ",
     )?;
     Ok(())

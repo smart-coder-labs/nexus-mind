@@ -2923,7 +2923,8 @@ pub fn store_memory_with_audit(
 }
 
 /// Stores a memory with upsert semantics when `topic_key` is provided.
-/// - With `topic_key`: SELECT existing row for `(org_id, topic_key)`.
+/// - With `topic_key`: SELECT existing row for `(org_id, topic_key, project_id)`,
+///   where `project_id IS NULL` (the org-shared bucket) is its own namespace.
 ///   If found, UPDATE content/title/type/scope/hash and increment `revision_count`.
 ///   If not found, INSERT with `revision_count = 1`.
 /// - Without `topic_key`: always INSERT.
@@ -2954,10 +2955,10 @@ pub fn upsert_memory(
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     if let Some(topic_key) = &req.topic_key {
-        // Try to find existing row for this (org_id, topic_key)
+        // Try to find existing row for this (org_id, topic_key, project_id)
         let existing = conn.query_row(
-            "SELECT id, revision_count, created_at FROM memories WHERE org_id = ?1 AND topic_key = ?2",
-            rusqlite::params![org_id, topic_key],
+            "SELECT id, revision_count, created_at FROM memories WHERE org_id = ?1 AND topic_key = ?2 AND COALESCE(project_id, '') = COALESCE(?3, '')",
+            rusqlite::params![org_id, topic_key, &project_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
         );
 
@@ -2967,8 +2968,8 @@ pub fn upsert_memory(
                 let new_revision = revision_count + 1;
                 conn.execute(
                     "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
-                     normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8
-                     WHERE id = ?9",
+                     normalized_hash = ?5, revision_count = ?6, tags = ?7
+                     WHERE id = ?8",
                     rusqlite::params![
                         req.content,
                         req.title,
@@ -2977,7 +2978,6 @@ pub fn upsert_memory(
                         normalized_hash,
                         new_revision,
                         tags_json,
-                        &project_id,
                         existing_id
                     ],
                 )?;
@@ -10539,6 +10539,185 @@ mod tests {
         );
         assert_eq!(mem1.revision_count, 1);
         assert_eq!(mem2.revision_count, 1);
+    }
+
+    /// Builds a `topic_key` store request for `project` with the given content.
+    fn topic_req(
+        project: Option<&str>,
+        topic_key: &str,
+        content: &str,
+    ) -> crate::models::types::StoreMemoryRequest {
+        crate::models::types::StoreMemoryRequest {
+            project: project.map(String::from),
+            tool: "claude".into(),
+            content: content.into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: Some(topic_key.into()),
+            session_id: None,
+        }
+    }
+
+    /// Reads back `(content, project_id, revision_count)` straight from SQL so the
+    /// assertions never depend on the response struct the upsert happened to build.
+    fn memory_row(conn: &Connection, id: &str) -> (String, Option<String>, i64) {
+        conn.query_row(
+            "SELECT content, project_id, revision_count FROM memories WHERE id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn upsert_memory_topic_key_is_project_scoped() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Org1", "org1", "a@org1.com", "Admin1").unwrap();
+        let alpha = create_project(&conn, &org.id, "alpha", None, None).unwrap();
+        let beta = create_project(&conn, &org.id, "beta", None, None).unwrap();
+
+        let mem_alpha = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("alpha"), "arch/auth-model", "alpha content"),
+        )
+        .unwrap();
+        let mem_beta = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("beta"), "arch/auth-model", "beta content"),
+        )
+        .unwrap();
+
+        assert_ne!(
+            mem_alpha.id, mem_beta.id,
+            "two projects in one org must get separate rows for the same topic_key"
+        );
+        assert_eq!(mem_alpha.revision_count, 1);
+        assert_eq!(mem_beta.revision_count, 1);
+
+        let (alpha_content, alpha_project, alpha_rev) = memory_row(&conn, &mem_alpha.id);
+        let (beta_content, beta_project, beta_rev) = memory_row(&conn, &mem_beta.id);
+        assert_eq!(
+            alpha_content, "alpha content",
+            "alpha's content must survive beta's store"
+        );
+        assert_eq!(beta_content, "beta content");
+        assert_ne!(alpha_content, beta_content);
+        assert_eq!(alpha_project.as_deref(), Some(alpha.id.as_str()));
+        assert_eq!(beta_project.as_deref(), Some(beta.id.as_str()));
+        assert_eq!(alpha_rev, 1);
+        assert_eq!(beta_rev, 1);
+    }
+
+    #[test]
+    fn upsert_memory_same_project_same_topic_key_updates_in_place() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Org1", "org1", "a@org1.com", "Admin1").unwrap();
+        let alpha = create_project(&conn, &org.id, "alpha", None, None).unwrap();
+
+        let first = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("alpha"), "arch/auth-model", "first"),
+        )
+        .unwrap();
+        let second = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("alpha"), "arch/auth-model", "second"),
+        )
+        .unwrap();
+
+        assert_eq!(second.id, first.id, "same project must reuse the row");
+        assert_eq!(second.revision_count, 2);
+
+        let (content, project_id, revision) = memory_row(&conn, &first.id);
+        assert_eq!(content, "second");
+        assert_eq!(revision, 2);
+        assert_eq!(
+            project_id.as_deref(),
+            Some(alpha.id.as_str()),
+            "an update must never move the row to another project"
+        );
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
+                [&org.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "update must not create a second row");
+    }
+
+    #[test]
+    fn upsert_memory_null_project_is_its_own_namespace() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Org1", "org1", "a@org1.com", "Admin1").unwrap();
+        let alpha = create_project(&conn, &org.id, "alpha", None, None).unwrap();
+        // `project: None` resolves to the name "default"; bootstrap only creates
+        // "nexus-mind", so no project row matches and project_id stays NULL.
+        assert!(
+            find_project_id(&conn, &org.id, "default").unwrap().is_none(),
+            "no project named \"default\" may exist, or the NULL bucket is not exercised"
+        );
+
+        let scoped = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("alpha"), "arch/auth-model", "alpha content"),
+        )
+        .unwrap();
+        let shared = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(None, "arch/auth-model", "shared content"),
+        )
+        .unwrap();
+
+        assert_ne!(
+            scoped.id, shared.id,
+            "the org-shared bucket must not upsert onto a project-scoped row"
+        );
+        assert_eq!(
+            memory_row(&conn, &shared.id).1,
+            None,
+            "the no-project row must have project_id NULL"
+        );
+        assert_eq!(
+            memory_row(&conn, &scoped.id).1.as_deref(),
+            Some(alpha.id.as_str())
+        );
+
+        // Re-storing with no project updates the NULL-project row only.
+        let shared2 = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(None, "arch/auth-model", "shared updated"),
+        )
+        .unwrap();
+        assert_eq!(shared2.id, shared.id);
+        assert_eq!(shared2.revision_count, 2);
+
+        let (shared_content, shared_project, shared_rev) = memory_row(&conn, &shared.id);
+        assert_eq!(shared_content, "shared updated");
+        assert_eq!(shared_project, None);
+        assert_eq!(shared_rev, 2);
+
+        let (scoped_content, scoped_project, scoped_rev) = memory_row(&conn, &scoped.id);
+        assert_eq!(scoped_content, "alpha content");
+        assert_eq!(scoped_project.as_deref(), Some(alpha.id.as_str()));
+        assert_eq!(scoped_rev, 1, "the project-scoped row must be untouched");
     }
 
     #[test]
