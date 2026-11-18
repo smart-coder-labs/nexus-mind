@@ -5001,6 +5001,9 @@ async fn resolve_issue_worktree(
         claude.stdin(std::process::Stdio::piped());
     } else {
         restrict_claude_environment(&mut claude);
+        // Build output outside the checkout: the workspace sent to the verification
+        // pod stays small, and the run's issues share compiled dependencies.
+        claude.env("CARGO_TARGET_DIR", workdir.parent().unwrap_or(workdir.as_path()).join("cargo-target"));
         ignore_repository_settings(&mut claude);
         let model = if pi_selected {
             super::pi::MODEL.to_string()
