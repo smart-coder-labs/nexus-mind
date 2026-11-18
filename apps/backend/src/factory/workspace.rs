@@ -36,12 +36,14 @@ async fn pack_workspace_limited(
     // submodules, vendored repositories); the pod builds its own baseline. So is
     // any `.codex`: the Codex CLI starts the MCP servers a repository's
     // `.codex/config.toml` declares, which would run repository commands in the
-    // agent pod before the model acts (verified with codex-cli 0.160).
+    // agent pod before the model acts (verified with codex-cli 0.160). Any
+    // `node_modules` is installed output, often hundreds of MB; the pod runs its
+    // own `npm ci`, so it never needs the worker's copy.
     let mut child = Command::new("sh")
         .current_dir(workdir)
         .args([
             "-c",
-            "find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .codex -print0 | tar --null -c -f - --exclude=.git --exclude=.codex -T -",
+            "find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .codex ! -name node_modules -print0 | tar --null -c -f - --exclude=.git --exclude=.codex --exclude=node_modules -T -",
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -232,6 +234,19 @@ mod tests {
                 .any(|e| e == ".git" || e.starts_with(".git/")),
             "{entries:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn installed_dependencies_never_reach_the_pod() {
+        let dir = repo().await;
+        for path in ["node_modules/pkg", "apps/admin/node_modules/pkg"] {
+            std::fs::create_dir_all(dir.path().join(path)).unwrap();
+            std::fs::write(dir.path().join(path).join("index.js"), "x").unwrap();
+        }
+        std::fs::write(dir.path().join("apps/admin/package.json"), "{}").unwrap();
+        let entries = list(&pack_workspace(dir.path(), &[]).await.unwrap()).await;
+        assert!(entries.iter().any(|e| e == "apps/admin/package.json"), "{entries:?}");
+        assert!(!entries.iter().any(|e| e.contains("node_modules")), "{entries:?}");
     }
 
     #[tokio::test]
