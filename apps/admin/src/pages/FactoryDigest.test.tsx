@@ -8,7 +8,6 @@ import type { FactoryDigest as Digest, FactoryEconomics } from '../types'
 
 const api = vi.hoisted(() => ({
   getFactoryDigest: vi.fn(),
-  getWorkflowCatalog: vi.fn(),
   getFactoryEconomics: vi.fn(),
   decideFactoryMerge: vi.fn(),
   listFactoryTrajectoryFeedback: vi.fn(),
@@ -94,14 +93,6 @@ describe('FactoryDigest', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.getFactoryDigest.mockResolvedValue(digest)
-    api.getWorkflowCatalog.mockResolvedValue({
-      runners: [],
-      workspaces: [],
-      definitions: [],
-      runs: [],
-      pending_runs: [],
-      factory_enabled: true,
-    })
     api.getFactoryEconomics.mockResolvedValue(economics)
     api.decideFactoryMerge.mockResolvedValue({ id: 'd1', merges_after: '2026-10-04 01:10:00' })
     api.listFactoryTrajectoryFeedback.mockResolvedValue([])
@@ -115,27 +106,6 @@ describe('FactoryDigest', () => {
     })
   })
 
-  it('includes workflow blocks without pretending they are merge approvals', async () => {
-    api.getWorkflowCatalog.mockResolvedValue({
-      pending_runs: [
-        {
-          id: 'workflow-1',
-          title: 'Repair checkout',
-          source_key: 'github:acme/app#42',
-          workspace_name: 'Kasymir',
-          definition_name: 'Delivery',
-          last_event: 'step.blocked',
-        },
-      ],
-    })
-    renderPage(['factory_policy:read'])
-    expect(await screen.findByRole('link', { name: 'Revisar bloqueo' })).toHaveAttribute(
-      'href',
-      '/factory/runs?kind=workflow&run=workflow-1',
-    )
-    expect(screen.getByText('Repair checkout')).toBeInTheDocument()
-    expect(screen.queryByText(/nothing is waiting on a person/i)).not.toBeInTheDocument()
-  })
   it('lists held merges, blocked runs, waiting tasks and labels to give', async () => {
     renderPage(['factory_policy:read'])
     const held = await screen.findByRole('region', { name: /merges held for a person/i })

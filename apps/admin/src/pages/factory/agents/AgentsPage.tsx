@@ -215,7 +215,7 @@ export default function AgentsPage() {
     <div className="mx-auto min-w-0 max-w-7xl space-y-6 p-6 md:p-8">
       <PageHeader
         title="Agentes"
-        subtitle="Catálogo de perfiles y plantillas. Ejecútalos individualmente con su harness, o reutiliza sus perfiles compatibles en fases de un workflow."
+        subtitle="Catálogo de perfiles y plantillas. Ejecútalos individualmente con su harness."
         actions={
           <>
             <Link
@@ -238,16 +238,6 @@ export default function AgentsPage() {
         }
       />
 
-      <p className="text-sm text-muted-foreground">
-        Los contadores siguientes corresponden a agentes individuales.{' '}
-        <Link
-          className="underline underline-offset-4"
-          to="/factory/workflows?tab=settings&section=agents"
-        >
-          Asignar perfiles a un workflow
-        </Link>
-        .
-      </p>
       {/* Fleet strip: one bordered row of four cells. */}
       <div className="grid gap-px overflow-hidden rounded-xl border border-border-primary bg-border-primary sm:grid-cols-2 xl:grid-cols-4">
         <Cell

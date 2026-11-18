@@ -1,14 +1,4 @@
 import type {
-  WorkflowCatalog,
-  WorkflowDefinition,
-  WorkflowRun,
-  WorkflowEventPage,
-  WorkflowEventQuery,
-  Workspace,
-  Repository,
-  StoredWorkflow,
-} from '../pages/factory/workflows/types'
-import type {
   Org,
   OrgSettings,
   User,
@@ -1694,44 +1684,6 @@ export class NexusMindClient {
     })
   }
 
-  approveWorkflowAction(id: string, action: string, revision: number): Promise<WorkflowRun> {
-    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/approve`, {
-      method: 'POST',
-      body: JSON.stringify({ action, revision }),
-    })
-  }
-  getWorkflowArtifact(id: string): Promise<{ mime: string; content_base64: string }> {
-    return this.request(`/v1/factory/workflow-artifacts/${encodeURIComponent(id)}`)
-  }
-  rotateFactoryRunner(id: string): Promise<{ id: string; token: string }> {
-    return this.request(`/v1/factory/runners/${encodeURIComponent(id)}/rotate`, { method: 'POST' })
-  }
-  createWorkflowIntake(data: {
-    definition_id: string
-    kind: string
-    connector_id: string
-    config: unknown
-    enabled?: boolean
-  }): Promise<{ id: string; enabled: boolean }> {
-    return this.request('/v1/factory/workflow-intakes', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    })
-  }
-  updateWorkflowIntake(id: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
-    return this.request(`/v1/factory/workflow-intakes/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ enabled }),
-    })
-  }
-  deleteWorkflowIntake(id: string): Promise<void> {
-    return this.request(`/v1/factory/workflow-intakes/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    })
-  }
-  pollWorkflowIntakes(): Promise<{ polling: boolean }> {
-    return this.request('/v1/factory/workflow-intakes/poll', { method: 'POST' })
-  }
   getGithubReviewHooks(): Promise<{
     login: string | null
     hooks: {
@@ -1764,119 +1716,6 @@ export class NexusMindClient {
     return this.request(`/v1/autonomous-agents/github/review-hooks/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       body: JSON.stringify({ administration_token }),
-    })
-  }
-  getWorkflowCatalog(): Promise<WorkflowCatalog> {
-    return this.request('/v1/factory/workflow-catalog')
-  }
-  registerFactoryRunner(name: string): Promise<{ id: string; name: string; token: string }> {
-    return this.request('/v1/factory/runners', { method: 'POST', body: JSON.stringify({ name }) })
-  }
-  revokeFactoryRunner(id: string): Promise<void> {
-    return this.request(`/v1/factory/runners/${encodeURIComponent(id)}`, { method: 'DELETE' })
-  }
-  createFactoryWorkspace(data: {
-    runner_id: string
-    name: string
-    root_path: string
-  }): Promise<Workspace> {
-    return this.request('/v1/factory/workspaces', { method: 'POST', body: JSON.stringify(data) })
-  }
-  confirmFactoryWorkspace(
-    id: string,
-    revision: number,
-    repositories: Repository[],
-  ): Promise<Workspace> {
-    return this.request(`/v1/factory/workspaces/${encodeURIComponent(id)}/confirm`, {
-      method: 'POST',
-      body: JSON.stringify({ revision, repositories }),
-    })
-  }
-  createFactoryWorkflow(definition: WorkflowDefinition): Promise<StoredWorkflow> {
-    return this.request('/v1/factory/workflows', {
-      method: 'POST',
-      body: JSON.stringify(definition),
-    })
-  }
-  startFactoryWorkflow(
-    definition_id: string,
-    source_key: string,
-    task: unknown,
-  ): Promise<WorkflowRun> {
-    return this.request('/v1/factory/workflow-runs', {
-      method: 'POST',
-      body: JSON.stringify({ definition_id, source_key, task }),
-    })
-  }
-  startNextLinearWorkflow(
-    id: string,
-    connector_id: string,
-    team_id?: string,
-    project_id?: string,
-  ): Promise<{ run: WorkflowRun | null; reason?: string }> {
-    return this.request(`/v1/factory/workflows/${encodeURIComponent(id)}/linear-next`, {
-      method: 'POST',
-      body: JSON.stringify({
-        connector_id,
-        team_id: team_id || null,
-        project_id: project_id || null,
-      }),
-    })
-  }
-  getWorkflowPublicationIdentity(): Promise<{enabled:boolean;login:string|null;error:string|null}> {return this.request('/v1/factory/github/publication-identity')}
-  getWorkflowAgentProfile(
-    id: string,
-  ): Promise<import('../pages/factory/workflows/runtime').WorkflowAgentProfile> {
-    return this.request(`/v1/factory/workflow-agent-profiles/${encodeURIComponent(id)}`)
-  }
-  saveWorkflowRuntime(
-    workspace: string,
-    revision: number,
-    config: import('../pages/factory/workflows/runtime').RuntimeConfig,
-  ): Promise<import('../pages/factory/workflows/runtime').RuntimeState> {
-    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/runtime`, {
-      method: 'PUT',
-      body: JSON.stringify({ revision, config }),
-    })
-  }
-  listRepoSecrets(workspace: string): Promise<import('../pages/factory/workflows/RepoSecrets').RepoSecretList> {
-    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/repo-secrets`)
-  }
-  saveRepoSecret(
-    workspace: string,
-    repository: string,
-    kind: import('../pages/factory/workflows/RepoSecrets').RepoSecretKind,
-    content: string,
-  ): Promise<import('../pages/factory/workflows/RepoSecrets').RepoSecretList> {
-    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/repo-secrets`, {
-      method: 'PUT',
-      body: JSON.stringify({ repository, kind, content }),
-    })
-  }
-  deleteRepoSecret(
-    workspace: string,
-    repository: string,
-    kind: import('../pages/factory/workflows/RepoSecrets').RepoSecretKind,
-  ): Promise<import('../pages/factory/workflows/RepoSecrets').RepoSecretList> {
-    const qs = new URLSearchParams({ repository, kind })
-    return this.request(`/v1/factory/workspaces/${encodeURIComponent(workspace)}/repo-secrets?${qs}`, { method: 'DELETE' })
-  }
-  getFactoryWorkflowRun(id: string): Promise<WorkflowRun> {
-    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}`)
-  }
-  getWorkflowRunEvents(id: string, query: WorkflowEventQuery): Promise<WorkflowEventPage> {
-    const qs = new URLSearchParams()
-    for (const [key, value] of Object.entries(query)) if (value != null) qs.set(key, String(value))
-    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/events?${qs}`)
-  }
-  controlFactoryWorkflowRun(
-    id: string,
-    action: 'cancel' | 'retry' | 'resume',
-    step_id?: string,
-  ): Promise<WorkflowRun> {
-    return this.request(`/v1/factory/workflow-runs/${encodeURIComponent(id)}/control`, {
-      method: 'POST',
-      body: JSON.stringify({ action, step_id }),
     })
   }
 

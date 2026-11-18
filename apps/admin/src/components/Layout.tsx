@@ -264,13 +264,6 @@ const NAV_GROUPS: NavGroup[] = [
         requiredPermission: ['factory_policy:read', 'autonomous_agent:read'],
       },
       {
-        label: 'Workflows',
-        href: '/factory/workflows',
-        icon: FolderGit,
-        adminOnly: true,
-        requiredPermission: 'factory_policy:read',
-      },
-      {
         label: 'Agentes',
         href: '/factory/agents',
         icon: Bot,
@@ -289,14 +282,14 @@ const NAV_GROUPS: NavGroup[] = [
         href: '/factory/runs',
         icon: PlayCircle,
         adminOnly: true,
-        requiredPermission: ['factory_policy:read', 'autonomous_agent:read'],
+        requiredPermission: 'autonomous_agent:read',
       },
       {
         label: 'Hallazgos',
         href: '/factory/findings',
         icon: Flag,
         adminOnly: true,
-        requiredPermission: ['factory_policy:read', 'autonomous_agent:read'],
+        requiredPermission: 'autonomous_agent:read',
       },
       {
         label: 'Pendientes',
