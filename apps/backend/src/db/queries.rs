@@ -16715,6 +16715,7 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
         ],
         "ai_content_manager" => vec!["content:write", "delivery:write"],
         "security_scan" => vec!["repository:read", "finding:write", "delivery:write"],
+        "product_strategist" => vec!["repository:read", "finding:write", "delivery:write"],
         "security_dast" => vec!["scan:active", "finding:write", "delivery:write"],
         _ => anyhow::bail!("invalid_template"),
     };
@@ -17381,6 +17382,25 @@ pub fn validate_autonomous_agent_definition(
                 if !(1..=10).contains(&limit) {
                     errors.push("invalid_auto_publish_daily_limit")
                 }
+            }
+        }
+        "product_strategist" => {
+            let repository_valid = current.revision.config.get("repository").and_then(|v| v.as_str())
+                .is_some_and(|v| crate::automation::connectors::validate_repository(v).is_ok());
+            if !repository_valid {
+                errors.push("valid_repository_required")
+            }
+            let per_run = current.revision.config.get("issues_per_run");
+            if per_run.is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=10).contains(&n))) {
+                errors.push("issues_per_run_out_of_range")
+            }
+            let labels_valid = current.revision.config.get("issue_labels").is_none_or(|v| {
+                v.as_array().is_some_and(|items| items.len() <= 10 && items.iter().all(|item| {
+                    item.as_str().is_some_and(|label| !label.trim().is_empty() && label.len() <= 50)
+                }))
+            });
+            if !labels_valid {
+                errors.push("invalid_issue_labels")
             }
         }
         "security_scan" => {
