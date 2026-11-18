@@ -261,12 +261,12 @@ async fn replay(
     Ok((report, output))
 }
 
-use crate::factory::verification::{command_timeout_secs, REPO_COMMAND_TIMEOUT_SECS as COMMAND_TIMEOUT_SECS, RUST_COMMAND_TIMEOUT_SECS};
-}
+use crate::factory::verification::command_timeout_secs;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::factory::verification::{REPO_COMMAND_TIMEOUT_SECS as COMMAND_TIMEOUT_SECS, RUST_COMMAND_TIMEOUT_SECS};
 
     fn task(repository: &str, files: &[&str]) -> GoldenTask {
         GoldenTask {
