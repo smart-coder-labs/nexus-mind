@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 113;
+pub const LATEST_USER_VERSION: i32 = 114;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -116,6 +116,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v111(conn)?;
     run_v112(conn)?;
     run_v113(conn)?;
+    run_v114(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -283,6 +284,25 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA foreign_keys = ON;
         PRAGMA user_version = 113;
         ",
+    )?;
+    Ok(())
+}
+
+/// Migration v114: one memory per `(org, topic_key, project)`. `topic_key` upserts are now
+/// project-scoped, so the database enforces what the lookup assumes. COALESCE puts the
+/// org-shared bucket (`project_id IS NULL`) in its own slot instead of letting every NULL
+/// project collide-free past a UNIQUE. No existing row can violate it: the previous
+/// behaviour kept at most one row per `(org_id, topic_key)`.
+pub fn run_v114(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 114 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_topic_key_project
+             ON memories(org_id, topic_key, COALESCE(project_id, ''))
+             WHERE topic_key IS NOT NULL;
+         PRAGMA user_version = 114;",
     )?;
     Ok(())
 }
@@ -9817,5 +9837,62 @@ mod tests {
             )
             .is_err());
         assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    /// v114 has to apply to a database that already holds `topic_key` memories — the old
+    /// upsert kept at most one row per `(org_id, topic_key)`, so nothing can collide — and
+    /// then keep one row per project while leaving the org-shared bucket its own slot.
+    #[test]
+    fn run_v114_scopes_the_topic_key_index_to_the_project() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "o1", "acme");
+        conn.execute("INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')", []).unwrap();
+        for project in ["p1", "p2"] {
+            conn.execute(
+                "INSERT INTO projects (id, org_id, name) VALUES (?1,'o1',?1)",
+                [project],
+            )
+            .unwrap();
+        }
+        // Pre-existing rows written before the index: one per project plus the org bucket.
+        for (id, project) in [("m1", Some("p1")), ("m2", Some("p2")), ("m3", None)] {
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, tool, content, topic_key, project_id)
+                 VALUES (?1,'o1','u1','claude','c','arch/auth',?2)",
+                rusqlite::params![id, project],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version=113;").unwrap();
+        run_v114(&conn).expect("v114 must apply to a database that already has topic_key rows");
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+
+        // A second row for the same project and key is now impossible...
+        assert!(conn
+            .execute(
+                "INSERT INTO memories (id, org_id, user_id, tool, content, topic_key, project_id)
+                 VALUES ('dup','o1','u1','claude','c','arch/auth','p1')",
+                [],
+            )
+            .is_err());
+        // ...and so is a second row in the org-shared bucket.
+        assert!(conn
+            .execute(
+                "INSERT INTO memories (id, org_id, user_id, tool, content, topic_key, project_id)
+                 VALUES ('dup','o1','u1','claude','c','arch/auth',NULL)",
+                [],
+            )
+            .is_err());
+        // Memories without a topic_key stay outside the index.
+        for id in ["n1", "n2"] {
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, tool, content, project_id)
+                 VALUES (?1,'o1','u1','claude','c','p1')",
+                [id],
+            )
+            .unwrap();
+        }
+        run_v114(&conn).expect("v114 must be idempotent");
     }
 }
