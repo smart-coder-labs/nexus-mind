@@ -845,6 +845,7 @@ fn label_color(label: &str) -> &'static str {
         "severity:low" => "0e8a16",
         "bug" => "d73a4a",
         "qa" => "1d76db",
+        "ux-review" => "0052cc",
         "i18n" => "c5def5",
         "a11y" => "bfdadc",
         "design" => "d4c5f9",

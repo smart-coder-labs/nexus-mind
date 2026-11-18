@@ -800,7 +800,7 @@ pub fn apply_local(
         command.env_remove("NEXUSMIND_API_KEY");
     }
     let mut plan = plan(&runtime, executor, root, nexusmind)?;
-    if executor == "nexus" && matches!(template, "qa" | "judge") {
+    if executor == "nexus" && matches!(template, "qa" | "judge" | "ux_review") {
         let qa_path =
             std::env::var("AUTONOMOUS_QA_MCP_CONFIG").unwrap_or_else(|_| "/app/qa-mcp.json".into());
         let qa: Value =

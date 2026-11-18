@@ -115,6 +115,10 @@ interface FormState {
   qaInstructions: string
   qaProjectId: string
   customInstructions: string
+  // ui/ux reviewer
+  uxRoutes: string // comma or line separated paths
+  uxMaxFindings: string
+  uxDomainPack: string
   // lead generation
   product: string
   icp: string
@@ -189,7 +193,7 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     isolation: 'default',
     allowedHosts: '',
     targetKind:
-      template === 'qa' || template === 'judge'
+      template === 'qa' || template === 'judge' || template === 'ux_review'
         ? 'web_application'
         : template === 'lead_generation' || template === 'ai_content_manager'
           ? 'none'
@@ -240,6 +244,9 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     judgeMode: 'auto',
     triggerWorkflow: '',
     slackChannel: '',
+    uxRoutes: '',
+    uxMaxFindings: '10',
+    uxDomainPack: 'none',
     loginUser: '',
     loginPassword: '',
     loginUrl: '',
@@ -284,6 +291,7 @@ export function preservedConfig(config: Record<string, unknown>, template: strin
     'on_success_trigger_delay_seconds',
   ]
   const fields: Record<string, string[]> = {
+    ux_review: ['outputs', 'repository', 'routes', 'max_findings', 'domain_pack', 'custom_instructions'],
     qa: [
       'outputs',
       'test_adapter',
@@ -363,6 +371,15 @@ export function buildConfig(state: FormState): Record<string, unknown> {
     if (state.repository.trim()) config.repository = state.repository.trim()
     if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (state.assignIssuesToSelf) config.assign_issues_to_self = true
+  } else if (state.template === 'ux_review') {
+    const outputs = ['nexusmind']
+    if (state.outputSlack) outputs.push('slack')
+    if (state.outputGithubIssue) outputs.push('github_issue')
+    config = { outputs, max_findings: Number(state.uxMaxFindings) || 10, domain_pack: state.uxDomainPack }
+    const routes = state.uxRoutes.split(/[,\n]/).map((route) => route.trim()).filter(Boolean)
+    if (routes.length) config.routes = routes
+    if (state.repository.trim()) config.repository = state.repository.trim()
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else if (state.template === 'github_issue_resolver') {
     config = { github_auth: 'server_gh_cli', base_branch: state.baseBranch.trim() || 'main' }
     if (state.repository.trim()) config.repository = state.repository.trim()
@@ -490,7 +507,7 @@ export function buildConfig(state: FormState): Record<string, unknown> {
       delete result.project_id;
     }
   }
-  if (['github_issue_resolver', 'qa'].includes(state.template) && state.githubPublicationConnectorId) result.github_publication_connector_id = state.githubPublicationConnectorId
+  if (['github_issue_resolver', 'qa', 'ux_review'].includes(state.template) && state.githubPublicationConnectorId) result.github_publication_connector_id = state.githubPublicationConnectorId
   else delete result.github_publication_connector_id
   if (state.executionModel.trim()) result.model = state.executionModel.trim()
   else delete result.model
@@ -553,6 +570,9 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     qaProjectId: typeof config.project_id === 'string' ? config.project_id : '',
     customInstructions:
       typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
+    uxRoutes: Array.isArray(config.routes) ? (config.routes as string[]).join(', ') : '',
+    uxMaxFindings: typeof config.max_findings === 'number' ? String(config.max_findings) : '10',
+    uxDomainPack: typeof config.domain_pack === 'string' ? config.domain_pack : 'none',
     product: typeof config.product === 'string' ? config.product : '',
     icp: typeof config.icp === 'string' ? config.icp : '',
     leadCount: typeof config.count === 'number' ? String(config.count) : '10',
@@ -729,7 +749,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
       let credentialConnectorId: string | undefined =
         state.existingCredentialConnectorId || undefined
       if (
-        (state.template === 'judge' || state.template === 'qa') &&
+        ['judge', 'qa', 'ux_review'].includes(state.template) &&
         state.loginUser.trim() &&
         state.loginPassword.trim()
       ) {
@@ -934,6 +954,8 @@ function validateStep(id: StepId, state: FormState): boolean {
         return false
       if (state.template === 'qa')
         return state.testAdapter === 'playwright' || (csvArgv(state.testCommand).length > 0 && Boolean(state.repository.trim()))
+      if (state.template === 'ux_review')
+        return !state.outputGithubIssue || Boolean(state.repository.trim())
       if (state.template === 'lead_generation')
         return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
@@ -1198,7 +1220,7 @@ function StepConfig({
   const publicationConnections = useQuery({
     queryKey: ['github-publication-connectors'],
     queryFn: () => client.listAutonomousAgentConnectors(),
-    enabled: ['github_issue_resolver', 'qa'].includes(template),
+    enabled: ['github_issue_resolver', 'qa', 'ux_review'].includes(template),
   })
   const publishers = (publicationConnections.data ?? []).filter((connector) => connector.kind === 'target_secret' && connector.health === 'ready' && connector.secret_configured && connector.metadata.purpose === 'factory_workflow_github' && connector.scopes.includes('github:write'))
   const judges = (judgesQuery.data ?? []).filter((agent) => agent.template_key === 'judge')
@@ -1434,6 +1456,44 @@ function StepConfig({
         </>
       )}
 
+      {template === 'ux_review' && (
+        <>
+          <Field label="Screens to review" hint="Paths, comma or line separated. Leave blank to review the main screens found in the app's navigation.">
+            <Textarea className="font-mono text-xs" rows={2} value={state.uxRoutes} onChange={(event) => set('uxRoutes', event.target.value)} placeholder="/dashboard, /settings" />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Most findings per run" hint="Highest impact first; similar problems are merged.">
+              <Input inputSize="sm" type="number" min={1} max={25} value={state.uxMaxFindings} onChange={(event) => set('uxMaxFindings', event.target.value)} />
+            </Field>
+            <Field label="Product type" hint="Adds checks specific to this kind of product.">
+              <NativeSelect value={state.uxDomainPack} onChange={(value) => set('uxDomainPack', value)}>
+                <option value="none">General</option>
+                <option value="saas_admin">SaaS / admin panel</option>
+                <option value="fintech">Fintech</option>
+                <option value="marketplace">Marketplace / booking</option>
+                <option value="ecommerce">Online store</option>
+                <option value="ai_chat">AI assistant / chat</option>
+                <option value="content">Content / editorial</option>
+              </NativeSelect>
+            </Field>
+          </div>
+          <Field label="Repository for issues (owner/repo)" hint="Issues are filed here, and its DESIGN.md or design rules are applied when present.">
+            <Input inputSize="sm" value={state.repository} onChange={(event) => set('repository', event.target.value)} placeholder="acme/web" />
+          </Field>
+          <Field label="Focus (optional)" hint="Flows or areas to prioritise. It cannot widen what the agent is allowed to do.">
+            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={(event) => set('customInstructions', event.target.value)} placeholder="e.g. Onboarding and billing settings" />
+          </Field>
+          <div className="rounded-xl border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Outputs</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked disabled size="sm" label="NexusMind (canonical)" />
+              <Switch checked={state.outputSlack} onCheckedChange={(value) => set('outputSlack', value)} size="sm" label="Slack summary" />
+              <Switch checked={state.outputGithubIssue} onCheckedChange={(value) => set('outputGithubIssue', value)} size="sm" label="GitHub issue" />
+            </div>
+          </div>
+        </>
+      )}
+
       {template === 'github_issue_resolver' && (
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
@@ -1528,7 +1588,7 @@ function StepConfig({
         </div>
       )}
 
-      {['github_issue_resolver', 'qa'].includes(template) && <Field label="Cuenta para publicar en GitHub" hint="Reutiliza una cuenta publicadora de Workflows para crear PRs o issues. La cuenta gh del backend sigue siendo la revisora y la usada por los webhooks; no se cambia su login.">
+      {['github_issue_resolver', 'qa', 'ux_review'].includes(template) && <Field label="Cuenta para publicar en GitHub" hint="Reutiliza una cuenta publicadora de Workflows para crear PRs o issues. La cuenta gh del backend sigue siendo la revisora y la usada por los webhooks; no se cambia su login.">
         <NativeSelect value={state.githubPublicationConnectorId} onChange={(value) => set('githubPublicationConnectorId', value)}>
           <option value="">Cuenta gh del backend (comportamiento actual)</option>
           {state.githubPublicationConnectorId && !publishers.some((connector) => connector.id === state.githubPublicationConnectorId) && <option value={state.githubPublicationConnectorId}>Cuenta no disponible: revisa su conexión</option>}
@@ -2191,7 +2251,7 @@ function StepConfig({
         </div>
       )}
 
-      {(template === 'judge' || template === 'qa') && (
+      {['judge', 'qa', 'ux_review'].includes(template) && (
         <div className="rounded-xl border border-border-primary p-3 space-y-3">
           <div>
             <p className="text-xs font-medium text-text-secondary">App login</p>

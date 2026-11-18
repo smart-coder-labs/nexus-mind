@@ -7,7 +7,7 @@ use crate::{db::queries, models::types::AutonomousAgentConnector};
 pub fn connection(conn: &Connection, org: &str, template: &str, config: &Value) -> Result<Option<AutonomousAgentConnector>> {
     let Some(value) = config.get("github_publication_connector_id") else { return Ok(None); };
     let id = value.as_str().filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("github_publication_connection_invalid"))?;
-    if !matches!(template, "github_issue_resolver" | "qa") { bail!("github_publication_connection_invalid"); }
+    if !matches!(template, "github_issue_resolver" | "qa" | "ux_review") { bail!("github_publication_connection_invalid"); }
     let connector = queries::list_autonomous_agent_connectors(conn, org)?.into_iter().find(|c| c.id == id)
         .ok_or_else(|| anyhow::anyhow!("github_publication_connection_invalid"))?;
     validate(&connector, config)?;

@@ -42,6 +42,18 @@ impl Fixture {
     }
 }
 
+/// ux_review goes through the same create/validate path and the same drift-tolerant
+/// identity as QA, so re-reviewing a screen does not file a second issue.
+#[test]
+fn ux_review_is_creatable_and_reuses_open_finding_when_fingerprint_drifts() {
+    let f = fixture("ux_review");
+    let first = f.detect(0, OLD_FP, TITLE, LOCATION);
+    let again = f.detect(1, NEW_FP, TITLE, LOCATION);
+    assert_eq!(again.id, first.id);
+    assert_eq!(again.fingerprint, OLD_FP);
+    assert_eq!(again.occurrence_count, 2);
+}
+
 #[test]
 fn reuses_open_finding_when_model_rewords_its_fingerprint() {
     let f = fixture("qa");
