@@ -9309,7 +9309,25 @@ async fn run_claim(store: SqliteStore, config: Arc<Config>, claim: queries::Clai
         );
     }
     let mut secret_values = Vec::new();
+    // Keep the lease alive for the whole run, not only while a model process runs:
+    // clone, planning, verification and fan-out waits can outlast the claim lease,
+    // and an expired lease hands the same run to a second, concurrent attempt.
+    let keepalive = {
+        let (store, claim) = (store.clone(), claim.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                let alive = store.conn().lock().ok().and_then(|conn| {
+                    queries::heartbeat_autonomous_agent_run(&conn, &claim.org_id, &claim.run.id, &claim.attempt_id, &claim.claim_token, 3700).ok()
+                });
+                if alive != Some(true) {
+                    return;
+                }
+            }
+        })
+    };
     let (mut status, mut result) = execute_claim(&store, &config, &claim, &mut secret_values).await;
+    keepalive.abort();
     if status == "succeeded" && claim.template_key == "qa" {
         let structured = structured_result(&result);
         let coverage = store.conn().lock().map_err(|_| anyhow::anyhow!("database_lock"))
