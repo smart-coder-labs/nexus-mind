@@ -34,6 +34,7 @@ fn test_config() -> Config {
         app_base_url: "http://localhost:5173".into(),
         admin_origin: "http://localhost:3000".into(),
         cookie_secure: false,
+        session_ttl_hours: 168,
         github_client_id: None,
         github_client_secret: None,
         github_redirect_uri: None,
@@ -400,6 +401,241 @@ async fn logout_clears_cookie_and_revokes_key() {
         StatusCode::UNAUTHORIZED,
         "/me with a revoked cookie must return 401"
     );
+}
+
+// ── Session lifetime, concurrent sessions and impersonation ──────────────────
+
+/// Build a router together with the org id and the live store, so a test can
+/// inspect (or age) the rows the handlers just wrote.
+fn app_with_store(config: Config) -> (axum::Router, String, nexusmind::store::sqlite::SqliteStore) {
+    let conn = connection::connect(":memory:").expect("in-memory db");
+    migrations::run(&conn).expect("migrations");
+
+    let (org, admin, _) =
+        queries::bootstrap(&conn, "Test Org", "test-org", ADMIN_EMAIL, "Test Admin")
+            .expect("bootstrap");
+    let hashed = hash_password(ADMIN_PASSWORD).expect("hash");
+    queries::set_user_password(&conn, &admin.id, &hashed).expect("set password");
+
+    let (router, store) = router::build_with_store(conn, config);
+    (router, org.id, store)
+}
+
+/// GET /v1/admin/auth/me with a session cookie; returns the status.
+async fn me_status_with_cookie(router: axum::Router, session: &str) -> StatusCode {
+    router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/auth/me")
+                .header("Cookie", format!("nexusmind_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+async fn json_body(response: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+}
+
+/// The login cookie must carry a `Max-Age` equal to the configured session TTL,
+/// so the browser and the server agree on when the session dies.
+#[tokio::test]
+async fn login_cookie_max_age_matches_session_ttl() {
+    let config = Config { session_ttl_hours: 3, ..test_config() };
+    let (router, _, _) = app_with_store(config);
+
+    let response = do_login(router).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let set_cookie = set_cookie_header(&response).to_lowercase();
+    assert!(
+        set_cookie.contains("max-age=10800"),
+        "cookie Max-Age must be the 3h TTL in seconds, got: {set_cookie}"
+    );
+}
+
+/// A session whose row has passed its `expires_at` must stop authenticating.
+#[tokio::test]
+async fn expired_session_cookie_returns_401() {
+    let (router, _, store) = app_with_store(test_config());
+
+    let login = do_login(router.clone()).await;
+    let session = extract_session_cookie(&login);
+    assert_eq!(
+        me_status_with_cookie(router.clone(), &session).await,
+        StatusCode::OK
+    );
+
+    // Age the session row past its expiry, as the clock would.
+    let key_hash = nexusmind::auth::api_keys::hash_key(&session);
+    {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "UPDATE api_keys SET expires_at = datetime('now', '-1 minute') WHERE key_hash = ?1",
+            [&key_hash],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        me_status_with_cookie(router, &session).await,
+        StatusCode::UNAUTHORIZED,
+        "an expired session cookie must return 401"
+    );
+}
+
+/// Logging in twice must leave both sessions usable — a second browser no
+/// longer kicks the first one out.
+#[tokio::test]
+async fn two_logins_keep_both_sessions_alive() {
+    let (router, _, _) = app_with_store(test_config());
+
+    let first = extract_session_cookie(&do_login(router.clone()).await);
+    let second = extract_session_cookie(&do_login(router.clone()).await);
+    assert_ne!(first, second, "each login must mint its own session");
+
+    assert_eq!(
+        me_status_with_cookie(router.clone(), &first).await,
+        StatusCode::OK,
+        "the first session must survive a second login"
+    );
+    assert_eq!(
+        me_status_with_cookie(router, &second).await,
+        StatusCode::OK
+    );
+}
+
+/// Logout stays scoped to the presented session.
+#[tokio::test]
+async fn logout_leaves_the_other_sessions_alive() {
+    let (router, _, _) = app_with_store(test_config());
+
+    let first = extract_session_cookie(&do_login(router.clone()).await);
+    let second = extract_session_cookie(&do_login(router.clone()).await);
+
+    let logout = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/auth/logout")
+                .header("Cookie", format!("nexusmind_session={first}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        me_status_with_cookie(router.clone(), &first).await,
+        StatusCode::UNAUTHORIZED,
+        "the session that logged out must be revoked"
+    );
+    assert_eq!(
+        me_status_with_cookie(router, &second).await,
+        StatusCode::OK,
+        "logout must not touch the user's other sessions"
+    );
+}
+
+/// Impersonation mints its own short-lived, audited credential and leaves the
+/// target admin's browser sessions alone.
+#[tokio::test]
+async fn impersonation_is_separate_short_lived_and_audited() {
+    const SUPERUSER_KEY: &str = "super-secret-key";
+    let config = Config {
+        superuser_key: Some(SUPERUSER_KEY.to_string()),
+        ..test_config()
+    };
+    let (router, org_id, _) = app_with_store(config);
+
+    // The org admin is signed in in their own browser.
+    let session = extract_session_cookie(&do_login(router.clone()).await);
+
+    let impersonate = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/internal/orgs/{org_id}/impersonate"))
+                .header("Authorization", format!("Bearer {SUPERUSER_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(impersonate.status(), StatusCode::OK);
+    let body = json_body(impersonate).await;
+
+    assert_eq!(
+        body["label"], "impersonation",
+        "the minted key must be labelled impersonation, got: {body}"
+    );
+    let token = body["token"].as_str().expect("token").to_string();
+    let expires_at = body["expires_at"].as_str().expect("expires_at");
+    let minutes_ahead = chrono::DateTime::parse_from_rfc3339(expires_at)
+        .expect("expires_at must be RFC3339")
+        .signed_duration_since(chrono::Utc::now())
+        .num_minutes();
+    assert!(
+        minutes_ahead > 0 && minutes_ahead <= 60,
+        "impersonation must expire within the hour, got {minutes_ahead} minutes"
+    );
+
+    // The impersonated admin is still signed in.
+    assert_eq!(
+        me_status_with_cookie(router.clone(), &session).await,
+        StatusCode::OK,
+        "impersonation must not revoke the admin's own sessions"
+    );
+
+    // The impersonation key resolves to its own org and nothing else.
+    let me = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/auth/me")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(me.status(), StatusCode::OK);
+    let me_body = json_body(me).await;
+    assert_eq!(
+        me_body["org"]["id"], org_id,
+        "the impersonation key must resolve only to its own org"
+    );
+
+    // And it left exactly one audit entry.
+    let audit = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/internal/audit?action=org.impersonated")
+                .header("Authorization", format!("Bearer {SUPERUSER_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(audit.status(), StatusCode::OK);
+    let entries = json_body(audit).await;
+    let entries = entries.as_array().expect("audit must return a list");
+    assert_eq!(entries.len(), 1, "impersonation must be audited once");
+    assert_eq!(entries[0]["org_id"], org_id);
+    assert_eq!(entries[0]["metadata"]["origin"], "superadmin");
 }
 
 // ── JSON error response tests ─────────────────────────────────────────────────

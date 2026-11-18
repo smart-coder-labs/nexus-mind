@@ -89,7 +89,11 @@ export function deleteOrg(orgId: string): Promise<void> {
   return request(`/internal/orgs/${orgId}`, { method: 'DELETE' })
 }
 
-export function impersonateOrg(orgId: string): Promise<{ token: string }> {
+/** Mints a short-lived `impersonation` key on the org admin's account. It does
+ *  not touch that admin's own browser sessions and expires at `expires_at`. */
+export function impersonateOrg(
+  orgId: string,
+): Promise<{ token: string; label: string; expires_at: string }> {
   return request(`/internal/orgs/${orgId}/impersonate`, { method: 'POST' })
 }
 

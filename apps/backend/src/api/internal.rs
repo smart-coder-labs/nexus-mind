@@ -288,7 +288,10 @@ pub async fn impersonate_org(
     require_superuser(&superuser_key, &headers)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let token = queries::get_org_admin_key(&conn, &org_id)
+    // Mints a short-lived `impersonation` key and writes the audit entry; the
+    // target admin's own browser sessions are left alone. See
+    // `queries::create_impersonation_key`.
+    let (token, expires_at) = queries::get_org_admin_key(&conn, &org_id)
         .map_err(db_err)?
         .ok_or_else(|| {
             (
@@ -299,7 +302,11 @@ pub async fn impersonate_org(
                 }),
             )
         })?;
-    Ok(Json(serde_json::json!({ "token": token })))
+    Ok(Json(serde_json::json!({
+        "token": token,
+        "label": queries::IMPERSONATION_LABEL,
+        "expires_at": expires_at,
+    })))
 }
 
 pub async fn suspend_user(

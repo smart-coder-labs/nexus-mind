@@ -42,3 +42,5 @@ CI clones with full history because `migration::git_history` has a calibration t
 ## Run
 
 `cd apps/backend && cargo run` (reads `data/nexusmind.db` relative to `apps/backend`, port 8080). Seed with `scripts/reset-demo.sh`. Set `COOKIE_SECURE=false` for browser logins over plain HTTP.
+
+Sessions: a login mints a `web-session` API key that expires after `SESSION_TTL_HOURS` (default 168 = 7 days, also the cookie `Max-Age`); a user keeps up to 5 live sessions (`queries::MAX_LIVE_WEB_SESSIONS`, least recently used dropped past that) and dead rows are swept on the next login. Backoffice impersonation mints a separate 1h `impersonation` key and writes its own `org.impersonated` audit row — it never touches the target admin's sessions.

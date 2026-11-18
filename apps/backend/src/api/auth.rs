@@ -48,12 +48,19 @@ fn bad_request(msg: &str, code: &str) -> (StatusCode, Json<ApiError>) {
 /// browser on an insecure origin, which turns a successful login into an
 /// immediate bounce back to /login. See the field docs for the security
 /// trade-off — it must be true wherever TLS is available.
-fn set_session_cookie(cookies: &Cookies, raw_key: String, secure: bool) {
+///
+/// `ttl_hours` is [`Config::session_ttl_hours_clamped`], the same TTL written
+/// to the session key's `expires_at` by `queries::create_web_session_key`. It
+/// becomes the cookie `Max-Age` so the browser drops the cookie exactly when
+/// the server stops accepting the key, instead of presenting a dead
+/// credential and getting a surprise 401.
+fn set_session_cookie(cookies: &Cookies, raw_key: String, secure: bool, ttl_hours: i64) {
     let mut cookie = Cookie::new("nexusmind_session", raw_key);
     cookie.set_http_only(true);
     cookie.set_path("/");
     cookie.set_secure(secure);
     cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
+    cookie.set_max_age(tower_cookies::cookie::time::Duration::hours(ttl_hours));
     cookies.add(cookie);
 }
 
@@ -90,10 +97,16 @@ pub async fn login(
             .map_err(|_| internal_err("db error"))?
             .ok_or_else(|| internal_err("user not found"))?;
 
-        let raw_key = queries::create_web_session_key(&conn, &auth_ctx.user_id, &auth_ctx.org_id)
-            .map_err(|_| internal_err("failed to create session"))?;
+        let ttl_hours = config.session_ttl_hours_clamped();
+        let raw_key = queries::create_web_session_key(
+            &conn,
+            &auth_ctx.user_id,
+            &auth_ctx.org_id,
+            ttl_hours,
+        )
+        .map_err(|_| internal_err("failed to create session"))?;
 
-        set_session_cookie(&cookies, raw_key, config.cookie_secure);
+        set_session_cookie(&cookies, raw_key, config.cookie_secure, ttl_hours);
 
         return Ok(Json(serde_json::json!({
             "org": org,
@@ -123,10 +136,11 @@ pub async fn login(
         .map_err(|_| internal_err("db error"))?
         .ok_or_else(|| internal_err("org not found"))?;
 
-    let raw_key = queries::create_web_session_key(&conn, &user.id, &user.org_id)
+    let ttl_hours = config.session_ttl_hours_clamped();
+    let raw_key = queries::create_web_session_key(&conn, &user.id, &user.org_id, ttl_hours)
         .map_err(|_| internal_err("failed to create session"))?;
 
-    set_session_cookie(&cookies, raw_key, config.cookie_secure);
+    set_session_cookie(&cookies, raw_key, config.cookie_secure, ttl_hours);
 
     Ok(Json(serde_json::json!({
         "org": org,

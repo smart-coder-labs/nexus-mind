@@ -57,6 +57,18 @@ pub struct Config {
     #[arg(long, env = "COOKIE_SECURE", default_value_t = true)]
     pub cookie_secure: bool,
 
+    /// Lifetime of a browser session, in hours. Default 168 (7 days).
+    ///
+    /// A login mints a `web-session` API key whose `expires_at` is this far
+    /// ahead of now — `validate_api_key` refuses the key past that point — and
+    /// the session cookie carries the same `Max-Age` so the browser and the
+    /// server agree on when the session dies.
+    ///
+    /// Read through [`Config::session_ttl_hours_clamped`], which bounds the
+    /// value to 1 hour .. 1 year.
+    #[arg(long, env = "SESSION_TTL_HOURS", default_value_t = 168)]
+    pub session_ttl_hours: u64,
+
     #[arg(long, env = "GITHUB_CLIENT_ID")]
     pub github_client_id: Option<String>,
 
@@ -99,4 +111,45 @@ pub struct Config {
 
     #[arg(long, env = "AUTONOMOUS_AGENT_POLL_SECONDS", default_value_t = 15)]
     pub autonomous_agent_poll_seconds: u64,
+}
+
+impl Config {
+    /// Session lifetime in hours, bounded to 1 hour .. 1 year and narrowed to
+    /// the `i64` the session code works in. A `SESSION_TTL_HOURS` of 0 would
+    /// otherwise mint a session that is already expired when the login
+    /// response reaches the browser, and an absurd value would overflow the
+    /// cookie `Max-Age`.
+    pub fn session_ttl_hours_clamped(&self) -> i64 {
+        self.session_ttl_hours.clamp(1, 24 * 365) as i64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Config {
+        Config::try_parse_from(args).expect("config must parse")
+    }
+
+    #[test]
+    fn session_ttl_defaults_to_one_week() {
+        let config = parse(&["nexusmind"]);
+        assert_eq!(config.session_ttl_hours, 168);
+        assert_eq!(config.session_ttl_hours_clamped(), 168);
+    }
+
+    #[test]
+    fn session_ttl_is_clamped_to_a_usable_range() {
+        assert_eq!(
+            parse(&["nexusmind", "--session-ttl-hours", "0"]).session_ttl_hours_clamped(),
+            1,
+            "a zero TTL must not mint an already-expired session"
+        );
+        assert_eq!(
+            parse(&["nexusmind", "--session-ttl-hours", "999999999"]).session_ttl_hours_clamped(),
+            24 * 365
+        );
+    }
 }
