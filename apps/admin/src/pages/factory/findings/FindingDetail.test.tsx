@@ -36,3 +36,37 @@ describe('FindingDetail repository selector', () => {
     expect(onCreateIssue).toHaveBeenCalledWith('finding-1', 'acme/api')
   })
 })
+
+describe('FindingDetail evidence', () => {
+  const base = { deliveries: [], connectedDestinations: new Set<string>(), can: () => true, onResolveWithAgent: () => {},
+    onCreateIssue: () => {}, creatingIssue: false, onMarkResolved: () => {}, onArchive: () => {}, onRestore: () => {},
+    onPublish: () => {}, publishing: false, onRetryDelivery: () => {} }
+
+  it('shows a Product Strategist proposal in full with its screenshot', () => {
+    const strategist: AutonomousAgentFinding = { ...finding, evidence: {
+      problem: 'Owners cannot see **why** a run failed.', proposal: 'Add a failure reason to the run list.',
+      acceptance_criteria: ['The run list shows the reason', 'The reason links to the transcript'],
+      type: 'improvement', module: 'factory/runs', repository: 'acme/admin', screenshot_url: 'https://cdn.example/shot.png',
+    } }
+    render(<FindingDetail {...base} finding={strategist} templateKey="product_strategist" />)
+    expect(screen.getByText('Proposal · Improvement')).toBeInTheDocument()
+    expect(screen.queryByText(/Bug/)).toBeNull()
+    expect(screen.getByText('Problem')).toBeInTheDocument()
+    expect(screen.getByText('why').tagName).toBe('STRONG')
+    expect(screen.getByText('Add a failure reason to the run list.')).toBeInTheDocument()
+    expect(screen.getByText('The run list shows the reason')).toBeInTheDocument()
+    expect(screen.getByText('The reason links to the transcript')).toBeInTheDocument()
+    expect(screen.getByText('acme/admin')).toBeInTheDocument()
+    expect(screen.getByText('factory/runs')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: `Screenshot for ${finding.title}` })).toHaveAttribute('src', 'https://cdn.example/shot.png')
+  })
+
+  it('still shows a QA finding as a bug with steps and no proposal', () => {
+    const qa: AutonomousAgentFinding = { ...finding, evidence: { kind: 'functional', steps: ['Open the page', 'Click save'] } }
+    render(<FindingDetail {...base} finding={qa} templateKey="qa" />)
+    expect(screen.getByText(/^Bug · /)).toBeInTheDocument()
+    expect(screen.getByText('Steps to reproduce')).toBeInTheDocument()
+    expect(screen.getByText('Click save')).toBeInTheDocument()
+    expect(screen.queryByText('Acceptance criteria')).toBeNull()
+  })
+})
