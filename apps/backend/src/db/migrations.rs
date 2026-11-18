@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 112;
+pub const LATEST_USER_VERSION: i32 = 113;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -115,6 +115,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v110(conn)?;
     run_v111(conn)?;
     run_v112(conn)?;
+    run_v113(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -237,6 +238,31 @@ pub fn run_v112(conn: &Connection) -> Result<()> {
         PRAGMA foreign_keys = ON;
         PRAGMA user_version = 112;
         ",
+    )?;
+    Ok(())
+}
+
+/// Migration v113: give the session rows minted before sessions had a TTL an
+/// expiry, so they can die.
+///
+/// `validate_api_key` reads `expires_at IS NULL` as "never expires", and the
+/// login-time sweep only removes rows that are revoked or already past their
+/// expiry. Every `web-session` (and early `impersonation`) row written before
+/// this change therefore authenticates forever and is never collected — a
+/// browser cookie from months ago still logs in. Backfilling the default
+/// 168-hour (7 day) window retires them on the same schedule a session minted
+/// today gets. Rows that already carry an `expires_at` are left alone.
+///
+/// Idempotent — guarded by PRAGMA user_version < 113.
+pub fn run_v113(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 113 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "UPDATE api_keys SET expires_at = datetime('now', '+168 hours')
+          WHERE label IN ('web-session','impersonation') AND expires_at IS NULL;
+         PRAGMA user_version = 113;",
     )?;
     Ok(())
 }
@@ -9745,6 +9771,39 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(get_user_version(&conn), 112);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    /// A session row written before sessions had a TTL has `expires_at IS NULL`,
+    /// which `validate_api_key` reads as "never expires" and the login sweep
+    /// never collects. v113 has to hand those rows an expiry — and only those:
+    /// a long-lived personal API key must keep its NULL.
+    #[test]
+    fn run_v113_backfills_an_expiry_onto_legacy_session_rows() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "o1", "acme");
+        conn.execute("INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')", []).unwrap();
+        for (id, label) in [("k1", "web-session"), ("k2", "impersonation"), ("k3", "default")] {
+            conn.execute(
+                "INSERT INTO api_keys (id,user_id,org_id,key_hash,label) VALUES (?1,'u1','o1',?1,?2)",
+                rusqlite::params![id, label],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version=112;").unwrap();
+        run_v113(&conn).unwrap();
+        let expiries: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT id,expires_at FROM api_keys ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(expiries[0].1.is_some(), "the legacy web-session row must get an expiry");
+        assert!(expiries[1].1.is_some(), "the legacy impersonation row must get an expiry");
+        assert_eq!(expiries[2].1, None, "a personal API key must stay non-expiring");
+        assert_eq!(get_user_version(&conn), 113);
+        run_v113(&conn).expect("v113 must be idempotent");
     }
 }

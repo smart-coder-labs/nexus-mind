@@ -31,7 +31,17 @@ function StatusBadge({ status }: { status: User['status'] }) {
   )
 }
 
-function ImpersonateModal({ token, onClose }: { token: string; onClose: () => void }) {
+// `expires_at` arrives in SQLite's UTC `YYYY-MM-DD HH:MM:SS` shape, which
+// browsers parse as *local* time — normalize it to ISO before formatting.
+function formatExpiry(expiresAt: string) {
+  return new Date(`${expiresAt.replace(' ', 'T')}Z`).toLocaleString()
+}
+
+function ImpersonateModal({ token, expiresAt, onClose }: {
+  token: string
+  expiresAt: string
+  onClose: () => void
+}) {
   const [copied, setCopied] = useState(false)
 
   const copy = () => {
@@ -71,7 +81,10 @@ function ImpersonateModal({ token, onClose }: { token: string; onClose: () => vo
         </button>
 
         <p className="text-[11px] text-text-quaternary leading-relaxed">
-          Use this token to log in to the admin panel with API key auth. Token expires when the session is revoked.
+          Use this token to log in to the admin panel with API key auth. The token is valid until{' '}
+          <span className="text-text-secondary">{formatExpiry(expiresAt)}</span>; logging in with it
+          consumes the token and starts a fresh admin session that lasts 1 hour from login.
+          Impersonating again issues a new token.
         </p>
 
         <button
@@ -156,7 +169,7 @@ export default function OrgDetail() {
   const [error, setError] = useState('')
 
   const [suspending, setSuspending] = useState<string | null>(null)
-  const [impersonateToken, setImpersonateToken] = useState<string | null>(null)
+  const [impersonateToken, setImpersonateToken] = useState<{ token: string; expires_at: string } | null>(null)
   const [impersonating, setImpersonating] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -188,7 +201,7 @@ export default function OrgDetail() {
     if (!id) return
     setImpersonating(true)
     impersonateOrg(id)
-      .then(({ token }) => setImpersonateToken(token))
+      .then(({ token, expires_at }) => setImpersonateToken({ token, expires_at }))
       .catch(err => setError(err.message ?? 'Failed to impersonate org'))
       .finally(() => setImpersonating(false))
   }
@@ -366,7 +379,8 @@ export default function OrgDetail() {
       {/* Impersonate modal */}
       {impersonateToken && (
         <ImpersonateModal
-          token={impersonateToken}
+          token={impersonateToken.token}
+          expiresAt={impersonateToken.expires_at}
           onClose={() => setImpersonateToken(null)}
         />
       )}

@@ -92,6 +92,25 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
     }
 }
 
+/// Returns the `label` of the api_key with this hash, or `None` when no row
+/// matches. Deliberately unfiltered on `revoked`/`expires_at`: callers that
+/// care have already run [`validate_api_key`] on the same hash.
+///
+/// Used by the login exchange to tell a backoffice `impersonation` credential
+/// apart from an ordinary key — the two mint sessions with very different
+/// lifetimes, and laundering the first into the second would turn a 1-hour
+/// audited break-glass token into a week-long anonymous browser session.
+pub fn get_api_key_label(conn: &Connection, key_hash: &str) -> Result<Option<String>> {
+    let label = conn
+        .query_row(
+            "SELECT label FROM api_keys WHERE key_hash = ?1",
+            [key_hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(label)
+}
+
 /// Checks whether a key exists and its associated user account is disabled.
 /// Returns true if the key exists, is not revoked, has not expired, but the user's
 /// disabled_at IS NOT NULL. Used by auth middleware to return a specific error code.
@@ -3707,25 +3726,152 @@ pub fn assign_memory_collection(
     Ok(affected > 0)
 }
 
-/// Creates a "web-session" API key for the user, revoking any previous ones.
-/// Returns the raw API key.
-pub fn create_web_session_key(conn: &Connection, user_id: &str, org_id: &str) -> Result<String> {
-    conn.execute(
-        "UPDATE api_keys SET revoked = 1 WHERE user_id = ?1 AND label = 'web-session'",
-        [user_id],
-    )?;
+/// How many live `web-session` keys one user may hold at once. Logging in from
+/// a sixth browser revokes that user's least recently used session instead of
+/// all of them, so several devices work at the same time without the key table
+/// growing without bound.
+const MAX_LIVE_WEB_SESSIONS: u32 = 5;
 
+/// Lifetime of a backoffice impersonation credential, in hours. Deliberately
+/// not configurable: it is a superadmin break-glass key, not a browser login,
+/// and it must stay short no matter how a deployment is tuned.
+pub const IMPERSONATION_TTL_HOURS: u32 = 1;
+
+/// Upper bound on a TTL modifier, in hours (10 years). Keeps
+/// `datetime('now', '+N hours')` inside SQLite's representable range — beyond
+/// it the function returns NULL, which would silently mint a key that never
+/// expires.
+///
+/// Public because the session cookie's `Max-Age` has to be clamped with the
+/// same number as the row's `expires_at`: clamping only one side hands the
+/// browser a cookie that outlives the key it carries.
+pub const MAX_TTL_HOURS: u32 = 87_600;
+
+/// Inserts a session-style api_key row and returns `(raw_key, expires_at)`.
+///
+/// `expires_at` is computed by SQLite so it is stored in the same
+/// `YYYY-MM-DD HH:MM:SS` shape `datetime('now')` produces. That matters: the
+/// expiry predicate in [`validate_api_key`] is a plain string comparison, and
+/// an ISO `...T...Z` value sorts above `datetime('now')` for the whole day it
+/// falls on — i.e. it would read as "not expired". `created_at` keeps its
+/// existing ISO form; nothing compares it.
+fn insert_session_key(
+    conn: &Connection,
+    user_id: &str,
+    org_id: &str,
+    label: &str,
+    ttl_hours: u32,
+) -> Result<(String, String)> {
     let key_id = Uuid::new_v4().to_string();
     let (raw_key, key_hash) = api_keys::generate();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
+    let expires_at: String = conn.query_row(
+        "SELECT datetime('now', ?1)",
+        rusqlite::params![format!("+{} hours", ttl_hours.min(MAX_TTL_HOURS))],
+        |row| row.get(0),
+    )?;
+
     conn.execute(
-        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
-         VALUES (?1, ?2, ?3, ?4, 'web-session', ?5)",
-        rusqlite::params![key_id, user_id, org_id, key_hash, now],
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![key_id, user_id, org_id, key_hash, label, now, expires_at],
+    )?;
+
+    Ok((raw_key, expires_at))
+}
+
+/// Creates a "web-session" API key for the user, valid for `ttl_hours`.
+/// Returns the raw API key.
+///
+/// Sessions are no longer mutually exclusive — a second login leaves the first
+/// browser signed in. Three things bound the table instead:
+/// - every row gets an `expires_at`, so an abandoned session dies on its own;
+/// - the user's already-dead session rows (revoked or expired) are deleted;
+/// - at most `MAX_LIVE_WEB_SESSIONS` live sessions survive, the least recently
+///   used ones beyond the cap being revoked.
+pub fn create_web_session_key(
+    conn: &Connection,
+    user_id: &str,
+    org_id: &str,
+    ttl_hours: u32,
+) -> Result<String> {
+    // Sweep first so the cap below only ever counts credentials that still work.
+    // Nothing references api_keys(id), so dead rows can go rather than pile up.
+    // Only `web-session` rows: an ordinary login must not reach into the user's
+    // `impersonation` rows, which [`create_impersonation_key`] sweeps itself.
+    conn.execute(
+        "DELETE FROM api_keys
+         WHERE user_id = ?1
+           AND label = 'web-session'
+           AND (revoked = 1 OR (expires_at IS NOT NULL AND expires_at <= datetime('now')))",
+        [user_id],
+    )?;
+
+    let (raw_key, _expires_at) =
+        insert_session_key(conn, user_id, org_id, "web-session", ttl_hours)?;
+
+    // Keep the newest `MAX_LIVE_WEB_SESSIONS` and revoke the rest. `datetime()`
+    // normalizes the mix of stored formats (`last_used*` is written by
+    // `datetime('now')`, `created_at` is ISO), and `rowid DESC` breaks ties
+    // because several logins can land in the same second — without it the row
+    // just inserted could be the one revoked.
+    conn.execute(
+        "UPDATE api_keys SET revoked = 1
+         WHERE user_id = ?1
+           AND label = 'web-session'
+           AND revoked = 0
+           AND (expires_at IS NULL OR expires_at > datetime('now'))
+           AND id NOT IN (
+               SELECT id FROM api_keys
+               WHERE user_id = ?1
+                 AND label = 'web-session'
+                 AND revoked = 0
+                 AND (expires_at IS NULL OR expires_at > datetime('now'))
+               ORDER BY datetime(COALESCE(last_used_at, last_used, created_at)) DESC, rowid DESC
+               LIMIT ?2
+           )",
+        rusqlite::params![user_id, i64::from(MAX_LIVE_WEB_SESSIONS)],
     )?;
 
     Ok(raw_key)
+}
+
+/// Mints a short-lived "impersonation" key for the user. Returns
+/// `(raw_key, expires_at)`.
+///
+/// Kept separate from [`create_web_session_key`] on purpose: a superadmin
+/// borrowing an admin's identity must never disturb that admin's own browser
+/// sessions, so this only ever touches rows labelled `impersonation`.
+///
+/// At most one break-glass credential is live per user: the previous one is
+/// revoked here, so a second "Impersonate" click replaces the outstanding key
+/// rather than leaving another live hour of access behind.
+pub fn create_impersonation_key(
+    conn: &Connection,
+    user_id: &str,
+    org_id: &str,
+    ttl_hours: u32,
+) -> Result<(String, String)> {
+    // Order matters: sweep the dead rows, revoke the live one, then insert.
+    // Both writes run before the insert, so neither can reach the row this call
+    // is about to return — swapping the revoke past the insert would revoke the
+    // key it returns — and the result is exactly one live `impersonation` row.
+    conn.execute(
+        "DELETE FROM api_keys
+         WHERE user_id = ?1
+           AND label = 'impersonation'
+           AND (revoked = 1 OR (expires_at IS NOT NULL AND expires_at <= datetime('now')))",
+        [user_id],
+    )?;
+
+    conn.execute(
+        "UPDATE api_keys SET revoked = 1
+         WHERE user_id = ?1 AND label = 'impersonation' AND revoked = 0",
+        [user_id],
+    )?;
+
+    insert_session_key(conn, user_id, org_id, "impersonation", ttl_hours)
 }
 
 /// Lists all roles belonging to an organization or global templates.
@@ -5151,7 +5297,19 @@ pub fn delete_org(conn: &Connection, org_id: &str) -> Result<bool> {
     Ok(deleted > 0)
 }
 
-pub fn get_org_admin_key(conn: &Connection, org_id: &str) -> Result<Option<String>> {
+/// A minted impersonation credential, plus the identity and expiry the caller
+/// needs to audit it.
+#[derive(Debug, Clone)]
+pub struct OrgImpersonation {
+    pub raw_key: String,
+    pub user_id: String,
+    pub expires_at: String,
+}
+
+/// Mints a short-lived impersonation key for the org's oldest active admin.
+/// Returns `None` when the org has no active admin. The admin's own web
+/// sessions are left alone — impersonating someone must not log them out.
+pub fn get_org_admin_key(conn: &Connection, org_id: &str) -> Result<Option<OrgImpersonation>> {
     let admin_user: Option<String> = conn
         .query_row(
             "SELECT id FROM users WHERE org_id = ?1 AND role = 'admin' AND status = 'active' ORDER BY created_at ASC LIMIT 1",
@@ -5162,8 +5320,13 @@ pub fn get_org_admin_key(conn: &Connection, org_id: &str) -> Result<Option<Strin
 
     match admin_user {
         Some(user_id) => {
-            let key = create_web_session_key(conn, &user_id, org_id)?;
-            Ok(Some(key))
+            let (raw_key, expires_at) =
+                create_impersonation_key(conn, &user_id, org_id, IMPERSONATION_TTL_HOURS)?;
+            Ok(Some(OrgImpersonation {
+                raw_key,
+                user_id,
+                expires_at,
+            }))
         }
         None => Ok(None),
     }
@@ -9643,6 +9806,200 @@ mod tests {
         let conn = setup();
         let result = validate_api_key(&conn, "deadbeef").unwrap();
         assert!(result.is_none());
+    }
+
+    // ── Session keys (TTL, cap, sweep) ───────────────────────────────────────
+
+    /// Number of the user's keys with `label` that still authenticate.
+    fn live_keys(conn: &Connection, user_id: &str, label: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM api_keys
+             WHERE user_id = ?1 AND label = ?2 AND revoked = 0
+               AND (expires_at IS NULL OR expires_at > datetime('now'))",
+            rusqlite::params![user_id, label],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn expires_at_of(conn: &Connection, raw_key: &str) -> String {
+        conn.query_row(
+            "SELECT expires_at FROM api_keys WHERE key_hash = ?1",
+            rusqlite::params![api_keys::hash_key(raw_key)],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn create_web_session_key_sets_comparable_expires_at() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let raw_key = create_web_session_key(&conn, &user.id, &org.id, 168).unwrap();
+        let expires_at = expires_at_of(&conn, &raw_key);
+
+        // The window also pins the FORMAT: `validate_api_key` compares strings,
+        // and an ISO "…T…Z" value sorts above every `datetime(...)` string, so
+        // the upper bound would fail if the expiry were written that way.
+        let in_window: bool = conn
+            .query_row(
+                "SELECT ?1 > datetime('now', '+167 hours') AND ?1 <= datetime('now', '+168 hours')",
+                rusqlite::params![expires_at],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            in_window,
+            "expires_at must be ~168h out in SQLite's own format, got {expires_at}"
+        );
+        assert!(
+            validate_api_key(&conn, &api_keys::hash_key(&raw_key))
+                .unwrap()
+                .is_some(),
+            "a fresh session key must authenticate"
+        );
+    }
+
+    #[test]
+    fn create_web_session_key_with_zero_ttl_is_already_expired() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let raw_key = create_web_session_key(&conn, &user.id, &org.id, 0).unwrap();
+        assert!(
+            validate_api_key(&conn, &api_keys::hash_key(&raw_key))
+                .unwrap()
+                .is_none(),
+            "expiry must actually be enforced by validate_api_key"
+        );
+    }
+
+    #[test]
+    fn create_web_session_key_caps_live_sessions() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let mut raw_keys = Vec::new();
+        for _ in 0..=MAX_LIVE_WEB_SESSIONS {
+            raw_keys.push(create_web_session_key(&conn, &user.id, &org.id, 168).unwrap());
+        }
+
+        assert_eq!(
+            live_keys(&conn, &user.id, "web-session"),
+            i64::from(MAX_LIVE_WEB_SESSIONS),
+            "only MAX_LIVE_WEB_SESSIONS sessions may stay live"
+        );
+        assert!(
+            validate_api_key(&conn, &api_keys::hash_key(&raw_keys[0]))
+                .unwrap()
+                .is_none(),
+            "the least recently used session is the one revoked"
+        );
+        for raw_key in &raw_keys[1..] {
+            assert!(
+                validate_api_key(&conn, &api_keys::hash_key(raw_key))
+                    .unwrap()
+                    .is_some(),
+                "the session just minted must never be the one revoked"
+            );
+        }
+    }
+
+    #[test]
+    fn create_web_session_key_sweeps_dead_rows() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let revoked = create_web_session_key(&conn, &user.id, &org.id, 168).unwrap();
+        conn.execute(
+            "UPDATE api_keys SET revoked = 1 WHERE key_hash = ?1",
+            rusqlite::params![api_keys::hash_key(&revoked)],
+        )
+        .unwrap();
+        // A 0-hour TTL expires on creation, so this row is dead too.
+        create_web_session_key(&conn, &user.id, &org.id, 0).unwrap();
+
+        create_web_session_key(&conn, &user.id, &org.id, 168).unwrap();
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE user_id = ?1 AND label = 'web-session'",
+                rusqlite::params![user.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "revoked and expired session rows must be deleted");
+    }
+
+    #[test]
+    fn create_impersonation_key_leaves_web_sessions_untouched() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let session = create_web_session_key(&conn, &user.id, &org.id, 168).unwrap();
+        let (impersonation, expires_at) =
+            create_impersonation_key(&conn, &user.id, &org.id, IMPERSONATION_TTL_HOURS).unwrap();
+
+        assert!(
+            validate_api_key(&conn, &api_keys::hash_key(&session))
+                .unwrap()
+                .is_some(),
+            "impersonating an admin must not sign that admin out"
+        );
+        assert_eq!(live_keys(&conn, &user.id, "web-session"), 1);
+
+        let label: String = conn
+            .query_row(
+                "SELECT label FROM api_keys WHERE key_hash = ?1",
+                rusqlite::params![api_keys::hash_key(&impersonation)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(label, "impersonation");
+        assert_eq!(expires_at, expires_at_of(&conn, &impersonation));
+    }
+
+    #[test]
+    fn create_impersonation_key_replaces_the_previous_live_one() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let session = create_web_session_key(&conn, &user.id, &org.id, 168).unwrap();
+        let (first, _) =
+            create_impersonation_key(&conn, &user.id, &org.id, IMPERSONATION_TTL_HOURS).unwrap();
+        let (second, _) =
+            create_impersonation_key(&conn, &user.id, &org.id, IMPERSONATION_TTL_HOURS).unwrap();
+
+        assert_eq!(
+            live_keys(&conn, &user.id, "impersonation"),
+            1,
+            "a second Impersonate click must not add another live break-glass key"
+        );
+        assert!(
+            validate_api_key(&conn, &api_keys::hash_key(&first))
+                .unwrap()
+                .is_none(),
+            "the superseded impersonation key must stop working"
+        );
+        assert!(
+            validate_api_key(&conn, &api_keys::hash_key(&second))
+                .unwrap()
+                .is_some(),
+            "the key just minted must never be the one revoked"
+        );
+
+        assert_eq!(
+            live_keys(&conn, &user.id, "web-session"),
+            1,
+            "revoking the previous impersonation key must not touch web-session rows"
+        );
+        assert!(
+            validate_api_key(&conn, &api_keys::hash_key(&session))
+                .unwrap()
+                .is_some(),
+            "impersonating twice must still not sign the admin out"
+        );
     }
 
     #[test]

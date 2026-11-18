@@ -514,6 +514,7 @@ fn app(role: &str) -> axum::Router {
             app_base_url: "http://localhost:5173".into(),
             admin_origin: "http://localhost:3000".into(),
             cookie_secure: false,
+            session_ttl_hours: 168,
             github_client_id: None,
             github_client_secret: None,
             github_redirect_uri: None,

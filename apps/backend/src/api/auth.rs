@@ -48,12 +48,22 @@ fn bad_request(msg: &str, code: &str) -> (StatusCode, Json<ApiError>) {
 /// browser on an insecure origin, which turns a successful login into an
 /// immediate bounce back to /login. See the field docs for the security
 /// trade-off — it must be true wherever TLS is available.
-fn set_session_cookie(cookies: &Cookies, raw_key: String, secure: bool) {
+///
+/// `ttl_hours` becomes the cookie's `Max-Age`, mirroring the `expires_at` the
+/// server put on the session key: the browser then drops the cookie instead of
+/// presenting a credential that can only 401. It is clamped with the same
+/// [`queries::MAX_TTL_HOURS`] the row's `expires_at` is clamped with — a
+/// misconfigured [`Config::session_ttl_hours`] must not produce a cookie that
+/// outlives the key it carries.
+fn set_session_cookie(cookies: &Cookies, raw_key: String, secure: bool, ttl_hours: u32) {
     let mut cookie = Cookie::new("nexusmind_session", raw_key);
     cookie.set_http_only(true);
     cookie.set_path("/");
     cookie.set_secure(secure);
     cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
+    cookie.set_max_age(tower_cookies::cookie::time::Duration::hours(i64::from(
+        ttl_hours.min(queries::MAX_TTL_HOURS),
+    )));
     cookies.add(cookie);
 }
 
@@ -90,10 +100,36 @@ pub async fn login(
             .map_err(|_| internal_err("db error"))?
             .ok_or_else(|| internal_err("user not found"))?;
 
-        let raw_key = queries::create_web_session_key(&conn, &auth_ctx.user_id, &auth_ctx.org_id)
-            .map_err(|_| internal_err("failed to create session"))?;
+        // Any valid key may be exchanged for a cookie, including the backoffice
+        // `impersonation` token the operator is told to paste here. That one is
+        // a 1-hour audited break-glass credential, so the session it buys stays
+        // labelled `impersonation` and keeps the same short lifetime instead of
+        // being laundered into a week-long, indistinguishable browser session.
+        let is_impersonation = queries::get_api_key_label(&conn, &hash)
+            .map_err(|_| internal_err("db error"))?
+            .is_some_and(|label| label == "impersonation");
 
-        set_session_cookie(&cookies, raw_key, config.cookie_secure);
+        let (raw_key, ttl_hours) = if is_impersonation {
+            let (raw_key, _) = queries::create_impersonation_key(
+                &conn,
+                &auth_ctx.user_id,
+                &auth_ctx.org_id,
+                queries::IMPERSONATION_TTL_HOURS,
+            )
+            .map_err(|_| internal_err("failed to create session"))?;
+            (raw_key, queries::IMPERSONATION_TTL_HOURS)
+        } else {
+            let raw_key = queries::create_web_session_key(
+                &conn,
+                &auth_ctx.user_id,
+                &auth_ctx.org_id,
+                config.session_ttl_hours,
+            )
+            .map_err(|_| internal_err("failed to create session"))?;
+            (raw_key, config.session_ttl_hours)
+        };
+
+        set_session_cookie(&cookies, raw_key, config.cookie_secure, ttl_hours);
 
         return Ok(Json(serde_json::json!({
             "org": org,
@@ -123,10 +159,16 @@ pub async fn login(
         .map_err(|_| internal_err("db error"))?
         .ok_or_else(|| internal_err("org not found"))?;
 
-    let raw_key = queries::create_web_session_key(&conn, &user.id, &user.org_id)
-        .map_err(|_| internal_err("failed to create session"))?;
+    let raw_key =
+        queries::create_web_session_key(&conn, &user.id, &user.org_id, config.session_ttl_hours)
+            .map_err(|_| internal_err("failed to create session"))?;
 
-    set_session_cookie(&cookies, raw_key, config.cookie_secure);
+    set_session_cookie(
+        &cookies,
+        raw_key,
+        config.cookie_secure,
+        config.session_ttl_hours,
+    );
 
     Ok(Json(serde_json::json!({
         "org": org,

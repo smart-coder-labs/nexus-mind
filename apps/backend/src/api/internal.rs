@@ -288,7 +288,7 @@ pub async fn impersonate_org(
     require_superuser(&superuser_key, &headers)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let token = queries::get_org_admin_key(&conn, &org_id)
+    let impersonation = queries::get_org_admin_key(&conn, &org_id)
         .map_err(db_err)?
         .ok_or_else(|| {
             (
@@ -299,7 +299,34 @@ pub async fn impersonate_org(
                 }),
             )
         })?;
-    Ok(Json(serde_json::json!({ "token": token })))
+
+    // Attributed to the borrowed identity, with the superadmin origin in the
+    // metadata — otherwise the entry is indistinguishable from the admin's own
+    // activity. Fails the request if it cannot be written: an unaudited
+    // impersonation credential must not leave the building.
+    queries::log_audit(
+        &conn,
+        &org_id,
+        &impersonation.user_id,
+        "org.impersonate",
+        "org",
+        Some(&org_id),
+        serde_json::json!({
+            "origin": "superadmin",
+            "label": "impersonation",
+            "expires_at": &impersonation.expires_at,
+            "ttl_hours": queries::IMPERSONATION_TTL_HOURS,
+        }),
+    )
+    .map_err(db_err)?;
+
+    // `token` is what the backoffice reads (apps/backoffice/src/api/client.ts);
+    // the label and expiry are additive so it can show how long it lasts.
+    Ok(Json(serde_json::json!({
+        "token": impersonation.raw_key,
+        "label": "impersonation",
+        "expires_at": impersonation.expires_at,
+    })))
 }
 
 pub async fn suspend_user(

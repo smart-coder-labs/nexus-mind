@@ -14,6 +14,7 @@
 |---|---|---|
 | `NEXUSMIND_TOKEN_ENCRYPTION_KEY` | Before first boot on any install that stores GitHub credentials | 64 hex characters (32 bytes). Generate with `openssl rand -hex 32`. |
 | `NEXUSMIND_EMBED_ENABLED` | To enable semantic search | Set to `true`. When unset the backend logs `Embedding service disabled` and search silently degrades to full-text — it does **not** fail loudly, so check the startup log. |
+| `SESSION_TTL_HOURS` | Never — defaults to `168` (7 days) | How long a browser login lasts (`--session-ttl-hours`). It is both the session key's `expires_at` and the session cookie's `Max-Age`; lower it to shrink the window a stolen cookie is useful for. |
 
 ### `NEXUSMIND_TOKEN_ENCRYPTION_KEY` is a startup dependency
 

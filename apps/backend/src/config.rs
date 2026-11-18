@@ -57,6 +57,18 @@ pub struct Config {
     #[arg(long, env = "COOKIE_SECURE", default_value_t = true)]
     pub cookie_secure: bool,
 
+    /// How long a browser credential stays valid, in hours. Default 168 (7 days).
+    ///
+    /// The `web-session` api_key minted at login gets an `expires_at` this far
+    /// out, so a stolen session cookie stops working on its own instead of
+    /// lasting forever. The same span is mirrored as the cookie's `Max-Age` so
+    /// the browser drops the cookie at the moment the server stops accepting
+    /// it, rather than sending a credential that can only 401. Both sides are
+    /// clamped to `queries::MAX_TTL_HOURS`, so an absurd value cannot desync
+    /// them.
+    #[arg(long, env = "SESSION_TTL_HOURS", default_value_t = 168)]
+    pub session_ttl_hours: u32,
+
     #[arg(long, env = "GITHUB_CLIENT_ID")]
     pub github_client_id: Option<String>,
 

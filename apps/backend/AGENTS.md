@@ -10,7 +10,7 @@ The NexusMind API and Factory control plane: Rust 2021 (stable toolchain), Axum,
 | `src/api/<area>.rs` | handlers, one file per area (memory, sdd, tasks, harnesses, factory*, workflow*, internal…) |
 | `src/api/helpers.rs` | `require_permission`, `require_explicit_permission`, visibility checks, `AppJson`/`JsonBody` extractors (both normalise body errors to a structured `ApiError`), `hidden_resource_not_found`, pagination (`MAX_LIST_LIMIT` 500) |
 | `src/api/middleware.rs` | auth (cookie `nexusmind_session` then Bearer, SHA-256 key lookup) and the audit layer (`AUDIT_SKIP_PATTERNS`) |
-| `src/db/migrations.rs` | `run_all` + `run_vN` (current 111), guarded by `PRAGMA user_version` |
+| `src/db/migrations.rs` | `run_all` + `run_vN` (current 113), guarded by `PRAGMA user_version` |
 | `src/db/queries.rs` | most SQL (≈25k lines — grep for the function, don't read it whole); other `db/*.rs` hold area queries |
 | `src/store/sqlite.rs` | `SqliteStore` wrapping `Arc<Mutex<Connection>>` |
 | `src/models/types.rs` | request/response types, `AuthContext`, `ApiError`, `UserRole` |
@@ -41,4 +41,4 @@ CI clones with full history because `migration::git_history` has a calibration t
 
 ## Run
 
-`cd apps/backend && cargo run` (reads `data/nexusmind.db` relative to `apps/backend`, port 8080). Seed with `scripts/reset-demo.sh`. Set `COOKIE_SECURE=false` for browser logins over plain HTTP.
+`cd apps/backend && cargo run` (reads `data/nexusmind.db` relative to `apps/backend`, port 8080). Seed with `scripts/reset-demo.sh`. Set `COOKIE_SECURE=false` for browser logins over plain HTTP. `SESSION_TTL_HOURS` (`--session-ttl-hours`, default 168 = 7 days) bounds a web session: it is the session key's `expires_at` and the cookie's `Max-Age`.

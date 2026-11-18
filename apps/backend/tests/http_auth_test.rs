@@ -34,6 +34,7 @@ fn test_config() -> Config {
         app_base_url: "http://localhost:5173".into(),
         admin_origin: "http://localhost:3000".into(),
         cookie_secure: false,
+        session_ttl_hours: 168,
         github_client_id: None,
         github_client_secret: None,
         github_redirect_uri: None,
@@ -87,6 +88,43 @@ fn app_with_cookie_secure(cookie_secure: bool) -> axum::Router {
     queries::set_user_password(&conn, &admin.id, &hashed).expect("set password");
 
     router::build(conn, Config { cookie_secure, ..test_config() })
+}
+
+/// Same as [`app`] but with an explicit `session_ttl_hours`, so the tests can
+/// pin both the cookie `Max-Age` and the server-side expiry.
+fn app_with_session_ttl_hours(session_ttl_hours: u32) -> axum::Router {
+    let conn = connection::connect(":memory:").expect("in-memory db");
+    migrations::run(&conn).expect("migrations");
+
+    let (_, admin, _) = queries::bootstrap(
+        &conn,
+        "Test Org",
+        "test-org",
+        ADMIN_EMAIL,
+        "Test Admin",
+    )
+    .expect("bootstrap");
+
+    let hashed = hash_password(ADMIN_PASSWORD).expect("hash");
+    queries::set_user_password(&conn, &admin.id, &hashed).expect("set password");
+
+    router::build(conn, Config { session_ttl_hours, ..test_config() })
+}
+
+/// GET /v1/admin/auth/me with a session cookie; returns the status only.
+async fn me_status(router: axum::Router, session: &str) -> StatusCode {
+    router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/auth/me")
+                .header("Cookie", format!("nexusmind_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
 }
 
 /// Read the raw `Set-Cookie` header off a response.
@@ -701,4 +739,85 @@ async fn logout_removal_cookie_mirrors_cookie_secure() {
             "logout removal cookie must mirror cookie_secure={secure}, got: {set_cookie}"
         );
     }
+}
+
+// ── SESSION_TTL_HOURS ─────────────────────────────────────────────────────────
+//
+// Web sessions used to live forever, and each login revoked the previous one —
+// one browser per user, and backoffice impersonation signed the admin out. Now
+// every session key carries an `expires_at`, the cookie carries the matching
+// `Max-Age`, and concurrent sessions are allowed up to a per-user cap.
+
+#[tokio::test]
+async fn login_cookie_max_age_matches_session_ttl() {
+    let response = do_login(app_with_session_ttl_hours(2)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let set_cookie = set_cookie_header(&response);
+    assert!(
+        set_cookie.contains("Max-Age=7200"),
+        "cookie Max-Age must mirror session_ttl_hours=2 (7200s), got: {set_cookie}"
+    );
+}
+
+#[tokio::test]
+async fn expired_session_cookie_is_rejected() {
+    // With a 0-hour TTL the key's `expires_at` is exactly `datetime('now')`, and
+    // `validate_api_key` compares with a strict `>` — so the session is already
+    // past its expiry on the very next request, with no sleeping involved.
+    let router = app_with_session_ttl_hours(0);
+    let session = extract_session_cookie(&do_login(router.clone()).await);
+
+    assert_eq!(
+        me_status(router, &session).await,
+        StatusCode::UNAUTHORIZED,
+        "/me with an expired session key must return 401"
+    );
+}
+
+#[tokio::test]
+async fn two_successive_logins_both_authenticate() {
+    let router = app();
+    let first = extract_session_cookie(&do_login(router.clone()).await);
+    let second = extract_session_cookie(&do_login(router.clone()).await);
+    assert_ne!(first, second, "each login must mint a distinct session key");
+
+    assert_eq!(
+        me_status(router.clone(), &first).await,
+        StatusCode::OK,
+        "the first session must survive a second login"
+    );
+    assert_eq!(me_status(router, &second).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn logout_revokes_only_the_presented_session() {
+    let router = app();
+    let first = extract_session_cookie(&do_login(router.clone()).await);
+    let second = extract_session_cookie(&do_login(router.clone()).await);
+
+    let logout = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/auth/logout")
+                .header("Cookie", format!("nexusmind_session={first}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        me_status(router.clone(), &first).await,
+        StatusCode::UNAUTHORIZED,
+        "the session that logged out must be revoked"
+    );
+    assert_eq!(
+        me_status(router, &second).await,
+        StatusCode::OK,
+        "logging out of one browser must not sign the other one out"
+    );
 }
