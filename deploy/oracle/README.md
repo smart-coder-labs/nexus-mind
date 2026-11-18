@@ -50,6 +50,7 @@ secrets are named `GH_*` (the workflow maps them to the app's `GITHUB_*` vars).
 | `APP_BASE_URL` / `CORS_ORIGINS` | URLs / CORS |
 | `NEXUSMIND_EMBED_ENABLED` | embeddings toggle |
 | `BACKUP_DATABASE_URL` / `BACKUP_INTERVAL_HOURS` | backup cadence |
+| `SESSION_TTL_HOURS` | browser session key lifetime and cookie `Max-Age`; optional, the backend defaults to `168` (7 days) |
 
 See `env.template` for the shape of the `.env` the workflow writes on the box.
 

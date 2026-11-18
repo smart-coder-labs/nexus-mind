@@ -9,6 +9,7 @@ use nexusmind::{
     auth::password::hash_password,
     config::Config,
     db::{connection, migrations, queries},
+    store::sqlite::SqliteStore,
 };
 use tower::util::ServiceExt;
 
@@ -34,6 +35,7 @@ fn test_config() -> Config {
         app_base_url: "http://localhost:5173".into(),
         admin_origin: "http://localhost:3000".into(),
         cookie_secure: false,
+        session_ttl_hours: 168,
         github_client_id: None,
         github_client_secret: None,
         github_redirect_uri: None,
@@ -670,6 +672,432 @@ async fn login_cookie_omits_secure_when_cookie_secure_is_false() {
     assert!(
         set_cookie.contains("SameSite=Lax"),
         "SameSite=Lax must still be set, got: {set_cookie}"
+    );
+}
+
+// ── SESSION_TTL_HOURS, multi-session, impersonation ───────────────────────────
+//
+// Sessions used to be immortal (`expires_at` was never written) and exclusive
+// (every login blanket-revoked the user's other `web-session` rows, which also
+// meant backoffice impersonation logged the impersonated admin out). These tests
+// pin the replacement behaviour: a TTL that the cookie and the key agree on,
+// additive sessions capped by an LRU, and an audited impersonation key on its own
+// label.
+
+const SUPERUSER_KEY: &str = "test-superuser";
+
+/// Build a router over an in-memory DB **plus** a handle to the same store, so a
+/// test can inspect the `api_keys` rows the HTTP flows produced. `/internal/*` is
+/// enabled via `superuser_key`.
+fn app_with_store(session_ttl_hours: i64) -> (axum::Router, SqliteStore) {
+    let conn = connection::connect(":memory:").expect("in-memory db");
+    migrations::run(&conn).expect("migrations");
+
+    let (_, admin, _) =
+        queries::bootstrap(&conn, "Test Org", "test-org", ADMIN_EMAIL, "Test Admin")
+            .expect("bootstrap");
+    let hashed = hash_password(ADMIN_PASSWORD).expect("hash");
+    queries::set_user_password(&conn, &admin.id, &hashed).expect("set password");
+
+    router::build_with_store(
+        conn,
+        Config {
+            session_ttl_hours,
+            superuser_key: Some(SUPERUSER_KEY.to_string()),
+            ..test_config()
+        },
+    )
+}
+
+/// Two tenants: org A (the usual test admin) and org B, each with a
+/// password-enabled admin, over one router with `/internal/*` enabled.
+struct TwoOrgs {
+    router: axum::Router,
+    org_a: String,
+    admin_a_key: String,
+    org_b: String,
+    admin_b_id: String,
+}
+
+const ORG_B_EMAIL: &str = "admin@orgb.test";
+
+fn app_two_orgs() -> TwoOrgs {
+    let conn = connection::connect(":memory:").expect("in-memory db");
+    migrations::run(&conn).expect("migrations");
+
+    let (org_a, admin_a, admin_a_key) =
+        queries::bootstrap(&conn, "Org A", "org-a", ADMIN_EMAIL, "Admin A").expect("bootstrap");
+    let (org_b, admin_b, _) =
+        queries::create_org(&conn, "Org B", "org-b", ORG_B_EMAIL, "Admin B").expect("create org B");
+
+    let hashed = hash_password(ADMIN_PASSWORD).expect("hash");
+    queries::set_user_password(&conn, &admin_a.id, &hashed).expect("set password A");
+    queries::set_user_password(&conn, &admin_b.id, &hashed).expect("set password B");
+
+    let router = router::build(
+        conn,
+        Config {
+            superuser_key: Some(SUPERUSER_KEY.to_string()),
+            ..test_config()
+        },
+    );
+
+    TwoOrgs {
+        router,
+        org_a: org_a.id,
+        admin_a_key,
+        org_b: org_b.id,
+        admin_b_id: admin_b.id,
+    }
+}
+
+/// Run a closure against the test database.
+fn with_db<T>(store: &SqliteStore, f: impl FnOnce(&rusqlite::Connection) -> T) -> T {
+    let db = store.conn();
+    let conn = db.lock().expect("db lock");
+    f(&conn)
+}
+
+/// Login as an arbitrary admin (the shared `do_login` is hardcoded to org A).
+async fn do_login_as(router: &axum::Router, email: &str) -> axum::response::Response {
+    let body = serde_json::json!({ "email": email, "password": ADMIN_PASSWORD });
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/auth/login")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// Status of `GET /v1/admin/auth/me` for a session cookie.
+async fn me_status(router: &axum::Router, session: &str) -> StatusCode {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/auth/me")
+                .header("Cookie", format!("nexusmind_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+/// `GET uri` with a Bearer token; returns status + parsed body.
+async fn get_with_bearer(
+    router: &axum::Router,
+    uri: &str,
+    bearer: &str,
+) -> (StatusCode, serde_json::Value) {
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("Authorization", format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// `POST /internal/orgs/:id/impersonate` as the superadmin.
+async fn impersonate(router: &axum::Router, org_id: &str) -> (StatusCode, serde_json::Value) {
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/internal/orgs/{org_id}/impersonate"))
+                .header("Authorization", format!("Bearer {SUPERUSER_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+#[tokio::test]
+async fn login_sets_session_expiry_and_matching_cookie_max_age() {
+    let (router, store) = app_with_store(168);
+    let response = do_login(router.clone()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // 168h = 604800s. The cookie must die exactly when the key does, or the
+    // browser keeps presenting a token the server already refuses.
+    let set_cookie = set_cookie_header(&response);
+    assert!(
+        set_cookie.contains("Max-Age=604800"),
+        "session cookie must carry Max-Age matching session_ttl_hours=168, got: {set_cookie}"
+    );
+
+    let session = extract_session_cookie(&response);
+    let hash = nexusmind::auth::api_keys::hash_key(&session);
+    let (expires_at, hours_ahead) = with_db(&store, |conn| {
+        conn.query_row(
+            "SELECT expires_at, (julianday(expires_at) - julianday('now')) * 24.0
+             FROM api_keys WHERE key_hash = ?1",
+            [&hash],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<f64>>(1)?)),
+        )
+        .expect("session row must exist")
+    });
+
+    let expires_at = expires_at.expect("expires_at must not be NULL — sessions must expire");
+    assert!(
+        !expires_at.contains('T'),
+        "expires_at must use SQLite's space format so `expires_at > datetime('now')` works, \
+         got: {expires_at}"
+    );
+    let hours_ahead = hours_ahead.expect("expires_at must be a parseable datetime");
+    assert!(
+        (hours_ahead - 168.0).abs() < 1.0,
+        "expires_at must sit ~168h ahead, got {hours_ahead}h"
+    );
+}
+
+#[tokio::test]
+async fn session_cookie_whose_key_expired_is_rejected() {
+    let (router, store) = app_with_store(1);
+    let session = extract_session_cookie(&do_login(router.clone()).await);
+    assert_eq!(me_status(&router, &session).await, StatusCode::OK);
+
+    // Backdating the row is the only way to test expiry without sleeping out a
+    // real TTL; everything else here goes through the HTTP flows.
+    let hash = nexusmind::auth::api_keys::hash_key(&session);
+    with_db(&store, |conn| {
+        conn.execute(
+            "UPDATE api_keys SET expires_at = datetime('now', '-1 hours') WHERE key_hash = ?1",
+            [&hash],
+        )
+        .unwrap()
+    });
+
+    assert_eq!(
+        me_status(&router, &session).await,
+        StatusCode::UNAUTHORIZED,
+        "an expired session cookie must not authenticate"
+    );
+}
+
+#[tokio::test]
+async fn two_logins_keep_both_sessions_alive() {
+    let (router, _store) = app_with_store(168);
+
+    let first = extract_session_cookie(&do_login(router.clone()).await);
+    let second = extract_session_cookie(&do_login(router.clone()).await);
+    assert_ne!(first, second, "each login must mint a distinct session");
+
+    assert_eq!(
+        me_status(&router, &first).await,
+        StatusCode::OK,
+        "the first session must survive a second login (laptop + phone)"
+    );
+    assert_eq!(me_status(&router, &second).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn sixth_login_evicts_oldest_session_and_rows_do_not_accumulate() {
+    let (router, store) = app_with_store(168);
+
+    let mut sessions = Vec::new();
+    for _ in 0..6 {
+        sessions.push(extract_session_cookie(&do_login(router.clone()).await));
+    }
+
+    assert_eq!(
+        me_status(&router, &sessions[0]).await,
+        StatusCode::UNAUTHORIZED,
+        "past the cap of 5 the least-recently-used session must be revoked"
+    );
+    for (i, session) in sessions.iter().enumerate().skip(1) {
+        assert_eq!(
+            me_status(&router, session).await,
+            StatusCode::OK,
+            "session {i} must still authenticate"
+        );
+    }
+
+    let live = with_db(&store, |conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM api_keys
+             WHERE label = 'web-session' AND revoked = 0
+               AND (expires_at IS NULL OR expires_at > datetime('now'))",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(live, 5, "live sessions must stay capped at 5");
+
+    // The admin key list must agree — expired/revoked rows stop showing up as
+    // active instead of piling up forever.
+    let (status, keys) = get_with_bearer(&router, "/v1/admin/keys", &sessions[5]).await;
+    assert_eq!(status, StatusCode::OK, "GET /v1/admin/keys must succeed: {keys}");
+    let listed = keys
+        .as_array()
+        .expect("keys must be an array")
+        .iter()
+        .filter(|k| k["label"] == "web-session")
+        .count();
+    assert_eq!(
+        listed, 5,
+        "only the 5 live sessions may be listed as active, got {keys}"
+    );
+}
+
+#[tokio::test]
+async fn impersonate_mints_short_lived_key_without_touching_admin_sessions() {
+    let orgs = app_two_orgs();
+
+    // The target org's admin is signed in on their own browser.
+    let admin_session = extract_session_cookie(&do_login_as(&orgs.router, ORG_B_EMAIL).await);
+    assert_eq!(me_status(&orgs.router, &admin_session).await, StatusCode::OK);
+
+    let (status, body) = impersonate(&orgs.router, &orgs.org_b).await;
+    assert_eq!(status, StatusCode::OK, "impersonation must succeed: {body}");
+
+    let token = body["token"].as_str().expect("token must still be returned");
+    assert_eq!(body["label"], "impersonation");
+    assert_eq!(body["ttl_hours"], 1);
+    assert_eq!(body["expires_in"], 3600);
+
+    let (me_status_code, me_body) = get_with_bearer(&orgs.router, "/v1/admin/auth/me", token).await;
+    assert_eq!(me_status_code, StatusCode::OK, "impersonation key must authenticate");
+    assert_eq!(me_body["org"]["id"], orgs.org_b);
+
+    assert_eq!(
+        me_status(&orgs.router, &admin_session).await,
+        StatusCode::OK,
+        "impersonation must NOT log the impersonated admin out of their own browser"
+    );
+}
+
+#[tokio::test]
+async fn impersonate_writes_exactly_one_audit_entry() {
+    let orgs = app_two_orgs();
+
+    let (status, body) = impersonate(&orgs.router, &orgs.org_b).await;
+    assert_eq!(status, StatusCode::OK, "impersonation must succeed: {body}");
+    let token = body["token"].as_str().unwrap().to_string();
+
+    let (status, entries) = get_with_bearer(
+        &orgs.router,
+        "/internal/audit?action=org.impersonate",
+        SUPERUSER_KEY,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "audit listing must succeed: {entries}");
+
+    let entries = entries.as_array().expect("audit must be an array");
+    assert_eq!(
+        entries.len(),
+        1,
+        "impersonation must write exactly one audit entry, got {entries:?}"
+    );
+    let entry = &entries[0];
+    assert_eq!(entry["org_id"], orgs.org_b, "audited against the target org");
+    assert_eq!(
+        entry["user_id"], orgs.admin_b_id,
+        "audited against the impersonated user"
+    );
+    assert_eq!(entry["resource_type"], "organization");
+    assert_eq!(entry["resource_id"], orgs.org_b);
+    assert_eq!(entry["metadata"]["origin"], "superadmin");
+    assert_eq!(entry["metadata"]["label"], "impersonation");
+
+    // Credentials must never land in audit metadata.
+    let serialized = entry.to_string();
+    assert!(
+        !serialized.contains(&token) && !serialized.contains(SUPERUSER_KEY),
+        "audit metadata must not contain key material: {serialized}"
+    );
+}
+
+#[tokio::test]
+async fn logout_revokes_only_the_presented_session() {
+    let (router, _store) = app_with_store(168);
+
+    let keep = extract_session_cookie(&do_login(router.clone()).await);
+    let drop_me = extract_session_cookie(&do_login(router.clone()).await);
+
+    let logout = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/auth/logout")
+                .header("Cookie", format!("nexusmind_session={drop_me}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        me_status(&router, &drop_me).await,
+        StatusCode::UNAUTHORIZED,
+        "the session that logged out must be dead"
+    );
+    assert_eq!(
+        me_status(&router, &keep).await,
+        StatusCode::OK,
+        "logout must revoke ONLY the presented session"
+    );
+}
+
+#[tokio::test]
+async fn impersonation_key_cannot_read_another_orgs_resources() {
+    let orgs = app_two_orgs();
+
+    // Org A creates a project with its own admin key.
+    let (status, _) = post_project(
+        orgs.router.clone(),
+        &orgs.admin_a_key,
+        serde_json::json!({ "name": "org-a-secret" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = impersonate(&orgs.router, &orgs.org_b).await;
+    assert_eq!(status, StatusCode::OK, "impersonation must succeed: {body}");
+    let token = body["token"].as_str().unwrap();
+
+    // The impersonation key resolves to org B and only org B.
+    let (status, me) = get_with_bearer(&orgs.router, "/v1/admin/auth/me", token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["org"]["id"], orgs.org_b);
+    assert_ne!(
+        me["org"]["id"].as_str(),
+        Some(orgs.org_a.as_str()),
+        "the impersonation key must never resolve to the other tenant"
+    );
+
+    let (status, projects) = get_with_bearer(&orgs.router, "/v1/projects", token).await;
+    assert_eq!(status, StatusCode::OK, "project listing must succeed: {projects}");
+    assert!(
+        !projects.to_string().contains("org-a-secret"),
+        "an org B impersonation key must not see org A's projects: {projects}"
     );
 }
 

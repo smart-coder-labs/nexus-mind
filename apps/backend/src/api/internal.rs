@@ -279,6 +279,16 @@ pub async fn delete_org(
     }
 }
 
+/// Lifetime of a backoffice impersonation token. Deliberately NOT
+/// `session_ttl_hours`: a support operator needs the next hour, not the next
+/// week, and this token is handed out around the login flow rather than through
+/// it, so it never gets a logout to clean it up.
+const IMPERSONATION_TTL_HOURS: i64 = 1;
+
+/// Mints a short-lived `impersonation` key for the org's primary admin.
+///
+/// Unlike the old implementation this does NOT reuse the browser-session path,
+/// so the impersonated admin stays logged in on their own devices.
 pub async fn impersonate_org(
     State(store): State<SqliteStore>,
     Extension(superuser_key): Extension<Option<String>>,
@@ -288,18 +298,49 @@ pub async fn impersonate_org(
     require_superuser(&superuser_key, &headers)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let token = queries::get_org_admin_key(&conn, &org_id)
-        .map_err(db_err)?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "No active admin found for this organization".to_string(),
-                    code: "no_admin".to_string(),
-                }),
-            )
-        })?;
-    Ok(Json(serde_json::json!({ "token": token })))
+    let (impersonated_user_id, token) =
+        queries::get_org_admin_key(&conn, &org_id, IMPERSONATION_TTL_HOURS)
+            .map_err(db_err)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "No active admin found for this organization".to_string(),
+                        code: "no_admin".to_string(),
+                    }),
+                )
+            })?;
+
+    // `/internal/*` routes sit outside the audit middleware, so the entry is
+    // written here. Metadata records WHO authorised the impersonation (the
+    // superadmin channel) but never any key material. If the audit write fails
+    // the whole request fails — an unaudited impersonation token is worse than a
+    // failed support action — and the key we just minted is revoked again.
+    if let Err(e) = queries::log_audit(
+        &conn,
+        &org_id,
+        &impersonated_user_id,
+        "org.impersonate",
+        "organization",
+        Some(&org_id),
+        serde_json::json!({
+            "origin": "superadmin",
+            "via": "internal",
+            "label": queries::LABEL_IMPERSONATION,
+            "ttl_hours": IMPERSONATION_TTL_HOURS,
+        }),
+    ) {
+        let hash = crate::auth::api_keys::hash_key(&token);
+        let _ = queries::revoke_key_by_hash(&conn, &hash);
+        return Err(db_err(e));
+    }
+
+    Ok(Json(serde_json::json!({
+        "token": token,
+        "label": queries::LABEL_IMPERSONATION,
+        "ttl_hours": IMPERSONATION_TTL_HOURS,
+        "expires_in": IMPERSONATION_TTL_HOURS * 3600,
+    })))
 }
 
 pub async fn suspend_user(

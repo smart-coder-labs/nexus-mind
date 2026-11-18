@@ -118,6 +118,9 @@ Use it as the MCP `NEXUSMIND_API_KEY` and point clients at `http://<box-ip>:8080
   here. The price is that **the session token travels in cleartext** — anyone on
   the network path can capture it and impersonate the user, so keep the AWS
   Security Group restricted to known source IPs. See "Getting to TLS" below.
+- **`SESSION_TTL_HOURS`** — lifetime of a browser session key and of the cookie's
+  `Max-Age`; the backend defaults to `168` (7 days), so set it in
+  `docker-compose.yml` only to shorten or lengthen that window.
 
 ## Getting to TLS (removes the `COOKIE_SECURE` debt)
 

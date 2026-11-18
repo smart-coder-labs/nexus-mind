@@ -57,6 +57,18 @@ pub struct Config {
     #[arg(long, env = "COOKIE_SECURE", default_value_t = true)]
     pub cookie_secure: bool,
 
+    /// Lifetime, in hours, of a browser session key AND of the session cookie's
+    /// `Max-Age`. Login writes an `api_keys` row labelled `web-session` with
+    /// `expires_at = datetime('now', '+<n> hours')`; after that instant
+    /// `validate_api_key` stops accepting the key, and the browser drops the
+    /// cookie at the same moment so the two never disagree.
+    ///
+    /// Default 168 (7 days). Sessions used to never expire at all, which left a
+    /// stolen cookie valid forever. Lower it for higher-sensitivity deployments;
+    /// a value of 0 or less mints a key that is dead on arrival, so don't.
+    #[arg(long, env = "SESSION_TTL_HOURS", default_value_t = 168)]
+    pub session_ttl_hours: i64,
+
     #[arg(long, env = "GITHUB_CLIENT_ID")]
     pub github_client_id: Option<String>,
 
