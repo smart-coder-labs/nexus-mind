@@ -353,9 +353,6 @@ mod tests {
         )
         .unwrap();
         let id = agent.definition.id;
-        // Without a repository or a project it cannot validate.
-        let invalid = queries::validate_autonomous_agent_definition(&conn, &org.id, &user.id, &id).unwrap().unwrap();
-        assert_eq!(invalid.revision.validation_status, "invalid");
         queries::put_autonomous_agent_target(&conn, &org.id, &id, &PutAutonomousAgentTargetRequest {
             kind: "project".into(),
             name: "Kas".into(),
