@@ -125,7 +125,9 @@ spec:
         # Exactly one worker for the MVP. It shares SQLite and Claude Code's
         # persisted host identity with the API container in this single pod.
         - name: autonomous-worker
-          image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+          # The backend image plus Rust (factory-commands.Dockerfile): the Issue
+          # Resolver builds and runs targeted tests while it works.
+          image: ghcr.io/smart-coder-labs/nexusmind-factory-commands:main-arm64
           imagePullPolicy: Always
           command: ["/app/autonomous_worker"]
           envFrom:
@@ -163,7 +165,7 @@ spec:
             #   higgsfield auth login   (interactive, once, inside the container)
             # Without the CLI, content agents still run and simply post text only.
             - name: PATH
-              value: /claude-home/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              value: /usr/local/cargo/bin:/claude-home/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             # Absolute base the Judge template uses to embed durable evidence image
             # URLs (the public /evidence re-signing endpoint) in GitHub comments.
             - name: PUBLIC_API_BASE_URL
@@ -212,7 +214,7 @@ spec:
               cpu: 250m
               memory: 512Mi
             limits:
-              memory: 6Gi
+              memory: 12Gi
       volumes:
         - name: data
           persistentVolumeClaim:
