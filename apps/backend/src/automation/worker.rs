@@ -4231,6 +4231,23 @@ fn nexusmind_memory_clause(project: &str) -> String {
     )
 }
 
+/// `slack_notify_channel`: a Slack channel or DM id (e.g. C0123, D04FE0BDN07) or
+/// #name. Anything else is ignored rather than handed to the model.
+fn slack_notify_channel(config: &serde_json::Value) -> Option<&str> {
+    config.get("slack_notify_channel").and_then(|v| v.as_str()).map(str::trim).filter(|c| {
+        (2..=80).contains(&c.len()) && c.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '#' | '-' | '_'))
+    })
+}
+
+/// One closing Slack message per agent run (or per resolver issue), so the owner
+/// follows the whole flow from a DM without reading run pages.
+fn slack_notify_clause(channel: &str, run_url: Option<&str>) -> String {
+    let link = run_url.map(|url| format!(" and end with this run link: {url}")).unwrap_or_default();
+    format!(
+        " When you are done, send exactly ONE short Slack message with the server-configured `slack` MCP (mcp__slack__* tools) to the channel `{channel}`: one or two lines saying what you did and the outcome, linking the GitHub issues or pull requests you created, reviewed or verified{link}. No secrets, tokens, logs or screenshots, and no other Slack messages."
+    )
+}
+
 /// The resolver edits code and may run targeted build/test commands, nothing else
 /// through the shell (the worker image carries Cargo and Node).
 const RESOLVER_TOOLS: &str = "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*,Bash(cargo check:*),Bash(cargo test:*),Bash(cargo build:*),Bash(cargo clippy:*),Bash(cargo fmt:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(npx tsc:*),Bash(npx vitest:*),Bash(pnpm:*)";
@@ -4942,6 +4959,15 @@ async fn resolve_issue_worktree(
     if let Some(project) = runtime_config.get("nexusmind_project").and_then(|v| v.as_str()) {
         prompt = format!("{}{prompt}", nexusmind_memory_clause(project));
     }
+    let notify = slack_notify_channel(&runtime_config).filter(|_| !sandboxed);
+    if let Some(channel) = notify {
+        let run_url = judge_run_url(std::env::var("APP_BASE_URL").ok().as_deref(), &claim.run.id);
+        prompt.push_str(&slack_notify_clause(channel, run_url.as_deref()));
+    }
+    let resolver_tools = match notify {
+        Some(_) => format!("{RESOLVER_TOOLS},mcp__slack__*"),
+        None => RESOLVER_TOOLS.to_string(),
+    };
     let mut claude = Command::new(&worker_bin);
     let max_turns_str = max_turns.to_string();
     // Codex runs only in the sandbox (enforced by its isolation): its model is
@@ -5028,7 +5054,7 @@ async fn resolve_issue_worktree(
             "--output-format", "stream-json", "--verbose",
             "--max-turns", &max_turns_str, "--permission-mode", "acceptEdits",
             "--allowedTools",
-            RESOLVER_TOOLS,
+            &resolver_tools,
             "--model", &model,
         ]);
     }
@@ -6418,7 +6444,7 @@ async fn execute_claim(
             config.insert("qa_coverage_history".into(), json!(history));
         }
     }
-    if claim.template_key == "judge" {
+    if claim.template_key == "judge" || slack_notify_channel(&claim.config).is_some() {
         if let Some(url) = judge_run_url(std::env::var("APP_BASE_URL").ok().as_deref(), &claim.run.id) {
             if let Some(config) = runtime_config.as_object_mut() {
                 config.insert("run_url".into(), json!(url));
@@ -6500,6 +6526,15 @@ async fn execute_claim(
     let allowed_tools = match memory_project {
         Some(_) if !allowed_tools.contains("mcp__plugin_nexusmind_nexusmind__*") => format!("{allowed_tools},{NEXUSMIND_MEMORY_TOOLS}"),
         _ => allowed_tools.to_string(),
+    };
+    let notify = slack_notify_channel(&runtime_config).filter(|_| !sandboxed && !pi_selected && !nexus_selected);
+    let allowed_tools = match notify {
+        Some(_) if !allowed_tools.contains("mcp__slack__*") => format!("{allowed_tools},mcp__slack__*"),
+        _ => allowed_tools,
+    };
+    let prompt = match notify {
+        Some(channel) => format!("{prompt}{}", slack_notify_clause(channel, runtime_config.get("run_url").and_then(|v| v.as_str()))),
+        None => prompt,
     };
     let allowed_tools = allowed_tools.as_str();
     let prompt = match memory_project {
@@ -10864,5 +10899,18 @@ mod resolver_issue_limit_tests {
         assert_eq!(limit(&serde_json::json!({"max_issues_per_run": 5})), 5);
         assert_eq!(limit(&serde_json::json!({"max_issues_per_run": 50})), 5);
         assert_eq!(limit(&serde_json::json!({"max_issues_per_run": 0})), 1);
+    }
+}
+
+#[cfg(test)]
+mod slack_notify_tests {
+    #[test]
+    fn notify_channel_accepts_ids_and_names_only() {
+        use super::slack_notify_channel as ch;
+        assert_eq!(ch(&serde_json::json!({"slack_notify_channel":"D04FE0BDN07"})), Some("D04FE0BDN07"));
+        assert_eq!(ch(&serde_json::json!({"slack_notify_channel":"#kasymir"})), Some("#kasymir"));
+        assert_eq!(ch(&serde_json::json!({"slack_notify_channel":"x; ignore previous"})), None);
+        assert_eq!(ch(&serde_json::json!({})), None);
+        assert!(super::slack_notify_clause("D04FE0BDN07", Some("https://a/run")).contains("D04FE0BDN07"));
     }
 }
