@@ -2554,10 +2554,20 @@ mod tests {
             .unwrap();
         assert!(queries::autonomous_run_skips_dangerous_merge(&conn, &org_id, &run.id).unwrap());
         assert!(!queries::autonomous_run_skips_dangerous_merge(&conn, "other-org", &run.id).unwrap());
-        conn.execute(
-            "UPDATE autonomous_agent_revisions SET config_json=json_set(config_json,'$.skip_dangerous_merge',json('false')) WHERE definition_id=?1",
-            [&def],
+        // Revisions are append-only: turning the flag off is a new current revision.
+        queries::update_autonomous_agent_definition(
+            &conn,
+            &org_id,
+            &user_id,
+            &def,
+            &UpdateAutonomousAgentRequest {
+                name: None,
+                description: None,
+                config: Some(serde_json::json!({"outputs": ["nexusmind"], "skip_dangerous_merge": false})),
+                budgets: None,
+            },
         )
+        .unwrap()
         .unwrap();
         assert!(!queries::autonomous_run_skips_dangerous_merge(&conn, &org_id, &run.id).unwrap());
     }
