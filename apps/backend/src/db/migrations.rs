@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 113;
+pub const LATEST_USER_VERSION: i32 = 114;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -116,6 +116,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v111(conn)?;
     run_v112(conn)?;
     run_v113(conn)?;
+    run_v114(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -284,6 +285,57 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 113;
         ",
     )?;
+    Ok(())
+}
+
+/// Migration v114: one memory per `(org_id, topic_key, project)` instead of one per
+/// `(org_id, topic_key)`. The index backs `upsert_memory`'s lookup and keeps two
+/// concurrent stores from racing a second row into the same bucket;
+/// `COALESCE(project_id,'')` makes the org-shared bucket (`project_id` NULL) a
+/// namespace of its own.
+///
+/// The old org-wide upsert kept at most one row per `(org_id, topic_key)`, so there is
+/// normally nothing to collide with. Rows written before the upsert existed can still
+/// duplicate a key, and a UNIQUE index would then abort startup, so that case gets a
+/// plain index and keeps its rows — `upsert_memory`'s own lookup is what separates the
+/// projects either way.
+pub fn run_v114(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 114 {
+        return Ok(());
+    }
+    let duplicate_keys: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+             SELECT 1 FROM memories
+             WHERE topic_key IS NOT NULL
+             GROUP BY org_id, topic_key, COALESCE(project_id, '')
+             HAVING COUNT(*) > 1
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if duplicate_keys == 0 {
+        conn.execute_batch(
+            "
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_org_topic_project
+                ON memories(org_id, topic_key, COALESCE(project_id, ''))
+                WHERE topic_key IS NOT NULL;
+            ",
+        )?;
+    } else {
+        tracing::warn!(
+            duplicate_keys,
+            "migration v114: topic_key groups predating the project-scoped upsert are duplicated; creating a non-unique index and leaving the rows in place"
+        );
+        conn.execute_batch(
+            "
+            CREATE INDEX IF NOT EXISTS idx_memories_org_topic_project
+                ON memories(org_id, topic_key, COALESCE(project_id, ''))
+                WHERE topic_key IS NOT NULL;
+            ",
+        )?;
+    }
+    conn.execute_batch("PRAGMA user_version = 114;")?;
     Ok(())
 }
 
@@ -9816,6 +9868,132 @@ mod tests {
                 [],
             )
             .is_err());
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    /// Rewinds a fully migrated database to the state a v113 deployment left behind,
+    /// so run_v114 runs against rows that already carry a `topic_key`.
+    fn rewind_to_v113(conn: &Connection) {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_memories_org_topic_project;
+             PRAGMA user_version = 113;",
+        )
+        .unwrap();
+    }
+
+    fn seed_topic_memory(conn: &Connection, id: &str, topic_key: &str, project_id: Option<&str>) {
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content, topic_key, project_id, revision_count)
+             VALUES (?1, 'o1', 'u1', 'p', 'claude', ?2, ?3, ?4, 1)",
+            rusqlite::params![id, format!("content of {id}"), topic_key, project_id],
+        )
+        .unwrap();
+    }
+
+    fn seed_org_with_two_projects(conn: &Connection) {
+        seed_org(conn, "o1", "acme");
+        conn.execute("INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name) VALUES ('pa','o1','alpha')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name) VALUES ('pb','o1','beta')", []).unwrap();
+    }
+
+    #[test]
+    fn run_v114_indexes_topic_key_per_project_on_a_database_that_already_has_memories() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org_with_two_projects(&conn);
+        rewind_to_v113(&conn);
+
+        // The three buckets the new key distinguishes: two projects plus org-shared.
+        seed_topic_memory(&conn, "m-a", "arch/auth", Some("pa"));
+        seed_topic_memory(&conn, "m-b", "arch/auth", Some("pb"));
+        seed_topic_memory(&conn, "m-null", "arch/auth", None);
+
+        run_v114(&conn).unwrap();
+
+        assert_eq!(get_user_version(&conn), 114);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)).unwrap(),
+            3,
+            "the migration must not touch existing rows"
+        );
+        let index_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_memories_org_topic_project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(index_sql.contains("UNIQUE"), "got {index_sql}");
+
+        // A fourth row in a bucket that is already taken is now rejected.
+        assert!(
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, topic_key, project_id, revision_count)
+                 VALUES ('m-dup','o1','u1','p','claude','dup','arch/auth','pa',1)",
+                [],
+            )
+            .is_err(),
+            "the unique index must reject a second row for (org, topic_key, project)"
+        );
+        // Rows without a topic_key stay outside the index.
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content, project_id, revision_count)
+             VALUES ('m-free','o1','u1','p','claude','free','pa',1)",
+            [],
+        )
+        .expect("rows with no topic_key are not constrained");
+    }
+
+    #[test]
+    fn run_v114_keeps_pre_upsert_duplicate_topic_keys_with_a_non_unique_index() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org_with_two_projects(&conn);
+        rewind_to_v113(&conn);
+
+        // Two rows in one bucket — only reachable from writes that predate the upsert.
+        seed_topic_memory(&conn, "m-old", "arch/auth", Some("pa"));
+        seed_topic_memory(&conn, "m-new", "arch/auth", Some("pa"));
+
+        run_v114(&conn).unwrap();
+
+        assert_eq!(get_user_version(&conn), 114, "a duplicate must not block the upgrade");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)).unwrap(),
+            2,
+            "no row may be dropped to make the index fit"
+        );
+        let index_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_memories_org_topic_project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!index_sql.contains("UNIQUE"), "got {index_sql}");
+    }
+
+    #[test]
+    fn run_v114_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let before: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='idx_memories_org_topic_project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        run_v114(&conn).unwrap();
+        let after: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='idx_memories_org_topic_project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
         assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
     }
 }
