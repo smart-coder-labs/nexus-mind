@@ -2679,7 +2679,7 @@ mod tests {
     #[test]
     fn agents_on_the_same_repository_do_not_block_each_other_and_get_their_project() {
         let (conn, org_id, user_id) = fixture();
-        conn.execute("INSERT INTO projects(id,org_id,name) VALUES ('nm',?1,'nexus-mind')", [&org_id]).unwrap();
+        conn.execute("INSERT INTO projects(id,org_id,name) VALUES ('nm',?1,'memory-project')", [&org_id]).unwrap();
         conn.execute("INSERT INTO code_projects(org_id,name,root_path,project_id,repo_url) VALUES (?1,'nm','/nm','nm','https://github.com/Acme/App.git')", [&org_id]).unwrap();
         queries::save_autonomous_runtime_health(
             &conn,
@@ -2706,7 +2706,7 @@ mod tests {
             ids.push(def);
         }
         let first = queries::claim_next_autonomous_agent_run(&conn, "worker", 60).unwrap().unwrap();
-        assert_eq!(first.config["nexusmind_project"], "nexus-mind");
+        assert_eq!(first.config["nexusmind_project"], "memory-project");
         // The first agent holds acme/app; the second agent still gets claimed.
         let second = queries::claim_next_autonomous_agent_run(&conn, "worker", 60).unwrap().unwrap();
         assert_ne!(first.run.definition_id, second.run.definition_id);
@@ -3217,14 +3217,13 @@ mod tests {
         let second = queries::claim_next_autonomous_agent_run(&conn, "worker-b", 60)
             .unwrap()
             .unwrap();
-        assert_ne!(first.run.definition_id, second.run.definition_id);
-        assert_eq!(second.run.definition_id, other_definition);
-        assert_eq!(
-            queries::list_autonomous_agent_runs(&conn, &org_id, Some(&second_definition)).unwrap()
-                [0]
-            .status,
-            "queued"
-        );
+        // Repository concurrency is per agent: another agent on acme/shared is not blocked.
+        assert_eq!(first.run.definition_id, first_definition);
+        assert_eq!(second.run.definition_id, second_definition);
+        let third = queries::claim_next_autonomous_agent_run(&conn, "worker-c", 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(third.run.definition_id, other_definition);
     }
 
     #[test]
