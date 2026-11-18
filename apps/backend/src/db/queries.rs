@@ -2923,10 +2923,17 @@ pub fn store_memory_with_audit(
 }
 
 /// Stores a memory with upsert semantics when `topic_key` is provided.
-/// - With `topic_key`: SELECT existing row for `(org_id, topic_key)`.
+/// - With `topic_key`: SELECT existing row for `(org_id, topic_key, project_id)`.
 ///   If found, UPDATE content/title/type/scope/hash and increment `revision_count`.
 ///   If not found, INSERT with `revision_count = 1`.
 /// - Without `topic_key`: always INSERT.
+///
+/// The upsert key includes the project: two projects in the same org can use the
+/// same `topic_key` without overwriting each other, and the org-shared bucket
+/// (`project_id IS NULL`) is its own namespace. An upsert never moves a row to a
+/// different project — `project_id` is set at INSERT and immutable afterwards.
+/// `run_v114` backs this with a unique index on
+/// `(org_id, topic_key, COALESCE(project_id,''))`.
 pub fn upsert_memory(
     conn: &Connection,
     org_id: &str,
@@ -2954,10 +2961,14 @@ pub fn upsert_memory(
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     if let Some(topic_key) = &req.topic_key {
-        // Try to find existing row for this (org_id, topic_key)
+        // Try to find existing row for this (org_id, topic_key, project_id). The
+        // COALESCE keeps the org-shared bucket (project_id IS NULL) a namespace of
+        // its own instead of matching every project-scoped row with the same key.
         let existing = conn.query_row(
-            "SELECT id, revision_count, created_at FROM memories WHERE org_id = ?1 AND topic_key = ?2",
-            rusqlite::params![org_id, topic_key],
+            "SELECT id, revision_count, created_at FROM memories
+             WHERE org_id = ?1 AND topic_key = ?2
+               AND COALESCE(project_id, '') = COALESCE(?3, '')",
+            rusqlite::params![org_id, topic_key, &project_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
         );
 
@@ -2966,9 +2977,11 @@ pub fn upsert_memory(
                 // UPDATE the existing row
                 let new_revision = revision_count + 1;
                 conn.execute(
+                    // project_id is deliberately absent: an upsert updates the row
+                    // it matched and never moves a memory to another project.
                     "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
-                     normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8
-                     WHERE id = ?9",
+                     normalized_hash = ?5, revision_count = ?6, tags = ?7
+                     WHERE id = ?8",
                     rusqlite::params![
                         req.content,
                         req.title,
@@ -2977,7 +2990,6 @@ pub fn upsert_memory(
                         normalized_hash,
                         new_revision,
                         tags_json,
-                        &project_id,
                         existing_id
                     ],
                 )?;
