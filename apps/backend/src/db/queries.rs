@@ -18855,6 +18855,27 @@ pub fn enqueue_github_webhook_agents(
     Ok(created)
 }
 
+/// Whether `workflow` matches `trigger_workflow`: comma-separated names,
+/// case-insensitive, where `*` matches any text (e.g. "Deploy*, GCP beta deploy").
+fn workflow_matches(patterns: &str, workflow: &str) -> bool {
+    let name = workflow.trim().to_lowercase();
+    patterns.split(',').map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty()).any(|pattern| {
+        let parts: Vec<&str> = pattern.split('*').collect();
+        let (first, last) = (parts[0], parts[parts.len() - 1]);
+        if parts.len() == 1 {
+            return name == pattern;
+        }
+        if name.len() < first.len() + last.len() || !name.starts_with(first) || !name.ends_with(last) {
+            return false;
+        }
+        let mut rest = &name[first.len()..name.len() - last.len()];
+        parts[1..parts.len() - 1].iter().all(|part| match rest.find(part) {
+            Some(at) => { rest = &rest[at + part.len()..]; true }
+            None => false,
+        })
+    })
+}
+
 /// Enabled, valid Judge agents that watch `workflow` finishing on `repository`
 /// (`trigger_workflow` in their config), with the repository spelled as the
 /// agent configured it (the worker matches targets against that list exactly).
@@ -18868,10 +18889,10 @@ pub fn judges_for_workflow(
         "SELECT d.id, r.config_json FROM autonomous_agent_definitions d
          JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key='judge' AND r.validation_status='valid'
-           AND lower(trim(json_extract(r.config_json,'$.trigger_workflow')))=lower(?2)",
+           AND json_extract(r.config_json,'$.trigger_workflow') IS NOT NULL",
     )?;
     let judges = stmt
-        .query_map(rusqlite::params![org_id, workflow.trim()], |row| {
+        .query_map(rusqlite::params![org_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -18879,6 +18900,9 @@ pub fn judges_for_workflow(
     let mut rows = Vec::new();
     for (id, config) in judges {
         let config: serde_json::Value = serde_json::from_str(&config)?;
+        if !config["trigger_workflow"].as_str().is_some_and(|patterns| workflow_matches(patterns, workflow)) {
+            continue;
+        }
         let allowed = crate::db::autonomous_scope::judge_repositories(conn, org_id, &id, &config)?;
         if let Some(repo) = allowed.into_iter().find(|repo| repo.eq_ignore_ascii_case(repository)) {
             rows.push((id, repo));
@@ -25119,3 +25143,24 @@ mod inheritance_tests {
             .expect("re-linking the same repo must be a no-op");
     }
 }
+
+#[cfg(test)]
+mod workflow_pattern_tests {
+    use super::workflow_matches;
+
+    #[test]
+    fn trigger_workflow_accepts_lists_and_wildcards() {
+        assert!(workflow_matches("Deploy", "deploy"));
+        assert!(!workflow_matches("Deploy", "Deploy App UI to GCP Beta"));
+        let patterns = "Deploy*, GCP beta deploy";
+        assert!(workflow_matches(patterns, "Deploy App UI to GCP Beta"));
+        assert!(workflow_matches(patterns, "Deploy Backoffice to GCP Beta"));
+        assert!(workflow_matches(patterns, "GCP beta deploy"));
+        assert!(!workflow_matches(patterns, "E2E Tests (post-deploy)"));
+        assert!(workflow_matches("*deploy*", "E2E Tests (post-deploy)"));
+        assert!(workflow_matches("Deploy*Beta", "Deploy App UI to GCP Beta"));
+        assert!(!workflow_matches("Deploy*Beta*Beta", "Deploy Beta"));
+        assert!(!workflow_matches(" , ", "Deploy"));
+    }
+}
+
