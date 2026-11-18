@@ -18003,6 +18003,49 @@ pub struct ClaimedAutonomousRun {
 // its WIP branches instead of starting over.
 const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url", "deploy_workflow", "continue_from_run_id"];
 
+/// Runs still leased by `worker_id` when that worker starts again were cut off by
+/// its restart (a deploy). Requeue them at once instead of waiting out the lease,
+/// without spending an attempt, and point an interrupted resolver at its own WIP
+/// checkpoints. A run interrupted three times in a row fails instead, so a run that
+/// kills the worker cannot loop forever. Returns the requeued run ids.
+pub fn recover_interrupted_autonomous_runs(conn: &Connection, worker_id: &str) -> Result<Vec<String>> {
+    let leases: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT lease.run_id, lease.attempt_id, run.org_id FROM autonomous_agent_leases lease
+             JOIN autonomous_agent_runs run ON run.id=lease.run_id
+             WHERE lease.released_at IS NULL AND lease.worker_id=?1 AND run.status IN ('leased','running')",
+        )?
+        .query_map([worker_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut requeued = Vec::new();
+    for (run_id, attempt_id, org_id) in leases {
+        let restarts: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM automation_revocations v
+             JOIN automation_attempts a ON a.id=v.attempt_id
+             JOIN autonomous_agent_runs run ON run.automation_run_id=a.run_id
+             WHERE run.id=?1 AND v.reason='worker_restarted'",
+            [&run_id],
+            |row| row.get(0),
+        )?;
+        finalize_qa_attempt_plan_if_needed(conn, &org_id, &run_id, &attempt_id)?;
+        revoke_automation_attempt(conn, &org_id, &attempt_id, "worker_restarted")?;
+        conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND released_at IS NULL", [&run_id])?;
+        if restarts >= 2 {
+            conn.execute("UPDATE autonomous_agent_runs SET status='failed',finished_at=datetime('now') WHERE id=?1", [&run_id])?;
+            continue;
+        }
+        conn.execute(
+            "UPDATE autonomous_agent_runs SET status='queued',started_at=NULL,
+               input_json=CASE WHEN EXISTS(SELECT 1 FROM autonomous_agent_definitions d WHERE d.id=autonomous_agent_runs.definition_id AND d.template_key='github_issue_resolver')
+                 THEN json_set(COALESCE(input_json,'{}'),'$.continue_from_run_id',id) ELSE input_json END
+             WHERE id=?1",
+            [&run_id],
+        )?;
+        requeued.push(run_id);
+    }
+    Ok(requeued)
+}
+
 pub fn claim_next_autonomous_agent_run(
     conn: &Connection,
     worker_id: &str,
@@ -18028,7 +18071,8 @@ pub fn claim_next_autonomous_agent_run(
         conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND released_at IS NULL",[&run_id])?;
         conn.execute("UPDATE autonomous_agent_runs SET status='queued',started_at=NULL WHERE id=?1 AND status IN ('leased','running')",[&run_id])?;
     }
-    conn.execute("UPDATE autonomous_agent_runs SET status='dead_letter',finished_at=datetime('now') WHERE status='queued' AND (SELECT COUNT(*) FROM automation_attempts a WHERE a.run_id=autonomous_agent_runs.automation_run_id)>=COALESCE(json_extract(budget_json,'$.max_attempts'),2)",[])?;
+    // Attempts cut off by a worker restart (a deploy) are not the run's fault.
+    conn.execute("UPDATE autonomous_agent_runs SET status='dead_letter',finished_at=datetime('now') WHERE status='queued' AND (SELECT COUNT(*) FROM automation_attempts a WHERE a.run_id=autonomous_agent_runs.automation_run_id AND NOT EXISTS (SELECT 1 FROM automation_revocations v WHERE v.attempt_id=a.id AND v.reason='worker_restarted'))>=COALESCE(json_extract(budget_json,'$.max_attempts'),2)",[])?;
     let candidate: Option<(String,String)> = conn.query_row(
         "SELECT r.id,r.org_id
          FROM autonomous_agent_runs r

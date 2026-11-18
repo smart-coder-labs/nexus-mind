@@ -9106,6 +9106,15 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             config.autonomous_agent_poll_seconds.max(5),
         ));
         let mut ticks: u64 = 0;
+        // A deploy restarts this single worker mid-run: resume what the last process
+        // left instead of letting it sit leased for an hour and restart from scratch.
+        if let Ok(conn) = store.conn().lock() {
+            match queries::recover_interrupted_autonomous_runs(&conn, "local-worker") {
+                Ok(runs) if !runs.is_empty() => tracing::info!(?runs, "requeued runs interrupted by the worker restart"),
+                Ok(_) => {}
+                Err(error) => tracing::error!("Could not recover interrupted runs: {error:#}"),
+            }
+        }
         // Runs executed at once by this worker; per-agent/repo/org budgets still apply on claim.
         let slots = std::env::var("AUTONOMOUS_WORKER_SLOTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).clamp(1, 8);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(slots));

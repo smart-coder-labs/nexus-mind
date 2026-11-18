@@ -2593,6 +2593,50 @@ mod tests {
     }
 
     #[test]
+    fn runs_cut_off_by_a_worker_restart_requeue_without_spending_attempts() {
+        let (conn, org_id, user_id) = fixture();
+        let mut req = request();
+        req.budgets = serde_json::json!({"wall_time_seconds": 300, "max_attempts": 1});
+        let created = queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &req).unwrap();
+        let def = created.definition.id;
+        queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &def).unwrap();
+        queries::set_autonomous_agent_status(&conn, &org_id, &def, "enabled").unwrap();
+        queries::save_autonomous_runtime_health(
+            &conn,
+            &crate::automation::runtime::RuntimeHealth {
+                status: "ready".into(),
+                reason_code: None,
+                claude_version: Some("test".into()),
+                checked_at: None,
+                last_success_at: None,
+                last_failure_at: None,
+            },
+        )
+        .unwrap();
+        let run = queries::enqueue_autonomous_agent_run(&conn, &org_id, &def, "manual", "restart-1", None, None)
+            .unwrap()
+            .unwrap();
+        // Another worker's lease is never touched.
+        queries::claim_next_autonomous_agent_run(&conn, "other-worker", 60).unwrap().unwrap();
+        assert!(queries::recover_interrupted_autonomous_runs(&conn, "local-worker").unwrap().is_empty());
+        conn.execute("UPDATE autonomous_agent_leases SET worker_id='local-worker'", []).unwrap();
+        for restart in 1..=3 {
+            let requeued = queries::recover_interrupted_autonomous_runs(&conn, "local-worker").unwrap();
+            let status = queries::get_autonomous_agent_run(&conn, &org_id, &run.id).unwrap().unwrap().status;
+            if restart < 3 {
+                assert_eq!(requeued, vec![run.id.clone()]);
+                assert_eq!(status, "queued");
+                // max_attempts is 1, yet the interrupted attempt does not dead-letter it.
+                let claim = queries::claim_next_autonomous_agent_run(&conn, "local-worker", 60).unwrap();
+                assert_eq!(claim.map(|c| c.run.id), Some(run.id.clone()));
+            } else {
+                assert!(requeued.is_empty());
+                assert_eq!(status, "failed");
+            }
+        }
+    }
+
+    #[test]
     fn continue_keeps_the_webhook_trigger_within_the_org() {
         let (conn, org_id, user_id) = fixture();
         let created =
