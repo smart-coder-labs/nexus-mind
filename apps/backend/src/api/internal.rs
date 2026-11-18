@@ -288,7 +288,7 @@ pub async fn impersonate_org(
     require_superuser(&superuser_key, &headers)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let token = queries::get_org_admin_key(&conn, &org_id)
+    let (token, user_id) = queries::create_org_impersonation_key(&conn, &org_id)
         .map_err(db_err)?
         .ok_or_else(|| {
             (
@@ -299,7 +299,33 @@ pub async fn impersonate_org(
                 }),
             )
         })?;
-    Ok(Json(serde_json::json!({ "token": token })))
+
+    // The `/internal/*` routes sit outside the audited `/v1` layer, so this is
+    // the only place impersonation can be recorded. Attributed to the user
+    // whose identity is being borrowed, in their own org, with the superadmin
+    // origin in the metadata — otherwise the actions taken under this key are
+    // indistinguishable from that admin's own.
+    queries::log_audit(
+        &conn,
+        &org_id,
+        &user_id,
+        "impersonate",
+        "org",
+        Some(&org_id),
+        serde_json::json!({
+            "origin": "superadmin",
+            "route": "POST /internal/orgs/:id/impersonate",
+            "key_label": queries::IMPERSONATION_LABEL,
+            "ttl_hours": queries::IMPERSONATION_TTL_HOURS,
+            "impersonated_user_id": user_id,
+        }),
+    )
+    .map_err(db_err)?;
+
+    Ok(Json(serde_json::json!({
+        "token": token,
+        "expires_in_hours": queries::IMPERSONATION_TTL_HOURS,
+    })))
 }
 
 pub async fn suspend_user(

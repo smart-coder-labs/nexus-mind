@@ -89,7 +89,7 @@ export function deleteOrg(orgId: string): Promise<void> {
   return request(`/internal/orgs/${orgId}`, { method: 'DELETE' })
 }
 
-export function impersonateOrg(orgId: string): Promise<{ token: string }> {
+export function impersonateOrg(orgId: string): Promise<{ token: string; expires_in_hours: number }> {
   return request(`/internal/orgs/${orgId}/impersonate`, { method: 'POST' })
 }
 

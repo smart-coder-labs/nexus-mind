@@ -31,7 +31,7 @@ function StatusBadge({ status }: { status: User['status'] }) {
   )
 }
 
-function ImpersonateModal({ token, onClose }: { token: string; onClose: () => void }) {
+function ImpersonateModal({ token, expiresInHours, onClose }: { token: string; expiresInHours: number; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
 
   const copy = () => {
@@ -71,7 +71,9 @@ function ImpersonateModal({ token, onClose }: { token: string; onClose: () => vo
         </button>
 
         <p className="text-[11px] text-text-quaternary leading-relaxed">
-          Use this token to log in to the admin panel with API key auth. Token expires when the session is revoked.
+          Use this token to log in to the admin panel with API key auth. It expires{' '}
+          {expiresInHours === 1 ? 'in 1 hour' : `in ${expiresInHours} hours`} and is recorded in the
+          organization's audit log. It does not affect the admin's own sessions.
         </p>
 
         <button
@@ -156,7 +158,7 @@ export default function OrgDetail() {
   const [error, setError] = useState('')
 
   const [suspending, setSuspending] = useState<string | null>(null)
-  const [impersonateToken, setImpersonateToken] = useState<string | null>(null)
+  const [impersonateToken, setImpersonateToken] = useState<{ token: string; expiresInHours: number } | null>(null)
   const [impersonating, setImpersonating] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -188,7 +190,8 @@ export default function OrgDetail() {
     if (!id) return
     setImpersonating(true)
     impersonateOrg(id)
-      .then(({ token }) => setImpersonateToken(token))
+      .then(({ token, expires_in_hours }) =>
+        setImpersonateToken({ token, expiresInHours: expires_in_hours }))
       .catch(err => setError(err.message ?? 'Failed to impersonate org'))
       .finally(() => setImpersonating(false))
   }
@@ -366,7 +369,8 @@ export default function OrgDetail() {
       {/* Impersonate modal */}
       {impersonateToken && (
         <ImpersonateModal
-          token={impersonateToken}
+          token={impersonateToken.token}
+          expiresInHours={impersonateToken.expiresInHours}
           onClose={() => setImpersonateToken(null)}
         />
       )}

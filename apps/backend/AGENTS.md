@@ -42,3 +42,9 @@ CI clones with full history because `migration::git_history` has a calibration t
 ## Run
 
 `cd apps/backend && cargo run` (reads `data/nexusmind.db` relative to `apps/backend`, port 8080). Seed with `scripts/reset-demo.sh`. Set `COOKIE_SECURE=false` for browser logins over plain HTTP.
+
+## Sessions
+
+A browser login mints a `web-session` API key row with `expires_at = now + SESSION_TTL_HOURS` (default `168`, i.e. 7 days) and a session cookie whose `Max-Age` matches, so the browser and the server expire together. A user may hold `queries::MAX_LIVE_WEB_SESSIONS` (5) live sessions at once — logging in on a second device no longer revokes the first — and the least recently used ones are revoked past the cap. Revoked and expired session rows are swept whenever a session is minted so they stop accumulating in the admin API key list.
+
+Superadmin impersonation (`POST /internal/orgs/:id/impersonate`) is a separate path: it mints an `impersonation`-labelled key with a one-hour TTL (`queries::IMPERSONATION_TTL_HOURS`), never touches the target admin's `web-session` rows, and writes an `impersonate` audit entry attributed to the impersonated user with `origin: "superadmin"` in the metadata — `/internal/*` sits outside the audited `/v1` layer, so that call site is the only place it can be recorded.

@@ -37,6 +37,7 @@ fn build_app_without_backup_pool() -> axum::Router {
         app_base_url: "http://localhost".to_string(),
         admin_origin: "http://localhost:3000".to_string(),
         cookie_secure: false,
+        session_ttl_hours: 168,
         github_client_id: None,
         github_client_secret: None,
         github_redirect_uri: None,

@@ -57,6 +57,18 @@ pub struct Config {
     #[arg(long, env = "COOKIE_SECURE", default_value_t = true)]
     pub cookie_secure: bool,
 
+    /// Lifetime of a browser session, in hours. Default 168 (7 days).
+    ///
+    /// Drives two things that must agree: the `expires_at` of the `web-session`
+    /// API key row (enforced by `queries::validate_api_key`) and the session
+    /// cookie's `Max-Age`. A browser credential that never expires is a
+    /// permanent one — stealing it once is stealing it forever.
+    ///
+    /// Lower it for shorter-lived sessions; a user whose session expires is
+    /// simply bounced to /login. Values are clamped to at least one hour.
+    #[arg(long, env = "SESSION_TTL_HOURS", default_value_t = 168)]
+    pub session_ttl_hours: i64,
+
     #[arg(long, env = "GITHUB_CLIENT_ID")]
     pub github_client_id: Option<String>,
 
