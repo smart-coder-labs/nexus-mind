@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'vitest'
 import { preservedConfig, defaultState, buildConfig } from './AutonomousAgentWizard'
 describe('agent configuration preservation', () => {
+  it('builds a project-scoped Product Strategist that can keep proposals out of GitHub', () => {
+    const state = defaultState('product_strategist')
+    expect(state.targetKind).toBe('project')
+    state.strategistIssues = '5'
+    state.strategistFocus = 'Onboarding'
+    state.labels = 'enhancement, status:approved'
+    const quiet = buildConfig(state)
+    expect(quiet).toMatchObject({ outputs: ['nexusmind'], issues_per_run: 5, focus: 'Onboarding' })
+    state.outputGithubIssue = true
+    expect(buildConfig(state)).toMatchObject({
+      outputs: ['nexusmind', 'github_issue'],
+      issue_labels: ['enhancement', 'status:approved'],
+    })
+    expect(preservedConfig({ ...quiet, assign_to_resolver: false }, 'product_strategist')).toEqual({ assign_to_resolver: false })
+  })
   it('builds the UI/UX reviewer config against a web target and keeps only unknown keys as extra', () => {
     const state = defaultState('ux_review')
     expect(state.targetKind).toBe('web_application')

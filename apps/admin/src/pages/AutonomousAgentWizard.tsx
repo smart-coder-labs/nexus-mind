@@ -119,6 +119,9 @@ interface FormState {
   uxRoutes: string // comma or line separated paths
   uxMaxFindings: string
   uxDomainPack: string
+  // product strategist
+  strategistIssues: string
+  strategistFocus: string
   // lead generation
   product: string
   icp: string
@@ -197,7 +200,9 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
         ? 'web_application'
         : template === 'lead_generation' || template === 'ai_content_manager'
           ? 'none'
-          : 'repository',
+          : template === 'product_strategist'
+            ? 'project'
+            : 'repository',
     targetName: '',
     targetPrimary: '',
     targetProjectId: '',
@@ -247,6 +252,8 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     uxRoutes: '',
     uxMaxFindings: '10',
     uxDomainPack: 'none',
+    strategistIssues: '3',
+    strategistFocus: '',
     loginUser: '',
     loginPassword: '',
     loginUrl: '',
@@ -292,6 +299,7 @@ export function preservedConfig(config: Record<string, unknown>, template: strin
   ]
   const fields: Record<string, string[]> = {
     ux_review: ['outputs', 'repository', 'routes', 'max_findings', 'domain_pack', 'custom_instructions'],
+    product_strategist: ['outputs', 'github_auth', 'repository', 'issues_per_run', 'issue_labels', 'focus', 'custom_instructions'],
     qa: [
       'outputs',
       'test_adapter',
@@ -371,6 +379,19 @@ export function buildConfig(state: FormState): Record<string, unknown> {
     if (state.repository.trim()) config.repository = state.repository.trim()
     if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (state.assignIssuesToSelf) config.assign_issues_to_self = true
+  } else if (state.template === 'product_strategist') {
+    // Without the GitHub output, proposals stay in NexusMind as findings only.
+    const outputs = ['nexusmind']
+    if (state.outputGithubIssue) outputs.push('github_issue')
+    config = {
+      github_auth: 'server_gh_cli',
+      outputs,
+      issues_per_run: Math.max(1, Math.min(10, Number(state.strategistIssues) || 3)),
+    }
+    if (csv(state.labels).length) config.issue_labels = csv(state.labels)
+    if (state.repository.trim()) config.repository = state.repository.trim()
+    if (state.strategistFocus.trim()) config.focus = state.strategistFocus.trim()
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else if (state.template === 'ux_review') {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
@@ -589,7 +610,13 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     contextRepos: Array.isArray(config.context_repos)
       ? (config.context_repos as string[]).join(', ')
       : '',
-    labels: Array.isArray(config.labels) ? (config.labels as string[]).join(', ') : '',
+    labels: Array.isArray(config.labels)
+      ? (config.labels as string[]).join(', ')
+      : Array.isArray(config.issue_labels)
+        ? (config.issue_labels as string[]).join(', ')
+        : '',
+    strategistIssues: typeof config.issues_per_run === 'number' ? String(config.issues_per_run) : '3',
+    strategistFocus: typeof config.focus === 'string' ? config.focus : '',
     excludedPaths: Array.isArray(config.excluded_paths)
       ? (config.excluded_paths as string[]).join(', ')
       : '',
@@ -1452,6 +1479,37 @@ function StepConfig({
                 />
               )}
             </div>
+          </div>
+        </>
+      )}
+
+      {template === 'product_strategist' && (
+        <>
+          <p className="text-sm text-text-secondary">
+            Studies the target (a project's linked repositories, or one repository) and proposes improvements and new features with acceptance criteria.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Proposals per run" hint="Most valuable first, up to 10.">
+              <Input inputSize="sm" type="number" min={1} max={10} value={state.strategistIssues} onChange={(event) => set('strategistIssues', event.target.value)} />
+            </Field>
+            <Field label="Main repository (optional)" hint="Defaults to the project's first linked repository.">
+              <Input inputSize="sm" value={state.repository} onChange={(event) => set('repository', event.target.value)} placeholder="acme/web" />
+            </Field>
+          </div>
+          <Field label="Focus (optional)" hint="Area or goal to prioritise, e.g. onboarding or admin UX.">
+            <Textarea className="text-sm" rows={2} value={state.strategistFocus} onChange={(event) => set('strategistFocus', event.target.value)} placeholder="e.g. Faster onboarding for new organizations" />
+          </Field>
+          <div className="rounded-xl border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Outputs</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked disabled size="sm" label="NexusMind (canonical)" />
+              <Switch checked={state.outputGithubIssue} onCheckedChange={(value) => set('outputGithubIssue', value)} size="sm" label="Create GitHub issues" />
+            </div>
+            {state.outputGithubIssue && (
+              <Field label="Issue labels" hint="Add the Issue Resolver's label (e.g. status:approved) to have proposals built automatically.">
+                <Input inputSize="sm" value={state.labels} onChange={(event) => set('labels', event.target.value)} placeholder="enhancement, status:approved" />
+              </Field>
+            )}
           </div>
         </>
       )}

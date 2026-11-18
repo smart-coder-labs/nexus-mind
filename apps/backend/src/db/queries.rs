@@ -17409,8 +17409,12 @@ pub fn validate_autonomous_agent_definition(
             if !strings("themes", 2, &|t| matches!(t, "light" | "dark")) { errors.push("invalid_themes") }
         }
         "product_strategist" => {
-            let repository_valid = current.revision.config.get("repository").and_then(|v| v.as_str())
-                .is_some_and(|v| crate::automation::connectors::validate_repository(v).is_ok());
+            // A repository (config or target) or a project whose linked repos it studies.
+            let is_repo = |v: &str| crate::automation::connectors::validate_repository(v).is_ok();
+            let repository_valid = current.revision.config.get("repository").and_then(|v| v.as_str()).is_some_and(is_repo)
+                || list_autonomous_agent_targets(conn, org_id, id).unwrap_or_default().iter().any(|t| {
+                    t.enabled && (t.kind == "project" || (t.kind == "repository" && t.config.get("repository").and_then(|v| v.as_str()).is_some_and(is_repo)))
+                });
             if !repository_valid {
                 errors.push("valid_repository_required")
             }
@@ -18215,6 +18219,24 @@ pub fn claim_next_autonomous_agent_run(
                 }
             }) {
                 object.insert("repository".into(), serde_json::json!(repo));
+            }
+        }
+        // A project-scoped strategist studies the project's linked repos: the first is
+        // the checkout unless config names one, the rest are read-only context.
+        if template_key == "product_strategist" {
+            let mut repos = crate::db::autonomous_scope::judge_repositories(conn, &org_id, &run.definition_id, &serde_json::json!({}))?;
+            if !repos.is_empty() {
+                let primary = object.get("repository").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| repos[0].clone());
+                if !repos.iter().any(|repo| repo.eq_ignore_ascii_case(&primary)) {
+                    repos.insert(0, primary.clone());
+                }
+                if object.get("context_repos").is_none() {
+                    // shortcut: first 8 other repos only, a whole product (Kasymir: 49) is too slow to clone per run.
+                    let context: Vec<&String> = repos.iter().filter(|repo| !repo.eq_ignore_ascii_case(&primary)).take(8).collect();
+                    object.insert("context_repos".into(), serde_json::json!(context));
+                }
+                object.insert("repository".into(), serde_json::json!(primary));
+                object.insert("project_repositories".into(), serde_json::json!(repos));
             }
         }
         if object.get("nexusmind_project").is_none() {
