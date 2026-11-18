@@ -2923,10 +2923,17 @@ pub fn store_memory_with_audit(
 }
 
 /// Stores a memory with upsert semantics when `topic_key` is provided.
-/// - With `topic_key`: SELECT existing row for `(org_id, topic_key)`.
+/// - With `topic_key`: SELECT existing row for `(org_id, topic_key, project_id)`.
 ///   If found, UPDATE content/title/type/scope/hash and increment `revision_count`.
 ///   If not found, INSERT with `revision_count = 1`.
 /// - Without `topic_key`: always INSERT.
+///
+/// The upsert is **project-scoped**: two projects in one org may hold the same
+/// `topic_key` without overwriting each other, and the org-shared bucket
+/// (`project_id IS NULL`) is its own namespace. It used to key on
+/// `(org_id, topic_key)` alone, so the second project to save a key silently
+/// destroyed the first project's content and moved the row across projects.
+/// An existing row therefore never changes `project_id`.
 pub fn upsert_memory(
     conn: &Connection,
     org_id: &str,
@@ -2954,10 +2961,14 @@ pub fn upsert_memory(
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     if let Some(topic_key) = &req.topic_key {
-        // Try to find existing row for this (org_id, topic_key)
+        // Try to find existing row for this (org_id, topic_key, project_id).
+        // COALESCE makes the NULL project (the org-shared bucket) match only
+        // itself: in SQL `project_id = NULL` is never true, so a plain equality
+        // would turn every org-shared store into an insert.
         let existing = conn.query_row(
-            "SELECT id, revision_count, created_at FROM memories WHERE org_id = ?1 AND topic_key = ?2",
-            rusqlite::params![org_id, topic_key],
+            "SELECT id, revision_count, created_at FROM memories
+             WHERE org_id = ?1 AND topic_key = ?2 AND COALESCE(project_id, '') = COALESCE(?3, '')",
+            rusqlite::params![org_id, topic_key, &project_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
         );
 
@@ -2965,10 +2976,13 @@ pub fn upsert_memory(
             Ok((existing_id, revision_count, created_at)) => {
                 // UPDATE the existing row
                 let new_revision = revision_count + 1;
+                // `project_id` is deliberately not written: the row was matched on
+                // it, so it already holds this project, and never reassigning it
+                // keeps an upsert from moving a memory between projects.
                 conn.execute(
                     "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
-                     normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8
-                     WHERE id = ?9",
+                     normalized_hash = ?5, revision_count = ?6, tags = ?7
+                     WHERE id = ?8",
                     rusqlite::params![
                         req.content,
                         req.title,
@@ -2977,7 +2991,6 @@ pub fn upsert_memory(
                         normalized_hash,
                         new_revision,
                         tags_json,
-                        &project_id,
                         existing_id
                     ],
                 )?;
@@ -10539,6 +10552,152 @@ mod tests {
         );
         assert_eq!(mem1.revision_count, 1);
         assert_eq!(mem2.revision_count, 1);
+    }
+
+    /// Builds a `StoreMemoryRequest` that upserts `topic_key` inside `project`.
+    fn topic_req(
+        project: Option<&str>,
+        topic_key: &str,
+        content: &str,
+    ) -> crate::models::types::StoreMemoryRequest {
+        crate::models::types::StoreMemoryRequest {
+            project: project.map(String::from),
+            tool: "claude".into(),
+            content: content.into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: Some(topic_key.into()),
+            session_id: None,
+        }
+    }
+
+    /// The defect this replaced: the lookup keyed on `(org_id, topic_key)`, so the
+    /// second project to save a shared key overwrote the first project's content,
+    /// bumped its `revision_count` and dragged the row into the other project.
+    #[test]
+    fn upsert_memory_topic_key_is_project_scoped() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let web = create_project(&conn, &org.id, "web", None, None).unwrap();
+        let api = create_project(&conn, &org.id, "api", None, None).unwrap();
+
+        let in_web = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("web"), "arch/auth-model", "web content"),
+        )
+        .unwrap();
+        let in_api = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("api"), "arch/auth-model", "api content"),
+        )
+        .unwrap();
+
+        assert_ne!(
+            in_web.id, in_api.id,
+            "two projects sharing a topic_key must get two rows"
+        );
+        assert_eq!(in_web.revision_count, 1);
+        assert_eq!(
+            in_api.revision_count, 1,
+            "the second project must create, not revise the first project's row"
+        );
+        assert_eq!(in_web.project_id.as_deref(), Some(web.id.as_str()));
+        assert_eq!(in_api.project_id.as_deref(), Some(api.id.as_str()));
+
+        // The first project's content survives untouched.
+        let (content, revision): (String, i64) = conn
+            .query_row(
+                "SELECT content, revision_count FROM memories WHERE id = ?1",
+                [&in_web.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "web content");
+        assert_eq!(revision, 1);
+    }
+
+    #[test]
+    fn upsert_memory_same_project_still_updates_in_place() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let web = create_project(&conn, &org.id, "web", None, None).unwrap();
+
+        let first = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("web"), "arch/auth-model", "first"),
+        )
+        .unwrap();
+        let second = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("web"), "arch/auth-model", "second"),
+        )
+        .unwrap();
+
+        assert_eq!(second.id, first.id, "same project must reuse the row");
+        assert_eq!(second.revision_count, 2);
+        assert_eq!(second.content, "second");
+        assert_eq!(
+            second.project_id.as_deref(),
+            Some(web.id.as_str()),
+            "an upsert must never move the row to another project"
+        );
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
+                [&org.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    /// The org-shared bucket is `project_id IS NULL`. SQL equality never matches
+    /// NULL, so the lookup has to COALESCE — otherwise every shared store would
+    /// insert a new row instead of revising the shared one.
+    #[test]
+    fn upsert_memory_shared_bucket_is_its_own_namespace() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        create_project(&conn, &org.id, "web", None, None).unwrap();
+
+        let scoped = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &topic_req(Some("web"), "arch/auth-model", "project content"),
+        )
+        .unwrap();
+        let shared = upsert_memory(&conn, &org.id, &user.id, &topic_req(None, "arch/auth-model", "shared content"))
+            .unwrap();
+        assert_ne!(
+            shared.id, scoped.id,
+            "a shared store must not revise a project-scoped row"
+        );
+        assert_eq!(shared.revision_count, 1);
+        assert_eq!(shared.project_id, None);
+
+        // A second shared store revises the shared row, not the project one.
+        let shared_again =
+            upsert_memory(&conn, &org.id, &user.id, &topic_req(None, "arch/auth-model", "shared v2")).unwrap();
+        assert_eq!(shared_again.id, shared.id);
+        assert_eq!(shared_again.revision_count, 2);
+        assert_eq!(shared_again.project_id, None);
+
+        let scoped_content: String = conn
+            .query_row("SELECT content FROM memories WHERE id = ?1", [&scoped.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(scoped_content, "project content");
     }
 
     #[test]
