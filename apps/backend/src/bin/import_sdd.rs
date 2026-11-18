@@ -1874,13 +1874,31 @@ mod tests {
     // ── 5.13 legacy memories ────────────────────────────────────────────────
 
     /// `created_at` is explicit: the whole memory-then-file ordering rests on it.
+    /// Lands in the org-shared bucket (`project_id` NULL), where the legacy
+    /// `sdd/*` memories sit.
     fn seed_memory(conn: &Connection, id: &str, topic_key: &str, content: &str, created_at: &str) {
+        seed_memory_in(conn, id, topic_key, content, created_at, None);
+    }
+
+    /// Same, with an explicit `project_id` bucket. Since v113 the upsert key is
+    /// `(org_id, topic_key, project_id)` and unique, so two legacy rows sharing a
+    /// `topic_key` sit in different buckets — which is how a real database holds
+    /// them: the pre-project-scoping row in the org-shared NULL bucket, the later
+    /// one against its project.
+    fn seed_memory_in(
+        conn: &Connection,
+        id: &str,
+        topic_key: &str,
+        content: &str,
+        created_at: &str,
+        project_id: Option<&str>,
+    ) {
         conn.execute(
             "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at,
-                                   title, type, scope, topic_key, revision_count)
+                                   title, type, scope, topic_key, revision_count, project_id)
              VALUES (?1, 'org1', 'u1', 'nexus-mind', 'claude-code', ?2, '[\"sdd\"]', ?3,
-                     'legacy', 'architecture', 'project', ?4, 1)",
-            rusqlite::params![id, content, created_at, topic_key],
+                     'legacy', 'architecture', 'project', ?4, 1, ?5)",
+            rusqlite::params![id, content, created_at, topic_key, project_id],
         )
         .unwrap();
     }
@@ -2049,9 +2067,25 @@ mod tests {
     #[test]
     fn import_legacy_memories_replays_the_memories_oldest_first() {
         let (conn, org, _user) = setup();
-        // Two revisions of the SAME artifact, seeded newest-row-first to prove the
-        // ORDER BY does the work rather than the insertion order.
-        seed_memory(&conn, "m-new", "sdd/demo/design", "v2", "2026-02-01T00:00:00Z");
+        // Two legacy rows for the SAME artifact, seeded newest-row-first to prove
+        // the ORDER BY does the work rather than the insertion order. They live in
+        // different `topic_key` buckets because that is the only way a database
+        // holds both since v113: the newer one against the project, the older one
+        // in the org-shared NULL bucket it was written into before project
+        // scoping. The importer reads by org, so it still replays both.
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('p-nm', 'org1', 'nexus-mind')",
+            [],
+        )
+        .unwrap();
+        seed_memory_in(
+            &conn,
+            "m-new",
+            "sdd/demo/design",
+            "v2",
+            "2026-02-01T00:00:00Z",
+            Some("p-nm"),
+        );
         seed_memory(&conn, "m-old", "sdd/demo/design", "v1", "2026-01-01T00:00:00Z");
 
         import_legacy_memories(&conn, &org, "nexus-mind", false).unwrap();
@@ -2067,6 +2101,11 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(contents, vec!["v1".to_string(), "v2".to_string()], "history reads forward");
+        assert_eq!(
+            artifact_content(&conn, &org, "nexus-mind", "demo", "design", "").as_deref(),
+            Some("v2"),
+            "the head revision is the newest memory's content, m-new's"
+        );
     }
 
     // ── 5.17 idempotency ────────────────────────────────────────────────────

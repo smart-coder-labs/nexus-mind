@@ -10489,7 +10489,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_memory_topic_key_is_org_scoped() {
+    fn upsert_memory_topic_key_is_isolated_across_orgs() {
         let conn = setup();
         let (org1, user1, _) = bootstrap(&conn, "Org1", "org1", "a@org1.com", "Admin1").unwrap();
 

@@ -59,7 +59,7 @@ Build: clean, zero compiler errors, zero warnings relevant to new code.
 | `revision_count` column (INTEGER NOT NULL DEFAULT 1) | Second store updates | `upsert_memory_second_call_updates_revision_count` | PASS |
 | SELECT-then-UPDATE on match | revision_count = 2 | `upsert_on_topic_key_increments_revision` (integration) | PASS |
 | New row on no match | First store inserts with revision = 1 | confirmed by count assertion | PASS |
-| topic_key is org-scoped | Different orgs get different rows | `upsert_memory_topic_key_is_org_scoped` | PASS |
+| topic_key is org-scoped | Different orgs get different rows | `upsert_memory_topic_key_is_isolated_across_orgs` | PASS |
 | No topic_key always inserts | Always INSERT | `upsert_memory_no_topic_key_always_inserts` | PASS |
 | `normalized_hash` column (nullable TEXT) | Hash computed on insert | `upsert_memory_first_call_inserts_with_revision_1` (hash is_some) | PASS |
 | SHA-256 of trim+lowercase | Same content → same hash | `normalized_hash_same_for_equivalent_content` | PASS |

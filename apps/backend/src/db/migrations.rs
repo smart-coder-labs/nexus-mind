@@ -245,15 +245,40 @@ pub fn run_v112(conn: &Connection) -> Result<()> {
 /// Migration v113: make the memory `topic_key` upsert key project-scoped. Two
 /// projects in one org may now evolve the same `topic_key` without overwriting
 /// each other; `project_id IS NULL` (the org-shared bucket) is its own namespace,
-/// hence `COALESCE(project_id, '')`. This cannot collide with existing data: the
-/// old behaviour keyed on `(org_id, topic_key)` alone, so a database can hold at
-/// most one row per `(org_id, topic_key)` already.
+/// hence `COALESCE(project_id, '')`.
+///
+/// Nothing ever enforced the old `(org_id, topic_key)` key — the upsert only
+/// SELECTed on it — so an existing database CAN hold duplicates (the legacy
+/// `import_sdd` memories are one way they arose), and a plain `CREATE UNIQUE
+/// INDEX` would fail and take the boot down with it. Duplicates are therefore
+/// collapsed first, without losing a row: the newest row in each colliding group
+/// keeps the `topic_key` and the older ones have theirs set to NULL, so their
+/// content stays readable and searchable, just no longer addressable by key.
+/// `memories` has no `updated_at`, so recency is `created_at`, then
+/// `revision_count` (how many upserts the row absorbed), then `id` — a total
+/// order, so the outcome is deterministic.
 pub fn run_v113(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 113 {
         return Ok(());
     }
-    conn.execute_batch(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE memories SET topic_key = NULL
+          WHERE id IN (
+              SELECT id FROM (
+                  SELECT id, ROW_NUMBER() OVER (
+                      PARTITION BY org_id, topic_key, COALESCE(project_id, '')
+                      ORDER BY created_at DESC, revision_count DESC, id DESC
+                  ) AS dup_rank
+                  FROM memories
+                  WHERE topic_key IS NOT NULL
+              )
+              WHERE dup_rank > 1
+          )",
+        [],
+    )?;
+    tx.execute_batch(
         "
         CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_org_topic_project
             ON memories(org_id, topic_key, COALESCE(project_id, '')) WHERE topic_key IS NOT NULL;
@@ -261,6 +286,7 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 113;
         ",
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -9768,6 +9794,126 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(get_user_version(&conn), 112);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    /// Inserts a memory with an explicit `topic_key` bucket. `project_id` NULL is
+    /// the org-shared bucket; the content doubles as the id so a surviving row is
+    /// identifiable after the migration.
+    fn insert_topic_memory(
+        conn: &Connection,
+        id: &str,
+        project_id: Option<&str>,
+        topic_key: &str,
+        created_at: &str,
+        revision_count: i64,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO memories (id,org_id,user_id,project,tool,content,topic_key,project_id,created_at,revision_count)
+             VALUES (?1,'o1','u1','alpha','claude-code',?1,?2,?3,?4,?5)",
+            rusqlite::params![id, topic_key, project_id, created_at, revision_count],
+        )
+    }
+
+    /// v113 moves the memory upsert key to `(org_id, topic_key, project_id)`. The
+    /// index must bite inside one project and inside the org-shared NULL bucket,
+    /// while letting two projects evolve the same `topic_key` side by side.
+    #[test]
+    fn run_v113_scopes_the_topic_key_index_to_the_project() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+        assert!(
+            index_exists(&conn, "memories", "idx_memories_org_topic_project"),
+            "the project-scoped topic_key index must exist after run_all"
+        );
+        seed_org(&conn, "o1", "acme");
+        conn.execute("INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')", []).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id,org_id,name) VALUES ('p-alpha','o1','alpha'),('p-beta','o1','beta')",
+            [],
+        )
+        .unwrap();
+
+        let t = "arch/auth-model";
+        insert_topic_memory(&conn, "m-alpha", Some("p-alpha"), t, "2026-01-01T00:00:00Z", 1).unwrap();
+        assert!(
+            insert_topic_memory(&conn, "m-alpha-2", Some("p-alpha"), t, "2026-01-02T00:00:00Z", 1).is_err(),
+            "one row per (org, topic_key) inside a project"
+        );
+        insert_topic_memory(&conn, "m-shared", None, t, "2026-01-01T00:00:00Z", 1)
+            .expect("the org-shared NULL bucket is its own namespace");
+        assert!(
+            insert_topic_memory(&conn, "m-shared-2", None, t, "2026-01-02T00:00:00Z", 1).is_err(),
+            "the NULL bucket is unique too — COALESCE(project_id,'') makes it one key"
+        );
+        insert_topic_memory(&conn, "m-beta", Some("p-beta"), t, "2026-01-01T00:00:00Z", 1)
+            .expect("another project may hold the same topic_key");
+        // A NULL topic_key is outside the partial index, so it never collides.
+        conn.execute(
+            "INSERT INTO memories (id,org_id,user_id,tool,content) VALUES ('m-free','o1','u1','claude-code','no key'),('m-free-2','o1','u1','claude-code','no key either')",
+            [],
+        )
+        .expect("rows without a topic_key stay unconstrained");
+
+        run_v113(&conn).expect("v113 must be idempotent");
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    /// The old `(org_id, topic_key)` key was never enforced, so a real database
+    /// can already hold duplicates (legacy `import_sdd` memories are one source).
+    /// v113 must collapse them instead of failing the boot: newest row keeps the
+    /// key, the older ones keep their content with `topic_key` NULL, nothing is
+    /// deleted.
+    #[test]
+    fn run_v113_collapses_pre_existing_duplicates_without_losing_a_row() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "o1", "acme");
+        conn.execute("INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')", []).unwrap();
+        conn.execute("INSERT INTO projects (id,org_id,name) VALUES ('p-alpha','o1','alpha')", []).unwrap();
+
+        // Back to a pre-v113 database: drop what v113 added and rewind the version.
+        conn.execute_batch("DROP INDEX idx_memories_org_topic_project; PRAGMA user_version = 112;")
+            .unwrap();
+
+        let dup = "sdd/demo/design";
+        insert_topic_memory(&conn, "m-old", None, dup, "2026-01-01T00:00:00Z", 1).unwrap();
+        // Same created_at: revision_count breaks the tie, then id — a total order.
+        insert_topic_memory(&conn, "m-tie-a", None, dup, "2026-03-01T00:00:00Z", 2).unwrap();
+        insert_topic_memory(&conn, "m-tie-b", None, dup, "2026-03-01T00:00:00Z", 5).unwrap();
+        // A duplicate pair in a project bucket, and an untouched singleton.
+        insert_topic_memory(&conn, "p-old", Some("p-alpha"), dup, "2026-01-01T00:00:00Z", 1).unwrap();
+        insert_topic_memory(&conn, "p-new", Some("p-alpha"), dup, "2026-02-01T00:00:00Z", 1).unwrap();
+        insert_topic_memory(&conn, "m-solo", None, "arch/auth-model", "2026-01-01T00:00:00Z", 1).unwrap();
+
+        run_v113(&conn).expect("a database with duplicates must still migrate");
+        assert_eq!(get_user_version(&conn), 113);
+        assert!(index_exists(&conn, "memories", "idx_memories_org_topic_project"));
+
+        let rows: Vec<(String, Option<String>, String)> = conn
+            .prepare("SELECT id, topic_key, content FROM memories ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 6, "not one memory may be deleted");
+        let kept: Vec<&str> = rows
+            .iter()
+            .filter(|(_, topic_key, _)| topic_key.is_some())
+            .map(|(id, _, _)| id.as_str())
+            .collect();
+        assert_eq!(
+            kept,
+            ["m-solo", "m-tie-b", "p-new"],
+            "the newest row of each group keeps the key; the singleton is untouched"
+        );
+        for (id, _, content) in &rows {
+            assert_eq!(content, id, "every row keeps its content, key or no key");
+        }
+
+        run_v113(&conn).expect("v113 must be idempotent");
+        assert_eq!(get_user_version(&conn), 113);
     }
 }
