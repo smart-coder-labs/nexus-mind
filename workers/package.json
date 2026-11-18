@@ -1,0 +1,10 @@
+{
+  "name": "nexusmind-workers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Execution-plane worker contract for the autonomous engineering loop.",
+  "scripts": {
+    "test": "node --test src/claude_code.test.ts"
+  }
+}
