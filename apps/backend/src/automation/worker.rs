@@ -4689,15 +4689,27 @@ async fn list_eligible_resolver_issues(
     };
     let required = string_list("labels");
     let excluded = string_list("excluded_labels");
-    let covered = resolver_open_pr_issue_numbers(&token, &repository).await;
+    // A project-scoped resolver looks across the project's repositories (resolved
+    // at claim time); a single-repository one only at its repository.
+    let mut repositories: Vec<String> = claim.config.get("project_repositories").and_then(|v| v.as_array())
+        .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    if !repositories.iter().any(|repo| repo.eq_ignore_ascii_case(&repository)) {
+        repositories.insert(0, repository.clone());
+    }
     // Scope strictly to issues ASSIGNED to the gh account the server is logged in
     // with (the bot). The resolver must never touch work that isn't assigned to it,
     // regardless of any custom instruction. Failing to resolve the login blocks the
     // run rather than falling back to every open issue.
     let assignee = super::connectors::github_authenticated_login(&token).await?;
+    let mut eligible = Vec::new();
+    for repository in repositories {
+    if super::connectors::validate_repository(&repository).is_err() {
+        continue;
+    }
+    let covered = resolver_open_pr_issue_numbers(&token, &repository).await;
     let issues =
         super::connectors::list_assigned_open_issues(&token, &repository, &assignee).await?;
-    let mut eligible = Vec::new();
     for issue in issues.as_array().into_iter().flatten() {
         if issue.get("pull_request").is_some()
             || issue.get("state").and_then(|v| v.as_str()) != Some("open")
@@ -4724,6 +4736,7 @@ async fn list_eligible_resolver_issues(
                 eligible.push((repository.clone(), number));
             }
         }
+    }
     }
     Ok(eligible)
 }
@@ -5426,6 +5439,23 @@ async fn execute_resolver_fanout(
     if continue_from.is_none() && issues.is_empty() {
         return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}));
     }
+    // One checkout per run: a project-scoped run works on the first eligible
+    // issue's repository; later runs reach the other repositories.
+    let scoped_claim;
+    let claim = match issues.first().map(|(repository, _)| repository.clone()) {
+        Some(repository) if claim.config.get("repository").and_then(|v| v.as_str()).is_none_or(|current| !current.eq_ignore_ascii_case(&repository)) => {
+            issues.retain(|(repo, _)| repo.eq_ignore_ascii_case(&repository));
+            let mut scoped = claim.clone();
+            scoped.config["repository"] = json!(repository);
+            scoped_claim = scoped;
+            &scoped_claim
+        }
+        Some(repository) => {
+            issues.retain(|(repo, _)| repo.eq_ignore_ascii_case(&repository));
+            claim
+        }
+        None => claim,
+    };
     issues.truncate(max_issues);
     // Verification always runs in a commands pod: prove one starts before spending
     // model time, so a broken sandbox fails in minutes instead of after the work.
