@@ -2436,7 +2436,7 @@ function StepSchedule({
           {state.template === 'judge' && (
             <Field
               label="Workflow to wait for"
-              hint="Exact name of the GitHub Actions workflow. When it finishes on the default branch after a merge, the Judge checks the merged PRs and fully verifies the issues they close."
+              hint="GitHub Actions workflow name; separate several with commas and use * as a wildcard (e.g. Deploy*, GCP beta deploy). When one finishes on the default branch after a merge, the Judge checks the merged PRs and fully verifies the issues they close."
             >
               <Input
                 inputSize="sm"
