@@ -5140,7 +5140,7 @@ async fn resolve_issue_worktree(
 
 /// Manual issue-resolver orchestration: resolve every assigned eligible issue
 /// (capped) in ONE run, each in its own detached worktree from the pinned base,
-/// up to CONCURRENCY at a time. One draft PR per issue; failures are isolated.
+/// up to `max_issues_per_run` at a time. One draft PR per issue; failures are isolated.
 /// Discover the WIP branches a prior resolver run left behind
 /// (`nexusmind/wip-<prev12>-<issue>`) via `git ls-remote`, so a Continue run can
 /// resume each. Returns `(issue_number, branch, sha)` per branch.
@@ -5212,6 +5212,11 @@ fn fanout_outcome(
     (status, code, detail)
 }
 
+/// Issues one resolver run works on at once (`max_issues_per_run`, 1-5, default 1).
+fn resolver_max_issues(config: &serde_json::Value) -> usize {
+    config.get("max_issues_per_run").and_then(|v| v.as_u64()).map_or(1, |n| n.clamp(1, 5) as usize)
+}
+
 async fn execute_resolver_fanout(
     store: &SqliteStore,
     config: &Config,
@@ -5219,11 +5224,13 @@ async fn execute_resolver_fanout(
     sandboxed: bool,
 ) -> (String, serde_json::Value) {
     let nexus_selected = queries::autonomous_executor(&claim.config).ok() == Some("nexus");
-    // One issue per run: keeps each run small and cheap (avoids blowing the Claude
-    // session budget) and gives a clean 1 PR ↔ 1 run mapping. Subsequent runs pick
-    // the next eligible issue (ones with an open resolver PR are already excluded).
-    const MAX_ISSUES: usize = 1;
-    const CONCURRENCY: usize = 3;
+    // One issue per run by default: keeps each run small and cheap (avoids blowing
+    // the Claude session budget) and gives a clean 1 PR ↔ 1 run mapping. Subsequent
+    // runs pick the next eligible issue (ones with an open resolver PR are already
+    // excluded). `max_issues_per_run` (1-5) resolves several in parallel in one run,
+    // which avoids two concurrent runs picking the same issue.
+    let max_issues = resolver_max_issues(&claim.config);
+    let concurrency = max_issues;
     // A Continue run resumes the WIP branches left by `continue_from_run_id`
     // (discovered after cloning) instead of listing fresh eligible issues.
     let continue_from = claim
@@ -5247,7 +5254,7 @@ async fn execute_resolver_fanout(
     if continue_from.is_none() && issues.is_empty() {
         return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}));
     }
-    issues.truncate(MAX_ISSUES);
+    issues.truncate(max_issues);
     let sandbox = match tempfile::Builder::new()
         .prefix(&format!("nexusmind-agent-{}-", claim.run.id))
         .tempdir()
@@ -5302,7 +5309,7 @@ async fn execute_resolver_fanout(
     let mut targets: Vec<(usize, String, i64, PathBuf, String, Option<String>)> = Vec::new();
     if let Some(ref prev) = continue_from {
         let mut discovered = discover_resumable_wip(&base, repo_token.as_deref(), prev).await;
-        discovered.truncate(MAX_ISSUES);
+        discovered.truncate(max_issues);
         let repository = claim
             .config
             .get("repository")
@@ -5383,7 +5390,7 @@ async fn execute_resolver_fanout(
                 continue_branch,
             ));
         };
-    for _ in 0..CONCURRENCY {
+    for _ in 0..concurrency {
         if let Some(item) = pending.next() {
             spawn_next(&mut set, item);
         }
@@ -10458,5 +10465,17 @@ Client.listTools() called but server does not advertise tools capability
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "command_not_allowlisted");
+    }
+}
+
+#[cfg(test)]
+mod resolver_issue_limit_tests {
+    #[test]
+    fn max_issues_per_run_defaults_to_one_and_caps_at_five() {
+        use super::resolver_max_issues as limit;
+        assert_eq!(limit(&serde_json::json!({})), 1);
+        assert_eq!(limit(&serde_json::json!({"max_issues_per_run": 5})), 5);
+        assert_eq!(limit(&serde_json::json!({"max_issues_per_run": 50})), 5);
+        assert_eq!(limit(&serde_json::json!({"max_issues_per_run": 0})), 1);
     }
 }
