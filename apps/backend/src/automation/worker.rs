@@ -4237,6 +4237,9 @@ const RESOLVER_TOOLS: &str = "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_n
 /// find before reading, read narrowly, and use the native tools over the shell.
 const EFFICIENT_SEARCH_CLAUSE: &str = " WORK EFFICIENTLY — every turn re-sends your whole context, so keep it small and your turns few: locate code before reading it (the `nexusmind` locate_code/search_code tools when available, else the Grep and Glob tools); read only the relevant range of a file with the Read tool's offset/limit and never read a file of more than ~1500 lines whole; use Read, Grep, Glob and Edit instead of cat, grep, sed, ls or cd through a shell; do not re-read what you already have; batch independent lookups in one turn.";
 
+/// Lets the Product Strategist show the current state of the screens it proposes to change.
+const STRATEGIST_SCREENSHOT_CLAUSE: &str = " The configuration `targets` includes the live web application (its `url`; sign-in values, when needed, are in `target_credentials`). For each proposal about something visible, open that screen with the Playwright MCP tools and take ONE screenshot of its current state with a short descriptive filename (e.g. `customers-guest-badge.png`), then set that finding's `screenshot` to the filename. Only look: never create, edit or delete data in the app, and skip screenshots for proposals that have no screen.";
+
 pub(crate) fn fixed_prompt(
     template: &str,
     config: &serde_json::Value,
@@ -6335,7 +6338,12 @@ async fn execute_claim(
     // values so they are redacted from the streamed transcript. Injected AFTER the
     // context manifest so secrets never enter its config hash.
     let mut target_secret_values: Vec<String> = Vec::new();
-    if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") {
+    // A Product Strategist with a live web app as a target screenshots the screens it proposes to change.
+    let strategist_web = claim.template_key == "product_strategist"
+        && claim.config.get("targets").and_then(|v| v.as_array()).is_some_and(|targets| targets.iter().any(|t| {
+            t.get("kind").and_then(|v| v.as_str()) == Some("web_application") && t.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+        }));
+    if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web {
         match target_environment(store, claim) {
             Ok(credentials) if !credentials.is_empty() => {
                 let map: serde_json::Map<String, serde_json::Value> = credentials
@@ -6423,6 +6431,11 @@ async fn execute_claim(
             );
         }
     };
+    let prompt = if strategist_web && !sandboxed && !pi_selected {
+        format!("{prompt}{STRATEGIST_SCREENSHOT_CLAUSE}")
+    } else {
+        prompt
+    };
     let preflight = if nexus_selected || pi_selected {
         None
     } else {
@@ -6473,6 +6486,7 @@ async fn execute_claim(
             "default",
             "Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
         ),
+        ("product_strategist", _) if strategist_web && !sandboxed => ("default", "Read,Grep,Glob,Skill,Task,mcp__playwright__*"),
         ("product_strategist", _) => ("plan", "Read,Grep,Glob,Skill,Task"),
         _ => ("plan", "Read,Grep,Glob"),
     };
@@ -6613,7 +6627,7 @@ async fn execute_claim(
     // the per-run directory (declared before the loop) the worker reads back
     // afterwards for evidence upload.
     // Sandboxed runs get their Playwright MCP from the sandbox runner.
-    if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") && !sandboxed && !pi_selected {
+    if (matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web) && !sandboxed && !pi_selected {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
         if std::path::Path::new(&base_config).exists() && !nexus_selected {
@@ -6937,7 +6951,7 @@ async fn execute_claim(
     }
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
     // attach the {filename: url} map so delivery can reference each finding's shot.
-    if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") {
+    if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web {
         let sandbox_root = workdir
             .parent()
             .map(|p| p.to_path_buf())
