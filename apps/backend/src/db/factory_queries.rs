@@ -868,10 +868,12 @@ pub fn latest_model_choice(
 /// role `factory-bot`, editable per org like any role.
 pub const FACTORY_BOT_NAME: &str = "nexus-bot";
 pub const FACTORY_BOT_ROLE: &str = "factory-bot";
-/// Initial grants when the role is first created: read-only project context.
-pub const FACTORY_BOT_DEFAULT_PERMISSIONS: [&str; 5] = [
+/// Initial grants when the role is first created: project context, plus storing
+/// what agents learn so later runs start from it.
+pub const FACTORY_BOT_DEFAULT_PERMISSIONS: [&str; 6] = [
     "memory:read",
     "memory:search",
+    "memory:write",
     "convention:read",
     "code:read",
     "project:read",
