@@ -17715,6 +17715,24 @@ pub fn autonomous_agent_run_is_cancelled(
         .unwrap_or(true))
 }
 
+/// Whether the agent behind `run_id` currently opts out of the merge risk floor.
+/// Reads the definition's current revision, so turning the flag off stops pending soaks.
+pub fn autonomous_run_skips_dangerous_merge(conn: &Connection, org_id: &str, run_id: &str) -> Result<bool> {
+    let flag: Option<i64> = conn
+        .query_row(
+            "SELECT json_extract(revision.config_json,'$.skip_dangerous_merge')
+             FROM autonomous_agent_runs run
+             JOIN autonomous_agent_definitions definition ON definition.id=run.definition_id
+             JOIN autonomous_agent_revisions revision ON revision.definition_id=definition.id AND revision.revision=definition.current_revision
+             WHERE run.id=?2 AND run.org_id=?1",
+            [org_id, run_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(flag == Some(1))
+}
+
 pub fn autonomous_agent_run_publish_authorized(
     conn: &Connection,
     org_id: &str,
