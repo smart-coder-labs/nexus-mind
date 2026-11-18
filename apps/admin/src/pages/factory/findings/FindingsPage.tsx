@@ -292,7 +292,7 @@ export default function FindingsPage({
         count={countFor('type')}
         options={[
           { value: 'all', label: 'All types' },
-          ...(['bug', 'post', 'feedback', 'lead'] as FindingType[]).map((t) => ({
+          ...(['bug', 'post', 'feedback', 'lead', 'proposal'] as FindingType[]).map((t) => ({
             value: t,
             label: FINDING_TYPE_PLURAL[t],
           })),

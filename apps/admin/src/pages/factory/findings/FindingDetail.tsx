@@ -1,8 +1,9 @@
 import { Fragment, useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, CheckCircle2, ExternalLink, FilePlus2, RefreshCw, Send, Wand2 } from 'lucide-react'
+import { Archive, ArchiveRestore, CheckCircle2, ExternalLink, FilePlus2, RefreshCw, Send, Square, Wand2 } from 'lucide-react'
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmModal } from '../../../components/ConfirmModal'
+import { Markdown } from '../../../components/ui/Markdown'
 import type { AutonomousAgentDelivery, AutonomousAgentFinding } from '../../../types'
 import {
   asArr, asDict, asStr, channelName, deliveryStatusMeta, evidenceKindLabel, findingStatusMeta, humanize, isPostEvidence, relativeTime,
@@ -97,6 +98,39 @@ function LeadBlock({ lead }: { lead: Dict }) {
   )
 }
 
+/** A Product Strategist proposal: problem, proposal, acceptance criteria and where it lands. */
+function ProposalBlock({ ev }: { ev: Dict }) {
+  const problem = asStr(ev.problem)
+  const proposal = asStr(ev.proposal)
+  const criteria = (asArr(ev.acceptance_criteria) ?? []).map(asStr).filter(Boolean) as string[]
+  const repository = asStr(ev.repository)
+  const module = asStr(ev.module)
+  return (
+    <section aria-label="Proposal" className="space-y-4">
+      {(repository || module) && (
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+          {repository && <><dt className="text-text-tertiary">Repository</dt><dd className="break-all font-mono text-[12px] text-text-secondary">{repository}</dd></>}
+          {module && <><dt className="text-text-tertiary">Module</dt><dd className="break-all font-mono text-[12px] text-text-secondary">{module}</dd></>}
+        </dl>
+      )}
+      {problem && <Block title="Problem"><div className="text-sm leading-relaxed text-text-secondary"><Markdown content={problem} /></div></Block>}
+      {proposal && <Block title="Proposal"><div className="text-sm leading-relaxed text-text-secondary"><Markdown content={proposal} /></div></Block>}
+      {criteria.length > 0 && (
+        <Block title="Acceptance criteria">
+          <ul className="grid list-none gap-1.5 p-0">
+            {criteria.map((c, i) => (
+              <li key={i} className="flex gap-2 text-sm text-text-secondary">
+                <Square className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary" aria-hidden />
+                {c}
+              </li>
+            ))}
+          </ul>
+        </Block>
+      )}
+    </section>
+  )
+}
+
 /** One finding: pills, title, summary, one primary action, evidence, deliveries, raw last. */
 export function FindingDetail(props: FindingDetailProps) {
   const { finding, deliveries, agentName, templateKey, connectedDestinations: connected, can } = props
@@ -152,7 +186,7 @@ export function FindingDetail(props: FindingDetailProps) {
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-1.5">
           <Badge size="sm" variant={severityVariant(finding.severity)} dot>{severityLabel(finding.severity)}</Badge>
-          <Badge size="sm" variant="default">{FINDING_TYPE_LABEL[type]}{kind && type === 'bug' ? ` · ${evidenceKindLabel(kind)}` : ''}</Badge>
+          <Badge size="sm" variant="default">{FINDING_TYPE_LABEL[type]}{kind && (type === 'bug' || type === 'proposal') ? ` · ${evidenceKindLabel(kind)}` : ''}</Badge>
           <Badge size="sm" variant={statusMeta.variant}>{statusMeta.label}</Badge>
           {isPost && linkedinDelivery && (
             <Badge size="sm" variant="success">
@@ -191,6 +225,8 @@ export function FindingDetail(props: FindingDetailProps) {
       )}
 
       {lead && <LeadBlock lead={lead} />}
+
+      {type === 'proposal' && <ProposalBlock ev={ev} />}
 
       {(shot || locDict || locStr || (steps && steps.length) || repro) && (
         <section aria-label="Evidence" className="space-y-4">

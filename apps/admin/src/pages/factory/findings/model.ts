@@ -1,16 +1,18 @@
 import type { AutonomousAgentDelivery, AutonomousAgentFinding } from '../../../types'
 import { asDict, asStr, isPostEvidence } from '../shared/format'
 
-export type FindingType = 'bug' | 'post' | 'feedback' | 'lead'
-export const FINDING_TYPE_LABEL: Record<FindingType, string> = { bug: 'Bug', post: 'Post', feedback: 'Feedback', lead: 'Lead' }
-export const FINDING_TYPE_PLURAL: Record<FindingType, string> = { bug: 'Bugs', post: 'Posts', feedback: 'Feedback', lead: 'Leads' }
+export type FindingType = 'bug' | 'post' | 'feedback' | 'lead' | 'proposal'
+export const FINDING_TYPE_LABEL: Record<FindingType, string> = { bug: 'Bug', post: 'Post', feedback: 'Feedback', lead: 'Lead', proposal: 'Proposal' }
+export const FINDING_TYPE_PLURAL: Record<FindingType, string> = { bug: 'Bugs', post: 'Posts', feedback: 'Feedback', lead: 'Leads', proposal: 'Proposals' }
 
-/** A finding's type: post / feedback / lead are flagged in evidence; the rest are bugs/issues. */
+/** A finding's type: post / feedback / lead / proposal are flagged in evidence; the rest are bugs/issues. */
 export function findingType(f: AutonomousAgentFinding): FindingType {
   const ev = asDict(f.evidence) ?? {}
   if (isPostEvidence(ev)) return 'post'
   if (asStr(ev.kind) === 'feedback') return 'feedback'
   if (asDict(ev.lead)) return 'lead'
+  // Product Strategist: its evidence.type is feature/improvement, not a bug class.
+  if (asStr(ev.proposal) || asStr(ev.problem)) return 'proposal'
   return 'bug'
 }
 
