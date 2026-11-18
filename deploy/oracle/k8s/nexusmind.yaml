@@ -136,7 +136,7 @@ spec:
               value: "true"
             # Runs executed in parallel; each agent's budgets still cap its own share.
             - name: AUTONOMOUS_WORKER_SLOTS
-              value: "3"
+              value: "6"
             # The Nexus executor's CLI requires an explicit registered gateway
             # name. Keep this aligned with the production registration under
             # /claude-home/.config/openshell; without it the worker silently
