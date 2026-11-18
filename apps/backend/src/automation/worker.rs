@@ -5301,6 +5301,51 @@ fn fanout_outcome(
     (status, code, detail)
 }
 
+/// Starts a commands pod and runs `true` in it. `Ok` when the sandbox is not
+/// configured at all (nothing to verify there); otherwise the pod must come up.
+async fn verification_sandbox_preflight(store: &SqliteStore, claim: &queries::ClaimedAutonomousRun) -> Result<(), String> {
+    let workdir = tempfile::Builder::new()
+        .prefix(&format!("nexusmind-agent-{}-preflight-", claim.run.id))
+        .tempdir()
+        .map_err(|_| "preflight_workdir_failed".to_string())?;
+    let receipts = std::sync::Mutex::new(Vec::new());
+    let run = super::sandboxed::SandboxedRun {
+        store,
+        org_id: &claim.org_id,
+        run_id: &claim.run.id,
+        attempt_id: &claim.attempt_id,
+        retry: 0,
+        workdir: workdir.path(),
+        secret_values: &[],
+        seq_base: 0,
+        wall_time: Duration::ZERO,
+        verification: &[],
+        receipts: &receipts,
+        qa: None,
+        qa_checkpoint: None,
+        slot: "preflight",
+        writes: None,
+    };
+    let commands = vec![vec!["true".to_string()]];
+    let spec = super::sandboxed::CommandsSpec {
+        commands: &commands,
+        extra_env: &[],
+        timeout_secs: 60,
+        reproduce_failures: false,
+        hosts: &[],
+        label: "p",
+        max_stdout: 1024,
+        files: Vec::new(),
+        proxy_file: None,
+    };
+    match super::sandboxed::run_commands_sandboxed(&run, &spec).await {
+        Ok(runs) if runs.first().and_then(|run| run.exit_code) == Some(0) => Ok(()),
+        Ok(_) => Err("preflight_command_failed".into()),
+        Err(error) if error.to_string() == "sandbox_unconfigured" => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Issues one resolver run works on at once (`max_issues_per_run`, 1-5, default 1).
 fn resolver_max_issues(config: &serde_json::Value) -> usize {
     config.get("max_issues_per_run").and_then(|v| v.as_u64()).map_or(1, |n| n.clamp(1, 5) as usize)
@@ -5344,6 +5389,11 @@ async fn execute_resolver_fanout(
         return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}));
     }
     issues.truncate(max_issues);
+    // Verification always runs in a commands pod: prove one starts before spending
+    // model time, so a broken sandbox fails in minutes instead of after the work.
+    if let Err(detail) = verification_sandbox_preflight(store, claim).await {
+        return ("blocked_runtime".into(), json!({"code":"verification_sandbox_unavailable","detail":detail}));
+    }
     let sandbox = match tempfile::Builder::new()
         .prefix(&format!("nexusmind-agent-{}-", claim.run.id))
         .tempdir()
