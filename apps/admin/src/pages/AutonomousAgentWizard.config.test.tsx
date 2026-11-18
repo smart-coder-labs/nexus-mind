@@ -1,6 +1,28 @@
 import { describe, it, expect } from 'vitest'
 import { preservedConfig, defaultState, buildConfig } from './AutonomousAgentWizard'
 describe('agent configuration preservation', () => {
+  it('builds the UI/UX reviewer config against a web target and keeps only unknown keys as extra', () => {
+    const state = defaultState('ux_review')
+    expect(state.targetKind).toBe('web_application')
+    state.outputGithubIssue = true
+    state.repository = 'acme/web'
+    state.uxRoutes = '/dashboard, /settings\n/billing'
+    state.uxMaxFindings = '6'
+    state.uxDomainPack = 'saas_admin'
+    state.customInstructions = 'Focus on onboarding'
+    state.githubPublicationConnectorId = 'workflow-publisher'
+    const config = buildConfig(state)
+    expect(config).toMatchObject({
+      outputs: ['nexusmind', 'github_issue'],
+      repository: 'acme/web',
+      routes: ['/dashboard', '/settings', '/billing'],
+      max_findings: 6,
+      domain_pack: 'saas_admin',
+      custom_instructions: 'Focus on onboarding',
+      github_publication_connector_id: 'workflow-publisher',
+    })
+    expect(preservedConfig({ ...config, themes: ['light'] }, 'ux_review')).toEqual({ themes: ['light'] })
+  })
   it('shares the Workflow publisher by reference without changing reviewer identity', () => {
     const state = defaultState('github_issue_resolver')
     state.repository = 'acme/web'

@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 112;
+pub const LATEST_USER_VERSION: i32 = 113;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -115,6 +115,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v110(conn)?;
     run_v111(conn)?;
     run_v112(conn)?;
+    run_v113(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -236,6 +237,51 @@ pub fn run_v112(conn: &Connection) -> Result<()> {
 
         PRAGMA foreign_keys = ON;
         PRAGMA user_version = 112;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v113: allow the `ux_review` agent template. Same table
+/// rebuild as run_v73 (SQLite cannot ALTER a CHECK); ids are preserved so inbound
+/// foreign keys stay valid.
+pub fn run_v113(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 113 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE autonomous_agent_definitions_new (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT,
+            template_key TEXT NOT NULL CHECK(template_key IN ('qa','github_issue_resolver','github_pr_reviewer','lead_generation','judge','ai_content_manager','security_scan','security_dast','product_strategist','ux_review')),
+            template_version INTEGER NOT NULL CHECK(template_version > 0),
+            status TEXT NOT NULL DEFAULT 'disabled' CHECK(status IN ('disabled','enabled','archived')),
+            current_revision INTEGER NOT NULL DEFAULT 1 CHECK(current_revision > 0),
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, name)
+        );
+
+        INSERT INTO autonomous_agent_definitions_new
+            (id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at)
+        SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
+        FROM autonomous_agent_definitions;
+
+        DROP TABLE autonomous_agent_definitions;
+        ALTER TABLE autonomous_agent_definitions_new RENAME TO autonomous_agent_definitions;
+
+        CREATE INDEX IF NOT EXISTS idx_autonomous_agent_definitions_org_status
+            ON autonomous_agent_definitions(org_id, status);
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 113;
         ",
     )?;
     Ok(())
@@ -9745,6 +9791,31 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(get_user_version(&conn), 112);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    #[test]
+    fn run_v113_allows_the_ux_review_template_and_keeps_rows() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "o1", "acme");
+        conn.execute("INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')", []).unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_definitions (id,org_id,name,template_key,template_version,created_by) VALUES ('d1','o1','Strategist','product_strategist',1,'u1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_definitions (id,org_id,name,template_key,template_version,created_by) VALUES ('d2','o1','UX','ux_review',1,'u1')",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO autonomous_agent_definitions (id,org_id,name,template_key,template_version,created_by) VALUES ('d3','o1','Bad','nope',1,'u1')",
+                [],
+            )
+            .is_err());
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
     }
 }

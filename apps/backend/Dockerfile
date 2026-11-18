@@ -210,6 +210,14 @@ RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
 # `slack` is Slack's hosted MCP (the same OAuth client as Claude's Slack plugin). It
 # only works after a one-time login in the worker's persistent HOME; until then the
 # Judge/QA simply cannot notify (see docs/factory/JUDGE_POST_DEPLOY.md).
+# axe-core, preloaded into every page of ux_review runs via the MCP's
+# --init-script so accessibility checks are measured, not guessed.
+RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
+      npm install -g axe-core@4.14.0 \
+      && cp "$(npm root -g)/axe-core/axe.min.js" /app/axe.min.js \
+      && npm cache clean --force ; \
+    fi
+
 RUN printf '%s' '{"mcpServers":{"playwright":{"command":"mcp-server-playwright","args":["--headless","--isolated","--no-sandbox","--browser","chromium"]},"slack":{"type":"http","url":"https://mcp.slack.com/mcp","oauth":{"clientId":"1601185624273.8899143856786","callbackPort":3118}}}}' > /app/qa-mcp.json
 
 # MCP config wired into the issue-resolver / lead-generation runs via

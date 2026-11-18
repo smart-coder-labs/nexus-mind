@@ -268,6 +268,27 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
             ],
         },
         AutonomousAgentTemplate {
+            key: "ux_review".into(),
+            version: 1,
+            name: "UI/UX Reviewer".into(),
+            description: "Logs into the live app, reviews each screen across viewports and themes against WCAG 2.2 (axe-core) and a UX/UI rubric, and files the verified problems as GitHub issues with rule, selector and screenshot. Read-only; never modifies code.".into(),
+            capabilities: vec![
+                "repository:read".into(),
+                "finding:write".into(),
+                "delivery:write".into(),
+            ],
+            default_budgets: serde_json::json!({"wall_time_seconds": 2700, "max_attempts": 1, "max_cost_usd": 12, "max_definition_concurrency": 1, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo","description":"Where issues are filed; its DESIGN.md / design rules are read when present"},"github_publication_connector_id":{"type":"string","description":"Optional shared Workflow GitHub publisher"},"routes":{"type":"array","items":{"type":"string"},"description":"Paths to review (e.g. /dashboard); empty = discover from the primary navigation"},"max_pages":{"type":"integer","default":8,"minimum":1,"maximum":30},"viewports":{"type":"array","items":{"type":"string"},"default":["390x844","1440x900"]},"themes":{"type":"array","items":["light","dark"],"default":["light","dark"]},"max_findings":{"type":"integer","default":10,"minimum":1,"maximum":25,"description":"Most findings reported per run, highest impact first"},"domain_pack":{"enum":["none","saas_admin","fintech","marketplace","ecommerce","ai_chat","content"],"default":"none"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"custom_instructions":{"type":"string","description":"Optional focus (e.g. onboarding flow); cannot expand scope"}}),
+            workflow: vec![
+                "login".into(),
+                "inspect".into(),
+                "measure".into(),
+                "verify".into(),
+                "record_findings".into(),
+                "deliver".into(),
+            ],
+        },
+        AutonomousAgentTemplate {
             key: "security_dast".into(),
             version: 1,
             name: "Security DAST".into(),
@@ -2177,6 +2198,25 @@ mod tests {
             !queries::claim_autonomous_agent_delivery(&conn, &org_id, &delivery.id).unwrap(),
             "a delivered post must never be republished"
         );
+    }
+
+    #[test]
+    fn ux_review_template_is_registered_read_only_and_browser_driven() {
+        let template = managed_templates()
+            .into_iter()
+            .find(|t| t.key == "ux_review")
+            .expect("ux_review template must be registered");
+        assert_eq!(
+            template.capabilities,
+            vec!["repository:read", "finding:write", "delivery:write"]
+        );
+        assert_eq!(
+            template.workflow,
+            vec!["login", "inspect", "measure", "verify", "record_findings", "deliver"]
+        );
+        for key in ["outputs", "repository", "routes", "viewports", "max_findings", "domain_pack"] {
+            assert!(template.config_schema.get(key).is_some(), "{key} must be in the schema");
+        }
     }
 
     #[test]

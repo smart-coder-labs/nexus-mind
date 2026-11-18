@@ -16716,6 +16716,7 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
         "ai_content_manager" => vec!["content:write", "delivery:write"],
         "security_scan" => vec!["repository:read", "finding:write", "delivery:write"],
         "product_strategist" => vec!["repository:read", "finding:write", "delivery:write"],
+        "ux_review" => vec!["repository:read", "finding:write", "delivery:write"],
         "security_dast" => vec!["scan:active", "finding:write", "delivery:write"],
         _ => anyhow::bail!("invalid_template"),
     };
@@ -17383,6 +17384,29 @@ pub fn validate_autonomous_agent_definition(
                     errors.push("invalid_auto_publish_daily_limit")
                 }
             }
+        }
+        "ux_review" => {
+            let config = &current.revision.config;
+            let outputs = config.get("outputs").and_then(|v| v.as_array());
+            if outputs.is_none_or(|v| v.is_empty() || v.iter().any(|item| !matches!(item.as_str(), Some("nexusmind" | "slack" | "github_issue")))) {
+                errors.push("invalid_outputs")
+            }
+            let repository = config.get("repository").and_then(|v| v.as_str());
+            if repository.is_some_and(|v| crate::automation::connectors::validate_repository(v).is_err())
+                || (repository.is_none() && outputs.is_some_and(|v| v.iter().any(|i| i.as_str() == Some("github_issue"))))
+            {
+                errors.push("valid_repository_required")
+            }
+            let in_range = |key: &str, max: u64| config.get(key).is_none_or(|v| v.as_u64().is_some_and(|n| (1..=max).contains(&n)));
+            if !in_range("max_findings", 25) { errors.push("max_findings_out_of_range") }
+            if !in_range("max_pages", 30) { errors.push("max_pages_out_of_range") }
+            if config.get("domain_pack").is_some_and(|v| !matches!(v.as_str(), Some("none" | "saas_admin" | "fintech" | "marketplace" | "ecommerce" | "ai_chat" | "content"))) {
+                errors.push("invalid_domain_pack")
+            }
+            let strings = |key: &str, max: usize, ok: &dyn Fn(&str) -> bool| config.get(key).is_none_or(|v| v.as_array().is_some_and(|items| items.len() <= max && items.iter().all(|i| i.as_str().is_some_and(ok))));
+            if !strings("routes", 30, &|r| r.starts_with('/') && r.len() <= 200) { errors.push("invalid_routes") }
+            if !strings("viewports", 4, &|v| v.split_once('x').is_some_and(|(w, h)| w.parse::<u16>().is_ok_and(|w| (320..=2560).contains(&w)) && h.parse::<u16>().is_ok_and(|h| (480..=1600).contains(&h)))) { errors.push("invalid_viewports") }
+            if !strings("themes", 2, &|t| matches!(t, "light" | "dark")) { errors.push("invalid_themes") }
         }
         "product_strategist" => {
             let repository_valid = current.revision.config.get("repository").and_then(|v| v.as_str())
@@ -19114,7 +19138,7 @@ fn upsert_autonomous_agent_finding_with_provenance(
         rusqlite::params![org_id, definition_id, fingerprint], |row| row.get(0),
     )?;
     let is_qa: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions WHERE org_id=?1 AND id=?2 AND template_key='qa')",
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_definitions WHERE org_id=?1 AND id=?2 AND template_key IN ('qa','ux_review'))",
         rusqlite::params![org_id, definition_id], |row| row.get(0),
     )?;
     let mut canonical = fingerprint.to_string();
