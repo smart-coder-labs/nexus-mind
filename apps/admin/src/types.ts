@@ -1625,6 +1625,8 @@ export interface FactoryEconomics {
   frontier_avoidance: number | null
   proposed_changes: number
   cost_per_proposed_change: number | null
+  accepted_changes: number
+  cost_per_accepted_change: number | null
   accepted_changes_tracked: boolean
 }
 

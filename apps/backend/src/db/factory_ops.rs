@@ -242,8 +242,11 @@ pub struct Economics {
     /// Pull requests the factory opened.
     pub proposed_changes: i64,
     pub cost_per_proposed_change: Option<f64>,
-    /// Whether accepted (merged) changes are measured yet; they are not, so
-    /// cost per accepted change is not reported.
+    /// Proposed changes from this window that a human (or the factory) merged.
+    pub accepted_changes: i64,
+    pub cost_per_accepted_change: Option<f64>,
+    /// Whether accepted (merged) changes are measured yet; they are, from the pull
+    /// request webhook and from the factory's own merges.
     pub accepted_changes_tracked: bool,
 }
 
@@ -281,6 +284,15 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
         params![org_id, since],
         |r| r.get(0),
     )?;
+    // Same population and window as the proposals, so the pair reads as an
+    // acceptance ratio instead of two unrelated counts.
+    let accepted_changes: i64 = conn.query_row(
+        "SELECT COALESCE(COUNT(*), 0) FROM autonomous_agent_output_links
+         WHERE org_id = ?1 AND kind IN ('draft_pr','pull_request') AND created_at >= datetime('now', ?2)
+           AND merged_at IS NOT NULL",
+        params![org_id, since],
+        |r| r.get(0),
+    )?;
     Ok(Economics {
         days,
         runs,
@@ -290,7 +302,9 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
         frontier_avoidance,
         proposed_changes,
         cost_per_proposed_change: (proposed_changes > 0).then(|| cost_usd / proposed_changes as f64),
-        accepted_changes_tracked: false,
+        accepted_changes,
+        cost_per_accepted_change: (accepted_changes > 0).then(|| cost_usd / accepted_changes as f64),
+        accepted_changes_tracked: true,
     })
 }
 
@@ -466,6 +480,61 @@ mod tests {
         assert_eq!(e.by_model[0].model.as_deref(), Some("claude-opus-5"));
         assert_eq!(e.frontier_avoidance, Some(0.75));
         assert_eq!(e.cost_per_proposed_change, Some(1.5));
-        assert!(!e.accepted_changes_tracked);
+        assert!(e.accepted_changes_tracked);
+        // The link is a live proposal: nothing merged it, so there is no acceptance yet.
+        assert_eq!(e.accepted_changes, 0);
+        assert!(e.cost_per_accepted_change.is_none());
+    }
+
+    #[test]
+    fn economics_reports_cost_per_accepted_change_once_a_proposal_is_merged() {
+        let (conn, org, _) = setup();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO factory_run_metrics (id, org_id, run_id, template_key, provider, model, cost_usd, outcome)
+             VALUES ('m1', ?1, 'r1', 'github_issue_resolver', 'claude-code', 'claude-opus-5', 2.0, 'succeeded')",
+            [&org],
+        )
+        .unwrap();
+        for (id, number) in [("l1", "12"), ("l2", "13")] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, external_url)
+                 VALUES (?1, ?2, 'r1', 'draft_pr', ?3, 'https://github.com/acme/api/pull/'||?3)",
+                params![id, org, number],
+            )
+            .unwrap();
+        }
+        assert!(queries::mark_autonomous_output_link_merged(
+            &conn,
+            &org,
+            "https://github.com/acme/api/pull/12",
+            Some("sha-1"),
+        )
+        .unwrap());
+        let e = economics(&conn, &org, 30).unwrap();
+        assert_eq!((e.proposed_changes, e.accepted_changes), (2, 1));
+        assert_eq!(e.cost_per_accepted_change, Some(2.0));
+        assert_eq!(e.cost_per_proposed_change, Some(1.0));
+    }
+
+    #[test]
+    fn economics_never_counts_another_orgs_accepted_change() {
+        let (conn, org, _) = setup();
+        let (other, _, _) = queries::create_org(&conn, "Other", "other", "o@other.com", "O").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        for (id, owner) in [("mine", &org), ("theirs", &other.id)] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, external_url)
+                 VALUES (?1, ?2, 'r1', 'draft_pr', '12', 'https://github.com/acme/'||?1||'/pull/12')",
+                params![id, owner],
+            )
+            .unwrap();
+        }
+        conn.execute("UPDATE autonomous_agent_output_links SET merged_at = datetime('now') WHERE id = 'theirs'", []).unwrap();
+        let e = economics(&conn, &org, 30).unwrap();
+        assert_eq!((e.proposed_changes, e.accepted_changes), (1, 0));
+        assert!(e.cost_per_accepted_change.is_none());
+        let theirs = economics(&conn, &other.id, 30).unwrap();
+        assert_eq!(theirs.accepted_changes, 1);
     }
 }

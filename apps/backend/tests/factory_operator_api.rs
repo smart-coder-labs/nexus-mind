@@ -198,7 +198,10 @@ async fn approving_a_held_merge_starts_its_soak_and_rejecting_cancels_it() {
     let (status, body) = get(&router, &cookie, "/v1/factory/economics?days=7").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["days"], 7);
-    assert_eq!(body["accepted_changes_tracked"], false);
+    assert_eq!(body["accepted_changes_tracked"], true);
+    // Nothing merged in this window, so acceptance is zero and its cost is not reported.
+    assert_eq!(body["accepted_changes"], 0);
+    assert!(body["cost_per_accepted_change"].is_null(), "{body}");
 }
 
 #[tokio::test]

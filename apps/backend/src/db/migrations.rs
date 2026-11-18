@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 112;
+pub const LATEST_USER_VERSION: i32 = 113;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -115,6 +115,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v110(conn)?;
     run_v111(conn)?;
     run_v112(conn)?;
+    run_v113(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -238,6 +239,34 @@ pub fn run_v112(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 112;
         ",
     )?;
+    Ok(())
+}
+
+/// Migration v113: record when a proposed change was accepted (merged).
+///
+/// Spend per *proposed* change was already reported, but nothing said which
+/// proposals a human actually took, so cost per accepted change was unknowable.
+/// The columns are nullable and added in place: existing `draft_pr` rows are
+/// deliberately stamped as they merge rather than reclassified, so the `kind`
+/// CHECK stays as shipped and no inbound foreign key moves.
+pub fn run_v113(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 113 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (column, kind) in [("merged_at", "TEXT"), ("merge_sha", "TEXT")] {
+        let has: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('autonomous_agent_output_links') WHERE name=?1)",
+            rusqlite::params![column],
+            |row| row.get(0),
+        )?;
+        if !has {
+            tx.execute_batch(&format!("ALTER TABLE autonomous_agent_output_links ADD COLUMN {column} {kind};"))?;
+        }
+    }
+    tx.execute_batch("PRAGMA user_version = 113;")?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -9745,6 +9774,16 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(get_user_version(&conn), 112);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    #[test]
+    fn run_v113_adds_merge_columns_to_autonomous_agent_output_links() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "autonomous_agent_output_links", "merged_at"));
+        assert!(column_exists(&conn, "autonomous_agent_output_links", "merge_sha"));
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+        run_v113(&conn).expect("v113 must be idempotent");
     }
 }

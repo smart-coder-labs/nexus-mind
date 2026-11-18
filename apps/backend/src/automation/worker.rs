@@ -3945,6 +3945,33 @@ fn decide_merge(
     Ok(verdict)
 }
 
+/// The canonical URL of a merged pull request, matching the `external_url` stored on
+/// the output link when the factory opened it. Kept pure so the shape stays testable.
+fn merged_pull_url(repository: &str, pull_number: i64) -> String {
+    format!("https://github.com/{repository}/pull/{pull_number}")
+}
+
+/// Records that a proposed change was accepted (merged), for cost per accepted change.
+/// The merge has already happened, so this must never change what the caller returns:
+/// a lock or write failure is logged and the merge still stands.
+fn record_accepted_change(
+    store: &SqliteStore,
+    org_id: &str,
+    repository: &str,
+    pull_number: i64,
+    merge_sha: Option<&str>,
+) {
+    let url = merged_pull_url(repository, pull_number);
+    let db = store.conn();
+    let stamped = db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("database_lock"))
+        .and_then(|conn| queries::mark_autonomous_output_link_merged(&conn, org_id, &url, merge_sha));
+    if let Err(error) = stamped {
+        tracing::warn!(repository, number = pull_number, "Could not record the accepted change: {error:#}");
+    }
+}
+
 /// Decide whether a reviewed PR may be auto-merged. Every deterministic gate runs
 /// on the exact reviewed commit, then the per-action policy engine decides. An
 /// `allow` does not merge yet: it starts the soak window, and the worker merges
@@ -3988,7 +4015,11 @@ async fn auto_merge_pull(
         // The owner opted this agent out of the risk floor, sandbox verification,
         // merge policy and soak: a clean review plus green CI merges.
         return Ok(match super::connectors::merge_github_pull(token, repository, number, "squash", Some(reviewed_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                let merge_sha = detail.get("sha").and_then(|v| v.as_str()).or(Some(reviewed_sha));
+                record_accepted_change(store, &claim.org_id, repository, number, merge_sha);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4095,7 +4126,11 @@ async fn merge_after_soak(
             return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
         }
         return Ok(match super::connectors::merge_github_pull(&token, &soak.repository, soak.pull_number, "squash", Some(&soak.head_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                let merge_sha = detail.get("sha").and_then(|v| v.as_str()).or(Some(soak.head_sha.as_str()));
+                record_accepted_change(store, &soak.org_id, &soak.repository, soak.pull_number, merge_sha);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4140,7 +4175,11 @@ async fn merge_after_soak(
     )
     .await
     {
-        Ok(result) => Ok(json!({"merged": true, "detail": result})),
+        Ok(result) => {
+            let merge_sha = result.get("sha").and_then(|v| v.as_str()).or(Some(soak.head_sha.as_str()));
+            record_accepted_change(store, &soak.org_id, &soak.repository, soak.pull_number, merge_sha);
+            Ok(json!({"merged": true, "detail": result}))
+        }
         Err(error) => {
             Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
         }
@@ -10619,6 +10658,14 @@ Client.listTools() called but server does not advertise tools capability
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "command_not_allowlisted");
+    }
+
+    #[test]
+    fn a_merged_pull_is_recorded_under_the_url_the_link_already_stores() {
+        assert_eq!(
+            super::merged_pull_url("acme/api", 12),
+            "https://github.com/acme/api/pull/12"
+        );
     }
 }
 

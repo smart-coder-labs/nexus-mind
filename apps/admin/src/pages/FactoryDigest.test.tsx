@@ -75,6 +75,8 @@ const economics: FactoryEconomics = {
   frontier_avoidance: 0.75,
   proposed_changes: 4,
   cost_per_proposed_change: 0.8,
+  accepted_changes: 0,
+  cost_per_accepted_change: null,
   accepted_changes_tracked: false,
 }
 
@@ -264,6 +266,36 @@ describe('FactoryDigest', () => {
     expect(within(card).getByText('75%')).toBeInTheDocument()
     expect(within(card).getByText('$0.800')).toBeInTheDocument()
     expect(within(card).getByText(/not measured yet/i)).toBeInTheDocument()
+    expect(within(card).queryByText(/^cost per accepted change$/i)).toBeNull()
+    expect(within(card).queryByText(/^accepted changes$/i)).toBeNull()
+  })
+
+  it('shows the accepted count and cost per accepted change once merges are measured', async () => {
+    api.getFactoryEconomics.mockResolvedValue({
+      ...economics,
+      accepted_changes_tracked: true,
+      accepted_changes: 3,
+      cost_per_accepted_change: 1.6,
+    })
+    renderPage(['factory_policy:read'])
+    const card = await screen.findByRole('region', { name: /economics/i })
+    expect(within(card).getByText('3 / 4')).toBeInTheDocument()
+    expect(within(card).getByText('$1.60')).toBeInTheDocument()
+    expect(within(card).queryByText(/not measured yet/i)).toBeNull()
+  })
+
+  it('shows a dash for cost per accepted change while nothing has been merged yet', async () => {
+    api.getFactoryEconomics.mockResolvedValue({
+      ...economics,
+      accepted_changes_tracked: true,
+      accepted_changes: 0,
+      cost_per_accepted_change: null,
+    })
+    renderPage(['factory_policy:read'])
+    const card = await screen.findByRole('region', { name: /economics/i })
+    expect(within(card).getByText('0 / 4')).toBeInTheDocument()
+    expect(within(card).getByText('—')).toBeInTheDocument()
+    expect(within(card).queryByText(/not measured yet/i)).toBeNull()
   })
 
   it('shows read-only lookback recommendations only when task and memory access are granted', async () => {

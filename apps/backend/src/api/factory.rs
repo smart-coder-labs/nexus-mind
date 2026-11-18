@@ -282,7 +282,7 @@ pub struct EconomicsQuery {
 }
 
 /// `GET /v1/factory/economics?days=30`: spend by model, the share of runs that
-/// avoided the frontier tier, and cost per proposed change.
+/// avoided the frontier tier, and cost per proposed and per accepted (merged) change.
 pub async fn economics(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

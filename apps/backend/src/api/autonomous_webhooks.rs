@@ -407,6 +407,34 @@ fn process_delivery(
         return Ok(());
     }
     if event == "pull_request" {
+        // A merged PR is the only signal that a proposed change was accepted, and it
+        // arrives whether or not this org asked for a review — so record it before the
+        // reviewer-only routing below. This only records an outcome; it decides nothing.
+        if action == Some("closed")
+            && payload.pointer("/pull_request/merged").and_then(|v| v.as_bool()) == Some(true)
+        {
+            let url = payload
+                .pointer("/pull_request/html_url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    // Derive it from the repository already scoped to the signed connector.
+                    payload
+                        .pointer("/pull_request/number")
+                        .and_then(|v| v.as_i64())
+                        .map(|number| format!("https://github.com/{repo}/pull/{number}"))
+                });
+            if let Some(url) = url {
+                let sha = payload
+                    .pointer("/pull_request/merge_commit_sha")
+                    .and_then(|v| v.as_str());
+                // No link matches when the factory did not open this PR; that stamps nothing.
+                // Discarded deliberately: this only records an outcome, so a transient
+                // write error must not abort the delivery and lose reviewer routing.
+                // The worst case is an undercounted acceptance.
+                let _ = queries::mark_autonomous_output_link_merged(c, org, &url, sha);
+            }
+        }
         let Some(login) = reviewer else { return Ok(()) };
         if !github_review_hooks::route(c, org, repo, payload, login)? {
             return Ok(());
@@ -754,5 +782,74 @@ mod tests {
                 Some(("github_pr", 9, Some("abc")))
             );
         }
+    }
+
+    /// A merge is the only evidence a proposed change was accepted, so the stamp has to
+    /// land for the signed org's link only — PR numbers repeat across repositories.
+    #[test]
+    fn a_merged_pull_request_is_recorded_per_org_and_an_unmerged_close_is_not() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (o, u, _) = queries::bootstrap(&c, "Org", "org", "owner@test.com", "Owner").unwrap();
+        let (other, other_user, _) =
+            queries::create_org(&c, "Other", "other", "other@test.com", "Owner").unwrap();
+        for (id, org, user) in [("hook", &o.id, &u.id), ("hook-b", &other.id, &other_user.id)] {
+            c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES (?1,?2,'target_secret','Hook','ready','{}',?3)",rusqlite::params![id,org,user]).unwrap();
+        }
+        // Only the link's org and URL matter here, so its run/work item is not built.
+        c.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        // link-b is the hazard: another tenant watching the same public repo, so its
+        // link carries link-a's exact URL and only the org scope separates them.
+        for (id, org, number, url) in [
+            ("link-a", &o.id, "12", "https://github.com/acme/api/pull/12"),
+            ("link-b", &other.id, "12", "https://github.com/acme/api/pull/12"),
+            ("link-unmerged", &o.id, "13", "https://github.com/acme/api/pull/13"),
+            ("link-no-html-url", &o.id, "14", "https://github.com/acme/api/pull/14"),
+        ] {
+            c.execute("INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id,external_url) VALUES (?1,?2,'r1','draft_pr',?3,?4)",rusqlite::params![id,org,number,url]).unwrap();
+        }
+        let merged_at = |id: &str| {
+            c.query_row(
+                "SELECT merged_at FROM autonomous_agent_output_links WHERE id=?1",
+                [id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .unwrap()
+        };
+        let deliver = |delivery: &str, org: &str, connector: &str, payload: &serde_json::Value| {
+            let hash = hex::encode(Sha256::digest(serde_json::to_vec(payload).unwrap()));
+            process_delivery(&c, org, connector, delivery, "pull_request", payload, None, &hash, true, &[]).unwrap();
+        };
+
+        let mut p = json!({"action":"closed","repository":{"full_name":"acme/api"},"pull_request":{"number":12,"merged":true,"html_url":"https://github.com/acme/api/pull/12","merge_commit_sha":"c".repeat(40)}});
+        deliver("merged-12", &o.id, "hook", &p);
+        assert!(merged_at("link-a").is_some(), "the merged PR's link is stamped");
+        assert_eq!(
+            c.query_row("SELECT merge_sha FROM autonomous_agent_output_links WHERE id='link-a'", [], |r| r.get::<_, Option<String>>(0)).unwrap(),
+            Some("c".repeat(40))
+        );
+        assert!(
+            merged_at("link-b").is_none(),
+            "another org's link for the same PR URL must stay unmerged"
+        );
+
+        // Closed without a merge is a rejected proposal, not an accepted change.
+        p["pull_request"]["number"] = json!(13);
+        p["pull_request"]["merged"] = json!(false);
+        p["pull_request"]["html_url"] = json!("https://github.com/acme/api/pull/13");
+        deliver("closed-13", &o.id, "hook", &p);
+        assert!(merged_at("link-unmerged").is_none());
+
+        // Without html_url the URL comes from the repository the connector is signed for.
+        let fallback = json!({"action":"closed","repository":{"full_name":"acme/api"},"pull_request":{"number":14,"merged":true}});
+        deliver("merged-14", &o.id, "hook", &fallback);
+        assert!(merged_at("link-no-html-url").is_some());
+
+        // The same delivery signed for the other tenant stamps that tenant's link, so
+        // the NULL above was the org scope at work and not an already-merged row.
+        let theirs = json!({"action":"closed","repository":{"full_name":"acme/api"},"pull_request":{"number":12,"merged":true,"html_url":"https://github.com/acme/api/pull/12"}});
+        deliver("merged-other-12", &other.id, "hook-b", &theirs);
+        assert!(merged_at("link-b").is_some());
+        assert!(merged_at("link-unmerged").is_none());
     }
 }

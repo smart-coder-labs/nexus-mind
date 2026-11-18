@@ -19060,6 +19060,107 @@ pub fn create_autonomous_output_link(
     Ok(())
 }
 
+/// Stamps the accepted (merged) outcome on the output link for a pull request.
+/// Org-scoped and keyed by the link's `external_url`, because links store the bare
+/// PR number under UNIQUE(org_id, kind, external_id) and numbers repeat across repos.
+/// Idempotent: the first observed merge wins. Returns true when a link was stamped.
+pub fn mark_autonomous_output_link_merged(
+    conn: &Connection,
+    org_id: &str,
+    external_url: &str,
+    merge_sha: Option<&str>,
+) -> Result<bool> {
+    // NOCASE on the URL: the caller may build it from the agent's configured
+    // `repository`, whose case need not match GitHub's canonical html_url.
+    let updated = conn.execute(
+        "UPDATE autonomous_agent_output_links SET merged_at = datetime('now'), merge_sha = ?3
+         WHERE org_id = ?1 AND external_url = ?2 COLLATE NOCASE AND merged_at IS NULL",
+        rusqlite::params![org_id, external_url, merge_sha],
+    )?;
+    Ok(updated > 0)
+}
+
+#[cfg(test)]
+mod output_link_merge_tests {
+    use super::*;
+    use crate::db::{connection::connect, migrations};
+
+    /// The link rows reference runs/work items we do not need for this helper, so
+    /// foreign keys are off exactly as the neighbouring link fixtures do.
+    fn setup() -> (Connection, String) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run(&conn).unwrap();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        (conn, org.id)
+    }
+
+    fn link(conn: &Connection, id: &str, org: &str, external_id: &str, url: &str) {
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, external_url)
+             VALUES (?1, ?2, 'r1', 'draft_pr', ?3, ?4)",
+            rusqlite::params![id, org, external_id, url],
+        )
+        .unwrap();
+    }
+
+    fn merged(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id=?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn stamping_records_the_merge_and_the_first_merge_wins() {
+        let (conn, org) = setup();
+        link(&conn, "l1", &org, "12", "https://github.com/acme/app/pull/12");
+        assert!(mark_autonomous_output_link_merged(&conn, &org, "https://github.com/acme/app/pull/12", Some("sha-1")).unwrap());
+        let (first_at, first_sha) = merged(&conn, "l1");
+        assert!(first_at.is_some());
+        assert_eq!(first_sha.as_deref(), Some("sha-1"));
+
+        assert!(
+            !mark_autonomous_output_link_merged(&conn, &org, "https://github.com/acme/app/pull/12", Some("sha-2")).unwrap(),
+            "a replayed merge stamps nothing"
+        );
+        assert_eq!(merged(&conn, "l1"), (first_at, first_sha));
+    }
+
+    #[test]
+    fn stamping_never_crosses_orgs_even_for_the_same_pr_number() {
+        let (conn, org_a) = setup();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org-b','Beta','beta')", []).unwrap();
+        // Two tenants watching the same public repo both hold a link for the very
+        // same PR URL, so only the org predicate can tell their rows apart.
+        let url = "https://github.com/acme/app/pull/12";
+        link(&conn, "l-a", &org_a, "12", url);
+        link(&conn, "l-b", "org-b", "12", url);
+
+        assert!(mark_autonomous_output_link_merged(&conn, &org_a, url, Some("sha-a")).unwrap());
+        assert!(merged(&conn, "l-a").0.is_some(), "org A's own link is stamped");
+        assert_eq!(merged(&conn, "l-b"), (None, None), "org B's identical URL must stay unmerged");
+
+        // Org B's own merge still lands, so the NULL above was the org scope at work
+        // and not a row that had already been stamped.
+        assert!(mark_autonomous_output_link_merged(&conn, "org-b", url, Some("sha-b")).unwrap());
+        assert_eq!(merged(&conn, "l-b").1.as_deref(), Some("sha-b"));
+        assert_eq!(merged(&conn, "l-a").1.as_deref(), Some("sha-a"), "org A's stamp is untouched");
+    }
+
+    /// The worker builds the URL from the configured `repository`, which is not
+    /// normalised, so a differently-cased URL must still find the link.
+    #[test]
+    fn stamping_matches_the_link_url_case_insensitively() {
+        let (conn, org) = setup();
+        link(&conn, "l1", &org, "12", "https://github.com/acme/api/pull/12");
+        assert!(mark_autonomous_output_link_merged(&conn, &org, "https://github.com/ACME/API/pull/12", Some("sha-1")).unwrap());
+        assert_eq!(merged(&conn, "l1").1.as_deref(), Some("sha-1"));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_autonomous_agent_finding(
     conn: &Connection,
