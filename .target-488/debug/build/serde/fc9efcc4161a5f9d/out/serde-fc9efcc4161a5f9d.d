@@ -1,0 +1,14 @@
+/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/fc9efcc4161a5f9d/out/serde-fc9efcc4161a5f9d.d: /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/e40c2120d04edc7a/out/private.rs
+
+/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/fc9efcc4161a5f9d/out/libserde-fc9efcc4161a5f9d.rlib: /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/e40c2120d04edc7a/out/private.rs
+
+/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/fc9efcc4161a5f9d/out/libserde-fc9efcc4161a5f9d.rmeta: /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/e40c2120d04edc7a/out/private.rs
+
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/e40c2120d04edc7a/out/private.rs:
+
+# env-dep:OUT_DIR=/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/serde/e40c2120d04edc7a/out

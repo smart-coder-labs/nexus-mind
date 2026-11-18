@@ -3952,6 +3952,36 @@ fn decide_merge(
     Ok(verdict)
 }
 
+/// Stamps the merge the factory just performed on the pull-request link that run
+/// created, so economics counts it as an accepted change. Merges a person does on
+/// GitHub arrive instead through the `pull_request` webhook. Best-effort: the
+/// merge already happened, so a failed stamp is logged and never propagated.
+fn record_factory_merge(
+    store: &SqliteStore,
+    org_id: &str,
+    run_id: &str,
+    number: i64,
+    detail: &serde_json::Value,
+) {
+    let sha = detail.get("sha").and_then(|v| v.as_str());
+    let db = store.conn();
+    let stamped = db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("database_lock"))
+        .and_then(|conn| {
+            queries::record_autonomous_run_pull_merge(
+                &conn,
+                org_id,
+                run_id,
+                &number.to_string(),
+                sha,
+            )
+        });
+    if let Err(error) = stamped {
+        tracing::warn!(%error, run_id, number, "merged pull request not recorded for economics");
+    }
+}
+
 /// Decide whether a reviewed PR may be auto-merged. Every deterministic gate runs
 /// on the exact reviewed commit, then the per-action policy engine decides. An
 /// `allow` does not merge yet: it starts the soak window, and the worker merges
@@ -3995,7 +4025,10 @@ async fn auto_merge_pull(
         // The owner opted this agent out of the risk floor, sandbox verification,
         // merge policy and soak: a clean review plus green CI merges.
         return Ok(match super::connectors::merge_github_pull(token, repository, number, "squash", Some(reviewed_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_factory_merge(store, &claim.org_id, &claim.run.id, number, &detail);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4102,7 +4135,10 @@ async fn merge_after_soak(
             return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
         }
         return Ok(match super::connectors::merge_github_pull(&token, &soak.repository, soak.pull_number, "squash", Some(&soak.head_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_factory_merge(store, &soak.org_id, &soak.run_id, soak.pull_number, &detail);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4147,7 +4183,10 @@ async fn merge_after_soak(
     )
     .await
     {
-        Ok(result) => Ok(json!({"merged": true, "detail": result})),
+        Ok(result) => {
+            record_factory_merge(store, &soak.org_id, &soak.run_id, soak.pull_number, &result);
+            Ok(json!({"merged": true, "detail": result}))
+        }
         Err(error) => {
             Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
         }

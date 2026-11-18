@@ -242,8 +242,16 @@ pub struct Economics {
     /// Pull requests the factory opened.
     pub proposed_changes: i64,
     pub cost_per_proposed_change: Option<f64>,
-    /// Whether accepted (merged) changes are measured yet; they are not, so
-    /// cost per accepted change is not reported.
+    /// Of those proposed changes, the ones that were merged — the factory's own
+    /// merges and the ones a person merged on GitHub, seen through the webhook.
+    pub accepted_changes: i64,
+    /// Window spend over `accepted_changes`; NULL while nothing was accepted.
+    /// It divides total spend, like `cost_per_proposed_change`, because the
+    /// proposals that were not accepted are part of what an accepted one cost.
+    pub cost_per_accepted_change: Option<f64>,
+    /// Whether accepted (merged) changes are measured. True since the merge stamp
+    /// shipped; links created before it stay unmerged, so the first windows that
+    /// reach back past it under-count.
     pub accepted_changes_tracked: bool,
 }
 
@@ -275,11 +283,13 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
     let frontier: i64 = tier_choices.iter().filter(|(t, _)| t == "frontier").map(|(_, n)| n).sum();
     let frontier_avoidance = (tiered > 0).then(|| (tiered - frontier) as f64 / tiered as f64);
 
-    let proposed_changes: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM autonomous_agent_output_links
+    // Both counts are windowed on when the change was proposed, so the accepted
+    // ones are a subset of the proposed ones and the ratio means something.
+    let (proposed_changes, accepted_changes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COUNT(merged_at) FROM autonomous_agent_output_links
          WHERE org_id = ?1 AND kind IN ('draft_pr','pull_request') AND created_at >= datetime('now', ?2)",
         params![org_id, since],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     Ok(Economics {
         days,
@@ -290,7 +300,9 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
         frontier_avoidance,
         proposed_changes,
         cost_per_proposed_change: (proposed_changes > 0).then(|| cost_usd / proposed_changes as f64),
-        accepted_changes_tracked: false,
+        accepted_changes,
+        cost_per_accepted_change: (accepted_changes > 0).then(|| cost_usd / accepted_changes as f64),
+        accepted_changes_tracked: true,
     })
 }
 
@@ -466,6 +478,42 @@ mod tests {
         assert_eq!(e.by_model[0].model.as_deref(), Some("claude-opus-5"));
         assert_eq!(e.frontier_avoidance, Some(0.75));
         assert_eq!(e.cost_per_proposed_change, Some(1.5));
-        assert!(!e.accepted_changes_tracked);
+        assert!(e.accepted_changes_tracked);
+        assert_eq!((e.accepted_changes, e.cost_per_accepted_change), (0, None));
+    }
+
+    #[test]
+    fn economics_counts_only_merged_changes_as_accepted() {
+        let (conn, org, _) = setup();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO factory_run_metrics (id, org_id, run_id, template_key, provider, model, cost_usd, outcome)
+             VALUES ('m1', ?1, 'r1', 'github_issue_resolver', 'claude-code', 'claude-opus-5', 2.0, 'succeeded')",
+            [&org],
+        )
+        .unwrap();
+        for (id, run, number, merged) in [("l1", "r1", "12", true), ("l2", "r2", "13", false)] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, merged_at)
+                 VALUES (?1, ?2, ?3, 'draft_pr', ?4, ?5)",
+                params![id, org, run, number, merged.then(|| "2026-01-01 00:00:00".to_string())],
+            )
+            .unwrap();
+        }
+        // Another org's merged link must not raise this org's accepted count.
+        let (other, ..) = queries::create_org(&conn, "Other", "other", "other@test.com", "Other").unwrap();
+        let other = other.id;
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, merged_at)
+             VALUES ('l3', ?1, 'r9', 'draft_pr', '12', '2026-01-01 00:00:00')",
+            [&other],
+        )
+        .unwrap();
+
+        let e = economics(&conn, &org, 30).unwrap();
+        assert_eq!((e.proposed_changes, e.accepted_changes), (2, 1));
+        assert_eq!(e.cost_per_proposed_change, Some(1.0));
+        assert_eq!(e.cost_per_accepted_change, Some(2.0));
+        assert!(e.accepted_changes_tracked);
     }
 }

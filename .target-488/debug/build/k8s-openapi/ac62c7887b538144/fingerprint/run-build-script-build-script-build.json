@@ -1,0 +1,1 @@
+{"rustc":18071862165218894360,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[10713361075025112338,"build_script_build",false,2336682316279535335]],"local":[{"RerunIfEnvChanged":{"var":"K8S_OPENAPI_ENABLED_VERSION","val":null}}],"rustflags":[],"config":0,"compile_kind":0}

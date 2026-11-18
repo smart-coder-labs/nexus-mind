@@ -198,7 +198,14 @@ async fn approving_a_held_merge_starts_its_soak_and_rejecting_cancels_it() {
     let (status, body) = get(&router, &cookie, "/v1/factory/economics?days=7").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["days"], 7);
-    assert_eq!(body["accepted_changes_tracked"], false);
+    // Accepted changes are measured; this org merged nothing, so the per-accepted
+    // cost is absent rather than zero.
+    assert_eq!(body["accepted_changes_tracked"], true);
+    assert_eq!(body["accepted_changes"], 0);
+    assert!(body["cost_per_accepted_change"].is_null(), "{body}");
+    for field in ["runs", "cost_usd", "by_model", "tier_choices", "proposed_changes"] {
+        assert!(!body[field].is_null(), "{field} must keep its name: {body}");
+    }
 }
 
 #[tokio::test]

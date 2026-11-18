@@ -74,7 +74,9 @@ const economics: FactoryEconomics = {
   frontier_avoidance: 0.75,
   proposed_changes: 4,
   cost_per_proposed_change: 0.8,
-  accepted_changes_tracked: false,
+  accepted_changes: 2,
+  cost_per_accepted_change: 1.6,
+  accepted_changes_tracked: true,
 }
 
 function renderPage(permissions: string[]) {
@@ -228,12 +230,28 @@ describe('FactoryDigest', () => {
     )
   })
 
-  it('shows spend and says accepted changes are not measured yet', async () => {
+  it('shows spend, accepted changes and cost per accepted change', async () => {
     renderPage(['factory_policy:read'])
     const card = await screen.findByRole('region', { name: /economics/i })
     expect(within(card).getByText('75%')).toBeInTheDocument()
     expect(within(card).getByText('$0.800')).toBeInTheDocument()
+    expect(within(card).getByText('2 of 4')).toBeInTheDocument()
+    expect(within(card).getByText('$1.60')).toBeInTheDocument()
+    expect(within(card).queryByText(/not measured yet/i)).not.toBeInTheDocument()
+  })
+
+  it('says accepted changes are not measured yet only while the backend does not track them', async () => {
+    api.getFactoryEconomics.mockResolvedValue({
+      ...economics,
+      accepted_changes: 0,
+      cost_per_accepted_change: null,
+      accepted_changes_tracked: false,
+    })
+    renderPage(['factory_policy:read'])
+    const card = await screen.findByRole('region', { name: /economics/i })
     expect(within(card).getByText(/not measured yet/i)).toBeInTheDocument()
+    expect(within(card).queryByText('Cost per accepted change')).not.toBeInTheDocument()
+    expect(within(card).queryByText('2 of 4')).not.toBeInTheDocument()
   })
 
   it('shows read-only lookback recommendations only when task and memory access are granted', async () => {

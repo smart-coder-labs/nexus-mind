@@ -19146,6 +19146,56 @@ pub fn create_autonomous_output_link(
     Ok(())
 }
 
+/// The link kinds that stand for a factory-proposed change (a pull request).
+const PULL_REQUEST_LINK_KINDS: &str = "('draft_pr','pull_request')";
+
+/// Records that a factory-proposed pull request was accepted (merged), so
+/// economics can count accepted changes. Returns the number of links stamped.
+///
+/// Matching is by `external_url` inside one org: links store the bare PR number
+/// as `external_id` under `UNIQUE(org_id, kind, external_id)`, and numbers repeat
+/// across repositories, so the number alone would stamp the wrong repository's
+/// link. The first stamp wins, which keeps a redelivered webhook idempotent.
+pub fn record_autonomous_output_link_merge_by_url(
+    conn: &Connection,
+    org_id: &str,
+    external_url: &str,
+    merge_sha: Option<&str>,
+) -> Result<usize> {
+    Ok(conn.execute(
+        &format!(
+            "UPDATE autonomous_agent_output_links
+             SET merged_at=COALESCE(merged_at, datetime('now')),
+                 merge_sha=COALESCE(merge_sha, ?3)
+             WHERE org_id=?1 AND kind IN {PULL_REQUEST_LINK_KINDS} AND external_url=?2
+               AND merged_at IS NULL"
+        ),
+        rusqlite::params![org_id, external_url, merge_sha],
+    )?)
+}
+
+/// [`record_autonomous_output_link_merge_by_url`] for a merge the factory
+/// performed itself, where the run that opened the pull request is known. The run
+/// pins the repository, so the bare PR number is unambiguous here.
+pub fn record_autonomous_run_pull_merge(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    external_id: &str,
+    merge_sha: Option<&str>,
+) -> Result<usize> {
+    Ok(conn.execute(
+        &format!(
+            "UPDATE autonomous_agent_output_links
+             SET merged_at=COALESCE(merged_at, datetime('now')),
+                 merge_sha=COALESCE(merge_sha, ?4)
+             WHERE org_id=?1 AND run_id=?2 AND kind IN {PULL_REQUEST_LINK_KINDS}
+               AND external_id=?3 AND merged_at IS NULL"
+        ),
+        rusqlite::params![org_id, run_id, external_id, merge_sha],
+    )?)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_autonomous_agent_finding(
     conn: &Connection,
@@ -25333,6 +25383,74 @@ mod workflow_pattern_tests {
         assert!(workflow_matches("Deploy*Beta", "Deploy App UI to GCP Beta"));
         assert!(!workflow_matches("Deploy*Beta*Beta", "Deploy Beta"));
         assert!(!workflow_matches(" , ", "Deploy"));
+    }
+}
+
+#[cfg(test)]
+mod output_link_merge_tests {
+    use super::*;
+
+    /// Two orgs, each with a link to their own pull request #12. The number is
+    /// what repeats across tenants, so it is what the tests try to confuse.
+    fn setup() -> (Connection, String, String) {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        let (one, _, _) = bootstrap(&conn, "One", "one", "one@test.com", "One").unwrap();
+        let (two, _, _) = create_org(&conn, "Two", "two", "two@test.com", "Two").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        for (id, org, run, url) in [
+            ("l1", &one.id, "run-1", "https://github.com/acme/api/pull/12"),
+            ("l2", &two.id, "run-2", "https://github.com/other/api/pull/12"),
+        ] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id,external_url) VALUES (?1,?2,?3,'draft_pr','12',?4)",
+                rusqlite::params![id, org, run, url],
+            )
+            .unwrap();
+        }
+        (conn, one.id, two.id)
+    }
+
+    fn merged_at(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT merged_at FROM autonomous_agent_output_links WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn stamping_by_url_is_scoped_to_one_org_and_keeps_the_first_stamp() {
+        let (conn, one, two) = setup();
+        let url = "https://github.com/acme/api/pull/12";
+        assert_eq!(record_autonomous_output_link_merge_by_url(&conn, &one, url, Some("abc")).unwrap(), 1);
+        let first = merged_at(&conn, "l1");
+        assert!(first.is_some());
+        assert_eq!(merged_at(&conn, "l2"), None, "the other org's PR #12 is untouched");
+
+        // The other org cannot stamp a link it does not own, even with the URL.
+        assert_eq!(record_autonomous_output_link_merge_by_url(&conn, &two, url, Some("def")).unwrap(), 0);
+        assert_eq!(merged_at(&conn, "l1"), first);
+
+        // A redelivered webhook neither double-counts nor rewrites the stamp.
+        assert_eq!(record_autonomous_output_link_merge_by_url(&conn, &one, url, Some("def")).unwrap(), 0);
+        let sha: Option<String> = conn
+            .query_row("SELECT merge_sha FROM autonomous_agent_output_links WHERE id='l1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sha.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn the_factorys_own_merge_stamps_that_runs_pull_request_only() {
+        let (conn, one, two) = setup();
+        assert_eq!(record_autonomous_run_pull_merge(&conn, &one, "run-1", "12", Some("abc")).unwrap(), 1);
+        assert!(merged_at(&conn, "l1").is_some());
+        assert_eq!(merged_at(&conn, "l2"), None);
+        // Same PR number, wrong run or wrong org: nothing is stamped.
+        assert_eq!(record_autonomous_run_pull_merge(&conn, &one, "run-2", "12", None).unwrap(), 0);
+        assert_eq!(record_autonomous_run_pull_merge(&conn, &two, "run-1", "12", None).unwrap(), 0);
+        assert_eq!(merged_at(&conn, "l2"), None);
     }
 }
 

@@ -1,7 +1,16 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, GitMerge, Inbox, ListTodo, Scale, TriangleAlert } from 'lucide-react'
+import {
+  BadgeCheck,
+  CheckCircle2,
+  Coins,
+  GitMerge,
+  Inbox,
+  ListTodo,
+  Scale,
+  TriangleAlert,
+} from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Badge } from '../components/ui/Badge'
@@ -589,6 +598,30 @@ function Economics({ data }: { data: FactoryEconomics }) {
             accent={accentFor(3)}
           />
         </div>
+        {data.accepted_changes_tracked && (
+          <>
+            <div role="listitem">
+              <MetricSummary
+                label="Changes accepted (merged)"
+                value={`${data.accepted_changes} of ${data.proposed_changes}`}
+                icon={BadgeCheck}
+                accent={accentFor(4)}
+              />
+            </div>
+            <div role="listitem">
+              <MetricSummary
+                label="Cost per accepted change"
+                value={
+                  data.cost_per_accepted_change === null
+                    ? '—'
+                    : usd(data.cost_per_accepted_change)
+                }
+                icon={Coins}
+                accent={accentFor(5)}
+              />
+            </div>
+          </>
+        )}
       </div>
       {!data.accepted_changes_tracked && (
         <p className="text-[12px] text-text-tertiary">

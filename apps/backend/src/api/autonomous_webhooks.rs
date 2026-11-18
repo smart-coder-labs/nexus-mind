@@ -102,6 +102,30 @@ fn closed_issue_status(payload: &serde_json::Value) -> Option<&'static str> {
         _ => None, // A missing/unknown reason is not proof of resolution.
     }
 }
+/// A pull request this delivery says was accepted: its page URL and the commit it
+/// landed as. `closed` on its own is not an acceptance — only `merged` is — and
+/// the URL must belong to the repository the signed connector is scoped to, so a
+/// delivery can never stamp another repository's link.
+fn merged_pull_request<'a>(
+    payload: &'a serde_json::Value,
+    repo: &str,
+) -> Option<(&'a str, Option<&'a str>)> {
+    let pull = &payload["pull_request"];
+    if payload["action"] != "closed" || pull["merged"] != true {
+        return None;
+    }
+    let url = pull["html_url"].as_str()?;
+    let prefix = format!("https://github.com/{repo}/pull/");
+    // `get` rather than a slice: the payload is untrusted, so a multibyte
+    // character at the cut must not panic.
+    if url.len() <= prefix.len() || !url.get(..prefix.len())?.eq_ignore_ascii_case(&prefix) {
+        return None;
+    }
+    let sha = pull["merge_commit_sha"]
+        .as_str()
+        .filter(|sha| crate::factory::workflows::valid_sha(sha));
+    Some((url, sha))
+}
 fn stale_issue_event(payload: &serde_json::Value, live: &serde_json::Value) -> bool {
     live["state"] != "closed" || live["state_reason"] != payload["issue"]["state_reason"]
 }
@@ -407,6 +431,12 @@ fn process_delivery(
         return Ok(());
     }
     if event == "pull_request" {
+        // Economics: a merged pull request is a factory change a person accepted.
+        // This only records the outcome on the link the run already created — it
+        // never approves, performs or unblocks a merge.
+        if let Some((url, sha)) = merged_pull_request(payload, repo) {
+            queries::record_autonomous_output_link_merge_by_url(c, org, url, sha)?;
+        }
         let Some(login) = reviewer else { return Ok(()) };
         if !github_review_hooks::route(c, org, repo, payload, login)? {
             return Ok(());
@@ -712,6 +742,80 @@ mod tests {
         p["workflow_run"]["conclusion"] = json!("success");
         p["workflow_run"]["event"] = json!("pull_request");
         assert!(finished_default_branch_run(&p).is_none());
+    }
+    #[test]
+    fn merged_pull_requests_stamp_only_their_own_orgs_link() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (one, user, _) = queries::bootstrap(&c, "One", "one", "one@test.com", "One").unwrap();
+        let (two, other, _) = queries::create_org(&c, "Two", "two", "two@test.com", "Two").unwrap();
+        for (org, owner) in [(&one.id, &user.id), (&two.id, &other.id)] {
+            c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES (?1,?2,'target_secret','Hook','ready','{}',?3)",rusqlite::params![format!("hook-{org}"),org,owner]).unwrap();
+        }
+        c.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        // Both orgs proposed a change numbered 12: only the URL tells them apart.
+        for (id, org, url) in [
+            ("l1", &one.id, "https://github.com/acme/api/pull/12"),
+            ("l2", &two.id, "https://github.com/other/api/pull/12"),
+        ] {
+            c.execute(
+                "INSERT INTO autonomous_agent_output_links(id,org_id,run_id,kind,external_id,external_url) VALUES (?1,?2,'r1','draft_pr','12',?3)",
+                rusqlite::params![id, org, url],
+            )
+            .unwrap();
+        }
+        let apply = |org: &str, delivery: &str, payload: &serde_json::Value| {
+            let tx =
+                rusqlite::Transaction::new_unchecked(&c, rusqlite::TransactionBehavior::Immediate)
+                    .unwrap();
+            let hash = hex::encode(Sha256::digest(serde_json::to_vec(payload).unwrap()));
+            process_delivery(&tx, org, &format!("hook-{org}"), delivery, "pull_request", payload, None, &hash, true, &[]).unwrap();
+            tx.commit().unwrap();
+        };
+        let merged_at = |id: &str| -> Option<String> {
+            c.query_row("SELECT merged_at FROM autonomous_agent_output_links WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
+        let sha = "a".repeat(40);
+        let mut p = json!({"action":"closed","repository":{"full_name":"acme/api"},"pull_request":{"number":12,"merged":false,"state":"closed","html_url":"https://github.com/acme/api/pull/12","merge_commit_sha":sha.clone()}});
+
+        // A PR closed without a merge is not an accepted change.
+        apply(&one.id, "closed-unmerged", &p);
+        assert_eq!(merged_at("l1"), None);
+
+        p["pull_request"]["merged"] = json!(true);
+        apply(&one.id, "closed-merged", &p);
+        assert!(merged_at("l1").is_some(), "the merged PR's own link is stamped");
+        assert_eq!(merged_at("l2"), None, "another org's PR #12 is untouched");
+        assert_eq!(
+            c.query_row("SELECT merge_sha FROM autonomous_agent_output_links WHERE id='l1'", [], |r| r.get::<_, Option<String>>(0)).unwrap(),
+            Some(sha),
+        );
+
+        // The other org merging its own PR #12 stamps only its own link.
+        let stamped = merged_at("l1");
+        p["repository"]["full_name"] = json!("other/api");
+        p["pull_request"]["html_url"] = json!("https://github.com/other/api/pull/12");
+        apply(&two.id, "closed-merged-two", &p);
+        assert!(merged_at("l2").is_some());
+        assert_eq!(merged_at("l1"), stamped, "the first stamp is never rewritten");
+    }
+    #[test]
+    fn a_merge_webhook_never_stamps_a_link_outside_its_repository() {
+        let sha = "a".repeat(40);
+        let merged = json!({"action":"closed","pull_request":{"merged":true,"html_url":"https://github.com/acme/api/pull/12","merge_commit_sha":sha.clone()}});
+        assert_eq!(merged_pull_request(&merged, "acme/api"), Some((merged["pull_request"]["html_url"].as_str().unwrap(), Some(sha.as_str()))));
+        assert!(merged_pull_request(&merged, "acme/other").is_none());
+        // A non-sha merge commit is recorded as unknown rather than stored raw.
+        let fuzzy = json!({"action":"closed","pull_request":{"merged":true,"html_url":"https://github.com/acme/api/pull/12","merge_commit_sha":"nope"}});
+        assert_eq!(merged_pull_request(&fuzzy, "acme/api").map(|(_, sha)| sha), Some(None));
+        for payload in [
+            json!({"action":"closed","pull_request":{"merged":false,"html_url":"https://github.com/acme/api/pull/12"}}),
+            json!({"action":"synchronize","pull_request":{"merged":true,"html_url":"https://github.com/acme/api/pull/12"}}),
+            json!({"action":"closed","pull_request":{"merged":true}}),
+            json!({"action":"closed","pull_request":{"merged":true,"html_url":"https://github.com/acme/api/pull/"}}),
+        ] {
+            assert!(merged_pull_request(&payload, "acme/api").is_none(), "{payload}");
+        }
     }
     #[test]
     fn github_hmac_rejects_tampering() {

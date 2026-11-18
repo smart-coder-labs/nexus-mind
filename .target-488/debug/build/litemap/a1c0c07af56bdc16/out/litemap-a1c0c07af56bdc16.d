@@ -1,0 +1,11 @@
+/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/litemap/a1c0c07af56bdc16/out/litemap-a1c0c07af56bdc16.d: /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/lib.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/map.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/mod.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/slice_impl.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/vec_impl.rs
+
+/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/litemap/a1c0c07af56bdc16/out/liblitemap-a1c0c07af56bdc16.rlib: /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/lib.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/map.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/mod.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/slice_impl.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/vec_impl.rs
+
+/tmp/nexusmind-agent-7ef8475b-64d8-4820-b55d-30b258b602c4-ZgN0mI/issue-488/.target-488/debug/build/litemap/a1c0c07af56bdc16/out/liblitemap-a1c0c07af56bdc16.rmeta: /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/lib.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/map.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/mod.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/slice_impl.rs /tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/vec_impl.rs
+
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/lib.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/map.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/mod.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/slice_impl.rs:
+/tmp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.7.5/src/store/vec_impl.rs:
