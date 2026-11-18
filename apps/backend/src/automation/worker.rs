@@ -8641,6 +8641,21 @@ async fn deliver_findings(
                     };
                     let created_number = response.as_ref().ok().and_then(|value|value.get("number").and_then(|n|n.as_i64()));
                     let created_repository=response.as_ref().ok().and_then(|value|value.get("repository").and_then(|repo|repo.as_str())).map(str::to_string).unwrap_or_else(||repository.to_string());
+                    // The resolver only takes issues assigned to the server's gh account, so a
+                    // strategist proposal is assigned to it unless `assign_to_resolver` is false.
+                    if claim.template_key == "product_strategist"
+                        && claim.config.get("assign_to_resolver").and_then(|v| v.as_bool()) != Some(false)
+                    {
+                        if let Some(number) = created_number {
+                            let assigned = match super::connectors::github_authenticated_login(&token).await {
+                                Ok(login) => super::connectors::add_issue_assignees(&token, &created_repository, number, &[login]).await.map(|_| ()),
+                                Err(error) => Err(error),
+                            };
+                            if let Err(error) = assigned {
+                                tracing::warn!(run_id = %claim.run.id, number, "strategist: could not assign issue to the resolver: {error:#}");
+                            }
+                        }
+                    }
                     let db = store.conn();
                     if let Ok(conn) = db.lock() {
                         match response {
