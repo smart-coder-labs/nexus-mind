@@ -8647,8 +8647,8 @@ async fn deliver_findings(
                         && claim.config.get("assign_to_resolver").and_then(|v| v.as_bool()) != Some(false)
                     {
                         if let Some(number) = created_number {
-                            let assigned = match super::connectors::github_authenticated_login(&token).await {
-                                Ok(login) => super::connectors::add_issue_assignees(&token, &created_repository, number, &[login]).await.map(|_| ()),
+                            let assigned = match super::connectors::github_authenticated_login(&early_token).await {
+                                Ok(login) => super::connectors::add_issue_assignees(&early_token, &created_repository, number, &[login]).await.map(|_| ()),
                                 Err(error) => Err(error),
                             };
                             if let Err(error) = assigned {
