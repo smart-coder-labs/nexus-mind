@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 113;
+pub const LATEST_USER_VERSION: i32 = 114;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -116,6 +116,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v111(conn)?;
     run_v112(conn)?;
     run_v113(conn)?;
+    run_v114(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -282,6 +283,34 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
 
         PRAGMA foreign_keys = ON;
         PRAGMA user_version = 113;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v114: one memory per `(org_id, topic_key, project)`.
+///
+/// `upsert_memory` now keys its lookup on the project too, so the database has
+/// to hold that shape — otherwise two concurrent first-saves of the same key in
+/// one project would both insert and the topic would silently fork. `COALESCE`
+/// puts the org-shared bucket (`project_id IS NULL`) in its own namespace
+/// instead of letting every NULL be distinct, which is what a plain unique
+/// index over a nullable column would do.
+///
+/// It cannot collide with existing data: the old lookup kept at most one row per
+/// `(org_id, topic_key)`, which is strictly coarser than the new triple.
+pub fn run_v114(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 114 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_org_topic_project
+            ON memories(org_id, topic_key, COALESCE(project_id, ''))
+            WHERE topic_key IS NOT NULL;
+
+        PRAGMA user_version = 114;
         ",
     )?;
     Ok(())
@@ -9817,5 +9846,105 @@ mod tests {
             )
             .is_err());
         assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    /// v114 applies to a database that already holds `topic_key` rows — the old
+    /// behaviour kept at most one per `(org_id, topic_key)`, so the coarser data
+    /// can never collide with the finer index.
+    #[test]
+    fn run_v114_applies_over_existing_topic_key_rows() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "o1", "acme");
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('p1','o1','web')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (id,org_id,user_id,tool,content,topic_key,project_id)
+             VALUES ('m1','o1','u1','claude','scoped','arch/auth','p1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (id,org_id,user_id,tool,content,topic_key)
+             VALUES ('m2','o1','u1','claude','shared','arch/auth')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch("DROP INDEX idx_memories_org_topic_project; PRAGMA user_version=113;")
+            .unwrap();
+        run_v114(&conn).expect("v114 must apply over rows that already use topic_key");
+
+        assert!(index_exists(&conn, "memories", "idx_memories_org_topic_project"));
+        assert_eq!(get_user_version(&conn), 114);
+        run_v114(&conn).expect("v114 must be idempotent");
+    }
+
+    #[test]
+    fn run_v114_index_separates_projects_and_the_shared_bucket() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "o1", "acme");
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1','o1','a@b.com','A')",
+            [],
+        )
+        .unwrap();
+        for project in ["p1", "p2"] {
+            conn.execute(
+                "INSERT INTO projects (id, org_id, name) VALUES (?1,'o1',?1)",
+                [project],
+            )
+            .unwrap();
+        }
+
+        // Same key in two projects plus the org-shared bucket: three distinct rows.
+        for (id, project) in [("m1", Some("p1")), ("m2", Some("p2")), ("m3", None)] {
+            conn.execute(
+                "INSERT INTO memories (id,org_id,user_id,tool,content,topic_key,project_id)
+                 VALUES (?1,'o1','u1','claude','c','arch/auth',?2)",
+                rusqlite::params![id, project],
+            )
+            .unwrap_or_else(|e| panic!("{id} must be allowed alongside the others: {e}"));
+        }
+
+        // A second row for the same triple is refused — including a second
+        // NULL-project row, which an index without COALESCE would admit.
+        assert!(
+            conn.execute(
+                "INSERT INTO memories (id,org_id,user_id,tool,content,topic_key,project_id)
+                 VALUES ('m4','o1','u1','claude','c','arch/auth','p1')",
+                [],
+            )
+            .is_err(),
+            "a duplicate (org, topic_key, project) must be refused"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO memories (id,org_id,user_id,tool,content,topic_key)
+                 VALUES ('m5','o1','u1','claude','c','arch/auth')",
+                [],
+            )
+            .is_err(),
+            "a duplicate org-shared row must be refused"
+        );
+
+        // Rows without a topic_key are outside the partial index and stay free
+        // to repeat, which is what `store_memory` without a key relies on.
+        for id in ["m6", "m7"] {
+            conn.execute(
+                "INSERT INTO memories (id,org_id,user_id,tool,content) VALUES (?1,'o1','u1','claude','c')",
+                [id],
+            )
+            .unwrap();
+        }
     }
 }
