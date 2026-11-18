@@ -3952,6 +3952,30 @@ fn decide_merge(
     Ok(verdict)
 }
 
+/// Record a merge the factory performed itself, so the change it proposed counts
+/// as accepted in the economics. The link is matched by pull request URL, as the
+/// merge webhook does, because the link belongs to the run that opened the PR,
+/// not to the run merging it. Best effort: the merge already happened, and
+/// failing to measure it must not fail the run.
+fn record_factory_merge(
+    store: &SqliteStore,
+    org_id: &str,
+    repository: &str,
+    number: i64,
+    detail: &serde_json::Value,
+) {
+    let url = format!("https://github.com/{repository}/pull/{number}");
+    let sha = detail.get("sha").and_then(|value| value.as_str());
+    let db = store.conn();
+    let recorded = db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("database_lock"))
+        .and_then(|conn| crate::db::factory_ops::record_merged_change(&conn, org_id, &url, sha));
+    if let Err(error) = recorded {
+        tracing::warn!(%repository, pull = number, %error, "Merged pull request not recorded as an accepted change");
+    }
+}
+
 /// Decide whether a reviewed PR may be auto-merged. Every deterministic gate runs
 /// on the exact reviewed commit, then the per-action policy engine decides. An
 /// `allow` does not merge yet: it starts the soak window, and the worker merges
@@ -3995,7 +4019,10 @@ async fn auto_merge_pull(
         // The owner opted this agent out of the risk floor, sandbox verification,
         // merge policy and soak: a clean review plus green CI merges.
         return Ok(match super::connectors::merge_github_pull(token, repository, number, "squash", Some(reviewed_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_factory_merge(store, &claim.org_id, repository, number, &detail);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4102,7 +4129,10 @@ async fn merge_after_soak(
             return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
         }
         return Ok(match super::connectors::merge_github_pull(&token, &soak.repository, soak.pull_number, "squash", Some(&soak.head_sha)).await {
-            Ok(detail) => json!({"merged": true, "detail": detail, "risk_floor_skipped": true}),
+            Ok(detail) => {
+                record_factory_merge(store, &soak.org_id, &soak.repository, soak.pull_number, &detail);
+                json!({"merged": true, "detail": detail, "risk_floor_skipped": true})
+            }
             Err(error) => json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}),
         });
     }
@@ -4147,7 +4177,10 @@ async fn merge_after_soak(
     )
     .await
     {
-        Ok(result) => Ok(json!({"merged": true, "detail": result})),
+        Ok(result) => {
+            record_factory_merge(store, &soak.org_id, &soak.repository, soak.pull_number, &result);
+            Ok(json!({"merged": true, "detail": result}))
+        }
         Err(error) => {
             Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
         }
@@ -10833,6 +10866,46 @@ Client.listTools() called but server does not advertise tools capability
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "command_not_allowlisted");
+    }
+}
+
+#[cfg(test)]
+mod factory_merge_record_tests {
+    use super::*;
+
+    /// A merge the factory performs itself has to land on the link of the run
+    /// that *opened* the pull request, which is matched by URL — the reviewer run
+    /// doing the merge keeps a review link, not a pull request one.
+    #[test]
+    fn a_factory_merge_accepts_the_pull_request_it_merged_and_nothing_else() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        let (org, _, _) = queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id,org_id,run_id,kind,external_id,external_url) VALUES ('l1',?1,'opener','draft_pr','12','https://github.com/acme/api/pull/12')",
+            [&org.id],
+        )
+        .unwrap();
+        let store = SqliteStore::new(conn);
+        let merge = || -> (Option<String>, Option<String>) {
+            let db = store.conn();
+            let c = db.lock().unwrap();
+            c.query_row(
+                "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id='l1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        // Another repository's pull request 12 shares the number — under
+        // UNIQUE(org_id, kind, external_id) it has no link of its own, so matching
+        // on the number would have accepted the wrong change.
+        record_factory_merge(&store, &org.id, "acme/web", 12, &json!({"sha": "e".repeat(40)}));
+        assert_eq!(merge(), (None, None));
+        record_factory_merge(&store, &org.id, "acme/api", 12, &json!({"sha": "d".repeat(40), "merged": true}));
+        assert!(merge().0.is_some());
+        assert_eq!(merge().1, Some("d".repeat(40)));
     }
 }
 

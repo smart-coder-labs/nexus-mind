@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 113;
+pub const LATEST_USER_VERSION: i32 = 114;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -116,6 +116,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v111(conn)?;
     run_v112(conn)?;
     run_v113(conn)?;
+    run_v114(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -284,6 +285,33 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 113;
         ",
     )?;
+    Ok(())
+}
+
+/// Migration v114: record when a proposed change was accepted. A factory PR is
+/// only worth its spend once a human merges it, so the link the factory already
+/// keeps for the pull request gains the merge timestamp and the merge commit.
+/// Both stay NULL for an unmerged or closed-without-merge pull request.
+pub fn run_v114(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 114 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for column in ["merged_at", "merge_sha"] {
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('autonomous_agent_output_links') WHERE name=?1)",
+            [column],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            tx.execute_batch(&format!(
+                "ALTER TABLE autonomous_agent_output_links ADD COLUMN {column} TEXT;"
+            ))?;
+        }
+    }
+    tx.execute_batch("PRAGMA user_version=114;")?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -9816,6 +9844,31 @@ mod tests {
                 [],
             )
             .is_err());
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    #[test]
+    fn run_v114_adds_nullable_merge_columns_to_output_links_and_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "o1", "acme");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id,org_id,run_id,kind,external_id,external_url) VALUES ('l1','o1','r1','draft_pr','7','https://github.com/acme/api/pull/7')",
+            [],
+        )
+        .unwrap();
+        let merged: Option<String> = conn
+            .query_row("SELECT merged_at FROM autonomous_agent_output_links WHERE id='l1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(merged, None, "an existing link is not retroactively accepted");
+        conn.execute("UPDATE autonomous_agent_output_links SET merged_at=datetime('now'), merge_sha='abc' WHERE id='l1'", []).unwrap();
+        // Re-running must not drop the column or the merge it already recorded.
+        run_v114(&conn).unwrap();
+        let sha: Option<String> = conn
+            .query_row("SELECT merge_sha FROM autonomous_agent_output_links WHERE id='l1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sha.as_deref(), Some("abc"));
         assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
     }
 }

@@ -242,9 +242,41 @@ pub struct Economics {
     /// Pull requests the factory opened.
     pub proposed_changes: i64,
     pub cost_per_proposed_change: Option<f64>,
-    /// Whether accepted (merged) changes are measured yet; they are not, so
-    /// cost per accepted change is not reported.
+    /// Of those proposed changes, the ones that were merged. A change counts in
+    /// the window it was proposed in, so it is never larger than
+    /// `proposed_changes`.
+    pub accepted_changes: i64,
+    /// Total spend over the window divided by the accepted changes; `None` while
+    /// nothing has been accepted yet.
+    pub cost_per_accepted_change: Option<f64>,
+    /// Whether accepted (merged) changes are measured. They are: the factory
+    /// stamps a merge it performs, and a `pull_request` merge webhook stamps one
+    /// a person performed.
     pub accepted_changes_tracked: bool,
+}
+
+/// Record that the pull request at `url` was merged, on the link the factory
+/// already keeps for it. Returns whether a link was stamped.
+///
+/// The match is on `external_url`, never on the pull request number: links store
+/// the bare number under `UNIQUE(org_id, kind, external_id)`, and numbers repeat
+/// across repositories. `org_id` keeps one tenant's merge off another's link.
+/// The first merge wins — GitHub can redeliver a webhook, and a pull request is
+/// merged once.
+pub fn record_merged_change(
+    conn: &Connection,
+    org_id: &str,
+    url: &str,
+    merge_sha: Option<&str>,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE autonomous_agent_output_links
+         SET merged_at = datetime('now'), merge_sha = ?3
+         WHERE org_id = ?1 AND external_url = ?2
+           AND kind IN ('draft_pr','pull_request') AND merged_at IS NULL",
+        params![org_id, url, merge_sha],
+    )?;
+    Ok(changed > 0)
 }
 
 pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics> {
@@ -275,11 +307,13 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
     let frontier: i64 = tier_choices.iter().filter(|(t, _)| t == "frontier").map(|(_, n)| n).sum();
     let frontier_avoidance = (tiered > 0).then(|| (tiered - frontier) as f64 / tiered as f64);
 
-    let proposed_changes: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM autonomous_agent_output_links
+    // Both counts are keyed on when the change was proposed, so accepted is a
+    // subset of proposed and the ratio reads as the acceptance rate of the window.
+    let (proposed_changes, accepted_changes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COUNT(merged_at) FROM autonomous_agent_output_links
          WHERE org_id = ?1 AND kind IN ('draft_pr','pull_request') AND created_at >= datetime('now', ?2)",
         params![org_id, since],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     Ok(Economics {
         days,
@@ -290,7 +324,9 @@ pub fn economics(conn: &Connection, org_id: &str, days: i64) -> Result<Economics
         frontier_avoidance,
         proposed_changes,
         cost_per_proposed_change: (proposed_changes > 0).then(|| cost_usd / proposed_changes as f64),
-        accepted_changes_tracked: false,
+        accepted_changes,
+        cost_per_accepted_change: (accepted_changes > 0).then(|| cost_usd / accepted_changes as f64),
+        accepted_changes_tracked: true,
     })
 }
 
@@ -466,6 +502,74 @@ mod tests {
         assert_eq!(e.by_model[0].model.as_deref(), Some("claude-opus-5"));
         assert_eq!(e.frontier_avoidance, Some(0.75));
         assert_eq!(e.cost_per_proposed_change, Some(1.5));
-        assert!(!e.accepted_changes_tracked);
+        assert!(e.accepted_changes_tracked);
+        // Nothing merged yet: the cost of an accepted change is not a division by zero.
+        assert_eq!((e.accepted_changes, e.cost_per_accepted_change), (0, None));
+    }
+
+    /// Two links in two orgs sharing pull request number 12, as repositories do.
+    fn two_orgs_one_pr_number(conn: &Connection, org: &str) -> String {
+        let other = "org-other".to_string();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES (?1, 'Other', 'other')", [&other]).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, external_url)
+             VALUES ('l1', ?1, 'r1', 'draft_pr', '12', 'https://github.com/acme/api/pull/12')",
+            [org],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, external_url)
+             VALUES ('l2', ?1, 'r2', 'draft_pr', '12', 'https://github.com/other/web/pull/12')",
+            [&other],
+        )
+        .unwrap();
+        other
+    }
+
+    #[test]
+    fn a_merge_stamps_only_the_matching_link_of_the_owning_org() {
+        let (conn, org, _) = setup();
+        let other = two_orgs_one_pr_number(&conn, &org);
+        assert!(record_merged_change(&conn, &org, "https://github.com/acme/api/pull/12", Some("sha1")).unwrap());
+        let merged = |id: &str| -> (Option<String>, Option<String>) {
+            conn.query_row(
+                "SELECT merged_at, merge_sha FROM autonomous_agent_output_links WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())),
+            )
+            .unwrap()
+        };
+        assert!(merged("l1").0.is_some());
+        assert_eq!(merged("l1").1.as_deref(), Some("sha1"));
+        assert_eq!(merged("l2"), (None, None), "the other tenant's same-numbered PR is untouched");
+        // Same URL, wrong tenant: a merge in one org never reaches another's link.
+        assert!(!record_merged_change(&conn, &other, "https://github.com/acme/api/pull/12", Some("sha2")).unwrap());
+        assert_eq!(merged("l1").1.as_deref(), Some("sha1"), "a redelivery keeps the first merge");
+        assert!(!record_merged_change(&conn, &org, "https://github.com/acme/api/pull/12", Some("sha3")).unwrap());
+        assert_eq!(merged("l1").1.as_deref(), Some("sha1"));
+    }
+
+    #[test]
+    fn economics_reports_accepted_changes_and_their_cost() {
+        let (conn, org, _) = setup();
+        two_orgs_one_pr_number(&conn, &org);
+        conn.execute(
+            "INSERT INTO factory_run_metrics (id, org_id, run_id, template_key, provider, model, cost_usd, outcome)
+             VALUES ('m1', ?1, 'r1', 'github_issue_resolver', 'claude-code', 'claude-opus-5', 2.0, 'succeeded')",
+            [&org],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_output_links (id, org_id, run_id, kind, external_id, external_url)
+             VALUES ('l3', ?1, 'r1', 'draft_pr', '13', 'https://github.com/acme/api/pull/13')",
+            [&org],
+        )
+        .unwrap();
+        record_merged_change(&conn, &org, "https://github.com/acme/api/pull/12", Some("sha1")).unwrap();
+        let e = economics(&conn, &org, 30).unwrap();
+        assert_eq!((e.proposed_changes, e.accepted_changes), (2, 1));
+        assert_eq!(e.cost_per_proposed_change, Some(1.0));
+        assert_eq!(e.cost_per_accepted_change, Some(2.0));
     }
 }

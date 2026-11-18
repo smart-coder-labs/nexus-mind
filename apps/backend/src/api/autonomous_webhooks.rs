@@ -94,6 +94,25 @@ fn finished_default_branch_run(
         conclusion,
     ))
 }
+/// A `pull_request` event that closed a *merged* pull request: its URL and the
+/// commit the merge produced. A pull request closed without merging is not one,
+/// so its proposed change stays unaccepted.
+fn merged_pull(payload: &serde_json::Value) -> Option<(&str, Option<&str>)> {
+    if payload["action"] != "closed"
+        || payload
+            .pointer("/pull_request/merged")
+            .and_then(|v| v.as_bool())
+            != Some(true)
+    {
+        return None;
+    }
+    Some((
+        payload.pointer("/pull_request/html_url")?.as_str()?,
+        payload
+            .pointer("/pull_request/merge_commit_sha")
+            .and_then(|v| v.as_str()),
+    ))
+}
 fn closed_issue_status(payload: &serde_json::Value) -> Option<&'static str> {
     if payload["action"] != "closed" || payload["issue"]["state"] != "closed" { return None }
     match payload["issue"]["state_reason"].as_str() {
@@ -407,6 +426,13 @@ fn process_delivery(
         return Ok(());
     }
     if event == "pull_request" {
+        // Economics: a proposed change is only worth its spend once someone
+        // merges it. This records that outcome on the link the factory already
+        // keeps for the pull request — it never approves, performs or unblocks
+        // a merge, and the org comes from the signed connector, not the payload.
+        if let Some((url, sha)) = merged_pull(payload) {
+            crate::db::factory_ops::record_merged_change(c, org, url, sha)?;
+        }
         let Some(login) = reviewer else { return Ok(()) };
         if !github_review_hooks::route(c, org, repo, payload, login)? {
             return Ok(());
@@ -432,6 +458,89 @@ fn process_delivery(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Two orgs, each with a link for *their* pull request number 12, as two
+    /// repositories naturally have.
+    fn two_orgs_with_pull_12(c: &rusqlite::Connection) -> (String, String) {
+        let (o, u, _) = queries::bootstrap(c, "Org", "org", "owner@test.com", "Owner").unwrap();
+        c.execute("INSERT INTO organizations (id,name,slug) VALUES ('org-other','Other','other')", []).unwrap();
+        c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES ('hook',?1,'target_secret','Hook','ready','{}',?2)",rusqlite::params![o.id,u.id]).unwrap();
+        c.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        c.execute("INSERT INTO autonomous_agent_connectors(id,org_id,kind,name,health,metadata_json,created_by) VALUES ('hook-other','org-other','target_secret','Hook','ready','{}',?1)",[&u.id]).unwrap();
+        for (id, org, repo) in [("l1", o.id.as_str(), "acme/api"), ("l2", "org-other", "other/web")] {
+            c.execute(
+                "INSERT INTO autonomous_agent_output_links (id,org_id,run_id,kind,external_id,external_url) VALUES (?1,?2,'r1','draft_pr','12',?3)",
+                rusqlite::params![id, org, format!("https://github.com/{repo}/pull/12")],
+            )
+            .unwrap();
+        }
+        (o.id, "org-other".into())
+    }
+
+    fn merged_at(c: &rusqlite::Connection, link: &str) -> Option<String> {
+        c.query_row("SELECT merged_at FROM autonomous_agent_output_links WHERE id=?1", [link], |r| r.get(0)).unwrap()
+    }
+
+    /// `process_delivery` for one `pull_request` payload signed for `org`'s connector.
+    fn deliver(c: &rusqlite::Connection, org: &str, connector: &str, delivery: &str, payload: &serde_json::Value) {
+        let tx = rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate).unwrap();
+        let hash = hex::encode(Sha256::digest(serde_json::to_vec(payload).unwrap()));
+        process_delivery(&tx, org, connector, delivery, "pull_request", payload, None, &hash, true, &[]).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn closed_pull(repo: &str, merged: bool) -> serde_json::Value {
+        json!({
+            "action": "closed",
+            "repository": {"full_name": repo},
+            "pull_request": {
+                "number": 12,
+                "state": "closed",
+                "merged": merged,
+                "merge_commit_sha": merged.then(|| "c".repeat(40)),
+                "html_url": format!("https://github.com/{repo}/pull/12"),
+                "head": {"sha": "a".repeat(40), "repo": {"fork": false}},
+            },
+        })
+    }
+
+    #[test]
+    fn a_merged_pull_request_marks_its_proposed_change_accepted() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (org, _) = two_orgs_with_pull_12(&c);
+        deliver(&c, &org, "hook", "merged", &closed_pull("acme/api", true));
+        assert!(merged_at(&c, "l1").is_some());
+        let sha: Option<String> = c
+            .query_row("SELECT merge_sha FROM autonomous_agent_output_links WHERE id='l1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sha, Some("c".repeat(40)));
+    }
+
+    #[test]
+    fn a_pull_request_closed_without_merging_is_not_an_accepted_change() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (org, _) = two_orgs_with_pull_12(&c);
+        deliver(&c, &org, "hook", "closed", &closed_pull("acme/api", false));
+        assert_eq!(merged_at(&c, "l1"), None);
+    }
+
+    #[test]
+    fn a_merge_webhook_never_stamps_another_orgs_link_with_the_same_pr_number() {
+        let c = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run(&c).unwrap();
+        let (org, other) = two_orgs_with_pull_12(&c);
+        // The org comes from the signed connector, so a payload naming the other
+        // tenant's repository still cannot reach the other tenant's link.
+        deliver(&c, &org, "hook", "cross-tenant", &closed_pull("other/web", true));
+        assert_eq!(merged_at(&c, "l2"), None, "the other tenant's PR 12 stays unmerged");
+        assert_eq!(merged_at(&c, "l1"), None, "and no same-numbered link is stamped by accident");
+        deliver(&c, &other, "hook-other", "own-merge", &closed_pull("other/web", true));
+        assert!(merged_at(&c, "l2").is_some());
+        assert_eq!(merged_at(&c, "l1"), None);
+    }
+
     #[test]
     fn requested_reviews_are_atomic_idempotent_and_superseded_by_new_heads() {
         use serde_json::json;

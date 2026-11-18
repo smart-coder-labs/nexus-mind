@@ -1625,6 +1625,10 @@ export interface FactoryEconomics {
   frontier_avoidance: number | null
   proposed_changes: number
   cost_per_proposed_change: number | null
+  /** Proposed changes that were merged; never more than `proposed_changes`. */
+  accepted_changes: number
+  /** Null while nothing has been accepted in the window. */
+  cost_per_accepted_change: number | null
   accepted_changes_tracked: boolean
 }
 

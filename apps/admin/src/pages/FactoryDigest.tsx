@@ -2,7 +2,15 @@ import { WorkflowPendingList } from './factory/WorkflowPendingList'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, GitMerge, Inbox, ListTodo, Scale, TriangleAlert } from 'lucide-react'
+import {
+  CheckCircle2,
+  GitMerge,
+  GitPullRequestArrow,
+  Inbox,
+  ListTodo,
+  Scale,
+  TriangleAlert,
+} from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Badge } from '../components/ui/Badge'
@@ -613,6 +621,22 @@ function Economics({ data }: { data: FactoryEconomics }) {
             accent={accentFor(3)}
           />
         </div>
+        {data.accepted_changes_tracked && (
+          <div role="listitem">
+            <MetricSummary
+              label="Cost per accepted change"
+              value={
+                data.cost_per_accepted_change === null ? '—' : usd(data.cost_per_accepted_change)
+              }
+              icon={GitPullRequestArrow}
+              accent={accentFor(4)}
+            >
+              <span>
+                {data.accepted_changes} of {data.proposed_changes} proposed changes merged
+              </span>
+            </MetricSummary>
+          </div>
+        )}
       </div>
       {!data.accepted_changes_tracked && (
         <p className="text-[12px] text-text-tertiary">

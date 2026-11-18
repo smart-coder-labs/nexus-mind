@@ -198,7 +198,14 @@ async fn approving_a_held_merge_starts_its_soak_and_rejecting_cancels_it() {
     let (status, body) = get(&router, &cookie, "/v1/factory/economics?days=7").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["days"], 7);
-    assert_eq!(body["accepted_changes_tracked"], false);
+    // Every field the MCP server, the CLI and the admin already read keeps its
+    // name and meaning; accepted changes are added next to them.
+    for field in ["runs", "cost_usd", "by_model", "tier_choices", "proposed_changes"] {
+        assert!(body.get(field).is_some(), "{field} missing from {body}");
+    }
+    assert_eq!(body["accepted_changes_tracked"], true);
+    assert_eq!(body["accepted_changes"], 0);
+    assert!(body["cost_per_accepted_change"].is_null(), "{body}");
 }
 
 #[tokio::test]

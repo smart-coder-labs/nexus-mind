@@ -304,7 +304,9 @@ export function fixture(path) {
       frontier_avoidance: null,
       proposed_changes: 0,
       cost_per_proposed_change: null,
-      accepted_changes_tracked: false,
+      accepted_changes: 0,
+      cost_per_accepted_change: null,
+      accepted_changes_tracked: true,
     }
   if (path.endsWith('/factory/shadow/report'))
     return { classes: [], min_settled_allows: 100, max_false_low_rate: 0.01 }
