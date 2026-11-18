@@ -288,18 +288,45 @@ pub async fn impersonate_org(
     require_superuser(&superuser_key, &headers)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let token = queries::get_org_admin_key(&conn, &org_id)
-        .map_err(db_err)?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "No active admin found for this organization".to_string(),
-                    code: "no_admin".to_string(),
-                }),
-            )
-        })?;
-    Ok(Json(serde_json::json!({ "token": token })))
+    let (token, user_id) =
+        queries::get_org_admin_key(&conn, &org_id, queries::IMPERSONATION_TTL_HOURS)
+            .map_err(db_err)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "No active admin found for this organization".to_string(),
+                        code: "no_admin".to_string(),
+                    }),
+                )
+            })?;
+
+    // `/internal/*` sits outside the audited `/v1` layer, so the entry is written
+    // here: attributed to the impersonated admin and their org, with the
+    // superadmin origin in the metadata. It joins the per-tenant hash chain and
+    // surfaces in `GET /internal/audit`.
+    queries::log_audit(
+        &conn,
+        &org_id,
+        &user_id,
+        "org.impersonate",
+        "org",
+        Some(&org_id),
+        serde_json::json!({
+            "origin": "superadmin",
+            "via": "internal_api",
+            "label": queries::IMPERSONATION_LABEL,
+            "ttl_hours": queries::IMPERSONATION_TTL_HOURS,
+            "impersonated_user_id": user_id,
+        }),
+    )
+    .map_err(db_err)?;
+
+    Ok(Json(serde_json::json!({
+        "token": token,
+        "label": queries::IMPERSONATION_LABEL,
+        "ttl_hours": queries::IMPERSONATION_TTL_HOURS,
+    })))
 }
 
 pub async fn suspend_user(
