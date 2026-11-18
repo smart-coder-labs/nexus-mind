@@ -2677,6 +2677,45 @@ mod tests {
     }
 
     #[test]
+    fn agents_on_the_same_repository_do_not_block_each_other_and_get_their_project() {
+        let (conn, org_id, user_id) = fixture();
+        conn.execute("INSERT INTO projects(id,org_id,name) VALUES ('nm',?1,'memory-project')", [&org_id]).unwrap();
+        conn.execute("INSERT INTO code_projects(org_id,name,root_path,project_id,repo_url) VALUES (?1,'nm','/nm','nm','https://github.com/Acme/App.git')", [&org_id]).unwrap();
+        queries::save_autonomous_runtime_health(
+            &conn,
+            &crate::automation::runtime::RuntimeHealth {
+                status: "ready".into(),
+                reason_code: None,
+                claude_version: Some("test".into()),
+                checked_at: None,
+                last_success_at: None,
+                last_failure_at: None,
+            },
+        )
+        .unwrap();
+        let mut ids = Vec::new();
+        for name in ["First", "Second"] {
+            let mut req = request();
+            req.name = name.into();
+            req.config = serde_json::json!({"outputs": ["nexusmind"], "repository": "acme/app"});
+            req.budgets = serde_json::json!({"wall_time_seconds": 300, "max_repository_concurrency": 1});
+            let def = queries::create_autonomous_agent_definition(&conn, &org_id, &user_id, &req).unwrap().definition.id;
+            queries::validate_autonomous_agent_definition(&conn, &org_id, &user_id, &def).unwrap();
+            queries::set_autonomous_agent_status(&conn, &org_id, &def, "enabled").unwrap();
+            queries::enqueue_autonomous_agent_run(&conn, &org_id, &def, "manual", name, None, None).unwrap();
+            ids.push(def);
+        }
+        let first = queries::claim_next_autonomous_agent_run(&conn, "worker", 60).unwrap().unwrap();
+        assert_eq!(first.config["nexusmind_project"], "memory-project");
+        // The first agent holds acme/app; the second agent still gets claimed.
+        let second = queries::claim_next_autonomous_agent_run(&conn, "worker", 60).unwrap().unwrap();
+        assert_ne!(first.run.definition_id, second.run.definition_id);
+        // A second run of the same agent on that repository still waits.
+        queries::enqueue_autonomous_agent_run(&conn, &org_id, &ids[0], "manual", "again", None, None).unwrap();
+        assert!(queries::claim_next_autonomous_agent_run(&conn, "worker", 60).unwrap().is_none());
+    }
+
+    #[test]
     fn continue_keeps_the_webhook_trigger_within_the_org() {
         let (conn, org_id, user_id) = fixture();
         let created =
@@ -3178,14 +3217,13 @@ mod tests {
         let second = queries::claim_next_autonomous_agent_run(&conn, "worker-b", 60)
             .unwrap()
             .unwrap();
-        assert_ne!(first.run.definition_id, second.run.definition_id);
-        assert_eq!(second.run.definition_id, other_definition);
-        assert_eq!(
-            queries::list_autonomous_agent_runs(&conn, &org_id, Some(&second_definition)).unwrap()
-                [0]
-            .status,
-            "queued"
-        );
+        // Repository concurrency is per agent: another agent on acme/shared is not blocked.
+        assert_eq!(first.run.definition_id, first_definition);
+        assert_eq!(second.run.definition_id, second_definition);
+        let third = queries::claim_next_autonomous_agent_run(&conn, "worker-c", 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(third.run.definition_id, other_definition);
     }
 
     #[test]

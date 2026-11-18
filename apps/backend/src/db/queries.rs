@@ -18070,6 +18070,39 @@ pub fn recover_interrupted_autonomous_runs(conn: &Connection, worker_id: &str) -
     Ok(requeued)
 }
 
+/// The NexusMind project whose memory a run should read: its project target, else
+/// the project that links the run's repository (top-level projects first).
+fn nexusmind_project_for_run(
+    conn: &Connection,
+    org_id: &str,
+    config: &serde_json::Map<String, serde_json::Value>,
+    targets: &[crate::models::types::AutonomousAgentTarget],
+) -> Result<Option<String>> {
+    let target_project = targets.iter().find_map(|t| {
+        (t.enabled && t.kind == "project").then(|| t.config.get("project_id").and_then(|v| v.as_str())).flatten()
+    });
+    if let Some(project_id) = target_project {
+        return Ok(conn
+            .query_row("SELECT name FROM projects WHERE org_id=?1 AND id=?2 AND archived_at IS NULL", [org_id, project_id], |row| row.get(0))
+            .optional()?);
+    }
+    let Some(repository) = config.get("repository").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    let repository = repository.to_ascii_lowercase();
+    Ok(conn
+        .query_row(
+            "SELECT p.name FROM code_projects c JOIN projects p ON p.id=c.project_id AND p.org_id=c.org_id
+             WHERE c.org_id=?1 AND c.archived_at IS NULL AND p.archived_at IS NULL
+               AND (lower(c.repo_url) LIKE '%github.com/' || ?2 OR lower(c.repo_url) LIKE '%github.com/' || ?2 || '.git'
+                    OR lower(c.repo_url) LIKE '%github.com/' || ?2 || '/')
+             ORDER BY p.parent_id IS NOT NULL LIMIT 1",
+            [org_id, repository.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 pub fn claim_next_autonomous_agent_run(
     conn: &Connection,
     worker_id: &str,
@@ -18118,6 +18151,8 @@ pub fn claim_next_autonomous_agent_run(
                  LEFT JOIN autonomous_agent_work_items active_work ON active_work.run_id=active.id
                  LEFT JOIN autonomous_agent_revisions active_revision ON active_revision.id=active.revision_id
                  WHERE active.org_id=r.org_id AND active.status IN ('leased','running')
+                   -- Per agent: another agent working on the same repository never blocks this one.
+                   AND active.definition_id=r.definition_id
                    AND COALESCE(active_work.repository,json_extract(active_revision.config_json,'$.repository'))
                        = COALESCE(candidate_work.repository,json_extract(candidate_revision.config_json,'$.repository')))
                 < COALESCE(json_extract(r.budget_json,'$.max_repository_concurrency'),1)
@@ -18180,6 +18215,11 @@ pub fn claim_next_autonomous_agent_run(
                 }
             }) {
                 object.insert("repository".into(), serde_json::json!(repo));
+            }
+        }
+        if object.get("nexusmind_project").is_none() {
+            if let Some(project) = nexusmind_project_for_run(conn, &org_id, object, &targets)? {
+                object.insert("nexusmind_project".into(), serde_json::json!(project));
             }
         }
         object.insert(
