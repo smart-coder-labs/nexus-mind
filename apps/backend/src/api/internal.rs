@@ -279,6 +279,15 @@ pub async fn delete_org(
     }
 }
 
+/// Mints a short-lived `impersonation` key for the org's first active admin.
+///
+/// Two things it deliberately does NOT do: touch that admin's own
+/// `web-session` rows (it used to revoke them, signing the admin out of their
+/// browser mid-session) and mint a credential without an expiry. The
+/// `/internal/*` routes sit outside the audited `/v1` layer, so the entry is
+/// written here by hand — attributed to the impersonated admin and the target
+/// org, with the superadmin origin in the metadata, which puts it in the
+/// per-tenant hash chain and in `GET /internal/audit`.
 pub async fn impersonate_org(
     State(store): State<SqliteStore>,
     Extension(superuser_key): Extension<Option<String>>,
@@ -288,18 +297,40 @@ pub async fn impersonate_org(
     require_superuser(&superuser_key, &headers)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let token = queries::get_org_admin_key(&conn, &org_id)
-        .map_err(db_err)?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "No active admin found for this organization".to_string(),
-                    code: "no_admin".to_string(),
-                }),
-            )
-        })?;
-    Ok(Json(serde_json::json!({ "token": token })))
+    let (user_id, token) =
+        queries::get_org_admin_key(&conn, &org_id, queries::IMPERSONATION_TTL_HOURS)
+            .map_err(db_err)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "No active admin found for this organization".to_string(),
+                        code: "no_admin".to_string(),
+                    }),
+                )
+            })?;
+
+    queries::log_audit(
+        &conn,
+        &org_id,
+        &user_id,
+        "org.impersonated",
+        "org",
+        Some(&org_id),
+        serde_json::json!({
+            "origin": "superadmin",
+            "via": "POST /internal/orgs/:id/impersonate",
+            "label": queries::IMPERSONATION_LABEL,
+            "ttl_hours": queries::IMPERSONATION_TTL_HOURS,
+        }),
+    )
+    .map_err(db_err)?;
+
+    Ok(Json(serde_json::json!({
+        "token": token,
+        "label": queries::IMPERSONATION_LABEL,
+        "ttl_hours": queries::IMPERSONATION_TTL_HOURS,
+    })))
 }
 
 pub async fn suspend_user(

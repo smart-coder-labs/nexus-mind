@@ -57,6 +57,18 @@ pub struct Config {
     #[arg(long, env = "COOKIE_SECURE", default_value_t = true)]
     pub cookie_secure: bool,
 
+    /// Lifetime of a browser session, in hours. Default 168 (7 days).
+    ///
+    /// It sets `api_keys.expires_at` on the `web-session` row AND the cookie's
+    /// `Max-Age`, so the browser and the server agree on when the credential
+    /// dies — `validate_api_key` already refuses an expired row, so a stale
+    /// cookie gets a 401 instead of authenticating forever.
+    ///
+    /// Lower it for a stricter deployment; 0 means "expired on arrival" and is
+    /// only useful for tests that need a dead session.
+    #[arg(long, env = "SESSION_TTL_HOURS", default_value_t = 168)]
+    pub session_ttl_hours: i64,
+
     #[arg(long, env = "GITHUB_CLIENT_ID")]
     pub github_client_id: Option<String>,
 

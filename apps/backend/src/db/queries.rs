@@ -3707,22 +3707,139 @@ pub fn assign_memory_collection(
     Ok(affected > 0)
 }
 
-/// Creates a "web-session" API key for the user, revoking any previous ones.
-/// Returns the raw API key.
-pub fn create_web_session_key(conn: &Connection, user_id: &str, org_id: &str) -> Result<String> {
-    conn.execute(
-        "UPDATE api_keys SET revoked = 1 WHERE user_id = ?1 AND label = 'web-session'",
-        [user_id],
+// ── Browser sessions ──────────────────────────────────────────────────────────
+
+/// Label of the key a browser login mints.
+pub const WEB_SESSION_LABEL: &str = "web-session";
+
+/// Label of the key the backoffice gets when a superadmin impersonates an org.
+/// Deliberately distinct from [`WEB_SESSION_LABEL`] so impersonation never
+/// touches — or is capped together with — the target user's own sessions.
+pub const IMPERSONATION_LABEL: &str = "impersonation";
+
+/// Lifetime of an impersonation key, in hours. Short on purpose: it is a
+/// superadmin borrowing someone else's identity, not a login.
+pub const IMPERSONATION_TTL_HOURS: i64 = 1;
+
+/// How many live `web-session` keys a single user may hold. Past the cap the
+/// least recently used ones are revoked, so a user can stay signed in on a
+/// handful of devices without the row count growing forever.
+pub const MAX_LIVE_WEB_SESSIONS: usize = 5;
+
+/// Deletes the user's dead session rows — revoked, or expired — for both
+/// session labels. Without this, every login and every logout would leave a
+/// row behind and `list_all_org_keys` would grow without bound.
+///
+/// Returns the number of rows removed.
+pub fn sweep_dead_session_keys(conn: &Connection, user_id: &str) -> Result<usize> {
+    let removed = conn.execute(
+        "DELETE FROM api_keys
+         WHERE user_id = ?1
+           AND label IN (?2, ?3)
+           AND (revoked = 1
+                OR (expires_at IS NOT NULL AND expires_at <= datetime('now')))",
+        rusqlite::params![user_id, WEB_SESSION_LABEL, IMPERSONATION_LABEL],
     )?;
+    Ok(removed)
+}
+
+/// Revokes the user's least recently used live `web-session` keys, keeping the
+/// [`MAX_LIVE_WEB_SESSIONS`] most recent. "Recent" is last use, falling back to
+/// creation for a key that has never been presented.
+///
+/// Returns the number of sessions revoked.
+pub fn enforce_web_session_cap(conn: &Connection, user_id: &str) -> Result<usize> {
+    let revoked = conn.execute(
+        "UPDATE api_keys SET revoked = 1
+         WHERE id IN (
+             SELECT id FROM api_keys
+             WHERE user_id = ?1 AND label = ?2 AND revoked = 0
+               AND (expires_at IS NULL OR expires_at > datetime('now'))
+             ORDER BY COALESCE(last_used_at, last_used, created_at) DESC, created_at DESC
+             LIMIT -1 OFFSET ?3
+         )",
+        rusqlite::params![user_id, WEB_SESSION_LABEL, MAX_LIVE_WEB_SESSIONS as i64],
+    )?;
+    Ok(revoked)
+}
+
+/// Creates a `web-session` API key for the user, expiring `ttl_hours` from now.
+/// Returns the raw API key.
+///
+/// It does NOT revoke the user's other sessions: signing in on a second device
+/// used to kill the first one. Instead the session count is capped
+/// ([`enforce_web_session_cap`]) and dead rows are swept
+/// ([`sweep_dead_session_keys`]).
+///
+/// `expires_at` is written with SQLite's own `datetime()` so it is directly
+/// comparable to the `expires_at > datetime('now')` check in
+/// [`validate_api_key`]; an ISO string with `T`/`Z` would sort above a
+/// same-day `datetime('now')` and never look expired.
+pub fn create_web_session_key(
+    conn: &Connection,
+    user_id: &str,
+    org_id: &str,
+    ttl_hours: i64,
+) -> Result<String> {
+    sweep_dead_session_keys(conn, user_id)?;
 
     let key_id = Uuid::new_v4().to_string();
     let (raw_key, key_hash) = api_keys::generate();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     conn.execute(
-        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
-         VALUES (?1, ?2, ?3, ?4, 'web-session', ?5)",
-        rusqlite::params![key_id, user_id, org_id, key_hash, now],
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', ?7))",
+        rusqlite::params![
+            key_id,
+            user_id,
+            org_id,
+            key_hash,
+            WEB_SESSION_LABEL,
+            now,
+            format!("{ttl_hours} hours"),
+        ],
+    )?;
+
+    // After the insert, so the session just minted counts towards the cap and
+    // the one it displaces is genuinely the least recently used.
+    enforce_web_session_cap(conn, user_id)?;
+
+    Ok(raw_key)
+}
+
+/// Creates a short-lived `impersonation` key for `user_id`, used when a
+/// superadmin enters an org from the backoffice. Returns the raw key.
+///
+/// Separate from [`create_web_session_key`] on purpose: impersonation must not
+/// log the target user out of their own browsers, and the distinct label makes
+/// the borrowed credential visible in the org's key list and in the audit log.
+/// Tenancy is unchanged — the key carries `org_id`, so `validate_api_key`
+/// resolves it to that org and no other.
+pub fn create_impersonation_key(
+    conn: &Connection,
+    user_id: &str,
+    org_id: &str,
+    ttl_hours: i64,
+) -> Result<String> {
+    sweep_dead_session_keys(conn, user_id)?;
+
+    let key_id = Uuid::new_v4().to_string();
+    let (raw_key, key_hash) = api_keys::generate();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', ?7))",
+        rusqlite::params![
+            key_id,
+            user_id,
+            org_id,
+            key_hash,
+            IMPERSONATION_LABEL,
+            now,
+            format!("{ttl_hours} hours"),
+        ],
     )?;
 
     Ok(raw_key)
@@ -5151,7 +5268,19 @@ pub fn delete_org(conn: &Connection, org_id: &str) -> Result<bool> {
     Ok(deleted > 0)
 }
 
-pub fn get_org_admin_key(conn: &Connection, org_id: &str) -> Result<Option<String>> {
+/// Mints an impersonation key for the org's first active admin, used by the
+/// backoffice to enter an org. Returns `(user_id, raw_key)` so the caller can
+/// attribute the audit entry to the impersonated admin.
+///
+/// It no longer goes through [`create_web_session_key`]: that logged the admin
+/// out of their own browser mid-session and handed the superadmin a credential
+/// that never expired. The key is labelled [`IMPERSONATION_LABEL`] and expires
+/// after `ttl_hours`.
+pub fn get_org_admin_key(
+    conn: &Connection,
+    org_id: &str,
+    ttl_hours: i64,
+) -> Result<Option<(String, String)>> {
     let admin_user: Option<String> = conn
         .query_row(
             "SELECT id FROM users WHERE org_id = ?1 AND role = 'admin' AND status = 'active' ORDER BY created_at ASC LIMIT 1",
@@ -5162,8 +5291,8 @@ pub fn get_org_admin_key(conn: &Connection, org_id: &str) -> Result<Option<Strin
 
     match admin_user {
         Some(user_id) => {
-            let key = create_web_session_key(conn, &user_id, org_id)?;
-            Ok(Some(key))
+            let key = create_impersonation_key(conn, &user_id, org_id, ttl_hours)?;
+            Ok(Some((user_id, key)))
         }
         None => Ok(None),
     }
