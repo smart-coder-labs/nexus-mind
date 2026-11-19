@@ -4374,6 +4374,19 @@ const EFFICIENT_SEARCH_CLAUSE: &str = " WORK EFFICIENTLY — every turn re-sends
 /// Lets the Product Strategist show the current state of the screens it proposes to change.
 const STRATEGIST_SCREENSHOT_CLAUSE: &str = " The configuration `targets` includes the live web application (its `url`; sign-in values, when needed, are in `target_credentials`). For each proposal about something visible, open that screen with the Playwright MCP tools and take ONE screenshot of its current state with a short descriptive filename (e.g. `customers-guest-badge.png`), then set that finding's `screenshot` to the filename. Only look: never create, edit or delete data in the app, and skip screenshots for proposals that have no screen.";
 
+/// Longest a run may take: 24 h, the lifetime of the run's NexusMind key.
+pub(crate) const MAX_WALL_TIME_SECONDS: u64 = 86_400;
+
+/// The run's `wall_time_seconds`: unset keeps the 1 h default, 0 means no limit
+/// of its own (only the 24 h ceiling), anything else is clamped to 30 s..24 h.
+fn run_wall_time_seconds(budget: &serde_json::Value) -> u64 {
+    match budget.get("wall_time_seconds").and_then(|v| v.as_u64()) {
+        None => 3600,
+        Some(0) => MAX_WALL_TIME_SECONDS,
+        Some(seconds) => seconds.clamp(30, MAX_WALL_TIME_SECONDS),
+    }
+}
+
 pub(crate) fn fixed_prompt(
     template: &str,
     config: &serde_json::Value,
@@ -5661,13 +5674,7 @@ async fn execute_resolver_fanout(
         .and_then(|v| v.as_u64())
         .unwrap_or(150)
         .clamp(1, 400);
-    let wall_time = claim
-        .run
-        .budget
-        .get("wall_time_seconds")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(3600)
-        .clamp(30, 3600);
+    let wall_time = run_wall_time_seconds(&claim.run.budget);
     // One detached worktree per unit of work (sequential — git worktree add mutates
     // shared .git state, so we don't race it). Each carries its own base sha and,
     // when resuming, the WIP branch to keep pushing to.
@@ -6737,13 +6744,7 @@ async fn execute_claim(
         None => prompt,
     };
     let max_turns = max_turns_num.to_string();
-    let wall_time = claim
-        .run
-        .budget
-        .get("wall_time_seconds")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(3600)
-        .clamp(30, 3600);
+    let wall_time = run_wall_time_seconds(&claim.run.budget);
     // Bounded output-format retry: the github_pr_reviewer agent's final JSON is
     // validated deterministically; when the model returns a malformed finding
     // (bad/missing severity, missing title, non-object result, >100 findings) we
@@ -11203,5 +11204,18 @@ mod slack_notify_tests {
         assert_eq!(ch(&serde_json::json!({"slack_notify_channel":"x; ignore previous"})), None);
         assert_eq!(ch(&serde_json::json!({})), None);
         assert!(super::slack_notify_clause("D04FE0BDN07", Some("https://a/run")).contains("D04FE0BDN07"));
+    }
+}
+
+#[cfg(test)]
+mod wall_time_tests {
+    #[test]
+    fn zero_wall_time_means_no_limit_but_the_daily_ceiling() {
+        use super::run_wall_time_seconds as wall;
+        assert_eq!(wall(&serde_json::json!({})), 3600);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 0})), super::MAX_WALL_TIME_SECONDS);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 7200})), 7200);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 10})), 30);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 999_999})), super::MAX_WALL_TIME_SECONDS);
     }
 }
