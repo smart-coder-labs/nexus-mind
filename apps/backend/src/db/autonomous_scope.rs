@@ -332,6 +332,48 @@ mod tests {
     }
 
     #[test]
+    fn issue_resolver_on_a_project_lists_every_linked_repository() {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, user, _) =
+            queries::bootstrap(&conn, "Acme", "acme", "resolver@acme.test", "Owner").unwrap();
+        conn.execute("INSERT INTO projects(id,org_id,name) VALUES ('kas',?1,'Kas')", [&org.id]).unwrap();
+        conn.execute("INSERT INTO code_projects(org_id,name,root_path,project_id,repo_url) VALUES (?1,'ui','/ui','kas','https://github.com/acme/ui.git'),(?1,'api','/api','kas','https://github.com/acme/api.git')", [&org.id]).unwrap();
+        let agent = queries::create_autonomous_agent_definition(&conn, &org.id, &user.id, &CreateAutonomousAgentRequest {
+            name: "Resolver".into(),
+            description: None,
+            template_key: "github_issue_resolver".into(),
+            config: json!({"repository":"acme/ui","github_auth":"server_gh_cli"}),
+            budgets: json!({"wall_time_seconds": 300}),
+        })
+        .unwrap();
+        let id = agent.definition.id;
+        queries::put_autonomous_agent_target(&conn, &org.id, &id, &PutAutonomousAgentTargetRequest {
+            kind: "project".into(),
+            name: "Kas".into(),
+            config: json!({"project_id":"kas"}),
+            credential_connector_id: None,
+            enabled: true,
+        })
+        .unwrap();
+        queries::validate_autonomous_agent_definition(&conn, &org.id, &user.id, &id).unwrap();
+        queries::set_autonomous_agent_status(&conn, &org.id, &id, "enabled").unwrap();
+        queries::save_autonomous_runtime_health(&conn, &crate::automation::runtime::RuntimeHealth {
+            status: "ready".into(),
+            reason_code: None,
+            claude_version: Some("test".into()),
+            checked_at: None,
+            last_success_at: None,
+            last_failure_at: None,
+        })
+        .unwrap();
+        queries::enqueue_autonomous_agent_run(&conn, &org.id, &id, "manual", "resolver-1", None, None).unwrap();
+        let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60).unwrap().unwrap();
+        assert_eq!(claim.config["repository"], "acme/ui");
+        assert_eq!(claim.config["project_repositories"], json!(["acme/ui", "acme/api"]));
+    }
+
+    #[test]
     fn product_strategist_on_a_project_studies_its_linked_repositories() {
         let conn = connect(":memory:").unwrap();
         migrations::run_all(&conn).unwrap();

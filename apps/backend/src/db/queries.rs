@@ -18223,6 +18223,17 @@ pub fn claim_next_autonomous_agent_run(
         }
         // A project-scoped strategist studies the project's linked repos: the first is
         // the checkout unless config names one, the rest are read-only context.
+        // A project-scoped Issue Resolver looks for eligible issues across the
+        // project's repositories; each run then works on one of them.
+        if template_key == "github_issue_resolver" {
+            let repos = crate::db::autonomous_scope::judge_repositories(conn, &org_id, &run.definition_id, &serde_json::json!({}))?;
+            if !repos.is_empty() {
+                if object.get("repository").and_then(|v| v.as_str()).is_none() {
+                    object.insert("repository".into(), serde_json::json!(repos[0]));
+                }
+                object.insert("project_repositories".into(), serde_json::json!(repos));
+            }
+        }
         if template_key == "product_strategist" {
             let mut repos = crate::db::autonomous_scope::judge_repositories(conn, &org_id, &run.definition_id, &serde_json::json!({}))?;
             if !repos.is_empty() {
