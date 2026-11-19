@@ -268,6 +268,24 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
             ],
         },
         AutonomousAgentTemplate {
+            key: "domain_research".into(),
+            version: 1,
+            name: "Domain Research".into(),
+            description: "Researches the project's business domain on the web (datasets, papers, regulation, market, processes, competitors) and saves each topic once, with its sources, as project memory the other agents read. Never modifies code.".into(),
+            capabilities: vec![
+                "web:search".into(),
+                "memory:write".into(),
+            ],
+            default_budgets: serde_json::json!({"wall_time_seconds": 2700, "max_attempts": 1, "max_cost_usd": 10, "max_definition_concurrency": 1, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({"domain":{"type":"string","required":true,"description":"The business to research, e.g. life and health insurance sales in Colombia"},"topics":{"type":"array","items":{"type":"string"},"description":"Optional areas to cover first (e.g. regulation, pricing, open datasets)"},"entries_per_run":{"type":"integer","default":8,"minimum":1,"maximum":15,"description":"Most topics saved per run; topics already saved are never repeated"},"custom_instructions":{"type":"string","description":"Optional guidance; cannot expand scope"}}),
+            workflow: vec![
+                "load_known".into(),
+                "research".into(),
+                "verify_sources".into(),
+                "save_memories".into(),
+            ],
+        },
+        AutonomousAgentTemplate {
             key: "ux_review".into(),
             version: 1,
             name: "UI/UX Reviewer".into(),

@@ -16,6 +16,16 @@ describe('agent configuration preservation', () => {
     })
     expect(preservedConfig({ ...quiet, assign_to_resolver: false }, 'product_strategist')).toEqual({ assign_to_resolver: false })
   })
+  it('builds a project-scoped Domain Research agent from its business domain', () => {
+    const state = defaultState('domain_research')
+    expect(state.targetKind).toBe('project')
+    state.researchDomain = '  Life insurance sales in Colombia '
+    state.researchTopics = 'regulation, pricing'
+    state.researchEntries = '40'
+    const config = buildConfig(state)
+    expect(config).toMatchObject({ domain: 'Life insurance sales in Colombia', topics: ['regulation', 'pricing'], entries_per_run: 15 })
+    expect(preservedConfig({ ...config, model: 'sonnet', kept: true }, 'domain_research')).toEqual({ kept: true })
+  })
   it('builds the UI/UX reviewer config against a web target and keeps only unknown keys as extra', () => {
     const state = defaultState('ux_review')
     expect(state.targetKind).toBe('web_application')

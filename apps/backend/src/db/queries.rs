@@ -15792,6 +15792,29 @@ mod memory_project_scope_tests {
         assert_eq!(unscoped.len(), 2, "without a scope the org-wide behaviour is unchanged");
     }
 
+    /// Domain Research reads this to know what a project already holds: it must
+    /// see its own project's topics and never another org's.
+    #[test]
+    fn memory_topics_stay_inside_the_org_and_the_prefix() {
+        let conn = seeded();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org2','Other','other')", []).unwrap();
+        conn.execute("INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u2','org2','x@y.z','X','admin','active')", []).unwrap();
+        for (id, org, user, key, title) in [
+            ("t1", "org1", "u1", "research/geocorp/soat-tarifas", "Tarifas SOAT"),
+            ("t2", "org1", "u1", "research/verdan/shopify-fees", "Shopify fees"),
+            ("t3", "org2", "u2", "research/geocorp/soat-tarifas", "Other org, same key"),
+        ] {
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, topic_key, title)
+                 VALUES (?1,?2,?3,'geocorp','domain-research','c','[]',datetime('now'),'project',?4,?5)",
+                rusqlite::params![id, org, user, key, title],
+            ).unwrap();
+        }
+        let topics = list_memory_topics(&conn, "org1", "research/geocorp/").unwrap();
+        assert_eq!(topics, vec![("Tarifas SOAT".to_string(), "research/geocorp/soat-tarifas".to_string())]);
+        assert!(list_memory_topics(&conn, "org3", "research/geocorp/").unwrap().is_empty());
+    }
+
     /// The vector half needs the same narrowing, and for a sharper reason:
     /// cosine ranking cannot express scope at all, so an unnarrowed candidate
     /// set silently decides the answer by similarity across clients.
@@ -16716,6 +16739,7 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
         "ai_content_manager" => vec!["content:write", "delivery:write"],
         "security_scan" => vec!["repository:read", "finding:write", "delivery:write"],
         "product_strategist" => vec!["repository:read", "finding:write", "delivery:write"],
+        "domain_research" => vec!["web:search", "memory:write"],
         "ux_review" => vec!["repository:read", "finding:write", "delivery:write"],
         "security_dast" => vec!["scan:active", "finding:write", "delivery:write"],
         _ => anyhow::bail!("invalid_template"),
@@ -17408,6 +17432,19 @@ pub fn validate_autonomous_agent_definition(
             if !strings("viewports", 4, &|v| v.split_once('x').is_some_and(|(w, h)| w.parse::<u16>().is_ok_and(|w| (320..=2560).contains(&w)) && h.parse::<u16>().is_ok_and(|h| (480..=1600).contains(&h)))) { errors.push("invalid_viewports") }
             if !strings("themes", 2, &|t| matches!(t, "light" | "dark")) { errors.push("invalid_themes") }
         }
+        "domain_research" => {
+            if current.revision.config.get("domain").and_then(|v| v.as_str()).is_none_or(|v| v.trim().is_empty()) {
+                errors.push("domain_required")
+            }
+            // Its entries become memories of a project, so it needs one.
+            let has_project = list_autonomous_agent_targets(conn, org_id, id).unwrap_or_default().iter().any(|t| t.enabled && t.kind == "project");
+            if !has_project {
+                errors.push("project_target_required")
+            }
+            if current.revision.config.get("entries_per_run").is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=15).contains(&n))) {
+                errors.push("entries_per_run_out_of_range")
+            }
+        }
         "product_strategist" => {
             // A repository (config or target) or a project whose linked repos it studies.
             let is_repo = |v: &str| crate::automation::connectors::validate_repository(v).is_ok();
@@ -18072,6 +18109,16 @@ pub fn recover_interrupted_autonomous_runs(conn: &Connection, worker_id: &str) -
         requeued.push(run_id);
     }
     Ok(requeued)
+}
+
+/// `(title, topic_key)` of an org's memories whose topic key starts with `prefix`, newest first.
+pub fn list_memory_topics(conn: &Connection, org_id: &str, prefix: &str) -> Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT COALESCE(title,''), topic_key FROM memories
+         WHERE org_id=?1 AND substr(topic_key,1,length(?2))=?2 ORDER BY created_at DESC LIMIT 500",
+    )?;
+    let rows = statement.query_map([org_id, prefix], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// The NexusMind project whose memory a run should read: its project target, else

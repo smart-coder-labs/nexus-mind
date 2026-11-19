@@ -47,6 +47,7 @@ describe('FindingDetail evidence', () => {
       problem: 'Owners cannot see **why** a run failed.', proposal: 'Add a failure reason to the run list.',
       acceptance_criteria: ['The run list shows the reason', 'The reason links to the transcript'],
       type: 'improvement', module: 'factory/runs', repository: 'acme/admin', screenshot_url: 'https://cdn.example/shot.png',
+      user: 'An owner checking last night\'s runs', success_metric: 'Time to find the failure reason', out_of_scope: ['Retrying the run'],
     } }
     render(<FindingDetail {...base} finding={strategist} templateKey="product_strategist" />)
     expect(screen.getByText('Proposal · Improvement')).toBeInTheDocument()
@@ -55,6 +56,9 @@ describe('FindingDetail evidence', () => {
     expect(screen.getByText('why').tagName).toBe('STRONG')
     expect(screen.getByText('Add a failure reason to the run list.')).toBeInTheDocument()
     expect(screen.getByText('The run list shows the reason')).toBeInTheDocument()
+    expect(screen.getByText('Who and what for')).toBeInTheDocument()
+    expect(screen.getByText('Time to find the failure reason')).toBeInTheDocument()
+    expect(screen.getByText('Retrying the run')).toBeInTheDocument()
     expect(screen.getByText('The reason links to the transcript')).toBeInTheDocument()
     expect(screen.getByText('acme/admin')).toBeInTheDocument()
     expect(screen.getByText('factory/runs')).toBeInTheDocument()
