@@ -1730,6 +1730,42 @@ fn target_environment(
     Ok(environment)
 }
 
+/// The GitHub PRs/issues a run was started for, as `{type, repository, number, url}`,
+/// recorded as a `run.origin` event so every run can link back to what triggered it.
+fn run_origins(template: &str, config: &serde_json::Value) -> Vec<serde_json::Value> {
+    let target = |kind: &str, repository: Option<&str>, number: Option<u64>| {
+        let (repository, number) = (repository?, number?);
+        super::connectors::validate_repository(repository).ok()?;
+        let path = if kind == "pr" { "pull" } else { "issues" };
+        Some(json!({"type": kind, "repository": repository, "number": number,
+            "url": format!("https://github.com/{repository}/{path}/{number}")}))
+    };
+    match template {
+        "judge" => config
+            .get("judge_targets")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .take(50)
+            .filter_map(|t| {
+                let kind = t.get("type").and_then(|v| v.as_str()).filter(|k| matches!(*k, "pr" | "issue"))?;
+                target(kind, t.get("repository").and_then(|v| v.as_str()), t.get("number").and_then(|v| v.as_u64()))
+            })
+            .collect(),
+        "github_pr_reviewer" | "github_issue_resolver" => {
+            let kind = if template == "github_pr_reviewer" { "pr" } else { "issue" };
+            let repository = config
+                .pointer("/trigger/repository")
+                .or_else(|| config.get("repository"))
+                .and_then(|v| v.as_str());
+            target(kind, repository, config.pointer("/trigger/number").and_then(|v| v.as_u64()))
+                .into_iter()
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Issue numbers a PR closes (GitHub's "Closes #N" links). GraphQL because the
 /// image's apt `gh` predates `pr view --json closingIssuesReferences`.
 /// shortcut: same-repository issues only; cross-repo closes need the allowlist here.
@@ -5834,6 +5870,14 @@ async fn execute_claim(
     } else {
         Vec::new()
     };
+    let origins = run_origins(&claim.template_key, &claim.config);
+    if !origins.is_empty() {
+        if let Ok(conn) = store.conn().lock() {
+            let _ = queries::append_redacted_autonomous_agent_event(
+                &conn, &claim.org_id, &claim.run.id, "run.origin", &json!({"targets": origins}),
+            );
+        }
+    }
     // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
     // assigned eligible issue in ONE run — each in its own git worktree, opening a
     // draft PR per issue — orchestrated by the worker so the safety gates still
@@ -6600,6 +6644,9 @@ async fn execute_claim(
         .parent()
         .unwrap_or(workdir.as_path())
         .join("screenshots");
+    // Repo checkouts and context clones exist before this instant; only images the
+    // agent writes afterwards are evidence (otherwise repo assets get uploaded).
+    let evidence_since = std::time::SystemTime::now();
     // Chosen once: output-format retries keep the same model. The nexus
     // executor takes no model, so none is selected (or recorded) for it.
     // Specialist (F4): a frontier planning step first; the resolver's own
@@ -7022,18 +7069,13 @@ async fn execute_claim(
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
     // attach the {filename: url} map so delivery can reference each finding's shot.
     if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web {
-        let sandbox_root = workdir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| workdir.clone());
         let roots = vec![
             qa_screenshots_dir.clone(),
             std::path::PathBuf::from("/tmp/playwright-mcp-output"),
-            sandbox_root,
             workdir.clone(),
         ];
         let r2_configured = super::r2::R2Config::from_env().is_some();
-        let images = collect_qa_images(&roots).await;
+        let images = collect_qa_images(&roots, evidence_since).await;
         let shots = upload_qa_screenshots(&images, &claim.org_id, &claim.run.id).await;
         outcome.1["screenshots_debug"] = json!({
             "r2_configured": r2_configured,
@@ -7087,7 +7129,7 @@ fn qa_mcp_config_with_output_dir(base_path: &str, out_dir: &std::path::Path, ini
 /// Recursively collect image files under the given roots (bounded), so we catch
 /// screenshots whether the MCP honours --output-dir or falls back to its default
 /// output directory (a known @playwright/mcp bug ignores --output-dir).
-async fn collect_qa_images(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+async fn collect_qa_images(roots: &[std::path::PathBuf], since: std::time::SystemTime) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = roots.to_vec();
     let mut visited = 0usize;
@@ -7106,7 +7148,8 @@ async fn collect_qa_images(roots: &[std::path::PathBuf]) -> Vec<std::path::PathB
                 continue;
             }
             let lower = path.to_string_lossy().to_lowercase();
-            if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+            let fresh = entry.metadata().await.and_then(|m| m.modified()).is_ok_and(|t| t >= since);
+            if fresh && (lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")) && found.len() < 50 {
                 found.push(path);
             }
         }
@@ -9794,6 +9837,41 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn qa_images_skip_files_that_predate_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let logo = dir.path().join("public/bank-logos/chase.png");
+        std::fs::create_dir_all(logo.parent().unwrap()).unwrap();
+        std::fs::write(&logo, b"x").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&logo).unwrap().set_modified(old).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+        let shot = dir.path().join("checkout-error.png");
+        std::fs::write(&shot, b"x").unwrap();
+        let found = super::collect_qa_images(&[dir.path().to_path_buf()], since).await;
+        assert_eq!(found, vec![shot]);
+    }
+
+    #[test]
+    fn run_origins_link_the_triggering_pr_or_issue() {
+        use serde_json::json;
+        let judge = json!({"judge_targets":[
+            {"type":"pr","repository":"acme/web","number":284},
+            {"type":"issue","repository":"acme/web","number":7},
+            {"type":"pr","repository":"not a repo","number":1},
+            {"type":"commit","repository":"acme/web","number":2}]});
+        let origins = super::run_origins("judge", &judge);
+        assert_eq!(origins.len(), 2);
+        assert_eq!(origins[0]["url"], "https://github.com/acme/web/pull/284");
+        assert_eq!(origins[1]["url"], "https://github.com/acme/web/issues/7");
+        let resolver = json!({"repository":"acme/api","trigger":{"number":12}});
+        assert_eq!(super::run_origins("github_issue_resolver", &resolver)[0]["type"], "issue");
+        let reviewer = json!({"trigger":{"repository":"acme/api","number":3}});
+        assert_eq!(super::run_origins("github_pr_reviewer", &reviewer)[0]["url"], "https://github.com/acme/api/pull/3");
+        assert!(super::run_origins("github_pr_reviewer", &json!({"repository":"acme/api"})).is_empty());
+        assert!(super::run_origins("qa", &judge).is_empty());
+    }
+
     #[test]
 
     fn related_qa_issue_body_links_only_delivered_issues_from_other_repositories() {
