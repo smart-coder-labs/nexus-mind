@@ -4460,7 +4460,7 @@ let login_clause = " AUTHENTICATION: if the target requires a login, the configu
             };
             // Only a judge with Slack output notifies the people responsible, and only on failure.
             let slack_clause = if slack_delivery {
-                " After judging, IF AND ONLY IF there is at least one \"bug\" finding, send ONE Slack message through the server-configured `slack` MCP (mcp__slack__*) to the people responsible: the PR author (`author.login`) and the assignees of each issue that is not fully resolved. Look each of them up with the Slack user search (by GitHub login and name) and @-mention the ones you find. Post it in the channel named in the configuration `slack_channel` when set; otherwise send it as a direct message to each person found. The message lists, per failing target, its link and what is missing or broken, in one short line each. Never paste screenshots, logs or long evidence into Slack: when the configuration has `run_url`, end the message with that link, where the full findings and screenshots are. If everything is verified, send nothing. Use Slack for nothing else and do not publish anywhere else."
+                " After judging, IF AND ONLY IF there is at least one \"bug\" finding, send ONE Slack message through the server-configured `slack` MCP (mcp__slack__*) to the people responsible: the PR author (`author.login`) and the assignees of each issue that is not fully resolved. Find each person's Slack user: when the configuration has `map_slack_github_users` (an object of Slack name → GitHub login), use it FIRST, take the Slack name whose value matches the GitHub login and search Slack users by that name; only for logins missing from it, search Slack by GitHub login and name. @-mention every person you find. Post it in the channel named in the configuration `slack_channel` when set; otherwise send it as a direct message to each person found. The message lists, per failing target, its link and what is missing or broken, in one short line each. Never paste screenshots, logs or long evidence into Slack: when the configuration has `run_url`, end the message with that link, where the full findings and screenshots are. If everything is verified, send nothing. Use Slack for nothing else and do not publish anywhere else."
             } else {
                 slack_clause
             };
@@ -10662,7 +10662,7 @@ mod tests {
         assert_eq!(judge_run_url(Some(""), "run-1"), None);
         let config = json!({"repositories":["acme/api"],"judge_targets_resolved":[],"outputs":["nexusmind","slack"]});
         let prompt = fixed_prompt("judge", &config, 50).unwrap();
-        assert!(prompt.contains("`run_url`") && prompt.contains("Never paste screenshots"));
+        assert!(prompt.contains("`run_url`") && prompt.contains("Never paste screenshots") && prompt.contains("map_slack_github_users"));
     }
     #[test]
     fn drafts_are_excluded_unless_the_agent_opts_in() {
