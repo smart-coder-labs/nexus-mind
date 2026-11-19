@@ -7,8 +7,10 @@ import {
   Camera,
   CheckCircle2,
   Circle,
+  CircleDot,
   ExternalLink,
   GitPullRequest,
+  Hash,
   Loader2,
   MessagesSquare,
   RefreshCw,
@@ -18,6 +20,7 @@ import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmModal } from '../../../components/ConfirmModal'
 import type {
+  AutonomousAgentDelivery,
   AutonomousAgentEvent,
   AutonomousAgentRun,
   QAScenarioResult,
@@ -33,6 +36,7 @@ import {
   asDict,
   asNum,
   asStr,
+  deliveryStatusMeta,
   dur,
   fmtDateTime,
   humanize,
@@ -325,6 +329,56 @@ function Stat({ value, label, tone }: { value: ReactNode; label: string; tone?: 
   )
 }
 
+// ── Origin and Slack ──
+
+export type RunOrigin = { type: 'pr' | 'issue'; label: string; url: string; commentUrl?: string }
+
+/** The PRs/issues the run was started for: the `run.origin` event, else (runs that
+ *  predate it) what the judge commented on or the reviewer reviewed. */
+export function runOrigins(events: AutonomousAgentEvent[], pub: Dict): RunOrigin[] {
+  const fromUrl = (raw: string, commentUrl?: string): RunOrigin | undefined => {
+    const m = raw.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/(pull|issues)\/(\d+)/)
+    return m ? { type: m[2] === 'pull' ? 'pr' : 'issue', label: `${m[1]}#${m[3]}`, url: m[0], commentUrl } : undefined
+  }
+  const recorded = asArr(asDict(events.find(e => e.kind === 'run.origin')?.payload)?.targets) ?? []
+  const origins = recorded.map(t => asStr(asDict(t)?.url)).filter((u): u is string => Boolean(u)).map(u => fromUrl(u)).filter((o): o is RunOrigin => Boolean(o))
+  // Attach the judge's comment link to its target (and use it as the origin for older runs).
+  for (const r of asArr(pub.results) ?? []) {
+    const url = asStr(asDict(r)?.url)
+    const o = url ? fromUrl(url, url) : undefined
+    if (!o) continue
+    const known = origins.find(x => x.url === o.url)
+    if (known) known.commentUrl = url
+    else origins.push(o)
+  }
+  const reviewed = asStr(asDict(asDict(asDict(pub.github_review)?._links)?.html)?.href)
+  const review = reviewed ? fromUrl(reviewed) : undefined
+  if (review && !origins.some(x => x.url === review.url)) origins.push(review)
+  return origins
+}
+
+export type SlackPost = { channel?: string; link?: string; text?: string; failed?: boolean }
+
+/** Slack messages the agent sent itself through the Slack MCP, read from its conversation. */
+export function slackPosts(transcript: AutonomousAgentEvent[]): SlackPost[] {
+  const sent = new Map<string, SlackPost>()
+  for (const turn of transcript) {
+    for (const block of asArr(asDict(asDict(turn.payload)?.message)?.content) ?? []) {
+      const b = asDict(block) ?? {}
+      if (b.type === 'tool_use' && /^mcp__slack__slack_(send|schedule)_message$/.test(asStr(b.name) ?? '')) {
+        const input = asDict(b.input) ?? {}
+        sent.set(asStr(b.id) ?? String(sent.size), { channel: asStr(input.channel_id), text: asStr(input.message) ?? asStr(input.text) })
+      } else if (b.type === 'tool_result' && sent.has(asStr(b.tool_use_id) ?? '')) {
+        const post = sent.get(asStr(b.tool_use_id)!)!
+        const text = typeof b.content === 'string' ? b.content : (asArr(b.content) ?? []).map(x => asStr(asDict(x)?.text) ?? '').join('')
+        post.failed = b.is_error === true
+        post.link = text.match(/https:\/\/[^"\s]+\.slack\.com\/archives\/[^"\s\\]+/)?.[0]
+      }
+    }
+  }
+  return [...sent.values()]
+}
+
 const REVIEW_EVENT: Record<string, { label: string; variant: 'warning' | 'success' | 'default' }> =
   {
     REQUEST_CHANGES: { label: 'Requested changes', variant: 'warning' },
@@ -340,6 +394,7 @@ export type RunDetailProps = {
   qaCoverage?: QAScenarioResult[]
   qaPlans?: import('../../../types').QABatchPlan[]
   qaCoverageError?: boolean
+  slackDeliveries?: AutonomousAgentDelivery[]
   agentName?: string
   templateKey?: string
   onOpenFindings?: () => void
@@ -360,6 +415,7 @@ export function RunDetail({
   qaCoverage = [],
   qaPlans = [],
   qaCoverageError = false,
+  slackDeliveries = [],
   agentName,
   templateKey,
   onOpenFindings,
@@ -402,6 +458,8 @@ export function RunDetail({
   const review = asDict(pub.github_review)
   const reviewUrl = asStr(review?.html_url)
   const reviewEvent = asStr(pub.event) ?? asStr(review?.event)
+  const origins = runOrigins(events, pub)
+  const slack = slackPosts(transcript)
   const reviewMeta = reviewEvent
     ? (REVIEW_EVENT[reviewEvent] ?? { label: humanize(reviewEvent), variant: 'default' as const })
     : undefined
@@ -422,6 +480,8 @@ export function RunDetail({
     tail.push(`Found ${findings.length} finding${findings.length === 1 ? '' : 's'}.`)
   if (prNumber != null) tail.push(`Opened draft PR #${prNumber}.`)
   if (reviewMeta) tail.push(`Review posted: ${reviewMeta.label.toLowerCase()}.`)
+  const slackSent = slack.filter(p => !p.failed).length + slackDeliveries.filter(d => d.status === 'delivered' || d.status === 'sent').length
+  if (slackSent) tail.push(`Posted ${slackSent} Slack message${slackSent === 1 ? '' : 's'}.`)
   if (
     run.status === 'budget_exhausted' ||
     code === 'cost_limit_exceeded' ||
@@ -579,6 +639,50 @@ export function RunDetail({
         {bits.length ? <> and used {bits.join(', ')}</> : null}. {tail.join(' ')}
         {code && !RESULT_CODE[code] && <> Result: {humanize(code).toLowerCase()}.</>}
       </p>
+
+      {(origins.length > 0 || slack.length > 0 || slackDeliveries.length > 0) && (
+        <section aria-label="Origin and Slack" className="grid gap-3 sm:grid-cols-2">
+          {origins.length > 0 && (
+            <div className="space-y-2 rounded-xl border border-border-primary bg-foreground/[0.02] p-4">
+              <p className={label}>Origin</p>
+              <ul className="list-none space-y-1.5 p-0 text-sm">
+                {origins.map(o => (
+                  <li key={o.url} className="flex flex-wrap items-center gap-2">
+                    {o.type === 'pr' ? <GitPullRequest className="h-4 w-4 text-text-secondary" aria-hidden /> : <CircleDot className="h-4 w-4 text-text-secondary" aria-hidden />}
+                    <a href={o.url} target="_blank" rel="noreferrer" className={TEXT_LINK}>{o.type === 'pr' ? 'PR' : 'Issue'} {o.label}</a>
+                    {o.commentUrl && <a href={o.commentUrl} target="_blank" rel="noreferrer" className="text-[12px] text-text-tertiary underline-offset-2 hover:underline">verdict comment</a>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {(slack.length > 0 || slackDeliveries.length > 0) && (
+            <div className="space-y-2 rounded-xl border border-border-primary bg-foreground/[0.02] p-4">
+              <p className={label}>Slack</p>
+              <ul className="list-none space-y-2 p-0 text-sm">
+                {slack.map((p, i) => (
+                  <li key={`mcp-${i}`} className="min-w-0 space-y-0.5">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <Hash className="h-4 w-4 text-text-secondary" aria-hidden />
+                      {p.link ? <a href={p.link} target="_blank" rel="noreferrer" className={TEXT_LINK}>Message in {p.channel ?? 'Slack'}</a> : <span className="text-text-primary">Message to {p.channel ?? 'Slack'}</span>}
+                      <Badge size="sm" variant={p.failed ? 'error' : p.link ? 'success' : 'warning'}>{p.failed ? 'Failed' : p.link ? 'Posted' : 'No confirmation'}</Badge>
+                    </span>
+                    {p.text && <span className="line-clamp-3 block whitespace-pre-line text-[12px] text-text-tertiary">{p.text}</span>}
+                  </li>
+                ))}
+                {slackDeliveries.map(d => (
+                  <li key={d.id} className="flex flex-wrap items-center gap-2">
+                    <Hash className="h-4 w-4 text-text-secondary" aria-hidden />
+                    <span className="text-text-primary">Finding notification</span>
+                    <Badge size="sm" variant={deliveryStatusMeta(d.status).tone === 'ok' ? 'success' : deliveryStatusMeta(d.status).tone === 'bad' ? 'error' : 'warning'}>{deliveryStatusMeta(d.status).label}</Badge>
+                    {d.last_error_code && <span className="text-[12px] text-text-tertiary">{humanize(d.last_error_code)}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
 
       <StageStrip stages={runStages(run, events, verificationReports, code)} />
 

@@ -1730,6 +1730,42 @@ fn target_environment(
     Ok(environment)
 }
 
+/// The GitHub PRs/issues a run was started for, as `{type, repository, number, url}`,
+/// recorded as a `run.origin` event so every run can link back to what triggered it.
+fn run_origins(template: &str, config: &serde_json::Value) -> Vec<serde_json::Value> {
+    let target = |kind: &str, repository: Option<&str>, number: Option<u64>| {
+        let (repository, number) = (repository?, number?);
+        super::connectors::validate_repository(repository).ok()?;
+        let path = if kind == "pr" { "pull" } else { "issues" };
+        Some(json!({"type": kind, "repository": repository, "number": number,
+            "url": format!("https://github.com/{repository}/{path}/{number}")}))
+    };
+    match template {
+        "judge" => config
+            .get("judge_targets")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .take(50)
+            .filter_map(|t| {
+                let kind = t.get("type").and_then(|v| v.as_str()).filter(|k| matches!(*k, "pr" | "issue"))?;
+                target(kind, t.get("repository").and_then(|v| v.as_str()), t.get("number").and_then(|v| v.as_u64()))
+            })
+            .collect(),
+        "github_pr_reviewer" | "github_issue_resolver" => {
+            let kind = if template == "github_pr_reviewer" { "pr" } else { "issue" };
+            let repository = config
+                .pointer("/trigger/repository")
+                .or_else(|| config.get("repository"))
+                .and_then(|v| v.as_str());
+            target(kind, repository, config.pointer("/trigger/number").and_then(|v| v.as_u64()))
+                .into_iter()
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Issue numbers a PR closes (GitHub's "Closes #N" links). GraphQL because the
 /// image's apt `gh` predates `pr view --json closingIssuesReferences`.
 /// shortcut: same-repository issues only; cross-repo closes need the allowlist here.
@@ -5834,6 +5870,14 @@ async fn execute_claim(
     } else {
         Vec::new()
     };
+    let origins = run_origins(&claim.template_key, &claim.config);
+    if !origins.is_empty() {
+        if let Ok(conn) = store.conn().lock() {
+            let _ = queries::append_redacted_autonomous_agent_event(
+                &conn, &claim.org_id, &claim.run.id, "run.origin", &json!({"targets": origins}),
+            );
+        }
+    }
     // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
     // assigned eligible issue in ONE run — each in its own git worktree, opening a
     // draft PR per issue — orchestrated by the worker so the safety gates still
@@ -9794,6 +9838,26 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn run_origins_link_the_triggering_pr_or_issue() {
+        use serde_json::json;
+        let judge = json!({"judge_targets":[
+            {"type":"pr","repository":"acme/web","number":284},
+            {"type":"issue","repository":"acme/web","number":7},
+            {"type":"pr","repository":"not a repo","number":1},
+            {"type":"commit","repository":"acme/web","number":2}]});
+        let origins = super::run_origins("judge", &judge);
+        assert_eq!(origins.len(), 2);
+        assert_eq!(origins[0]["url"], "https://github.com/acme/web/pull/284");
+        assert_eq!(origins[1]["url"], "https://github.com/acme/web/issues/7");
+        let resolver = json!({"repository":"acme/api","trigger":{"number":12}});
+        assert_eq!(super::run_origins("github_issue_resolver", &resolver)[0]["type"], "issue");
+        let reviewer = json!({"trigger":{"repository":"acme/api","number":3}});
+        assert_eq!(super::run_origins("github_pr_reviewer", &reviewer)[0]["url"], "https://github.com/acme/api/pull/3");
+        assert!(super::run_origins("github_pr_reviewer", &json!({"repository":"acme/api"})).is_empty());
+        assert!(super::run_origins("qa", &judge).is_empty());
+    }
+
     #[test]
 
     fn related_qa_issue_body_links_only_delivered_issues_from_other_repositories() {

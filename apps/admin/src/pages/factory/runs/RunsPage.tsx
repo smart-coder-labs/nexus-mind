@@ -112,6 +112,7 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
     enabled: Boolean(selectedRun),
   })
   const qaCoverage = useQuery({ queryKey: ['autonomous-run-qa-coverage', selectedRun?.id], queryFn: () => client.listAutonomousRunQACoverage(selectedRun!.id), enabled: Boolean(selectedRun && agents.data?.find(agent => agent.id === selectedRun.definition_id)?.template_key === 'qa') })
+  const deliveries = useQuery({ queryKey: ['autonomous-deliveries'], queryFn: () => client.listAutonomousAgentDeliveries(), enabled: Boolean(selectedRun) })
   const transcript = useQuery({
     queryKey: ['autonomous-run-transcript', selectedRun?.id],
     // Incremental: only fetch turns after the last one we already hold, then
@@ -139,6 +140,7 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
       void events.refetch()
       void verification.refetch()
       void qaCoverage.refetch()
+      void deliveries.refetch()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLiveStatus, selectedRun?.id])
@@ -421,6 +423,7 @@ export default function RunsPage({ embedded = false }: { embedded?: boolean }) {
               qaCoverage={qaCoverage.data?.scenarios ?? []}
               qaPlans={qaCoverage.data?.plans ?? []}
               qaCoverageError={qaCoverage.isError}
+              slackDeliveries={deliveries.data?.filter(d => d.run_id === current.id && d.channel === 'slack')}
                 agentName={runAgent?.name}
                 templateKey={runAgent?.template_key}
                 onOpenFindings={() => navigate('/factory/findings')}
