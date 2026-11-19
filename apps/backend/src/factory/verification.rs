@@ -14,6 +14,20 @@ const MAX_COMMANDS: usize = 8;
 pub const COMMAND_TIMEOUT_SECS: u64 = 300;
 /// Time a command may take including the kill grace, for budgeting the pod.
 pub const COMMAND_BUDGET_SECS: u64 = COMMAND_TIMEOUT_SECS + 10;
+/// Installs and test suites of real repositories take longer than the default.
+pub const REPO_COMMAND_TIMEOUT_SECS: u64 = 900;
+/// A cold Rust build in the constrained ARM64 pod (one Cargo job) can take far
+/// longer than JS tests: 300 s timed out every resolver verification in production.
+pub const RUST_COMMAND_TIMEOUT_SECS: u64 = 3600;
+
+/// Per-command timeout for a set of repository verification commands.
+pub fn command_timeout_secs(commands: &[Vec<String>]) -> u64 {
+    if commands.iter().any(|command| command.first().is_some_and(|program| program == "cargo")) {
+        RUST_COMMAND_TIMEOUT_SECS
+    } else {
+        REPO_COMMAND_TIMEOUT_SECS
+    }
+}
 
 /// Parses `verification_commands` (a list of argv arrays) against the allowlist.
 pub fn parse_verification_commands(value: Option<&Value>) -> anyhow::Result<Vec<Vec<String>>> {

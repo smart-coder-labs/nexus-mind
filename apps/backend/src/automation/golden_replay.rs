@@ -261,26 +261,12 @@ async fn replay(
     Ok((report, output))
 }
 
-/// Installs and test suites of real repositories take longer than a verification
-/// command's default.
-const COMMAND_TIMEOUT_SECS: u64 = 900;
-/// A cold Rust build in the constrained ARM64 pod can take longer than JS tests.
-const RUST_COMMAND_TIMEOUT_SECS: u64 = 3600;
-
-fn command_timeout_secs(commands: &[Vec<String>]) -> u64 {
-    if commands
-        .iter()
-        .any(|command| command.first().is_some_and(|program| program == "cargo"))
-    {
-        RUST_COMMAND_TIMEOUT_SECS
-    } else {
-        COMMAND_TIMEOUT_SECS
-    }
-}
+use crate::factory::verification::command_timeout_secs;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::factory::verification::{REPO_COMMAND_TIMEOUT_SECS as COMMAND_TIMEOUT_SECS, RUST_COMMAND_TIMEOUT_SECS};
 
     fn task(repository: &str, files: &[&str]) -> GoldenTask {
         GoldenTask {
