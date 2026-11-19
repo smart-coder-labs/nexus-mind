@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, piSupported, sandboxSupported } from './isolation'
+import { CODEX_TEMPLATES, codexSupported, isolationConfig, isolationFromConfig, localSupported, parseAllowedHosts, piSupported, sandboxSupported } from './isolation'
 
 describe('sandboxSupported', () => {
   it('matches the templates the server can sandbox, with the Claude executor only', () => {
@@ -10,10 +10,15 @@ describe('sandboxSupported', () => {
     expect(sandboxSupported('qa', 'nexus')).toBe(false)
   })
 
-  it('runs Codex only in the sandbox and only for code templates', () => {
+  it('runs Codex for all agent types, only in the sandbox', () => {
     expect(sandboxSupported('github_issue_resolver', 'codex')).toBe(true)
     expect(sandboxSupported('github_pr_reviewer', 'codex')).toBe(true)
-    expect(sandboxSupported('qa', 'codex')).toBe(false)
+    for (const template of CODEX_TEMPLATES) {
+      expect(codexSupported(template)).toBe(true)
+      expect(piSupported(template)).toBe(true)
+      expect(sandboxSupported(template, 'codex')).toBe(true)
+      expect(sandboxSupported(template, 'pi')).toBe(false)
+    }
     expect(localSupported('codex')).toBe(false)
     expect(localSupported('claude')).toBe(true)
   })
@@ -25,7 +30,7 @@ describe('Pi isolation', () => {
     expect(sandboxSupported('github_issue_resolver', 'pi')).toBe(false)
     expect(sandboxSupported('github_pr_reviewer', 'pi')).toBe(false)
     expect(piSupported('qa')).toBe(true)
-    expect(piSupported('judge')).toBe(false)
+    expect(piSupported('judge')).toBe(true)
     expect(sandboxSupported('qa', 'pi')).toBe(false)
   })
 })

@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-pub const TEMPLATES: [&str; 3] = ["github_issue_resolver", "github_pr_reviewer", "qa"];
+pub const TEMPLATES: [&str; 11] = super::codex::CODEX_TEMPLATES;
 pub const MODEL: &str = "gpt-6.1-sol";
 pub const EVAL_MODEL: &str = "gpt-6-luna";
 pub const EVAL_MODEL_QUALIFIED: &str = "openai-codex/gpt-6-luna";

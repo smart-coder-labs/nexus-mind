@@ -1010,12 +1010,15 @@ mod tests {
     }
 
     #[test]
-    fn codex_runs_only_sandboxed_and_only_for_code_templates() {
+    fn codex_runs_all_templates_only_sandboxed() {
         let resolve = |config: Value, template: &str| resolve_isolation(&config, template, "codex", Isolation::Local);
         assert_eq!(resolve(json!({}), "github_issue_resolver").unwrap(), Isolation::Sandbox);
         assert_eq!(resolve(json!({"isolation": "sandbox"}), "github_pr_reviewer").unwrap(), Isolation::Sandbox);
         assert_eq!(resolve(json!({"isolation": "local"}), "github_issue_resolver").unwrap_err().to_string(), "codex_requires_sandbox");
-        assert_eq!(resolve(json!({}), "qa").unwrap_err().to_string(), "codex_unsupported_template");
+        for template in crate::automation::codex::CODEX_TEMPLATES {
+            assert_eq!(resolve(json!({}), template).unwrap(), Isolation::Sandbox);
+        }
+        assert_eq!(resolve(json!({}), "unknown").unwrap_err().to_string(), "codex_unsupported_template");
     }
 
     #[test]

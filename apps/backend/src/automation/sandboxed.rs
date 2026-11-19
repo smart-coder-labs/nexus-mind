@@ -646,9 +646,6 @@ pub(crate) async fn run_claude_sandboxed(
     // Codex reads its provider (the proxy route, with this run's token) and MCP
     // servers from a config file in the pod, never from its arguments.
     if codex {
-        if run.qa.is_some() {
-            anyhow::bail!("codex_unsupported_template")
-        }
         agent_job.files.push((
             crate::factory::sandbox::CODEX_CONFIG_PATH.to_string(),
             crate::factory::sandbox::codex_config(&run_token, run.writes.is_some()),
@@ -658,11 +655,11 @@ pub(crate) async fn run_claude_sandboxed(
         // The browser reaches the targets through the proxy with the run token,
         // which goes into a file in the pod, never into the exec request.
         let (mcp, config) = crate::factory::sandbox::playwright_mcp(&run_token);
-        argv.extend(["--mcp-config".to_string(), mcp]);
-        agent_job.files = vec![(
+        if !codex { argv.extend(["--mcp-config".to_string(), mcp]); }
+        agent_job.files.push((
             crate::factory::sandbox::PLAYWRIGHT_CONFIG_PATH.to_string(),
             config,
-        )];
+        ));
         agent_job.collect_dir = Some(crate::factory::sandbox::QA_OUTPUT_DIR.to_string());
     }
     let runtime_config = {
@@ -673,13 +670,22 @@ pub(crate) async fn run_claude_sandboxed(
         text.map(|text| serde_json::from_str::<serde_json::Value>(&text)).transpose()?
     };
     if let Some(runtime_config) = runtime_config.as_ref() {
-    let runtime = super::agent_runtime::runtime_from_config(runtime_config)?;
+    let mut runtime = super::agent_runtime::runtime_from_config(runtime_config)?;
     anyhow::ensure!(runtime.components.iter().filter(|c| c.enabled).filter_map(|c| c.server.as_ref()).all(|s| s.env.is_empty() && s.headers.is_empty()), "runtime_mcp_credentials_require_sandbox_proxy");
     let executor = if codex { "codex" } else { "claude" };
     let root = if codex { crate::factory::sandbox::CODEX_HOME } else { "/tmp/agent-runtime" };
     let nexus: serde_json::Value = serde_json::from_str(&crate::factory::sandbox::nexusmind_mcp())?;
     let mut nexus = nexus["mcpServers"]["plugin_nexusmind_nexusmind"].clone();
     nexus["env"]["NEXUSMIND_BASE_URL"] = serde_json::json!(format!("http://{}/r/{run_token}/nexusmind", crate::factory::sandbox::PROXY_AUTHORITY));
+    if codex && run.qa.is_some() {
+        let (mcp, _) = crate::factory::sandbox::playwright_mcp(&run_token);
+        let mcp: serde_json::Value = serde_json::from_str(&mcp)?;
+        runtime.components.push(super::agent_runtime::Component {
+            id: "playwright".into(), kind: "mcp".into(), enabled: true,
+            server: Some(serde_json::from_value(mcp["mcpServers"]["playwright"].clone())?),
+            ..Default::default()
+        });
+    }
     let plan = super::agent_runtime::plan(&runtime, executor, root, nexus)?;
     for (path, content) in plan.files {
         if codex && path.ends_with("/runtime.toml") {

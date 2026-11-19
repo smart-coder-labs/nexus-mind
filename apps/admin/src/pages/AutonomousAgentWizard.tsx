@@ -1322,7 +1322,7 @@ function StepConfig({
     <div className="space-y-5">
       <Field
         label="Task executor"
-        hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for issue resolvers and PR reviewers. Pi uses the worker's ChatGPT login with gpt-6.1-sol, independently of Factory role preferences, for QA, issue resolvers and PR reviewers. QA uses Playwright without shell or file-editing tools. It runs locally (unsafe: worker credentials are accessible)."
+        hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back. Codex runs only in the sandbox, with the OpenAI key the egress proxy holds, for all agent types. Pi uses the worker's ChatGPT login with gpt-6.1-sol, independently of Factory role preferences, for all agent types. QA uses Playwright without shell or file-editing tools. It runs locally (unsafe: worker credentials are accessible)."
       >
         <TaskExecutorSelect
           value={state.executor}
@@ -1336,8 +1336,7 @@ function StepConfig({
         />
         {!piSupported(template) && (
           <p className="mt-2 text-[12px] text-text-secondary">
-            Pi is available for QA, issue resolvers and PR reviewers. Codex is available only for
-            issue resolvers and PR reviewers.
+            This agent type does not support Pi or Codex.
           </p>
         )}
       </Field>
@@ -1389,12 +1388,12 @@ function StepConfig({
       )}
       {state.executor === 'codex' && !codexSupported(template) && (
         <p role="alert" className="text-[12px] text-text-primary">
-          Codex runs only issue resolvers and PR reviewers. Choose another executor.
+          Codex does not support this agent type. Choose another executor.
         </p>
       )}
       {state.executor === 'pi' && !piSupported(template) && (
         <p role="alert" className="text-[12px] text-text-primary">
-          Pi runs only QA, issue resolvers and PR reviewers. Choose another executor.
+          Pi does not support this agent type. Choose another executor.
         </p>
       )}
       <AgentRuntimeEditor value={state.runtime} executor={state.executor} onChange={value => set('runtime', value)} onValidityChange={valid => set('runtimeValid', valid)} />
