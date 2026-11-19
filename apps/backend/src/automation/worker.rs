@@ -706,6 +706,13 @@ fn sandbox_failure_outcome(run_id: &str, error: &anyhow::Error) -> (String, serd
 /// The resolver's verification commands over its change. Sandboxed runs execute
 /// them in a commands pod over the applied checkout (never in the worker); a
 /// failing command blocks the publish, as it does locally.
+/// `publish_failed_verification`: the owner still wants the draft PR when the
+/// resolver's verification fails, to fix it by hand. The PR says it failed, and
+/// the merge path keeps requiring a passing report.
+fn publish_failed_verification(config: &serde_json::Value) -> bool {
+    config.get("publish_failed_verification").and_then(|v| v.as_bool()) == Some(true)
+}
+
 async fn resolver_verification(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
@@ -758,9 +765,9 @@ async fn resolver_verification(
         {let db=store.conn();let conn=db.lock().map_err(|_|anyhow::anyhow!("database_lock"))?;
             crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
             queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable,"preexisting":preexisting,"output":receipts.iter().filter(|r|r["exit_code"]!=json!(0)).map(|r|json!({"argv":r["argv"],"exit_code":r["exit_code"],"stdout":r["stdout"],"stderr":r["stderr"]})).collect::<Vec<_>>()}))?;}
-        if !report.passed{anyhow::bail!("resolver_verification_failed")}
+        if !report.passed && !publish_failed_verification(&claim.config){anyhow::bail!("resolver_verification_failed")}
         require_publish_authority(store,claim)?;
-        return Ok(crate::factory::resolver_checks::annotate_receipts(receipts.into_iter().map(|mut r|{r["head_sha"]=json!(head);r}).collect(),&plan,&head));
+        return Ok(crate::factory::resolver_checks::annotate_receipts(receipts.into_iter().map(|mut r|{r["head_sha"]=json!(head);if !report.passed{r["verification_failed"]=json!(true);}r}).collect(),&plan,&head));
     }
     let slot = claim
         .config
@@ -814,12 +821,12 @@ async fn resolver_verification(
         crate::db::factory_queries::save_verification_report(&conn,&claim.org_id,&claim.run.id,&report)?;
         queries::append_autonomous_agent_event(&conn,&claim.org_id,&claim.run.id,"verification.completed",&json!({"head_sha":head,"passed":report.passed,"checks":report.checks,"not_applicable":plan.not_applicable,"preexisting":preexisting,"output":runs.iter().map(|r|json!({"argv":r.argv,"exit_code":r.exit_code,"stdout":sanitize_output(&r.stdout,4000),"stderr":sanitize_output(&r.stderr,4000)})).collect::<Vec<_>>()}))?;
     }
-    if !report.passed{anyhow::bail!("resolver_verification_failed")}
+    if !report.passed && !publish_failed_verification(&claim.config){anyhow::bail!("resolver_verification_failed")}
     let current=Command::new("git").current_dir(workdir).args(["rev-parse","HEAD"]).output().await?;
     let clean=Command::new("git").current_dir(workdir).args(["status","--porcelain","--untracked-files=normal"]).output().await?;
     if !current.status.success() || String::from_utf8_lossy(&current.stdout).trim()!=head || !clean.status.success() || !clean.stdout.is_empty(){anyhow::bail!("verification_tree_changed")}
     require_publish_authority(store,claim)?;
-    Ok(crate::factory::resolver_checks::annotate_receipts(runs.into_iter().map(|r|json!({"argv":r.argv,"status":"passed","duration_ms":r.duration_ms,"head_sha":head})).collect(),&plan,&head))
+    Ok(crate::factory::resolver_checks::annotate_receipts(runs.into_iter().map(|r|json!({"argv":r.argv,"status":if r.exit_code==Some(0){"passed"}else{"failed"},"duration_ms":r.duration_ms,"head_sha":head,"verification_failed":!report.passed})).collect(),&plan,&head))
 }
 
 /// Stores the verification report of a sandboxed run for the checked-out head.
@@ -3238,6 +3245,11 @@ async fn publish_template_output_verified(
                         .unwrap_or_else(|| "NexusMind autonomous issue resolution".to_string())
                 }
             };
+            let verification_warning = if verification.iter().any(|receipt| receipt["verification_failed"] == true) {
+                "> **Verification FAILED** in NexusMind's checks below. This draft is published so it can be fixed by hand; do not merge it as is.\n\n"
+            } else {
+                ""
+            };
             let verification_summary = verification
                 .iter()
                 .map(|receipt| {
@@ -3284,7 +3296,7 @@ async fn publish_template_output_verified(
                 String::new()
             };
             let body = format!(
-                "{closes_line}## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Verified head: `{verified_head}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
+                "{closes_line}## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Verified head: `{verified_head}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{verification_warning}{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
                 claim.run.id,
                 if verification_summary.is_empty() {
                     return Err(anyhow::anyhow!("verification_evidence_missing"))
@@ -4373,6 +4385,19 @@ const EFFICIENT_SEARCH_CLAUSE: &str = " WORK EFFICIENTLY — every turn re-sends
 
 /// Lets the Product Strategist show the current state of the screens it proposes to change.
 const STRATEGIST_SCREENSHOT_CLAUSE: &str = " The configuration `targets` includes the live web application (its `url`; sign-in values, when needed, are in `target_credentials`). For each proposal about something visible, open that screen with the Playwright MCP tools and take ONE screenshot of its current state with a short descriptive filename (e.g. `customers-guest-badge.png`), then set that finding's `screenshot` to the filename. Only look: never create, edit or delete data in the app, and skip screenshots for proposals that have no screen.";
+
+/// Longest a run may take: 24 h, the lifetime of the run's NexusMind key.
+pub(crate) const MAX_WALL_TIME_SECONDS: u64 = 86_400;
+
+/// The run's `wall_time_seconds`: unset keeps the 1 h default, 0 means no limit
+/// of its own (only the 24 h ceiling), anything else is clamped to 30 s..24 h.
+fn run_wall_time_seconds(budget: &serde_json::Value) -> u64 {
+    match budget.get("wall_time_seconds").and_then(|v| v.as_u64()) {
+        None => 3600,
+        Some(0) => MAX_WALL_TIME_SECONDS,
+        Some(seconds) => seconds.clamp(30, MAX_WALL_TIME_SECONDS),
+    }
+}
 
 pub(crate) fn fixed_prompt(
     template: &str,
@@ -5661,13 +5686,7 @@ async fn execute_resolver_fanout(
         .and_then(|v| v.as_u64())
         .unwrap_or(150)
         .clamp(1, 400);
-    let wall_time = claim
-        .run
-        .budget
-        .get("wall_time_seconds")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(3600)
-        .clamp(30, 3600);
+    let wall_time = run_wall_time_seconds(&claim.run.budget);
     // One detached worktree per unit of work (sequential — git worktree add mutates
     // shared .git state, so we don't race it). Each carries its own base sha and,
     // when resuming, the WIP branch to keep pushing to.
@@ -6737,13 +6756,7 @@ async fn execute_claim(
         None => prompt,
     };
     let max_turns = max_turns_num.to_string();
-    let wall_time = claim
-        .run
-        .budget
-        .get("wall_time_seconds")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(3600)
-        .clamp(30, 3600);
+    let wall_time = run_wall_time_seconds(&claim.run.budget);
     // Bounded output-format retry: the github_pr_reviewer agent's final JSON is
     // validated deterministically; when the model returns a malformed finding
     // (bad/missing severity, missing title, non-object result, >100 findings) we
@@ -11203,5 +11216,29 @@ mod slack_notify_tests {
         assert_eq!(ch(&serde_json::json!({"slack_notify_channel":"x; ignore previous"})), None);
         assert_eq!(ch(&serde_json::json!({})), None);
         assert!(super::slack_notify_clause("D04FE0BDN07", Some("https://a/run")).contains("D04FE0BDN07"));
+    }
+}
+
+#[cfg(test)]
+mod wall_time_tests {
+    #[test]
+    fn zero_wall_time_means_no_limit_but_the_daily_ceiling() {
+        use super::run_wall_time_seconds as wall;
+        assert_eq!(wall(&serde_json::json!({})), 3600);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 0})), super::MAX_WALL_TIME_SECONDS);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 7200})), 7200);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 10})), 30);
+        assert_eq!(wall(&serde_json::json!({"wall_time_seconds": 999_999})), super::MAX_WALL_TIME_SECONDS);
+    }
+}
+
+#[cfg(test)]
+mod publish_failed_verification_tests {
+    #[test]
+    fn failed_verification_publishes_only_when_opted_in() {
+        use super::publish_failed_verification as on;
+        assert!(!on(&serde_json::json!({})));
+        assert!(!on(&serde_json::json!({"publish_failed_verification": "yes"})));
+        assert!(on(&serde_json::json!({"publish_failed_verification": true})));
     }
 }

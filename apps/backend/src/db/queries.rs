@@ -17069,7 +17069,8 @@ pub fn validate_autonomous_agent_definition(
         .get("wall_time_seconds")
         .and_then(|v| v.as_i64())
     {
-        if !(30..=3600).contains(&seconds) {
+        // 0 = no time limit of the agent's own (the worker still stops at 24 h).
+        if seconds != 0 && !(30..=86_400).contains(&seconds) {
             errors.push("wall_time_out_of_range")
         }
     }
