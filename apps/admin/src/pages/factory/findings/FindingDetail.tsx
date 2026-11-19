@@ -98,11 +98,13 @@ function LeadBlock({ lead }: { lead: Dict }) {
   )
 }
 
-/** A Product Strategist proposal: problem, proposal, acceptance criteria and where it lands. */
+/** A Product Strategist proposal: its business brief, proposal, acceptance criteria and where it lands. */
 function ProposalBlock({ ev }: { ev: Dict }) {
   const problem = asStr(ev.problem)
   const proposal = asStr(ev.proposal)
   const criteria = (asArr(ev.acceptance_criteria) ?? []).map(asStr).filter(Boolean) as string[]
+  const excluded = (asArr(ev.out_of_scope) ?? []).map(asStr).filter(Boolean) as string[]
+  const brief = [['Who and what for', asStr(ev.user)], ['Value action', asStr(ev.value_action)], ['Success metric', asStr(ev.success_metric)]].filter(([, value]) => value)
   const repository = asStr(ev.repository)
   const module = asStr(ev.module)
   return (
@@ -113,8 +115,16 @@ function ProposalBlock({ ev }: { ev: Dict }) {
           {module && <><dt className="text-text-tertiary">Module</dt><dd className="break-all font-mono text-[12px] text-text-secondary">{module}</dd></>}
         </dl>
       )}
+      {brief.map(([title, value]) => <Block key={title} title={title!}><p className="text-sm leading-relaxed text-text-secondary">{value}</p></Block>)}
       {problem && <Block title="Problem"><div className="text-sm leading-relaxed text-text-secondary"><Markdown content={problem} /></div></Block>}
       {proposal && <Block title="Proposal"><div className="text-sm leading-relaxed text-text-secondary"><Markdown content={proposal} /></div></Block>}
+      {excluded.length > 0 && (
+        <Block title="Out of scope">
+          <ul className="list-disc space-y-1 pl-5 text-sm text-text-secondary">
+            {excluded.map((item, i) => <li key={i}>{item}</li>)}
+          </ul>
+        </Block>
+      )}
       {criteria.length > 0 && (
         <Block title="Acceptance criteria">
           <ul className="grid list-none gap-1.5 p-0">

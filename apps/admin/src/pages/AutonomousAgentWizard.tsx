@@ -122,6 +122,10 @@ interface FormState {
   // product strategist
   strategistIssues: string
   strategistFocus: string
+  // domain research
+  researchDomain: string
+  researchTopics: string // comma-separated
+  researchEntries: string
   // lead generation
   product: string
   icp: string
@@ -200,7 +204,7 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
         ? 'web_application'
         : template === 'lead_generation' || template === 'ai_content_manager'
           ? 'none'
-          : template === 'product_strategist'
+          : template === 'product_strategist' || template === 'domain_research'
             ? 'project'
             : 'repository',
     targetName: '',
@@ -254,6 +258,9 @@ export function defaultState(template: AutonomousAgentTemplateKey): FormState {
     uxDomainPack: 'none',
     strategistIssues: '3',
     strategistFocus: '',
+    researchDomain: '',
+    researchTopics: '',
+    researchEntries: '8',
     loginUser: '',
     loginPassword: '',
     loginUrl: '',
@@ -299,6 +306,7 @@ export function preservedConfig(config: Record<string, unknown>, template: strin
   ]
   const fields: Record<string, string[]> = {
     ux_review: ['outputs', 'repository', 'routes', 'max_findings', 'domain_pack', 'custom_instructions'],
+    domain_research: ['domain', 'topics', 'entries_per_run', 'custom_instructions'],
     product_strategist: ['outputs', 'github_auth', 'repository', 'issues_per_run', 'issue_labels', 'focus', 'custom_instructions'],
     qa: [
       'outputs',
@@ -379,6 +387,13 @@ export function buildConfig(state: FormState): Record<string, unknown> {
     if (state.repository.trim()) config.repository = state.repository.trim()
     if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (state.assignIssuesToSelf) config.assign_issues_to_self = true
+  } else if (state.template === 'domain_research') {
+    config = {
+      domain: state.researchDomain.trim(),
+      entries_per_run: Math.max(1, Math.min(15, Number(state.researchEntries) || 8)),
+    }
+    if (csv(state.researchTopics).length) config.topics = csv(state.researchTopics)
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else if (state.template === 'product_strategist') {
     // Without the GitHub output, proposals stay in NexusMind as findings only.
     const outputs = ['nexusmind']
@@ -617,6 +632,9 @@ export function stateFromAgent(agent: AutonomousAgentDetail): FormState {
         : '',
     strategistIssues: typeof config.issues_per_run === 'number' ? String(config.issues_per_run) : '3',
     strategistFocus: typeof config.focus === 'string' ? config.focus : '',
+    researchDomain: typeof config.domain === 'string' ? config.domain : '',
+    researchTopics: config.domain !== undefined && Array.isArray(config.topics) ? (config.topics as string[]).join(', ') : '',
+    researchEntries: typeof config.entries_per_run === 'number' ? String(config.entries_per_run) : '8',
     excludedPaths: Array.isArray(config.excluded_paths)
       ? (config.excluded_paths as string[]).join(', ')
       : '',
@@ -963,6 +981,8 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'template':
       return Boolean(state.template)
     case 'target':
+      // Domain research saves into a project's memory, so it cannot run without one.
+      if (state.template === 'domain_research') return state.targetKind === 'project' && Boolean(state.targetProjectId)
       return state.targetKind !== 'project' || Boolean(state.targetProjectId)
     case 'config':
       if (!state.runtimeValid || state.runtime.components?.some(c => c.enabled !== false && !runtimeKinds[state.executor]?.includes(c.kind))) return false
@@ -985,6 +1005,7 @@ function validateStep(id: StepId, state: FormState): boolean {
         return !state.outputGithubIssue || Boolean(state.repository.trim())
       if (state.template === 'lead_generation')
         return state.product.trim().length > 0 && state.icp.trim().length > 0
+      if (state.template === 'domain_research') return state.researchDomain.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
       if (state.template === 'ai_content_manager') {
         if (csv(state.topics).length === 0 || state.audience.trim().length === 0) return false
@@ -1176,8 +1197,8 @@ export function StepTarget({
             set('targetKind', value)
             if (value === 'project' && state.template === 'github_pr_reviewer') set('scheduleKind', 'manual')
           }}>
-            <option value="web_application">Web application</option>
-            <option value="repository">Repository</option>
+            {state.template !== 'domain_research' && <option value="web_application">Web application</option>}
+            {state.template !== 'domain_research' && <option value="repository">Repository</option>}
             <option value="project">Project</option>
           </NativeSelect>
         </Field>
@@ -1480,6 +1501,28 @@ function StepConfig({
               )}
             </div>
           </div>
+        </>
+      )}
+
+      {template === 'domain_research' && (
+        <>
+          <p className="text-sm text-text-secondary">
+            Researches the business on the web and saves each topic once, with its sources, in the target project's memory, where the other agents read it. Topics already saved are not researched again.
+          </p>
+          <Field label="Business domain" hint="What the product is for: the business, its market and country.">
+            <Textarea className="text-sm" rows={2} value={state.researchDomain} onChange={(event) => set('researchDomain', event.target.value)} placeholder="e.g. Life and health insurance sales through brokers in Colombia" />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Topics first (optional)" hint="Comma-separated areas to cover before the rest.">
+              <Input inputSize="sm" value={state.researchTopics} onChange={(event) => set('researchTopics', event.target.value)} placeholder="regulation, pricing, open datasets" />
+            </Field>
+            <Field label="Topics per run" hint="Up to 15. Run it again to go deeper.">
+              <Input inputSize="sm" type="number" min={1} max={15} value={state.researchEntries} onChange={(event) => set('researchEntries', event.target.value)} />
+            </Field>
+          </div>
+          <Field label="Custom instructions (optional)" hint="Anything to emphasize or avoid; cannot widen what the agent may do.">
+            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={(event) => set('customInstructions', event.target.value)} placeholder="e.g. Prefer official regulator sources" />
+          </Field>
         </>
       )}
 
