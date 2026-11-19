@@ -5579,7 +5579,10 @@ async fn execute_resolver_fanout(
         .get("continue_from_run_id")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let mut issues = if continue_from.is_some() {
+    // A run requeued after a worker restart points at itself: it resumes its own
+    // checkpoints when it pushed some, and otherwise starts over on fresh issues.
+    let self_resume = continue_from.as_deref() == Some(claim.run.id.as_str());
+    let mut issues = if continue_from.is_some() && !self_resume {
         Vec::new()
     } else {
         match list_eligible_resolver_issues(store, claim).await {
@@ -5703,11 +5706,15 @@ async fn execute_resolver_fanout(
                 targets.push((index, repository.clone(), number, worktree, sha, Some(branch)));
             }
         }
-        if targets.is_empty() {
+        if targets.is_empty() && !self_resume {
             let _ = sandbox.keep();
             return ("blocked_policy".into(), json!({"code":"no_resumable_work"}));
         }
-    } else {
+    }
+    if targets.is_empty() {
+        if issues.is_empty() {
+            return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}));
+        }
         for (index, (repository, number)) in issues.iter().enumerate() {
             let worktree = sandbox.path().join(format!("issue-{number}"));
             let mut add = match repo_token {
