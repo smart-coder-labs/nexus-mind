@@ -6644,6 +6644,9 @@ async fn execute_claim(
         .parent()
         .unwrap_or(workdir.as_path())
         .join("screenshots");
+    // Repo checkouts and context clones exist before this instant; only images the
+    // agent writes afterwards are evidence (otherwise repo assets get uploaded).
+    let evidence_since = std::time::SystemTime::now();
     // Chosen once: output-format retries keep the same model. The nexus
     // executor takes no model, so none is selected (or recorded) for it.
     // Specialist (F4): a frontier planning step first; the resolver's own
@@ -7066,18 +7069,13 @@ async fn execute_claim(
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
     // attach the {filename: url} map so delivery can reference each finding's shot.
     if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web {
-        let sandbox_root = workdir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| workdir.clone());
         let roots = vec![
             qa_screenshots_dir.clone(),
             std::path::PathBuf::from("/tmp/playwright-mcp-output"),
-            sandbox_root,
             workdir.clone(),
         ];
         let r2_configured = super::r2::R2Config::from_env().is_some();
-        let images = collect_qa_images(&roots).await;
+        let images = collect_qa_images(&roots, evidence_since).await;
         let shots = upload_qa_screenshots(&images, &claim.org_id, &claim.run.id).await;
         outcome.1["screenshots_debug"] = json!({
             "r2_configured": r2_configured,
@@ -7131,7 +7129,7 @@ fn qa_mcp_config_with_output_dir(base_path: &str, out_dir: &std::path::Path, ini
 /// Recursively collect image files under the given roots (bounded), so we catch
 /// screenshots whether the MCP honours --output-dir or falls back to its default
 /// output directory (a known @playwright/mcp bug ignores --output-dir).
-async fn collect_qa_images(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+async fn collect_qa_images(roots: &[std::path::PathBuf], since: std::time::SystemTime) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = roots.to_vec();
     let mut visited = 0usize;
@@ -7150,7 +7148,8 @@ async fn collect_qa_images(roots: &[std::path::PathBuf]) -> Vec<std::path::PathB
                 continue;
             }
             let lower = path.to_string_lossy().to_lowercase();
-            if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+            let fresh = entry.metadata().await.and_then(|m| m.modified()).is_ok_and(|t| t >= since);
+            if fresh && (lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")) && found.len() < 50 {
                 found.push(path);
             }
         }
@@ -9838,6 +9837,21 @@ async fn maybe_trigger_next_agent(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn qa_images_skip_files_that_predate_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let logo = dir.path().join("public/bank-logos/chase.png");
+        std::fs::create_dir_all(logo.parent().unwrap()).unwrap();
+        std::fs::write(&logo, b"x").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&logo).unwrap().set_modified(old).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+        let shot = dir.path().join("checkout-error.png");
+        std::fs::write(&shot, b"x").unwrap();
+        let found = super::collect_qa_images(&[dir.path().to_path_buf()], since).await;
+        assert_eq!(found, vec![shot]);
+    }
+
     #[test]
     fn run_origins_link_the_triggering_pr_or_issue() {
         use serde_json::json;
