@@ -751,6 +751,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
               targetName: first.name,
               targetPrimary: primaryFromTargetConfig(first.config),
               targetProjectId: typeof first.config.project_id === 'string' ? first.config.project_id : prev.targetProjectId,
+              loginUrl: typeof first.config.login_url === 'string' ? first.config.login_url : '',
               existingCredentialConnectorId: first.credential_connector_id ?? '',
             }))
         })
@@ -1056,12 +1057,10 @@ export function buildTargetConfig(state: FormState): Record<string, unknown> {
   if (state.targetKind === 'project') return { project_id: state.targetProjectId }
   const value = state.targetPrimary.trim()
   if (!value) return {}
-  if (state.targetKind === 'web_application') {
-    const config: Record<string, unknown> = { url: value }
-    if (state.loginUrl.trim()) config.login_url = state.loginUrl.trim()
-    return config
-  }
-  return { repository: value }
+  const config: Record<string, unknown> = state.targetKind === 'web_application' ? { url: value } : { repository: value }
+  // A repository-target judge/QA still needs the app's URL to test it live.
+  if (state.loginUrl.trim()) config.login_url = state.loginUrl.trim()
+  return config
 }
 
 /* ---------- Steps ---------- */

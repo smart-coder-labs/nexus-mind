@@ -294,6 +294,17 @@ pub fn sandbox_hosts(config: &Value) -> anyhow::Result<Vec<String>> {
             add(&mut hosts, host);
         }
     }
+    // A repository target carries its app's address as `login_url` (judge/QA).
+    let login_urls = config
+        .get("targets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|target| target.get("enabled").and_then(Value::as_bool) == Some(true))
+        .filter_map(|target| target.pointer("/config/login_url").and_then(Value::as_str));
+    for host in login_urls.filter_map(https_host) {
+        add(&mut hosts, host);
+    }
     if let Some(url) = config.get("app_base_url").and_then(Value::as_str) {
         let host = https_host(url).ok_or_else(|| anyhow::anyhow!("target_not_sandboxable"))?;
         add(&mut hosts, host);
