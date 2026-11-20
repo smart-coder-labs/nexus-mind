@@ -18,6 +18,8 @@ pub struct MonitorSource {
     pub name: String,
     pub service_account: String,
     pub slack_connector_id: Option<String>,
+    /// Channel id for the server Slack MCP (`slack_connector_id = server_slack_mcp`).
+    pub slack_channel: Option<String>,
     pub github_connector_id: Option<String>,
     pub github_repo: Option<String>,
     pub throttle_minutes: i64,
@@ -32,13 +34,15 @@ pub struct SourceWrite {
     pub name: String,
     pub service_account: String,
     pub slack_connector_id: Option<String>,
+    /// Channel id for the server Slack MCP (`slack_connector_id = server_slack_mcp`).
+    pub slack_channel: Option<String>,
     pub github_connector_id: Option<String>,
     pub github_repo: Option<String>,
     pub throttle_minutes: i64,
     pub enabled: bool,
 }
 
-const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at";
+const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel";
 
 fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
     let id: String = row.get(0)?;
@@ -55,6 +59,7 @@ fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
         throttle_minutes: row.get(8)?,
         enabled: row.get::<_, i64>(9)? != 0,
         created_at: row.get(10)?,
+        slack_channel: row.get(11)?,
     })
 }
 
@@ -63,10 +68,10 @@ pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrit
     let id = Uuid::new_v4().to_string();
     let inserted = c.execute(
         "INSERT OR IGNORE INTO monitor_sources
-           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![id, org_id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64, user_id],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, user_id, w.slack_channel],
     )?;
     if inserted == 0 {
         return Ok(None);
@@ -78,10 +83,10 @@ pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrit
 pub fn update_source(c: &Connection, org_id: &str, id: &str, w: &SourceWrite) -> Result<bool> {
     let updated = c.execute(
         "UPDATE OR IGNORE monitor_sources SET project=?3,name=?4,service_account=?5,slack_connector_id=?6,
-           github_connector_id=?7,github_repo=?8,throttle_minutes=?9,enabled=?10
+           github_connector_id=?7,github_repo=?8,throttle_minutes=?9,enabled=?10,slack_channel=?11
          WHERE org_id=?1 AND id=?2",
         params![org_id, id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel],
     )?;
     Ok(updated > 0)
 }
@@ -240,6 +245,7 @@ mod tests {
             name: name.into(),
             service_account: "push@p.iam.gserviceaccount.com".into(),
             slack_connector_id: None,
+            slack_channel: None,
             github_connector_id: None,
             github_repo: None,
             throttle_minutes: 30,

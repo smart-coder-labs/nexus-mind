@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use crate::{
     api::helpers::{require_permission, AppJson},
+    monitor::delivery::{SERVER_GITHUB, SERVER_SLACK},
     config::Config,
     db::monitor::{self as store_monitor, MonitorGroup, MonitorSource, SourceWrite},
     models::types::{ApiError, AuthContext},
@@ -85,7 +86,14 @@ pub async fn gcp_push(
         let conn = db.lock().map_err(|_| lock_error())?;
         store_monitor::record(&conn, &source, &fingerprint, &runtime_error, chrono::Utc::now()).map_err(internal)?
     };
-    tokio::spawn(crate::monitor::delivery::deliver(store.clone(), source, action, group, config.app_base_url.clone()));
+    tokio::spawn(crate::monitor::delivery::deliver(
+        store.clone(),
+        source,
+        action,
+        group,
+        config.app_base_url.clone(),
+        config.claude_code_bin.clone(),
+    ));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -97,6 +105,7 @@ pub struct SourceRequest {
     pub name: String,
     pub service_account: String,
     pub slack_connector_id: Option<String>,
+    pub slack_channel: Option<String>,
     pub github_connector_id: Option<String>,
     pub github_repo: Option<String>,
     pub throttle_minutes: Option<i64>,
@@ -134,6 +143,14 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
         return Err(invalid("throttle_minutes must be between 1 and 1440"));
     }
     let slack_connector_id = blank_to_none(input.slack_connector_id);
+    let server_allowed = crate::monitor::delivery::server_integrations_allowed(org_id);
+    let not_authorized = || {
+        error(
+            StatusCode::FORBIDDEN,
+            "server_integration_not_authorized",
+            "The server's Slack and GitHub accounts are only available to the operator's organization",
+        )
+    };
     let github_connector_id = blank_to_none(input.github_connector_id);
     let github_repo = blank_to_none(input.github_repo);
     let connector_kind = |id: &str| -> ApiResult<Option<(String, serde_json::Value)>> {
@@ -141,13 +158,31 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
             .map_err(internal)?
             .map(|(c, _)| (c.kind, c.metadata)))
     };
-    if let Some(id) = &slack_connector_id {
+    let mut slack_channel = None;
+    if slack_connector_id.as_deref() == Some(SERVER_SLACK) {
+        if !server_allowed {
+            return Err(not_authorized());
+        }
+        let channel = blank_to_none(input.slack_channel).unwrap_or_default();
+        if !crate::monitor::delivery::valid_slack_channel_id(&channel) {
+            return Err(invalid("slack_channel must be a Slack channel ID like C0123ABCDE"));
+        }
+        slack_channel = Some(channel);
+    } else if let Some(id) = &slack_connector_id {
         if !matches!(connector_kind(id)?, Some((kind, _)) if kind == "slack") {
             return Err(invalid("slack_connector_id must be a Slack connector of this organization"));
         }
     }
     match (&github_connector_id, &github_repo) {
         (None, None) => {}
+        (Some(id), Some(repo)) if id == SERVER_GITHUB => {
+            if !server_allowed {
+                return Err(not_authorized());
+            }
+            if crate::automation::connectors::validate_repository(repo).is_err() {
+                return Err(invalid("github_repo must be owner/repo"));
+            }
+        }
         (Some(id), Some(repo)) => {
             let github = matches!(connector_kind(id)?, Some((kind, meta))
                 if kind == "github_app" || (kind == "target_secret" && meta["purpose"] == "github_token"));
@@ -165,6 +200,7 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
         name,
         service_account,
         slack_connector_id,
+        slack_channel,
         github_connector_id,
         github_repo,
         throttle_minutes,
@@ -174,6 +210,18 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
 
 fn name_taken() -> (StatusCode, Json<ApiError>) {
     error(StatusCode::CONFLICT, "name_taken", "A monitor source with this name already exists")
+}
+
+/// `GET /v1/monitor/options`: what the connect form may offer this org.
+pub async fn options(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_permission(&conn, &auth, None, PERMISSION)?;
+    let server = crate::monitor::delivery::server_integrations_allowed(&auth.org_id);
+    Ok(Json(serde_json::json!({"server_slack_mcp": server, "server_github": server})))
 }
 
 pub async fn list_sources(
@@ -257,6 +305,21 @@ pub async fn test_source(
     };
     let slack = match (&source.slack_connector_id, webhook) {
         (None, _) => "not_configured".to_string(),
+        (Some(id), _) if id == SERVER_SLACK => {
+            let text = format!(
+                "✅ NexusMind monitoring test for *{}*. Errors from this source will be posted here.",
+                crate::monitor::delivery::mcp_safe(&source.name)
+            );
+            let allowed = crate::monitor::delivery::server_integrations_allowed(&auth.org_id);
+            match source.slack_channel.as_deref() {
+                _ if !allowed => "not_authorized".into(),
+                None => "channel_missing".into(),
+                Some(channel) => match crate::monitor::delivery::send_slack_via_mcp(&config.claude_code_bin, channel, &text).await {
+                    Ok(()) => "ok".into(),
+                    Err(_) => "send_failed".into(),
+                },
+            }
+        }
         (Some(_), None) => "connector_unavailable".to_string(),
         (Some(_), Some(webhook)) => {
             let text = format!(

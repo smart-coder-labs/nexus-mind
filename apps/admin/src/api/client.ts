@@ -138,6 +138,7 @@ import type {
   FactoryIntakeSourceInput,
   MonitorGroup,
   MonitorGroupStatus,
+  MonitorOptions,
   MonitorSource,
   MonitorSourceInput,
   MonitorTestResult,
@@ -1735,6 +1736,10 @@ export class NexusMindClient {
 
   deleteFactoryPolicy(id: string): Promise<void> {
     return this.request(`/v1/factory/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  getMonitorOptions(): Promise<MonitorOptions> {
+    return this.request('/v1/monitor/options')
   }
 
   listMonitorSources(): Promise<MonitorSource[]> {

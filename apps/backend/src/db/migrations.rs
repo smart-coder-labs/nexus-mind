@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 115;
+pub const LATEST_USER_VERSION: i32 = 116;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -118,6 +118,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v113(conn)?;
     run_v114(conn)?;
     run_v115(conn)?;
+    run_v116(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -286,6 +287,27 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 113;
         ",
     )?;
+    Ok(())
+}
+
+/// Migration v116: a monitor source can alert a Slack channel through the
+/// server's Slack MCP instead of a webhook connector; this is that channel.
+pub fn run_v116(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 116 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let has: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('monitor_sources') WHERE name='slack_channel')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has {
+        tx.execute_batch("ALTER TABLE monitor_sources ADD COLUMN slack_channel TEXT;")?;
+    }
+    tx.execute_batch("PRAGMA user_version=116;")?;
+    tx.commit()?;
     Ok(())
 }
 

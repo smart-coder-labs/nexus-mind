@@ -196,3 +196,40 @@ async fn the_push_endpoint_requires_a_known_source_and_a_token() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn server_slack_and_github_are_only_for_the_operator_org() {
+    let (router, path) = app();
+    let a = login(&router, "a@test.com").await;
+    let org_a: String = {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        conn.query_row("SELECT org_id FROM users WHERE email='a@test.com'", [], |r| r.get(0)).unwrap()
+    };
+    let mut body = source_body("server");
+    body["slack_connector_id"] = json!("server_slack_mcp");
+    body["slack_channel"] = json!("C0123ABCDE");
+    body["github_connector_id"] = json!("server_gh_cli");
+    body["github_repo"] = json!("acme/app");
+
+    // The only test in this binary that touches the variable; every other one
+    // uses its own connectors, so running in parallel is safe.
+    std::env::remove_var("FACTORY_GITHUB_PUBLISH_ORG_ID");
+    let (_, options) = send(&router, &a, "GET", "/v1/monitor/options", None).await;
+    assert_eq!(options, json!({"server_slack_mcp": false, "server_github": false}));
+    let (status, _) = send(&router, &a, "POST", "/v1/monitor/sources", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    std::env::set_var("FACTORY_GITHUB_PUBLISH_ORG_ID", &org_a);
+    let (_, options) = send(&router, &a, "GET", "/v1/monitor/options", None).await;
+    assert_eq!(options, json!({"server_slack_mcp": true, "server_github": true}));
+    let mut bad_channel = body.clone();
+    bad_channel["slack_channel"] = json!("#alerts");
+    let (status, _) = send(&router, &a, "POST", "/v1/monitor/sources", Some(bad_channel)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, source) = send(&router, &a, "POST", "/v1/monitor/sources", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{source}");
+    assert_eq!(source["slack_channel"], "C0123ABCDE");
+    assert_eq!(source["github_connector_id"], "server_gh_cli");
+    std::env::remove_var("FACTORY_GITHUB_PUBLISH_ORG_ID");
+    let _ = std::fs::remove_file(path);
+}

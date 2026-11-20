@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import Monitoring, { pushEndpoint, setupCommands } from './Monitoring'
+import Monitoring, { pushEndpoint, setupCommands, setupSteps, suggestedAccount } from './Monitoring'
 import type { MonitorGroup, MonitorSource } from '../types'
+import { chooseSelectOption } from '../test/select'
 
 const api = vi.hoisted(() => ({
+  getMonitorOptions: vi.fn(),
   listMonitorSources: vi.fn(),
   listMonitorGroups: vi.fn(),
   listAutonomousAgentConnectors: vi.fn(),
@@ -26,6 +28,7 @@ const source: MonitorSource = {
   name: 'Kasymir beta',
   service_account: 'nexusmind-push@my-proj-1.iam.gserviceaccount.com',
   slack_connector_id: null,
+  slack_channel: null,
   github_connector_id: 'gh-1',
   github_repo: 'acme/app',
   throttle_minutes: 30,
@@ -74,6 +77,20 @@ describe('setupCommands', () => {
     expect(text).toContain('--project=PROJECT_ID')
   })
 
+  it('numbers the steps and keeps the service account step only for its own project', () => {
+    const own = setupSteps(source, 'my-proj-1', 'https://e')
+    expect(own.map(step => step.title)).toContain('Create the push service account')
+    expect(own.at(-2)?.command).toContain('gcloud logging write nexusmind-test')
+    const other = setupSteps(source, 'another-proj', 'https://e')
+    expect(other.map(step => step.title)).not.toContain('Create the push service account')
+    expect(setupCommands(source, 'my-proj-1', 'https://e')).toMatch(/^# 1\. Sign in and pick the project/)
+  })
+
+  it('suggests the push account from a valid project id only', () => {
+    expect(suggestedAccount('my-proj-1')).toBe('nexusmind-push@my-proj-1.iam.gserviceaccount.com')
+    expect(suggestedAccount('Bad Project')).toBe('')
+  })
+
   it('builds the push endpoint from the API base', () => {
     expect(pushEndpoint('src-1', 'https://api.example.com/')).toBe('https://api.example.com/v1/monitor/gcp/src-1')
   })
@@ -86,6 +103,7 @@ describe('Monitoring page', () => {
     api.listMonitorGroups.mockResolvedValue([group])
     api.listAutonomousAgentConnectors.mockResolvedValue([])
     api.setMonitorGroupStatus.mockResolvedValue(undefined)
+    api.getMonitorOptions.mockResolvedValue({ server_slack_mcp: false, server_github: false })
   })
 
   it('lists error groups with issue and log links, and resolves one', async () => {
@@ -96,10 +114,53 @@ describe('Monitoring page', () => {
     expect(api.setMonitorGroupStatus).toHaveBeenCalledWith('g1', 'resolved')
   })
 
-  it('shows the setup commands for a source', async () => {
+  it('opens the setup steps with the project taken from the service account', async () => {
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Setup commands for Kasymir beta' }))
+    expect(screen.getByLabelText('GCP project ID')).toHaveValue('my-proj-1')
+    const steps = screen.getByRole('list', { name: 'Setup steps' })
+    expect(steps.textContent).toContain('1. Sign in and pick the project')
+    expect(steps.textContent).toContain('--push-auth-token-audience=nexusmind-monitor:src-1')
+    expect(screen.getByRole('button', { name: 'Copy step 1' })).toBeInTheDocument()
+  })
+
+  it('fills the service account from the GCP project and offers server accounts only when allowed', async () => {
+    api.listMonitorSources.mockResolvedValue([])
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect GCP project' }))
+    expect(screen.getByRole('heading', { name: 'How it works' })).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('GCP project ID'), 'my-proj-1')
-    expect(screen.getByLabelText('Setup commands').textContent).toContain('--project=my-proj-1')
+    expect(screen.getByLabelText('Push service account')).toHaveValue('nexusmind-push@my-proj-1.iam.gserviceaccount.com')
+    await waitFor(() => expect(api.getMonitorOptions).toHaveBeenCalled())
+    const user = userEvent.setup()
+    await chooseSelectOption(user, screen.getByLabelText('Slack'), 'No Slack alerts')
+    await user.click(screen.getByLabelText('Slack'))
+    expect(await screen.findByRole('option', { name: 'No Slack alerts' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Server Slack/ })).not.toBeInTheDocument()
+  })
+
+  it('sends the channel when Slack goes through the server MCP', async () => {
+    api.listMonitorSources.mockResolvedValue([])
+    api.getMonitorOptions.mockResolvedValue({ server_slack_mcp: true, server_github: true })
+    api.createMonitorSource.mockResolvedValue({ ...source, id: 'src-2' })
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect GCP project' }))
+    await userEvent.type(screen.getByLabelText('Name'), 'Beta')
+    await userEvent.type(screen.getByLabelText('NexusMind project'), 'kasymir')
+    await userEvent.type(screen.getByLabelText('GCP project ID'), 'my-proj-1')
+    await waitFor(() => expect(api.getMonitorOptions).toHaveBeenCalled())
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Slack'), /Server Slack/)
+    await userEvent.type(screen.getByLabelText('Slack channel ID'), 'c0123abcde')
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('GitHub issues'), /Server GitHub/)
+    await userEvent.type(screen.getByLabelText('Repository for issues'), 'acme/app')
+    await userEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(api.createMonitorSource).toHaveBeenCalledWith(expect.objectContaining({
+      service_account: 'nexusmind-push@my-proj-1.iam.gserviceaccount.com',
+      slack_connector_id: 'server_slack_mcp',
+      slack_channel: 'C0123ABCDE',
+      github_connector_id: 'server_gh_cli',
+      github_repo: 'acme/app',
+    }))
+    expect(await screen.findByRole('list', { name: 'Setup steps' })).toBeInTheDocument()
   })
 })
