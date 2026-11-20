@@ -1832,15 +1832,18 @@ fn judge_mode(config: &serde_json::Value) -> &'static str {
     let live_available = url(&config["app_base_url"])
         || config["targets"].as_array().is_some_and(|targets| {
             targets.iter().any(|target| {
-                target["kind"] == "web_application"
-                    && target["enabled"] != false
-                    && (url(&target["config"]["url"]) || url(&target["url"]))
+                target["enabled"] != false
+                    // A repository target carries its app's address as `login_url`.
+                    && (url(&target["config"]["login_url"])
+                        || (target["kind"] == "web_application"
+                            && (url(&target["config"]["url"]) || url(&target["url"]))))
             })
         });
     match config.get("judge_mode").and_then(|v| v.as_str()).unwrap_or("auto") {
         "live" => "live",
         "code" => "code",
-        "both" => "both",
+        // Nothing to drive live: a "both" run would only stall on the login rule.
+        "both" if live_available => "both",
         _ if live_available => "live",
         _ => "code",
     }
@@ -4499,10 +4502,10 @@ let login_clause = " AUTHENTICATION: if the target requires a login, the configu
                     "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, by reviewing their CODE; no live application is used in this run. {code_review}{blind_clause} You have ONLY Read/Grep/Glob plus Task for parallel subagents (useful for independent, blind reviews of the same change); Bash, shell commands, browsers and WebFetch are unavailable, so never attempt them. Code review has no screenshots: set each finding's \"screenshot\" to an empty string.{turn_budget}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
                 ),
                 "both" => format!(
-                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, in TWO ways, and you must complete both. (1) LIVE: verify each claim against the target application (use `app_base_url` when present, otherwise the configured target's url) through the server-configured `playwright` MCP browser tools, checking ONLY that claim plus an immediate regression check of the adjacent flow, with a screenshot (short unique .png filename in the finding's \"screenshot\" field) for every live finding. (2) CODE: {code_review}{blind_clause} Put `[live]` or `[code]` right after the target reference in every finding title. An unreachable or login-blocked app stops only the live part: report it as one `[live]` finding and still complete the code review. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob and Task; Bash, shell commands and WebFetch are unavailable, so never attempt them. Code findings have no screenshot: use an empty string.{login_clause}{turn_budget}{cache_clause}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
+                    "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, in TWO ways, and you must complete both. (1) LIVE: verify each claim against the target application (use `app_base_url` when present, otherwise the configured target's `url`, or its `login_url` when it has no `url`) through the server-configured `playwright` MCP browser tools, checking ONLY that claim plus an immediate regression check of the adjacent flow, with a screenshot (short unique .png filename in the finding's \"screenshot\" field) for every live finding. (2) CODE: {code_review}{blind_clause} Put `[live]` or `[code]` right after the target reference in every finding title. An unreachable or login-blocked app stops only the live part: report it as one `[live]` finding and still complete the code review. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob and Task; Bash, shell commands and WebFetch are unavailable, so never attempt them. Code findings have no screenshot: use an empty string.{login_clause} In this two-way run that STOP ends only the LIVE part: still complete the CODE review and return its findings.{turn_budget}{cache_clause}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
                 ),
                 _ => format!(
-                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's url). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
+                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's `url`, or its `login_url` when it has no `url`). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{issue_clause}{deploy_clause}{slack_clause}{custom_clause}{judge_contract}"
                 ),
             }
         }
@@ -5982,7 +5985,8 @@ async fn execute_claim(
     let sandbox_receipts = std::sync::Mutex::new(Vec::new());
     // Browser-driven templates reach their targets through the proxy: HTTPS on
     // 443 only. A target that cannot be reached that way blocks the run.
-    let sandbox_hosts = if sandboxed && matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review" | "product_strategist") {
+    let code_only_judge = claim.template_key == "judge" && judge_mode(&claim.config) == "code";
+    let sandbox_hosts = if sandboxed && !code_only_judge && matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review" | "product_strategist") {
         match crate::factory::sandbox::sandbox_hosts(&claim.config) {
             Ok(hosts) => hosts,
             Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
@@ -10668,7 +10672,12 @@ mod tests {
         let web = |enabled: bool| json!({"targets":[{"kind":"web_application","enabled":enabled,"config":{"url":"https://app.example.com"}}]});
         assert_eq!(judge_mode(&web(true)), "live");
         assert_eq!(judge_mode(&web(false)), "code");
-        assert_eq!(judge_mode(&json!({"judge_mode":"both"})), "both");
+        assert_eq!(judge_mode(&json!({"judge_mode":"both"})), "code");
+        let repo_login = json!({"targets":[{"kind":"repository","enabled":true,"config":{"repository":"acme/web","login_url":"https://app.acme.test/login"}}]});
+        assert_eq!(judge_mode(&repo_login), "live");
+        let mut both = repo_login.clone();
+        both["judge_mode"] = json!("both");
+        assert_eq!(judge_mode(&both), "both");
         assert_eq!(judge_mode(&json!({"judge_mode":"live"})), "live");
         assert_eq!(judge_mode(&json!({"judge_mode":"code","app_base_url":"https://x.example.com"})), "code");
     }
