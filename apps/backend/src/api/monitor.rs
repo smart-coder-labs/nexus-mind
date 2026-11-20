@@ -324,6 +324,29 @@ pub async fn update_source(
     }
 }
 
+#[derive(Deserialize)]
+pub struct SourceEnabled {
+    pub enabled: bool,
+}
+
+/// `PATCH /v1/monitor/sources/:id {enabled}`: pause or resume without
+/// re-validating, so a source whose connectors broke can still be paused.
+/// A paused source acknowledges pushes and drops them: no group, alert or issue.
+pub async fn set_source_enabled(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    AppJson(input): AppJson<SourceEnabled>,
+) -> ApiResult<Json<MonitorSource>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_permission(&conn, &auth, None, PERMISSION)?;
+    if !store_monitor::set_source_enabled(&conn, &auth.org_id, &id, input.enabled).map_err(internal)? {
+        return Err(not_found());
+    }
+    store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.map(Json).ok_or_else(not_found)
+}
+
 pub async fn delete_source(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

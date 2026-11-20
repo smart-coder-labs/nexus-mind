@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   createMonitorSource: vi.fn(),
   updateMonitorSource: vi.fn(),
   deleteMonitorSource: vi.fn(),
+  setMonitorSourceEnabled: vi.fn(),
   testMonitorSource: vi.fn(),
   setMonitorGroupStatus: vi.fn(),
 }))
@@ -113,9 +114,15 @@ describe('Monitoring page', () => {
     api.getMonitorOptions.mockResolvedValue({ server_slack_mcp: false, server_github: false })
   })
 
-  it('lists error groups with issue and log links, and resolves one', async () => {
+  it('lists errors as terminal lines that open to every detail, and resolves one', async () => {
     renderPage()
-    expect(await screen.findByText('Order <n> not found')).toBeInTheDocument()
+    const line = await screen.findByText('Order <n> not found')
+    const errors = screen.getByRole('list', { name: 'Errors' })
+    expect(errors.textContent).toContain('ERROR')
+    expect(errors.textContent).toContain('×12')
+    expect(errors.textContent).toContain('[open]')
+    await userEvent.click(line)
+    expect(screen.getByText('Order 42 not found')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Issue #7' })).toHaveAttribute('href', 'https://github.com/acme/app/issues/7')
     await userEvent.click(screen.getByRole('button', { name: 'Resolve Order <n> not found' }))
     expect(api.setMonitorGroupStatus).toHaveBeenCalledWith('g1', 'resolved')
@@ -130,9 +137,10 @@ describe('Monitoring page', () => {
       audit_summary: 'The occupancy endpoint times out on the locations service',
     }])
     renderPage()
-    expect(await screen.findByText('🔎 The occupancy endpoint times out on the locations service')).toBeInTheDocument()
+    await userEvent.click(await screen.findByText('Order <n> not found'))
+    expect(screen.getByText(/The occupancy endpoint times out on the locations service/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'locations #7' })).toHaveAttribute('href', 'https://github.com/acme/locations/issues/7')
-    expect(screen.getByRole('link', { name: 'Audit run' })).toHaveAttribute('href', '/factory/runs?agent_run=run-9')
+    expect(screen.getByRole('link', { name: 'audit run' })).toHaveAttribute('href', '/factory/runs?agent_run=run-9')
   })
 
   it('sends the audit executor and model only with GitHub issues on', async () => {
@@ -151,6 +159,13 @@ describe('Monitoring page', () => {
       audit_executor: 'codex',
       audit_model: 'gpt-5.5',
     }))
+  })
+
+  it('pauses and resumes a project from its card', async () => {
+    api.setMonitorSourceEnabled.mockResolvedValue({ ...source, enabled: false })
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Pause Kasymir beta' }))
+    expect(api.setMonitorSourceEnabled).toHaveBeenCalledWith('src-1', false)
   })
 
   it('opens the setup steps with the project taken from the service account', async () => {
