@@ -6908,8 +6908,13 @@ async fn execute_claim(
     // sanitizer (e.g. the ephemeral repo access token).
     if pi_selected {
         claude = if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web {
-            match super::pi::qa_command(&workdir, &qa_screenshots_dir) {
-                Ok(command) => command,
+            match super::pi::qa_command(&workdir, &qa_screenshots_dir, slack_enabled) {
+                Ok(command) => {
+                    if slack_enabled {
+                        secret_values.extend(std::env::var(super::pi::SLACK_TOKEN_ENV).ok().filter(|token| !token.trim().is_empty()));
+                    }
+                    command
+                }
                 Err(_) => return ("blocked_runtime".into(), json!({"code":"pi_qa_mcp_unavailable"})),
             }
         } else {

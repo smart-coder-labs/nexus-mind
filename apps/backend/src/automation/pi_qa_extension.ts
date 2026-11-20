@@ -11,10 +11,17 @@ export default function (pi: ExtensionAPI) {
   if (!playwright || typeof playwright.command !== 'string' || !Array.isArray(playwright.args)) {
     throw new Error('pi_qa_mcp_config_invalid')
   }
+  // The worker adds the trusted `slack` server only for runs that deliver to Slack.
+  const slack = config.mcpServers?.slack
+  if (slack && (typeof slack.url !== 'string' || !slack.url.startsWith('https://'))) {
+    throw new Error('pi_qa_mcp_config_invalid')
+  }
+  const servers = [{ name: 'playwright', config: { ...playwright, exposure: 'direct' }, source: path, scope: 'extension' }]
+  if (slack) servers.push({ name: 'slack', config: { ...slack, exposure: 'direct' }, source: path, scope: 'extension' })
   return createMcpExtension({
-    // Override default discovery: connect ONLY this run's Playwright server.
+    // Override default discovery: connect ONLY this run's trusted servers.
     loadConfig: () => ({
-      servers: [{ name: 'playwright', config: { ...playwright, exposure: 'direct' }, source: path, scope: 'extension' }],
+      servers,
       autoEnableCodemode: false,
       errors: [],
     }),

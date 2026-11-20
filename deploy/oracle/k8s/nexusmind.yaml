@@ -200,6 +200,8 @@ spec:
             #                                http://otel-collector:4318 (/v1/traces is appended)
             #   OTEL_EXPORTER_OTLP_HEADERS   optional, e.g. authorization=Bearer%20<token>
             #   OTEL_SERVICE_NAME            optional, defaults to nexusmind-worker
+            # SLACK_MCP_TOKEN (in nexusmind-env, optional): Slack MCP access token for
+            # Pi QA/judge runs with Slack output; Pi cannot do the interactive OAuth sign-in.
           volumeMounts:
             - name: data
               mountPath: /data

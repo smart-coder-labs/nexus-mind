@@ -94,8 +94,13 @@ pub fn eval_command(read_only: bool) -> Command {
     command
 }
 
-/// Preserve the existing QA screenshot location while exposing only Playwright.
-fn qa_mcp_config(base: &Value, screenshots: &std::path::Path) -> anyhow::Result<Value> {
+/// Worker env var with a Slack MCP access token. Pi's MCP OAuth only signs in
+/// interactively (`/mcp`), which a headless worker cannot do.
+pub const SLACK_TOKEN_ENV: &str = "SLACK_MCP_TOKEN";
+
+/// Preserve the existing QA screenshot location while exposing only Playwright,
+/// plus the trusted `slack` server when the run delivers to Slack.
+fn qa_mcp_config(base: &Value, screenshots: &std::path::Path, slack: bool, slack_token: bool) -> anyhow::Result<Value> {
     let mut playwright = base.pointer("/mcpServers/playwright").cloned()
         .ok_or_else(|| anyhow::anyhow!("pi_qa_playwright_missing"))?;
     anyhow::ensure!(playwright.get("command").and_then(Value::as_str).is_some_and(|s| !s.is_empty()), "pi_qa_playwright_command_missing");
@@ -115,24 +120,46 @@ fn qa_mcp_config(base: &Value, screenshots: &std::path::Path) -> anyhow::Result<
     clean.extend([json!("--output-dir"), json!(screenshots)]);
     *args = clean;
     playwright["exposure"] = json!("direct");
-    Ok(json!({"mcpServers":{"playwright":playwright}}))
+    let mut servers = json!({"playwright": playwright});
+    if slack {
+        let mut slack = base.pointer("/mcpServers/slack").cloned()
+            .ok_or_else(|| anyhow::anyhow!("pi_qa_slack_missing"))?;
+        anyhow::ensure!(slack.get("url").and_then(Value::as_str).is_some_and(|url| url.starts_with("https://")), "pi_qa_slack_invalid");
+        if slack_token {
+            // Pi resolves `${NAME}` from its env, so the token never lands in a file the agent can read.
+            slack.as_object_mut().map(|object| object.remove("oauth"));
+            slack["headers"] = json!({"Authorization": format!("Bearer ${{{SLACK_TOKEN_ENV}}}")});
+        }
+        slack["type"] = json!("http");
+        slack["exposure"] = json!("direct");
+        servers["slack"] = slack;
+    }
+    Ok(json!({"mcpServers": servers}))
 }
 
-pub fn qa_command(workdir: &std::path::Path, screenshots: &std::path::Path) -> anyhow::Result<Command> {
+/// `slack`: the run delivers to Slack. Without `SLACK_MCP_TOKEN` the server keeps its
+/// OAuth config and uses tokens a one-time `/mcp` sign-in stored in pi's `mcp-auth.json`.
+pub fn qa_command(workdir: &std::path::Path, screenshots: &std::path::Path, slack: bool) -> anyhow::Result<Command> {
     let base = std::env::var("AUTONOMOUS_QA_MCP_CONFIG").unwrap_or_else(|_| "/app/qa-mcp.json".into());
     let base: Value = serde_json::from_slice(&std::fs::read(base)?)?;
-    let config = qa_mcp_config(&base, screenshots)?;
+    let token = std::env::var(SLACK_TOKEN_ENV).ok().filter(|token| slack && !token.trim().is_empty());
+    let config = qa_mcp_config(&base, screenshots, slack, token.is_some())?;
     let parent = workdir.parent().ok_or_else(|| anyhow::anyhow!("pi_qa_workdir_invalid"))?;
     let config_path = parent.join("pi-qa-mcp.json");
     let extension_path = parent.join("pi-qa-extension.ts");
     std::fs::create_dir_all(screenshots)?;
     std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
     std::fs::write(&extension_path, include_str!("pi_qa_extension.ts"))?;
-    Ok(qa_invocation(&extension_path, &config_path))
+    let mut command = qa_invocation(&extension_path, &config_path, slack);
+    if let Some(token) = token {
+        command.env(SLACK_TOKEN_ENV, token);
+    }
+    Ok(command)
 }
 
-fn qa_invocation(extension: &std::path::Path, config: &std::path::Path) -> Command {
-    let mut command = agent_command("read,grep,find,ls,mcp__playwright__*", MODEL, None);
+fn qa_invocation(extension: &std::path::Path, config: &std::path::Path, slack: bool) -> Command {
+    let tools = if slack { "read,grep,find,ls,mcp__playwright__*,mcp__slack__*" } else { "read,grep,find,ls,mcp__playwright__*" };
+    let mut command = agent_command(tools, MODEL, None);
     command.arg("--extension").arg(extension);
     command.env("FACTORY_PI_QA_MCP_CONFIG", config);
     command
@@ -218,17 +245,37 @@ mod tests {
             "playwright":{"command":"mcp-server-playwright", "args":["--headless", "--output-dir", "/old", "--output-dir=/older"]},
             "unrelated":{"command":"do-not-start"}
         }});
-        let config = qa_mcp_config(&base, std::path::Path::new("/run/screenshots")).unwrap();
+        let config = qa_mcp_config(&base, std::path::Path::new("/run/screenshots"), false, false).unwrap();
         assert_eq!(config["mcpServers"].as_object().unwrap().len(), 1);
         assert_eq!(config["mcpServers"]["playwright"]["args"], json!(["--headless", "--output-dir", "/run/screenshots"]));
         assert_eq!(config["mcpServers"]["playwright"]["exposure"], "direct");
-        assert!(qa_mcp_config(&json!({}), std::path::Path::new("/shots")).is_err());
-        assert!(qa_mcp_config(&json!({"mcpServers":{"playwright":{"command":"pw", "args":[false]}}}), std::path::Path::new("/shots")).is_err());
+        assert!(qa_mcp_config(&json!({}), std::path::Path::new("/shots"), false, false).is_err());
+        assert!(qa_mcp_config(&json!({"mcpServers":{"playwright":{"command":"pw", "args":[false]}}}), std::path::Path::new("/shots"), false, false).is_err());
+    }
+
+    #[test]
+    fn qa_adds_slack_only_when_delivering_and_prefers_the_env_token() {
+        let base = json!({"mcpServers":{
+            "playwright":{"command":"pw", "args":[]},
+            "slack":{"type":"http","url":"https://mcp.slack.com/mcp","oauth":{"clientId":"c","callbackPort":3118}}
+        }});
+        let shots = std::path::Path::new("/shots");
+        assert!(qa_mcp_config(&base, shots, false, true).unwrap()["mcpServers"].get("slack").is_none());
+        let oauth = qa_mcp_config(&base, shots, true, false).unwrap();
+        assert_eq!(oauth["mcpServers"]["slack"]["oauth"]["clientId"], "c");
+        assert_eq!(oauth["mcpServers"]["slack"]["exposure"], "direct");
+        let token = qa_mcp_config(&base, shots, true, true).unwrap();
+        assert!(token["mcpServers"]["slack"].get("oauth").is_none());
+        assert_eq!(token["mcpServers"]["slack"]["headers"]["Authorization"], "Bearer ${SLACK_MCP_TOKEN}");
+        assert!(qa_mcp_config(&json!({"mcpServers":{"playwright":{"command":"pw","args":[]}}}), shots, true, false).is_err());
+        let args: Vec<_> = qa_invocation(std::path::Path::new("/e.ts"), std::path::Path::new("/c.json"), true)
+            .as_std().get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
+        assert!(args.windows(2).any(|pair| pair == ["--tools", "read,grep,find,ls,mcp__playwright__*,mcp__slack__*"]));
     }
 
     #[test]
     fn qa_enables_only_the_trusted_extension_and_read_browser_tools() {
-        let command = qa_invocation(std::path::Path::new("/run/trusted.ts"), std::path::Path::new("/run/mcp.json"));
+        let command = qa_invocation(std::path::Path::new("/run/trusted.ts"), std::path::Path::new("/run/mcp.json"), false);
         let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
         assert!(args.windows(2).any(|pair| pair == ["--tools", "read,grep,find,ls,mcp__playwright__*"]));
         assert!(args.windows(2).any(|pair| pair == ["--extension", "/run/trusted.ts"]));
