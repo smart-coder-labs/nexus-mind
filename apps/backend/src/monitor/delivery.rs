@@ -291,13 +291,19 @@ async fn open_issue(
     )
     .await;
     let issue = match created {
-        Ok(issue) => Some(issue),
-        // A timeout can hide an issue GitHub did create.
-        Err(_) => crate::automation::connectors::find_github_issue_with_marker(&token, repository, &marker).await?,
+        Ok(issue) => issue,
+        // A timeout can hide an issue GitHub did create; otherwise keep
+        // GitHub's own reason (permissions, disabled issues…) for the log.
+        Err(error) => crate::automation::connectors::find_github_issue_with_marker(&token, repository, &marker)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| error.context(format!("issue_create_failed in {repository}")))?,
     };
     let number = issue
-        .and_then(|issue| issue.get("number").and_then(|v| v.as_i64()))
-        .ok_or_else(|| anyhow::anyhow!("issue_create_failed"))?;
+        .get("number")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| anyhow::anyhow!("issue_create_failed in {repository}: response has no number"))?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     store_monitor::set_issue(&conn, &group.id, number)?;
