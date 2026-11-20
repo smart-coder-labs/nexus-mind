@@ -71,10 +71,12 @@ pub fn from_log_entry(entry: &Value) -> Option<RuntimeError> {
     if !SEVERE.contains(&severity.as_str()) {
         return None;
     }
-    let labels = ["service_name", "container_name", "function_name", "job_name", "module_id"];
+    let labels = ["service_name", "container_name", "function_name", "job_name", "module_id", "database_id"];
     let service = labels
         .iter()
         .find_map(|label| text(entry, &format!("/resource/labels/{label}")))
+        // Cloud SQL's `database_id` is `project:instance`: the instance names it.
+        .map(|name| name.rsplit(':').next().unwrap_or_default().to_string())
         .or_else(|| text(entry, "/resource/type"))
         .unwrap_or_else(|| "unknown".into());
     // Error Reporting's field first, then the shapes pino, winston and Nest log.
@@ -86,12 +88,15 @@ pub fn from_log_entry(entry: &Value) -> Option<RuntimeError> {
         .find_map(|p| text(entry, p))
         .or_else(|| text(entry, "/jsonPayload/error"))
         .or_else(|| stack.clone())
+        .or_else(|| request_summary(entry))
+        .map(|m| strip_log_prefix(&m))
         .unwrap_or_else(|| "(no message)".into());
     // A plain-text stack trace: the message is its first line, the rest the stack.
     let stack = stack.or_else(|| message.lines().nth(1).map(|_| message.clone()));
     let title = capped(message.lines().next().unwrap_or_default(), 200);
     let project = text(entry, "/resource/labels/project_id");
-    let insert_id = text(entry, "/insertId").filter(|id| id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+    // Cloud SQL ids carry `=`, `;` and `@`: encode them, never drop the link.
+    let insert_id = text(entry, "/insertId").map(|id| percent_encode(&id));
     let log_url = match (project, insert_id) {
         (Some(project), Some(id)) if project.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') => Some(format!(
             "https://console.cloud.google.com/logs/query;query=insertId%3D%22{id}%22;duration=P7D?project={project}"
@@ -107,6 +112,43 @@ pub fn from_log_entry(entry: &Value) -> Option<RuntimeError> {
         log_url,
         group_hint: None,
     })
+}
+
+/// Percent-encodes everything but unreserved URL characters.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Drops the timestamp and process prefix database logs put on every line
+/// (`2026-11-20 22:59:33.794 UTC [2295883]: [7-1] db=…`), so the title starts
+/// with the error itself.
+fn strip_log_prefix(message: &str) -> String {
+    static PREFIX: OnceLock<regex::Regex> = OnceLock::new();
+    let prefix = PREFIX.get_or_init(|| {
+        regex::Regex::new(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?( ?[A-Z]{2,5}| ?[+-]\d{2}:?\d{2})? \[\d+\]:( \[[\d-]+\])? ?").expect("valid pattern")
+    });
+    prefix.replace(message, "").into_owned()
+}
+
+/// A request log with no message (Cloud Run writes one per 5xx response):
+/// `HTTP 502 GET /api/orders`. Only the path: the query string can carry ids
+/// and tokens.
+fn request_summary(entry: &Value) -> Option<String> {
+    let status = entry.pointer("/httpRequest/status").and_then(Value::as_i64)?;
+    let method = text(entry, "/httpRequest/requestMethod").unwrap_or_else(|| "?".into());
+    let url = text(entry, "/httpRequest/requestUrl").unwrap_or_default();
+    let without_query = url.split(['?', '#']).next().unwrap_or_default();
+    let path = match without_query.split_once("://") {
+        Some((_, rest)) => rest.find('/').map(|i| &rest[i..]).unwrap_or("/"),
+        None => without_query,
+    };
+    let latency = text(entry, "/httpRequest/latency").map(|l| format!(" after {l}")).unwrap_or_default();
+    Some(format!("HTTP {status} {method} {}{latency}", capped(path, 300)))
 }
 
 /// A Cloud Monitoring incident (alert policy with a Pub/Sub channel).
@@ -257,10 +299,55 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_log_url_parts_are_dropped() {
+    fn cloud_run_request_logs_name_the_status_method_and_path() {
+        let entry = json!({
+            "severity": "ERROR", "insertId": "6b00",
+            "resource": {"type": "cloud_run_revision", "labels": {"service_name": "app-ui", "project_id": "p-1"}},
+            "httpRequest": {"status": 502, "requestMethod": "GET", "latency": "5.9s",
+                "requestUrl": "https://app-ui-x.a.run.app/api/live-view/occupancy?tenantId=e764fbd4-8e48-4a03-be99-28d0737cc9f3"}
+        });
+        let error = from_log_entry(&entry).unwrap();
+        assert_eq!(error.title, "HTTP 502 GET /api/live-view/occupancy after 5.9s");
+        assert!(!error.message.contains("tenantId"));
+        // Same endpoint, other latency: same group.
+        let mut slower = entry.clone();
+        slower["httpRequest"]["latency"] = json!("12.1s");
+        assert_eq!(fingerprint("s", &error), fingerprint("s", &from_log_entry(&slower).unwrap()));
+    }
+
+    #[test]
+    fn log_url_parts_are_encoded_or_dropped() {
         let entry = json!({"severity": "ERROR", "insertId": "a\"b", "textPayload": "x",
-            "resource": {"labels": {"project_id": "p"}}});
-        assert_eq!(from_log_entry(&entry).unwrap().log_url, None);
+            "resource": {"labels": {"project_id": "p-1"}}});
+        assert_eq!(
+            from_log_entry(&entry).unwrap().log_url.as_deref(),
+            Some("https://console.cloud.google.com/logs/query;query=insertId%3D%22a%22b%22;duration=P7D?project=p-1")
+        );
+        let bad_project = json!({"severity": "ERROR", "insertId": "a", "textPayload": "x",
+            "resource": {"labels": {"project_id": "p;evil"}}});
+        assert_eq!(from_log_entry(&bad_project).unwrap().log_url, None);
+    }
+
+    #[test]
+    fn cloud_sql_errors_get_their_instance_a_clean_title_and_a_link() {
+        // A real Cloud SQL (Postgres) entry from production.
+        let entry = json!({
+            "severity": "ERROR",
+            "insertId": "s=1595972ac47c4b1388c2996213f6abde;i=28f6fb;b=b2f4;m=bfba;t=660b;x=99ec-0@aw",
+            "resource": {"type": "cloudsql_database", "labels": {
+                "database_id": "disco-ascent-510221-i9:kasymir-beta-postgres", "project_id": "disco-ascent-510221-i9"}},
+            "textPayload": "2026-11-20 22:59:33.794 UTC [2295883]: [7-1] db=analytics_service,user=kb_analytics ERROR:  relation \"public.internalUser\" does not exist at character 66"
+        });
+        let error = from_log_entry(&entry).unwrap();
+        assert_eq!(error.service, "kasymir-beta-postgres");
+        assert_eq!(error.title, "db=analytics_service,user=kb_analytics ERROR:  relation \"public.internalUser\" does not exist at character 66");
+        let url = error.log_url.clone().unwrap();
+        assert!(url.starts_with("https://console.cloud.google.com/logs/query;query=insertId%3D%22s%3D1595972ac47c4b1388c2996213f6abde%3Bi%3D28f6fb"));
+        assert!(url.ends_with("%40aw%22;duration=P7D?project=disco-ascent-510221-i9"));
+        // Another pid, line and timestamp: same group.
+        let mut later = entry.clone();
+        later["textPayload"] = json!("2026-11-20 23:10:01.002 UTC [2299001]: [3-1] db=analytics_service,user=kb_analytics ERROR:  relation \"public.internalUser\" does not exist at character 66");
+        assert_eq!(fingerprint("s", &error), fingerprint("s", &from_log_entry(&later).unwrap()));
     }
 
     #[test]

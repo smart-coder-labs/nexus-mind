@@ -45,13 +45,21 @@ fn fenced(text: &str) -> String {
     format!("```\n{}\n```", text.replace("```", "'''"))
 }
 
+/// The group's GitHub issue: its number and link. The repository was
+/// validated as `owner/repo` when the source was saved.
+pub fn issue_url(group: &MonitorGroup, source: &MonitorSource) -> Option<(i64, String)> {
+    let number = group.issue_number?;
+    let repo = source.github_repo.as_deref().filter(|r| crate::automation::connectors::validate_repository(r).is_ok())?;
+    Some((number, format!("https://github.com/{repo}/issues/{number}")))
+}
+
 pub fn slack_summary(action: Action, group: &MonitorGroup, source: &MonitorSource) -> String {
     let headline = match action {
         Action::New => "🔴 New error",
         Action::Regressed => "🔁 Regressed",
         _ => "🟠 Still happening",
     };
-    let issue = group.issue_number.map(|n| format!(" · issue #{n}")).unwrap_or_default();
+    let issue = issue_url(group, source).map(|(n, url)| format!(" · <{url}|issue #{n}>")).unwrap_or_default();
     let logs = group.log_url.as_deref().map(|u| format!("\n<{u}|View logs in GCP>")).unwrap_or_default();
     format!(
         "*{headline}* in `{}` ({})\n*{}*\n{}× since {}{issue}{logs}",
@@ -154,7 +162,7 @@ pub fn mcp_summary(action: Action, group: &MonitorGroup, source: &MonitorSource,
         Action::Regressed => "🔁 Regressed",
         _ => "🟠 Still happening",
     };
-    let issue = group.issue_number.map(|n| format!(" · issue #{n}")).unwrap_or_default();
+    let issue = issue_url(group, source).map(|(n, url)| format!("\nIssue #{n}: {url}")).unwrap_or_default();
     let logs = group.log_url.as_deref().map(|u| format!("\nLogs: {u}")).unwrap_or_default();
     format!(
         "*{headline}* in `{}` ({})\n*{}*\n{}× since {}{issue}\nNexusMind: {link}{logs}",
@@ -283,13 +291,19 @@ async fn open_issue(
     )
     .await;
     let issue = match created {
-        Ok(issue) => Some(issue),
-        // A timeout can hide an issue GitHub did create.
-        Err(_) => crate::automation::connectors::find_github_issue_with_marker(&token, repository, &marker).await?,
+        Ok(issue) => issue,
+        // A timeout can hide an issue GitHub did create; otherwise keep
+        // GitHub's own reason (permissions, disabled issues…) for the log.
+        Err(error) => crate::automation::connectors::find_github_issue_with_marker(&token, repository, &marker)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| error.context(format!("issue_create_failed in {repository}")))?,
     };
     let number = issue
-        .and_then(|issue| issue.get("number").and_then(|v| v.as_i64()))
-        .ok_or_else(|| anyhow::anyhow!("issue_create_failed"))?;
+        .get("number")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| anyhow::anyhow!("issue_create_failed in {repository}: response has no number"))?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     store_monitor::set_issue(&conn, &group.id, number)?;
@@ -326,8 +340,8 @@ mod tests {
             service_account: "sa@p.iam.gserviceaccount.com".into(),
             slack_connector_id: None,
             slack_channel: None,
-            github_connector_id: None,
-            github_repo: None,
+            github_connector_id: Some("gh-1".into()),
+            github_repo: Some("acme/app".into()),
             throttle_minutes: 30,
             enabled: true,
             created_at: String::new(),
@@ -340,7 +354,7 @@ mod tests {
         let text = slack_summary(Action::New, &group(), &source());
         assert!(text.contains("&lt;!channel&gt; boom"));
         assert!(!text.contains("<!channel>"));
-        assert!(text.contains("3× since 2026-11-20 10:00 · issue #7"));
+        assert!(text.contains("3× since 2026-11-20 10:00 · <https://github.com/acme/app/issues/7|issue #7>"));
         assert!(text.contains("<https://console.cloud.google.com/logs/query;query=x?project=p|View logs in GCP>"));
     }
 
@@ -349,10 +363,19 @@ mod tests {
         let text = mcp_summary(Action::New, &group(), &source(), "https://app/monitoring?group=g1");
         assert!(!text.contains('<') && !text.contains('@'));
         assert!(text.contains("‹!channel› boom"));
+        assert!(text.contains("\nIssue #7: https://github.com/acme/app/issues/7"));
         let prompt = mcp_prompt("C0123ABCDE", &text);
         assert!(prompt.contains("channel_id \"C0123ABCDE\""));
         assert!(prompt.contains("mcp__slack__slack_send_message exactly once"));
         assert!(prompt.ends_with(&format!("BEGIN\n{text}\nEND")));
+    }
+
+    #[test]
+    fn no_issue_no_link() {
+        let mut without = group();
+        without.issue_number = None;
+        assert_eq!(issue_url(&without, &source()), None);
+        assert!(!slack_summary(Action::New, &without, &source()).contains("issue"));
     }
 
     #[test]
