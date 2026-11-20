@@ -230,6 +230,43 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
     assert_eq!(status, StatusCode::CREATED, "{source}");
     assert_eq!(source["slack_channel"], "C0123ABCDE");
     assert_eq!(source["github_connector_id"], "server_gh_cli");
+    let id = source["id"].as_str().unwrap().to_string();
+
+    // Turning the error audit on creates an enabled, managed `error_audit` agent.
+    let mut audited = json!({
+        "project": "kasymir", "name": "server",
+        "service_account": "nexusmind-push@my-proj-1.iam.gserviceaccount.com",
+        "slack_connector_id": "server_slack_mcp", "slack_channel": "C0123ABCDE",
+        "github_connector_id": "server_gh_cli", "github_repo": "acme/app",
+        "audit_executor": "claude"
+    });
+    let (status, source) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(audited.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{source}");
+    let agent = source["audit_agent_id"].as_str().expect("managed agent").to_string();
+    let (agent_row, agent_owner): (String, String) = {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        conn.query_row(
+            "SELECT d.template_key||':'||d.status, json_extract(r.config_json,'$.github_owner') FROM autonomous_agent_definitions d
+               JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision WHERE d.id=?1 AND d.org_id=?2",
+            [&agent, &org_a],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!((agent_row.as_str(), agent_owner.as_str()), ("error_audit:enabled", "acme"));
+
+    // An unknown executor is refused; turning the audit off disables the agent.
+    audited["audit_executor"] = json!("gpt");
+    let (status, _) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(audited.clone())).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    audited["audit_executor"] = json!(null);
+    let (status, source) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(audited)).await;
+    assert_eq!((status, source["audit_executor"].clone()), (StatusCode::OK, json!(null)));
+    let agent_status: String = {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        conn.query_row("SELECT status FROM autonomous_agent_definitions WHERE id=?1", [&agent], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(agent_status, "disabled");
     std::env::remove_var("FACTORY_GITHUB_PUBLISH_ORG_ID");
     let _ = std::fs::remove_file(path);
 }

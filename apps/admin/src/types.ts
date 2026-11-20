@@ -63,7 +63,7 @@ export interface AuthSession {
   user: User
 }
 
-export type AutonomousAgentTemplateKey = 'qa' | 'github_issue_resolver' | 'github_pr_reviewer' | 'lead_generation' | 'judge' | 'ai_content_manager' | 'ux_review' | 'product_strategist' | 'domain_research'
+export type AutonomousAgentTemplateKey = 'qa' | 'github_issue_resolver' | 'github_pr_reviewer' | 'lead_generation' | 'judge' | 'ai_content_manager' | 'ux_review' | 'product_strategist' | 'domain_research' | 'error_audit'
 export interface AutonomousAgentTemplate { key: AutonomousAgentTemplateKey; version: number; name: string; description: string; capabilities: string[]; default_budgets: Record<string, unknown>; config_schema:Record<string,unknown>; workflow:string[] }
 export interface AutonomousAgentDefinition { id:string; org_id:string; name:string; description:string|null; template_key:AutonomousAgentTemplateKey; template_version:number; status:'disabled'|'enabled'|'archived'; current_revision:number; created_by:string; created_at:string; updated_at:string; validation_status:'pending'|'valid'|'invalid' }
 export interface AutonomousAgentRevision { id:string; definition_id:string; revision:number; config:Record<string,unknown>; config_hash:string; capabilities:string[]; budgets:Record<string,unknown>; policy_generation:number; validation_status:'pending'|'valid'|'invalid'; validation:Record<string,unknown>|null; validated_at:string|null; created_by:string; created_at:string }
@@ -1803,7 +1803,15 @@ export interface MonitorSource {
   created_at: string
   /** The audience the Pub/Sub push subscription must be created with. */
   audience: string
+  /** Executor of the error audit; null = no audit. */
+  audit_executor: MonitorAuditExecutor | null
+  audit_model: string | null
+  /** The managed `error_audit` agent (Factory › Agents). */
+  audit_agent_id: string | null
 }
+
+export type MonitorAuditExecutor = 'claude' | 'codex' | 'pi' | 'nexus'
+
 
 export interface MonitorSourceInput {
   project: string
@@ -1815,6 +1823,8 @@ export interface MonitorSourceInput {
   github_repo: string | null
   throttle_minutes: number
   enabled: boolean
+  audit_executor: MonitorAuditExecutor | null
+  audit_model: string | null
 }
 
 /** What the connect form may offer: the server's own Slack MCP and `gh` are
@@ -1840,6 +1850,11 @@ export interface MonitorGroup {
   log_url: string | null
   issue_number: number | null
   status: MonitorGroupStatus
+  audit_run_id: string | null
+  audit_status: 'pending' | 'done' | 'failed' | null
+  audit_summary: string | null
+  /** Where the issue was opened (the audit may route it). */
+  issue_repo: string | null
 }
 
 export interface MonitorTestResult {

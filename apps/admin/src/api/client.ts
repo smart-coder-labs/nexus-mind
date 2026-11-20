@@ -1512,7 +1512,9 @@ export class NexusMindClient {
 
   listQaProjectRepositories(projectId:string): Promise<QaProjectRepositories> { return this.request(`/v1/projects/${encodeURIComponent(projectId)}/qa-repositories`) }
   listAutonomousAgentTemplates(): Promise<AutonomousAgentTemplate[]> {
-    return this.request('/v1/autonomous-agents/templates')
+    // Error audits are created and configured from Monitoring, not by hand.
+    return this.request<AutonomousAgentTemplate[]>('/v1/autonomous-agents/templates')
+      .then(templates => templates.filter(template => template.key !== 'error_audit'))
   }
   listAutonomousAgents(): Promise<AutonomousAgentDefinition[]> {
     return this.request('/v1/autonomous-agents')

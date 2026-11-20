@@ -27,6 +27,11 @@ pub struct MonitorSource {
     pub created_at: String,
     /// The audience the push subscription must be created with.
     pub audience: String,
+    /// Executor of the error audit (`claude`, `codex`, `pi`, `nexus`); `None` = no audit.
+    pub audit_executor: Option<String>,
+    pub audit_model: Option<String>,
+    /// The managed `error_audit` agent that runs the audits.
+    pub audit_agent_id: Option<String>,
 }
 
 pub struct SourceWrite {
@@ -40,9 +45,11 @@ pub struct SourceWrite {
     pub github_repo: Option<String>,
     pub throttle_minutes: i64,
     pub enabled: bool,
+    pub audit_executor: Option<String>,
+    pub audit_model: Option<String>,
 }
 
-const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel";
+const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel,audit_executor,audit_model,audit_agent_id";
 
 fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
     let id: String = row.get(0)?;
@@ -60,6 +67,9 @@ fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
         enabled: row.get::<_, i64>(9)? != 0,
         created_at: row.get(10)?,
         slack_channel: row.get(11)?,
+        audit_executor: row.get(12)?,
+        audit_model: row.get(13)?,
+        audit_agent_id: row.get(14)?,
     })
 }
 
@@ -68,10 +78,10 @@ pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrit
     let id = Uuid::new_v4().to_string();
     let inserted = c.execute(
         "INSERT OR IGNORE INTO monitor_sources
-           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel,audit_executor,audit_model)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         params![id, org_id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64, user_id, w.slack_channel],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, user_id, w.slack_channel, w.audit_executor, w.audit_model],
     )?;
     if inserted == 0 {
         return Ok(None);
@@ -83,10 +93,11 @@ pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrit
 pub fn update_source(c: &Connection, org_id: &str, id: &str, w: &SourceWrite) -> Result<bool> {
     let updated = c.execute(
         "UPDATE OR IGNORE monitor_sources SET project=?3,name=?4,service_account=?5,slack_connector_id=?6,
-           github_connector_id=?7,github_repo=?8,throttle_minutes=?9,enabled=?10,slack_channel=?11
+           github_connector_id=?7,github_repo=?8,throttle_minutes=?9,enabled=?10,slack_channel=?11,
+           audit_executor=?12,audit_model=?13
          WHERE org_id=?1 AND id=?2",
         params![org_id, id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel, w.audit_executor, w.audit_model],
     )?;
     Ok(updated > 0)
 }
@@ -130,10 +141,17 @@ pub struct MonitorGroup {
     pub log_url: Option<String>,
     pub issue_number: Option<i64>,
     pub status: String,
+    /// The error audit's agent run, its state (`pending`, `done`, `failed`) and conclusion.
+    pub audit_run_id: Option<String>,
+    pub audit_status: Option<String>,
+    pub audit_summary: Option<String>,
+    /// Where the group's issue lives (the audit may route it away from the
+    /// source's default repository).
+    pub issue_repo: Option<String>,
 }
 
 const GROUP_COLUMNS: &str =
-    "id,source_id,service,title,severity,count,first_seen,last_seen,sample,log_url,issue_number,status";
+    "id,source_id,service,title,severity,count,first_seen,last_seen,sample,log_url,issue_number,status,audit_run_id,audit_status,audit_summary,issue_repo";
 
 fn group_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorGroup> {
     Ok(MonitorGroup {
@@ -149,6 +167,10 @@ fn group_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorGroup> {
         log_url: row.get(9)?,
         issue_number: row.get(10)?,
         status: row.get(11)?,
+        audit_run_id: row.get(12)?,
+        audit_status: row.get(13)?,
+        audit_summary: row.get(14)?,
+        issue_repo: row.get(15)?,
     })
 }
 
@@ -209,8 +231,8 @@ pub fn record(
     Ok((action, group))
 }
 
-pub fn set_issue(c: &Connection, group_id: &str, number: i64) -> Result<()> {
-    c.execute("UPDATE monitor_groups SET issue_number=?2 WHERE id=?1", params![group_id, number])?;
+pub fn set_issue(c: &Connection, group_id: &str, number: i64, repository: &str) -> Result<()> {
+    c.execute("UPDATE monitor_groups SET issue_number=?2,issue_repo=?3 WHERE id=?1", params![group_id, number, repository])?;
     Ok(())
 }
 
@@ -226,6 +248,47 @@ pub fn list_groups(c: &Connection, org_id: &str, source_id: Option<&str>, limit:
 /// `status`: open, resolved or muted. `Ok(false)` when the group is missing.
 pub fn set_group_status(c: &Connection, org_id: &str, id: &str, status: &str) -> Result<bool> {
     Ok(c.execute("UPDATE monitor_groups SET status=?3 WHERE org_id=?1 AND id=?2", params![org_id, id, status])? > 0)
+}
+
+pub fn set_audit_agent(c: &Connection, org_id: &str, source_id: &str, agent_id: Option<&str>) -> Result<()> {
+    c.execute("UPDATE monitor_sources SET audit_agent_id=?3 WHERE org_id=?1 AND id=?2", params![org_id, source_id, agent_id])?;
+    Ok(())
+}
+
+/// Audits a source started since UTC midnight (the daily cap counts these).
+pub fn audits_today(c: &Connection, source_id: &str) -> Result<i64> {
+    Ok(c.query_row(
+        "SELECT COUNT(*) FROM monitor_groups WHERE source_id=?1 AND audit_started_at >= date('now')",
+        params![source_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// Marks a group's audit as started, unless one is already pending.
+pub fn start_audit(c: &Connection, group_id: &str, run_id: &str) -> Result<bool> {
+    Ok(c.execute(
+        "UPDATE monitor_groups SET audit_run_id=?2,audit_status='pending',audit_summary=NULL,audit_started_at=datetime('now')
+         WHERE id=?1 AND COALESCE(audit_status,'')<>'pending'",
+        params![group_id, run_id],
+    )? > 0)
+}
+
+/// The group an audit run belongs to, inside its organization.
+pub fn group_for_audit_run(c: &Connection, org_id: &str, run_id: &str) -> Result<Option<MonitorGroup>> {
+    Ok(c.query_row(
+        &format!("SELECT {GROUP_COLUMNS} FROM monitor_groups WHERE org_id=?1 AND audit_run_id=?2"),
+        params![org_id, run_id],
+        group_from_row,
+    )
+    .optional()?)
+}
+
+pub fn finish_audit(c: &Connection, group_id: &str, status: &str, summary: Option<&str>) -> Result<()> {
+    c.execute(
+        "UPDATE monitor_groups SET audit_status=?2,audit_summary=?3 WHERE id=?1",
+        params![group_id, status, summary],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -250,6 +313,8 @@ mod tests {
             github_repo: None,
             throttle_minutes: 30,
             enabled: true,
+            audit_executor: None,
+            audit_model: None,
         }
     }
 
@@ -295,6 +360,22 @@ mod tests {
         assert_eq!((action, group.status.as_str(), group.count), (Action::Regressed, "open", 5));
         assert_eq!(list_groups(&c, "o1", Some(&source.id), 10).unwrap().len(), 1);
         assert!(list_groups(&c, "other", None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn audits_start_once_and_count_per_day() {
+        let c = conn();
+        let source = create_source(&c, "o1", "u1", &write("gcp")).unwrap().unwrap();
+        let (_, group) = record(&c, &source, "fp", &error("boom"), Utc::now()).unwrap();
+        assert_eq!(audits_today(&c, &source.id).unwrap(), 0);
+        assert!(start_audit(&c, &group.id, "run-1").unwrap());
+        assert!(!start_audit(&c, &group.id, "run-2").unwrap(), "one pending audit per group");
+        assert_eq!(audits_today(&c, &source.id).unwrap(), 1);
+        assert!(group_for_audit_run(&c, "other", "run-1").unwrap().is_none());
+        let found = group_for_audit_run(&c, "o1", "run-1").unwrap().unwrap();
+        assert_eq!((found.audit_status.as_deref(), found.audit_run_id.as_deref()), (Some("pending"), Some("run-1")));
+        finish_audit(&c, &group.id, "done", Some("cause")).unwrap();
+        assert!(start_audit(&c, &group.id, "run-3").unwrap(), "a finished audit can be redone");
     }
 
     #[test]

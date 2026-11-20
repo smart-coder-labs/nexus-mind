@@ -133,3 +133,34 @@ the path is limited to the operator's own org.
 
 The connect modal now explains the flow. It derives the push service account from the GCP project
 ID, and the setup panel shows numbered, explained steps, each with its own Copy button.
+
+## Error audit (v117, v118)
+
+Before a new or regressed error gets its issue, an agent can find why it happens and which repository
+causes it. The issue then opens in that repository instead of the source's fixed one.
+
+- **Setup:** the admin picks the executor (Claude, Codex, Pi or nexus) and an optional model in the
+  Monitoring modal. NexusMind keeps a managed `error_audit` agent per source (created, updated,
+  disabled with it; hidden from the template list). Its runs appear in Factory › Runs.
+- **When:** only `New` and `Regressed` groups, at most 10 audits per source per UTC day. Past that,
+  or when an audit can't start, the issue opens in the source's default repository as before. While
+  an audit is pending, repeats only alert Slack.
+- **Candidates:** every repository of the default repository's GitHub owner, scored by:
+  - name match with the service and, for database errors, the `db=` database;
+  - GitHub code search on the error's literals: the request route, a quoted identifier, the longest
+    fixed part of the message, the top stack file.
+
+  The top 5 are cloned: the first as the working directory, the rest read-only as context. The source's
+  own credential is used, never the Factory's.
+- **Agent:** read-only (`Read,Grep,Glob`, plan mode), 80 turns, $3 and 20 min by default. It returns
+  `{summary, root_cause, repository, routing_evidence, suggested_fix, confidence}`.
+- **Routing (the trust boundary):** the proposal is used only if it has evidence, sits inside the owner,
+  and the credential can read it. Otherwise the default repository gets the issue. Log text is
+  attacker-influenced, so the agent never chooses outside that boundary.
+- **Result:**
+  - The issue carries an "Audit" section (root cause, why this repository, suggested fix, link to the
+    run), fenced as untrusted model output.
+  - Slack gets a follow-up with the conclusion and the issue link.
+  - The group records `issue_repo`, `audit_run_id`, `audit_status` and `audit_summary`.
+- **Failure:** a failed or inconclusive run still opens the issue in the default repository, saying
+  the audit did not conclude.

@@ -31,7 +31,7 @@ const BROWSER_TEMPLATES = ['qa', 'judge']
 export const CODEX_TEMPLATES = [
   'github_issue_resolver', 'github_pr_reviewer', 'qa', 'judge', 'ux_review',
   'lead_generation', 'ai_content_manager', 'security_scan', 'security_dast',
-  'product_strategist', 'domain_research',
+  'product_strategist', 'domain_research', 'error_audit',
 ]
 
 export function codexSupported(template: string): boolean {

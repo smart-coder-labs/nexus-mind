@@ -35,6 +35,9 @@ const source: MonitorSource = {
   enabled: true,
   created_at: '2026-11-20',
   audience: 'nexusmind-monitor:src-1',
+  audit_executor: null,
+  audit_model: null,
+  audit_agent_id: null,
 }
 const group: MonitorGroup = {
   id: 'g1',
@@ -49,6 +52,10 @@ const group: MonitorGroup = {
   log_url: 'https://console.cloud.google.com/logs/query;query=x?project=my-proj-1',
   issue_number: 7,
   status: 'open',
+  audit_run_id: null,
+  audit_status: null,
+  audit_summary: null,
+  issue_repo: null,
 }
 
 function renderPage() {
@@ -112,6 +119,38 @@ describe('Monitoring page', () => {
     expect(screen.getByRole('link', { name: 'Issue #7' })).toHaveAttribute('href', 'https://github.com/acme/app/issues/7')
     await userEvent.click(screen.getByRole('button', { name: 'Resolve Order <n> not found' }))
     expect(api.setMonitorGroupStatus).toHaveBeenCalledWith('g1', 'resolved')
+  })
+
+  it('shows the audit conclusion, the routed issue and the audit run', async () => {
+    api.listMonitorGroups.mockResolvedValue([{
+      ...group,
+      issue_repo: 'acme/locations',
+      audit_run_id: 'run-9',
+      audit_status: 'done',
+      audit_summary: 'The occupancy endpoint times out on the locations service',
+    }])
+    renderPage()
+    expect(await screen.findByText('🔎 The occupancy endpoint times out on the locations service')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'locations #7' })).toHaveAttribute('href', 'https://github.com/acme/locations/issues/7')
+    expect(screen.getByRole('link', { name: 'Audit run' })).toHaveAttribute('href', '/factory/runs?agent_run=run-9')
+  })
+
+  it('sends the audit executor and model only with GitHub issues on', async () => {
+    api.listMonitorSources.mockResolvedValue([])
+    api.updateMonitorSource.mockResolvedValue(source)
+    api.listMonitorSources.mockResolvedValue([source])
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Kasymir beta' }))
+    await userEvent.click(screen.getByLabelText('Audit new errors before opening the issue'))
+    expect(screen.getByLabelText('Default repository for issues')).toHaveValue('acme/app')
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Task executor'), /Codex/)
+    await userEvent.type(screen.getByLabelText('Model (optional)'), 'gpt-5.5')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(api.updateMonitorSource).toHaveBeenCalledWith('src-1', expect.objectContaining({
+      github_connector_id: 'gh-1',
+      audit_executor: 'codex',
+      audit_model: 'gpt-5.5',
+    }))
   })
 
   it('opens the setup steps with the project taken from the service account', async () => {
