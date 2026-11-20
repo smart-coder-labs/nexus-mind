@@ -1,6 +1,6 @@
 use axum::{
     middleware,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Extension, Router,
 };
 use rusqlite::Connection;
@@ -9,7 +9,7 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
-    admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
+    admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup, monitor,
     clients, code, context, conventions, docs, factory, factory_evals, factory_lookback,
     factory_model_config, factory_trajectory, github_auth, harnesses, health, internal, memory,
     middleware as api_mw, migrations as migrations_api, policy, sdd, search, sessions,
@@ -74,6 +74,11 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
     };
 
     let protected = Router::new()
+        .route("/v1/monitor/sources", get(monitor::list_sources).post(monitor::create_source))
+        .route("/v1/monitor/sources/:id", put(monitor::update_source).delete(monitor::delete_source))
+        .route("/v1/monitor/sources/:id/test", post(monitor::test_source))
+        .route("/v1/monitor/groups", get(monitor::list_groups))
+        .route("/v1/monitor/groups/:id", patch(monitor::set_group_status))
         .route("/v1/memory/store", post(memory::store))
         .route("/v1/memory/search", post(memory::search))
         .route("/v1/memory/export", get(memory::export))
@@ -916,6 +921,8 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
 
     let router = Router::new()
         .route("/v1/health", get(health::handler))
+        // Public Pub/Sub push target; every request carries a Google OIDC token.
+        .route("/v1/monitor/gcp/:source_id", post(monitor::gcp_push))
         .route("/v1/autonomous-agents/github/webhook/:connector", post(autonomous_webhooks::github_cli_webhook))
         .route("/v1/factory/runner/workspaces", get(workflows::runner_workspaces))
         .route("/v1/factory/runner/workspaces/:id/inventory", post(workflows::report_inventory))

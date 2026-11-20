@@ -77,6 +77,7 @@ const ONLY_CONTEXT_HIDDEN: readonly string[] = [
   '/agents',
   '/policies',
   '/webhooks',
+  '/monitoring',
   '/audit',
   '/backups',
 ]

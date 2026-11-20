@@ -32,6 +32,7 @@ pub mod internal;
 pub mod memory;
 pub mod middleware;
 pub mod migrations;
+pub mod monitor;
 pub mod policy;
 pub mod router;
 pub mod sdd;

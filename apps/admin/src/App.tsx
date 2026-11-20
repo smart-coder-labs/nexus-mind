@@ -31,6 +31,7 @@ const FactoryLaboratory = lazy(() => import('./pages/factory/FactoryLaboratory')
 const FactoryDigest = lazy(() => import('./pages/FactoryDigest'))
 const Policies = lazy(() => import('./pages/Policies'))
 const Conventions = lazy(() => import('./pages/Conventions'))
+const Monitoring = lazy(() => import('./pages/Monitoring'))
 const Webhooks = lazy(() => import('./pages/Webhooks'))
 const Collections = lazy(() => import('./pages/Collections'))
 const Tags = lazy(() => import('./pages/Tags'))
@@ -284,6 +285,16 @@ function AppRoutes() {
                     <AdminRoute>
                       <Conventions />
                     </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/monitoring"
+                  element={
+                    <MaybeDisabled href="/monitoring">
+                      <AdminRoute>
+                        <Monitoring />
+                      </AdminRoute>
+                    </MaybeDisabled>
                   }
                 />
                 <Route

@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 114;
+pub const LATEST_USER_VERSION: i32 = 115;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -117,6 +117,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v112(conn)?;
     run_v113(conn)?;
     run_v114(conn)?;
+    run_v115(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -285,6 +286,53 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 113;
         ",
     )?;
+    Ok(())
+}
+
+/// Migration v115: runtime error monitoring (openspec `runtime-error-monitoring`).
+/// One source per connected GCP project; one group per error fingerprint.
+pub fn run_v115(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 115 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS monitor_sources (
+           id TEXT PRIMARY KEY,
+           org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+           project TEXT NOT NULL,
+           name TEXT NOT NULL,
+           service_account TEXT NOT NULL,
+           slack_connector_id TEXT,
+           github_connector_id TEXT,
+           github_repo TEXT,
+           throttle_minutes INTEGER NOT NULL DEFAULT 30,
+           enabled INTEGER NOT NULL DEFAULT 1,
+           created_by TEXT NOT NULL,
+           created_at TEXT NOT NULL DEFAULT (datetime('now')),
+           UNIQUE(org_id, name));
+         CREATE TABLE IF NOT EXISTS monitor_groups (
+           id TEXT PRIMARY KEY,
+           org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+           source_id TEXT NOT NULL REFERENCES monitor_sources(id) ON DELETE CASCADE,
+           fingerprint TEXT NOT NULL,
+           service TEXT NOT NULL,
+           title TEXT NOT NULL,
+           severity TEXT NOT NULL,
+           count INTEGER NOT NULL DEFAULT 1,
+           first_seen TEXT NOT NULL,
+           last_seen TEXT NOT NULL,
+           sample TEXT NOT NULL,
+           log_url TEXT,
+           issue_number INTEGER,
+           last_alert_at TEXT,
+           status TEXT NOT NULL DEFAULT 'open',
+           UNIQUE(source_id, fingerprint));
+         CREATE INDEX IF NOT EXISTS monitor_groups_org_seen ON monitor_groups(org_id, last_seen DESC);
+         PRAGMA user_version=115;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

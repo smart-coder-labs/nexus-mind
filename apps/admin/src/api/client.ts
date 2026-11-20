@@ -136,6 +136,11 @@ import type {
   FactoryIntakeItem,
   FactoryIntakeSource,
   FactoryIntakeSourceInput,
+  MonitorGroup,
+  MonitorGroupStatus,
+  MonitorSource,
+  MonitorSourceInput,
+  MonitorTestResult,
   FactoryWatchdog,
   ShadowReport,
   FactoryPolicy,
@@ -1730,6 +1735,35 @@ export class NexusMindClient {
 
   deleteFactoryPolicy(id: string): Promise<void> {
     return this.request(`/v1/factory/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  listMonitorSources(): Promise<MonitorSource[]> {
+    return this.request('/v1/monitor/sources')
+  }
+
+  createMonitorSource(input: MonitorSourceInput): Promise<MonitorSource> {
+    return this.request('/v1/monitor/sources', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  updateMonitorSource(id: string, input: MonitorSourceInput): Promise<MonitorSource> {
+    return this.request(`/v1/monitor/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) })
+  }
+
+  deleteMonitorSource(id: string): Promise<void> {
+    return this.request(`/v1/monitor/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  testMonitorSource(id: string): Promise<MonitorTestResult> {
+    return this.request(`/v1/monitor/sources/${encodeURIComponent(id)}/test`, { method: 'POST' })
+  }
+
+  listMonitorGroups(sourceId?: string): Promise<MonitorGroup[]> {
+    const query = sourceId ? `?source_id=${encodeURIComponent(sourceId)}` : ''
+    return this.request(`/v1/monitor/groups${query}`)
+  }
+
+  setMonitorGroupStatus(id: string, status: MonitorGroupStatus): Promise<void> {
+    return this.request(`/v1/monitor/groups/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status }) })
   }
 
   listFactoryIntakeSources(): Promise<FactoryIntakeSource[]> {
