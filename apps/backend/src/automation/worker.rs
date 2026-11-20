@@ -5982,7 +5982,7 @@ async fn execute_claim(
     let sandbox_receipts = std::sync::Mutex::new(Vec::new());
     // Browser-driven templates reach their targets through the proxy: HTTPS on
     // 443 only. A target that cannot be reached that way blocks the run.
-    let sandbox_hosts = if sandboxed && matches!(claim.template_key.as_str(), "qa" | "judge") {
+    let sandbox_hosts = if sandboxed && matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review" | "product_strategist") {
         match crate::factory::sandbox::sandbox_hosts(&claim.config) {
             Ok(hosts) => hosts,
             Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
@@ -6903,7 +6903,7 @@ async fn execute_claim(
     // Values to redact from the streamed transcript on top of the pattern-based
     // sanitizer (e.g. the ephemeral repo access token).
     if pi_selected {
-        claude = if claim.template_key == "qa" {
+        claude = if matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web {
             match super::pi::qa_command(&workdir, &qa_screenshots_dir) {
                 Ok(command) => command,
                 Err(_) => return ("blocked_runtime".into(), json!({"code":"pi_qa_mcp_unavailable"})),
@@ -6955,7 +6955,7 @@ async fn execute_claim(
                 wall_time: Duration::from_secs(wall_time),
                 // Evidence is gathered once per head: retries reuse the receipts.
                 slot: "main",
-                qa: matches!(claim.template_key.as_str(), "qa" | "judge").then_some(
+                qa: (matches!(claim.template_key.as_str(), "qa" | "judge" | "ux_review") || strategist_web).then_some(
                     super::sandboxed::QaSandbox {
                         hosts: &sandbox_hosts,
                         artifacts_dir: &qa_screenshots_dir,

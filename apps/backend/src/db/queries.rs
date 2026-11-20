@@ -16927,7 +16927,10 @@ mod autonomous_executor_tests {
         super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"local"}), "github_pr_reviewer").unwrap();
         assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "github_pr_reviewer").unwrap_err().to_string(), "pi_requires_local");
         super::validate_autonomous_executor(&json!({"executor":"pi"}), "qa").unwrap();
-        assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi"}), "judge").unwrap_err().to_string(), "pi_unsupported_template");
+        for template in crate::automation::pi::TEMPLATES {
+            super::validate_autonomous_executor(&json!({"executor":"pi"}), template).unwrap();
+            super::validate_autonomous_executor(&json!({"executor":"codex"}), template).unwrap();
+        }
         assert_eq!(super::validate_autonomous_executor(&json!({"executor":"pi","isolation":"sandbox"}), "qa").unwrap_err().to_string(), "pi_requires_local");
     }
 

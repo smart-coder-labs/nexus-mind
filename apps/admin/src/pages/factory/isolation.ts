@@ -28,7 +28,11 @@ const SANDBOX_TEMPLATES = [
 const BROWSER_TEMPLATES = ['qa', 'judge']
 
 /** Templates the Codex executor runs (`CODEX_TEMPLATES`): sandbox only. */
-export const CODEX_TEMPLATES = ['github_issue_resolver', 'github_pr_reviewer']
+export const CODEX_TEMPLATES = [
+  'github_issue_resolver', 'github_pr_reviewer', 'qa', 'judge', 'ux_review',
+  'lead_generation', 'ai_content_manager', 'security_scan', 'security_dast',
+  'product_strategist', 'domain_research',
+]
 
 export function codexSupported(template: string): boolean {
   return CODEX_TEMPLATES.includes(template)
@@ -36,7 +40,7 @@ export function codexSupported(template: string): boolean {
 
 /** Pi uses ChatGPT OAuth in the local worker; QA gets the trusted Playwright MCP. */
 export function piSupported(template: string): boolean {
-  return codexSupported(template) || template === 'qa'
+  return codexSupported(template)
 }
 
 export function sandboxSupported(template: string, executor: string): boolean {

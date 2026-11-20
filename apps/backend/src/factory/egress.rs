@@ -317,15 +317,15 @@ pub fn decide(
         let Ok(run) = verify_run_token(key, &token, now_unix) else {
             return deny("bad_run_token", None);
         };
-        // A Codex agent has a shell: no tunnel at all, since registries accept
-        // uploads inside the TLS stream the proxy cannot see.
-        if codex_tier(&run.run_id).is_some() {
-            return deny("token_scope", Some(&run));
-        }
         let Some((host, port)) = target.rsplit_once(':') else {
             return deny("bad_connect_target", Some(&run));
         };
         let host = host.to_ascii_lowercase();
+        // Codex may reach only this run's explicit browser targets, never the
+        // global registry allowlist (registries accept uploads over TLS).
+        if codex_tier(&run.run_id).is_some() && !run.hosts.contains(&host) {
+            return deny("token_scope", Some(&run));
+        }
         if !tunnel_allowlist
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(&host))
@@ -1168,6 +1168,20 @@ mod tests {
                 ("content-type".to_string(), "application/json".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn codex_browser_tunnels_are_limited_to_signed_targets() {
+        let key = b"0123456789abcdef0123456789abcdef";
+        let token = sign_run_token_with_hosts(key, "org-1", &codex_run_id("run-1", 1),
+            2_000_000_000, &["app.acme.test".into()]).unwrap();
+        let basic = format!("Basic {}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("run:{token}")));
+        let connect = |target: &str| decide(key, "CONNECT", target, Some(&basic), &["registry.npmjs.org"], 1_000);
+        assert!(matches!(connect("app.acme.test:443"), Decision::Tunnel { .. }));
+        assert!(matches!(connect("app.acme.test:80"), Decision::Deny { reason: "port_not_allowed", .. }));
+        for target in ["other.acme.test:443", "registry.npmjs.org:443"] {
+            assert!(matches!(connect(target), Decision::Deny { reason: "token_scope", .. }));
+        }
     }
 
     #[test]

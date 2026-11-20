@@ -12,9 +12,12 @@
 
 use serde_json::{json, Value};
 
-/// Templates the Codex executor may run: code writing and review. Browser and
-/// scanner templates depend on Claude-specific tooling.
-pub const CODEX_TEMPLATES: [&str; 2] = ["github_issue_resolver", "github_pr_reviewer"];
+/// All managed templates. Codex always runs in a credential-free task pod.
+pub const CODEX_TEMPLATES: [&str; 11] = [
+    "github_issue_resolver", "github_pr_reviewer", "qa", "judge", "ux_review",
+    "lead_generation", "ai_content_manager", "security_scan", "security_dast",
+    "product_strategist", "domain_research",
+];
 
 /// The pod-side invocation: the prompt goes on stdin (`-`), never in the exec
 /// request. The pod is the sandbox, so Codex's own one is bypassed (Landlock is
