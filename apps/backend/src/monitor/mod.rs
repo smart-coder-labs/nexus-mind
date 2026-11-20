@@ -86,6 +86,7 @@ pub fn from_log_entry(entry: &Value) -> Option<RuntimeError> {
         .find_map(|p| text(entry, p))
         .or_else(|| text(entry, "/jsonPayload/error"))
         .or_else(|| stack.clone())
+        .or_else(|| request_summary(entry))
         .unwrap_or_else(|| "(no message)".into());
     // A plain-text stack trace: the message is its first line, the rest the stack.
     let stack = stack.or_else(|| message.lines().nth(1).map(|_| message.clone()));
@@ -107,6 +108,22 @@ pub fn from_log_entry(entry: &Value) -> Option<RuntimeError> {
         log_url,
         group_hint: None,
     })
+}
+
+/// A request log with no message (Cloud Run writes one per 5xx response):
+/// `HTTP 502 GET /api/orders`. Only the path: the query string can carry ids
+/// and tokens.
+fn request_summary(entry: &Value) -> Option<String> {
+    let status = entry.pointer("/httpRequest/status").and_then(Value::as_i64)?;
+    let method = text(entry, "/httpRequest/requestMethod").unwrap_or_else(|| "?".into());
+    let url = text(entry, "/httpRequest/requestUrl").unwrap_or_default();
+    let without_query = url.split(['?', '#']).next().unwrap_or_default();
+    let path = match without_query.split_once("://") {
+        Some((_, rest)) => rest.find('/').map(|i| &rest[i..]).unwrap_or("/"),
+        None => without_query,
+    };
+    let latency = text(entry, "/httpRequest/latency").map(|l| format!(" after {l}")).unwrap_or_default();
+    Some(format!("HTTP {status} {method} {}{latency}", capped(path, 300)))
 }
 
 /// A Cloud Monitoring incident (alert policy with a Pub/Sub channel).
@@ -254,6 +271,23 @@ mod tests {
         assert_eq!((error.service.as_str(), error.title.as_str()), ("fn", "boom"));
         assert!(from_log_entry(&json!({"severity": "WARNING", "textPayload": "meh"})).is_none());
         assert!(from_log_entry(&json!({"textPayload": "no severity"})).is_none());
+    }
+
+    #[test]
+    fn cloud_run_request_logs_name_the_status_method_and_path() {
+        let entry = json!({
+            "severity": "ERROR", "insertId": "6b00",
+            "resource": {"type": "cloud_run_revision", "labels": {"service_name": "app-ui", "project_id": "p-1"}},
+            "httpRequest": {"status": 502, "requestMethod": "GET", "latency": "5.9s",
+                "requestUrl": "https://app-ui-x.a.run.app/api/live-view/occupancy?tenantId=e764fbd4-8e48-4a03-be99-28d0737cc9f3"}
+        });
+        let error = from_log_entry(&entry).unwrap();
+        assert_eq!(error.title, "HTTP 502 GET /api/live-view/occupancy after 5.9s");
+        assert!(!error.message.contains("tenantId"));
+        // Same endpoint, other latency: same group.
+        let mut slower = entry.clone();
+        slower["httpRequest"]["latency"] = json!("12.1s");
+        assert_eq!(fingerprint("s", &error), fingerprint("s", &from_log_entry(&slower).unwrap()));
     }
 
     #[test]
