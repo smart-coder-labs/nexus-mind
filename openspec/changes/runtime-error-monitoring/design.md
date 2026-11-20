@@ -110,3 +110,26 @@ line and column numbers.
 - Repeat alerts are the only retry for a failed Slack or GitHub delivery.
 - Permissions reuse `settings:write` instead of new `monitor:*` permissions, which would need a
   role-template migration and role-editor changes. Revisit if non-admin roles need read-only access.
+
+## Server Slack MCP and server `gh` (v116)
+
+A source can use the server's own identities instead of org connectors:
+
+- **GitHub:** `github_connector_id = "server_gh_cli"` opens issues with the server's authenticated `gh`.
+- **Slack:** `slack_connector_id = "server_slack_mcp"` plus `slack_channel` (a channel ID like
+  `C0123ABCDE`). Each alert runs the Claude CLI with `/app/qa-mcp.json`, allowed only
+  `mcp__slack__slack_send_message`, 3 turns at most, a 120 s timeout, and at most 2 runs at a time.
+  The message is passed as data between BEGIN and END lines. Untrusted text has `< > @` replaced,
+  so it can't mention anyone or carry links.
+
+Both identities belong to the operator. They are allowed only for the org in
+`FACTORY_GITHUB_PUBLISH_ORG_ID` (`backend_account_enabled`, the same rule as Factory publication).
+The rule is checked when a source is saved (403 `server_integration_not_authorized`) and again at
+delivery. `GET /v1/monitor/options` tells the form whether to offer them.
+
+Residual risk: on the MCP path a model reads log text. It can only call the send tool, but it could
+still be steered to another channel the Slack account can post to. This is acceptable only because
+the path is limited to the operator's own org.
+
+The connect modal now explains the flow. It derives the push service account from the GCP project
+ID, and the setup panel shows numbered, explained steps, each with its own Copy button.

@@ -1794,6 +1794,8 @@ export interface MonitorSource {
   name: string
   service_account: string
   slack_connector_id: string | null
+  /** Channel ID when Slack goes through the server's Slack MCP. */
+  slack_channel: string | null
   github_connector_id: string | null
   github_repo: string | null
   throttle_minutes: number
@@ -1808,10 +1810,18 @@ export interface MonitorSourceInput {
   name: string
   service_account: string
   slack_connector_id: string | null
+  slack_channel: string | null
   github_connector_id: string | null
   github_repo: string | null
   throttle_minutes: number
   enabled: boolean
+}
+
+/** What the connect form may offer: the server's own Slack MCP and `gh` are
+ *  only available to the operator's organization. */
+export interface MonitorOptions {
+  server_slack_mcp: boolean
+  server_github: boolean
 }
 
 export type MonitorGroupStatus = 'open' | 'resolved' | 'muted'

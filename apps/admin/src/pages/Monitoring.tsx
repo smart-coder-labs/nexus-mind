@@ -20,69 +20,145 @@ export function pushEndpoint(sourceId: string, apiBase = import.meta.env.VITE_AP
   return `${apiBase.replace(/\/+$/, '')}/v1/monitor/gcp/${sourceId}`
 }
 
+export interface SetupStep {
+  title: string
+  detail: string
+  command: string
+  optional?: boolean
+}
+
 /**
- * The one-time `gcloud` setup that routes a GCP project's errors to a source.
- * Every value is either validated here or by the server (service account,
- * uuid audience), so the commands are safe to paste.
+ * The one-time `gcloud` setup that routes a GCP project's errors to a source,
+ * as numbered steps. Every value is either validated here or by the server
+ * (service account, uuid audience), so the commands are safe to paste.
  */
-export function setupCommands(source: Pick<MonitorSource, 'id' | 'service_account' | 'audience'>, gcpProject: string, endpoint: string): string {
+export function setupSteps(source: Pick<MonitorSource, 'id' | 'service_account' | 'audience'>, gcpProject: string, endpoint: string): SetupStep[] {
   const project = GCP_PROJECT.test(gcpProject) ? gcpProject : 'PROJECT_ID'
   const account = source.service_account
   const accountName = account.split('@')[0]
   const ownAccount = account.endsWith(`@${project}.iam.gserviceaccount.com`)
-  return [
-    '# 1. A topic for errors',
-    `gcloud pubsub topics create nexusmind-errors --project=${project}`,
-    '',
-    '# 2. A sink that sends every ERROR (or worse) log to it, without audit logs',
-    `gcloud logging sinks create nexusmind-errors \\`,
-    `  pubsub.googleapis.com/projects/${project}/topics/nexusmind-errors \\`,
-    `  --project=${project} \\`,
-    `  --log-filter='severity>=ERROR AND NOT logName:"cloudaudit.googleapis.com"'`,
-    '',
-    '# 3. Let the sink publish to the topic',
-    `gcloud pubsub topics add-iam-policy-binding nexusmind-errors --project=${project} \\`,
-    `  --member="$(gcloud logging sinks describe nexusmind-errors --project=${project} --format='value(writerIdentity)')" \\`,
-    `  --role=roles/pubsub.publisher`,
-    '',
-    ...(ownAccount
-      ? ['# 4. The service account Pub/Sub signs pushes with (skip if it exists)', `gcloud iam service-accounts create ${accountName} --project=${project}`, '']
-      : ['# 4. Pushes are signed as the service account you entered: ' + account, '']),
-    '# 5. Push every error to NexusMind (you need iam.serviceAccounts.actAs on the account)',
-    `gcloud pubsub subscriptions create nexusmind-push --project=${project} \\`,
-    `  --topic=nexusmind-errors \\`,
-    `  --push-endpoint=${endpoint} \\`,
-    `  --push-auth-service-account=${account} \\`,
-    `  --push-auth-token-audience=${source.audience}`,
-    '',
-    '# Optional: send Cloud Monitoring alerts (restarts, error rate…) here too.',
-    '# Create a Pub/Sub notification channel on the same topic, then add it to your alert policies:',
-    `# gcloud beta monitoring channels create --project=${project} --type=pubsub --display-name="NexusMind" \\`,
-    `#   --channel-labels=topic=projects/${project}/topics/nexusmind-errors`,
-  ].join('\n')
+  const steps: SetupStep[] = [
+    {
+      title: 'Sign in and pick the project',
+      detail: 'Use Cloud Shell, or a terminal where you are signed in as an owner or editor of the project.',
+      command: ['gcloud auth list', `gcloud projects describe ${project} --format='value(projectNumber)'`].join('\n'),
+    },
+  ]
+  if (ownAccount) {
+    steps.push({
+      title: 'Create the push service account',
+      detail: 'Pub/Sub signs every push as this account and NexusMind only accepts pushes signed by it. It needs no roles and no key. Skip if it already exists.',
+      command: `gcloud iam service-accounts create ${accountName} --project=${project} --display-name="NexusMind push"`,
+    })
+  }
+  steps.push(
+    {
+      title: 'Create the topic',
+      detail: 'Errors from the project are collected here.',
+      command: `gcloud pubsub topics create nexusmind-errors --project=${project}`,
+    },
+    {
+      title: 'Send ERROR logs to the topic',
+      detail: 'A log sink copies every log with severity ERROR or worse, without audit logs. Logs keep going to Cloud Logging as before.',
+      command: [
+        'gcloud logging sinks create nexusmind-errors \\',
+        `  pubsub.googleapis.com/projects/${project}/topics/nexusmind-errors \\`,
+        `  --project=${project} \\`,
+        `  --log-filter='severity>=ERROR AND NOT logName:"cloudaudit.googleapis.com"'`,
+      ].join('\n'),
+    },
+    {
+      title: 'Let the sink publish to the topic',
+      detail: 'The sink writes as its own identity, which needs the publisher role on the topic.',
+      command: [
+        `gcloud pubsub topics add-iam-policy-binding nexusmind-errors --project=${project} \\`,
+        `  --member="$(gcloud logging sinks describe nexusmind-errors --project=${project} --format='value(writerIdentity)')" \\`,
+        '  --role=roles/pubsub.publisher',
+      ].join('\n'),
+    },
+    {
+      title: 'Let Pub/Sub sign as the service account',
+      detail: 'Only needed for projects created before April 2021. If you are unsure, run it: it is harmless.',
+      optional: true,
+      command: [
+        `PROJECT_NUMBER=$(gcloud projects describe ${project} --format='value(projectNumber)')`,
+        `gcloud iam service-accounts add-iam-policy-binding ${account} \\`,
+        `  --project=${project} \\`,
+        '  --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com" \\',
+        '  --role=roles/iam.serviceAccountTokenCreator',
+      ].join('\n'),
+    },
+    {
+      title: 'Push errors to NexusMind',
+      detail: 'The subscription posts each error to NexusMind, signed as the service account, with this source as the audience.',
+      command: [
+        `gcloud pubsub subscriptions create nexusmind-push --project=${project} \\`,
+        '  --topic=nexusmind-errors \\',
+        `  --push-endpoint=${endpoint} \\`,
+        `  --push-auth-service-account=${account} \\`,
+        `  --push-auth-token-audience=${source.audience}`,
+      ].join('\n'),
+    },
+    {
+      title: 'Send a test error',
+      detail: 'Within about a minute it should appear under Errors, in Slack and as a GitHub issue. Press Test on the card first to check Slack and GitHub.',
+      command: `gcloud logging write nexusmind-test '{"message":"NexusMind test error"}' --payload-type=json --severity=ERROR --project=${project}`,
+    },
+    {
+      title: 'Also send Cloud Monitoring alerts',
+      detail: 'Restarts, error rate and other alert policies can publish to the same topic. Add this channel to your alert policies afterwards.',
+      optional: true,
+      command: [
+        `gcloud beta monitoring channels create --project=${project} --type=pubsub --display-name="NexusMind" \\`,
+        `  --channel-labels=topic=projects/${project}/topics/nexusmind-errors`,
+      ].join('\n'),
+    },
+  )
+  return steps
+}
+
+/** Every step as one script, for "Copy all". */
+export function setupCommands(source: Pick<MonitorSource, 'id' | 'service_account' | 'audience'>, gcpProject: string, endpoint: string): string {
+  return setupSteps(source, gcpProject, endpoint)
+    .map((step, index) => `# ${index + 1}. ${step.title}${step.optional ? ' (optional)' : ''}\n${step.command}`)
+    .join('\n\n')
+}
+
+const SERVER_SLACK = 'server_slack_mcp'
+const SERVER_GITHUB = 'server_gh_cli'
+const SLACK_CHANNEL_ID = /^[CGD][A-Z0-9]{8,19}$/
+
+/** The service account to suggest for a GCP project. */
+export function suggestedAccount(gcpProject: string): string {
+  return GCP_PROJECT.test(gcpProject) ? `nexusmind-push@${gcpProject}.iam.gserviceaccount.com` : ''
 }
 
 interface Draft {
   id: string | null
   name: string
   project: string
+  /** Only used to fill the setup commands; not stored. */
+  gcpProject: string
   serviceAccount: string
   slack: string
+  slackChannel: string
   github: string
   repo: string
   throttle: string
   enabled: boolean
 }
 
-const EMPTY: Draft = { id: null, name: '', project: '', serviceAccount: '', slack: '', github: '', repo: '', throttle: '30', enabled: true }
+const EMPTY: Draft = { id: null, name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true }
 
 function draftFrom(source: MonitorSource): Draft {
   return {
     id: source.id,
     name: source.name,
     project: source.project,
+    gcpProject: source.service_account.match(/@([a-z][a-z0-9-]+)\.iam\.gserviceaccount\.com$/)?.[1] ?? '',
     serviceAccount: source.service_account,
     slack: source.slack_connector_id ?? '',
+    slackChannel: source.slack_channel ?? '',
     github: source.github_connector_id ?? '',
     repo: source.github_repo ?? '',
     throttle: String(source.throttle_minutes),
@@ -96,6 +172,7 @@ function sourceInput(draft: Draft): MonitorSourceInput {
     project: draft.project.trim(),
     service_account: draft.serviceAccount.trim(),
     slack_connector_id: draft.slack || null,
+    slack_channel: draft.slack === SERVER_SLACK ? draft.slackChannel.trim() : null,
     github_connector_id: draft.github || null,
     github_repo: draft.github ? draft.repo.trim() : null,
     throttle_minutes: Number(draft.throttle) || 30,
@@ -110,6 +187,8 @@ function message(error: unknown): string {
 const isGithub = (c: AutonomousAgentConnector) => c.kind === 'github_app' || (c.kind === 'target_secret' && c.metadata.purpose === 'github_token')
 
 const TEST_LABEL: Record<string, string> = {
+  not_authorized: 'server account not authorized for this organization',
+  channel_missing: 'no channel set',
   ok: 'works',
   not_configured: 'not set up',
   connector_unavailable: 'connector unavailable',
@@ -128,7 +207,7 @@ export default function Monitoring() {
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [setupFor, setSetupFor] = useState<MonitorSource | null>(null)
+  const [setupFor, setSetupFor] = useState<{ source: MonitorSource; gcpProject: string } | null>(null)
   const [tests, setTests] = useState<Record<string, MonitorTestResult>>({})
   const [sourceFilter, setSourceFilter] = useState('')
 
@@ -139,6 +218,7 @@ export default function Monitoring() {
     refetchInterval: 30_000,
     enabled: allowed,
   })
+  const options = useQuery({ queryKey: ['monitor-options'], queryFn: () => client.getMonitorOptions(), enabled: allowed })
   const connectors = useQuery({ queryKey: ['autonomous-connectors'], queryFn: () => client.listAutonomousAgentConnectors(), enabled: allowed })
   const usable = (connectors.data ?? []).filter(c => c.health !== 'revoked')
   const slackConnectors = usable.filter(c => c.kind === 'slack')
@@ -152,7 +232,7 @@ export default function Monitoring() {
       setDraft(null)
       refresh()
       // A new source is useless until GCP is set up: show the commands right away.
-      if (!current.id) setSetupFor(source)
+      if (!current.id) setSetupFor({ source, gcpProject: current.gcpProject.trim() })
     },
   })
   const remove = useMutation({ mutationFn: (id: string) => client.deleteMonitorSource(id), onSuccess: refresh })
@@ -168,6 +248,12 @@ export default function Monitoring() {
   if (!allowed) {
     return <PermissionDenied title="Monitoring" permission="settings:write" what="connect GCP projects and see their errors" />
   }
+
+  const slackLabel = (source: MonitorSource) =>
+    !source.slack_connector_id ? 'Off'
+      : source.slack_connector_id === SERVER_SLACK ? `Server Slack (MCP) · ${source.slack_channel ?? '—'}`
+      : usable.find(c => c.id === source.slack_connector_id)?.name ?? 'Unavailable connector'
+  const gcpProjectOf = (source: MonitorSource) => source.service_account.match(/@([a-z][a-z0-9-]+)\.iam\.gserviceaccount\.com$/)?.[1] ?? ''
 
   const sourceName = (id: string) => sources.data?.find(s => s.id === id)?.name ?? '—'
   const closeEditor = () => { setDraft(null); save.reset() }
@@ -206,9 +292,12 @@ export default function Monitoring() {
                   </div>
                   <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
                     <dt className="text-text-tertiary">Slack</dt>
-                    <dd className="text-text-secondary">{source.slack_connector_id ? usable.find(c => c.id === source.slack_connector_id)?.name ?? 'Unavailable connector' : 'Off'}</dd>
+                    <dd className="break-words text-text-secondary">{slackLabel(source)}</dd>
                     <dt className="text-text-tertiary">GitHub issues</dt>
-                    <dd className="min-w-0 break-all">{source.github_repo ? <span className="font-mono text-text-primary">{source.github_repo}</span> : <span className="text-text-secondary">Off</span>}</dd>
+                    <dd className="min-w-0 break-all">
+                      {source.github_repo ? <span className="font-mono text-text-primary">{source.github_repo}</span> : <span className="text-text-secondary">Off</span>}
+                      {source.github_connector_id === SERVER_GITHUB && <span className="text-text-tertiary"> · server gh</span>}
+                    </dd>
                     <dt className="text-text-tertiary">Repeat alerts</dt>
                     <dd className="text-text-secondary">At most every {source.throttle_minutes} min per error</dd>
                     <dt className="text-text-tertiary">Project</dt>
@@ -220,7 +309,7 @@ export default function Monitoring() {
                     </p>
                   )}
                   <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border-secondary pt-4">
-                    <Button size="sm" variant="secondary" leftIcon={<Terminal className="h-4 w-4" />} aria-label={`Setup commands for ${source.name}`} onClick={() => setSetupFor(source)}>Setup</Button>
+                    <Button size="sm" variant="secondary" leftIcon={<Terminal className="h-4 w-4" />} aria-label={`Setup commands for ${source.name}`} onClick={() => setSetupFor({ source, gcpProject: gcpProjectOf(source) })}>Setup</Button>
                     <Button size="sm" variant="secondary" aria-label={`Test ${source.name}`} disabled={test.isPending} onClick={() => test.mutate(source.id)}>Test</Button>
                     <Button size="sm" variant="secondary" aria-label={`Edit ${source.name}`} onClick={() => setDraft(draftFrom(source))}>Edit</Button>
                     <Button
@@ -291,12 +380,14 @@ export default function Monitoring() {
         setDraft={setDraft}
         slackConnectors={slackConnectors}
         githubConnectors={githubConnectors}
+        serverSlack={options.data?.server_slack_mcp ?? false}
+        serverGithub={options.data?.server_github ?? false}
         saving={save.isPending}
         error={save.isError ? message(save.error) : null}
         onSave={() => draft && save.mutate(draft)}
         onClose={closeEditor}
       />
-      <SetupModal source={setupFor} onClose={() => setSetupFor(null)} />
+      <SetupModal setup={setupFor} onClose={() => setSetupFor(null)} />
     </div>
   )
 }
@@ -343,18 +434,23 @@ function GroupRow({ group, source, sourceName, busy, onStatus }: {
   )
 }
 
-function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, saving, error, onSave, onClose }: {
+function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serverSlack, serverGithub, saving, error, onSave, onClose }: {
   draft: Draft | null
   setDraft: (draft: Draft | null) => void
   slackConnectors: AutonomousAgentConnector[]
   githubConnectors: AutonomousAgentConnector[]
+  serverSlack: boolean
+  serverGithub: boolean
   saving: boolean
   error: string | null
   onSave: () => void
   onClose: () => void
 }) {
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => draft && setDraft({ ...draft, [key]: value })
-  const complete = !!draft && !!draft.name.trim() && !!draft.project.trim() && !!draft.serviceAccount.trim() && (!draft.github || !!draft.repo.trim())
+  const suggestion = draft ? suggestedAccount(draft.gcpProject.trim()) : ''
+  const channelOk = !draft || draft.slack !== SERVER_SLACK || SLACK_CHANNEL_ID.test(draft.slackChannel.trim())
+  const complete = !!draft && !!draft.name.trim() && !!draft.project.trim() && !!draft.serviceAccount.trim()
+    && (!draft.github || !!draft.repo.trim()) && channelOk
   return (
     <Modal open={draft !== null} onOpenChange={value => { if (!value) onClose() }} size="xl" position="right">
       {draft && (
@@ -367,6 +463,18 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, savi
             <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={onClose} />
           </ModalHeader>
           <ModalContent className="flex-1 space-y-6">
+            {!draft.id && (
+              <section aria-labelledby="monitor-how-title" className="rounded-lg border border-border-primary bg-foreground/[0.03] p-4">
+                <h3 id="monitor-how-title" className="text-sm font-semibold text-text-primary">How it works</h3>
+                <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[13px] leading-normal text-text-secondary">
+                  <li>Enter the GCP project ID. The push service account is filled in for you.</li>
+                  <li>Choose where alerts go: Slack and, optionally, a repository for GitHub issues.</li>
+                  <li>Press <strong>Connect</strong>. The setup steps open with every <code className="font-mono">gcloud</code> command filled in.</li>
+                  <li>Run them in Cloud Shell, in order. You only do this once per project, and no service needs code changes.</li>
+                  <li>Press <strong>Test</strong> on the card, then send the test error from the last step.</li>
+                </ol>
+              </section>
+            )}
             <FieldGroup title="Source">
               <Field id="monitor-name" label="Name">
                 <Input id="monitor-name" value={draft.name} placeholder="Kasymir beta" onChange={e => set('name', e.target.value)} />
@@ -374,24 +482,54 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, savi
               <Field id="monitor-project" label="NexusMind project">
                 <Input id="monitor-project" value={draft.project} placeholder="kasymir" onChange={e => set('project', e.target.value)} />
               </Field>
+              <Field id="monitor-gcp" label="GCP project ID" hint="Fills the service account and the setup commands. Find it in the GCP console project picker.">
+                <Input
+                  id="monitor-gcp"
+                  className="font-mono"
+                  value={draft.gcpProject}
+                  placeholder="my-project-123"
+                  onChange={e => {
+                    const gcpProject = e.target.value
+                    const previous = suggestedAccount(draft.gcpProject.trim())
+                    // Follow the project while the account is still the suggestion (or empty).
+                    const follow = !draft.serviceAccount || draft.serviceAccount === previous
+                    setDraft({ ...draft, gcpProject, serviceAccount: follow ? suggestedAccount(gcpProject.trim()) : draft.serviceAccount })
+                  }}
+                />
+              </Field>
               <Field
                 id="monitor-sa"
                 label="Push service account"
-                hint="The GCP service account Pub/Sub signs each push with. Only pushes signed by it are accepted."
+                hint="Pub/Sub signs each push as this account; only pushes signed by it are accepted. It needs no roles and no key. The setup steps create it."
               >
-                <Input id="monitor-sa" value={draft.serviceAccount} placeholder="nexusmind-push@my-project.iam.gserviceaccount.com" onChange={e => set('serviceAccount', e.target.value)} />
+                <Input id="monitor-sa" value={draft.serviceAccount} placeholder={suggestion || 'nexusmind-push@my-project-123.iam.gserviceaccount.com'} onChange={e => set('serviceAccount', e.target.value)} />
               </Field>
             </FieldGroup>
             <FieldGroup title="Where alerts go">
-              <Field id="monitor-slack" label="Slack" hint={slackConnectors.length === 0 ? 'Add a Slack connector under Factory settings first.' : undefined}>
+              <Field
+                id="monitor-slack"
+                label="Slack"
+                hint={slackConnectors.length === 0 && !serverSlack ? 'Add a Slack connector under Factory settings first.' : undefined}
+              >
                 <StyledSelect id="monitor-slack" className={SELECT_CLASS} value={draft.slack} onChange={e => set('slack', e.target.value)}>
                   <option value="">No Slack alerts</option>
+                  {serverSlack && <option value={SERVER_SLACK}>Server Slack (Claude&apos;s Slack MCP)</option>}
                   {slackConnectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </StyledSelect>
               </Field>
-              <Field id="monitor-github" label="GitHub issues" hint="A GitHub App or token connector of this organization.">
+              {draft.slack === SERVER_SLACK && (
+                <Field
+                  id="monitor-slack-channel"
+                  label="Slack channel ID"
+                  hint="In Slack, open the channel, click its name, and copy the ID at the bottom (C…). Alerts post as the account the server's Slack MCP is signed in with."
+                >
+                  <Input id="monitor-slack-channel" className="font-mono" value={draft.slackChannel} placeholder="C0123ABCDE" onChange={e => set('slackChannel', e.target.value.trim().toUpperCase())} />
+                </Field>
+              )}
+              <Field id="monitor-github" label="GitHub issues" hint={serverGithub ? 'The server\'s gh account, or a GitHub App or token connector of this organization.' : 'A GitHub App or token connector of this organization.'}>
                 <StyledSelect id="monitor-github" className={SELECT_CLASS} value={draft.github} onChange={e => set('github', e.target.value)}>
                   <option value="">No GitHub issues</option>
+                  {serverGithub && <option value={SERVER_GITHUB}>Server GitHub (authenticated gh)</option>}
                   {githubConnectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </StyledSelect>
               </Field>
@@ -420,13 +558,11 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, savi
   )
 }
 
-function SetupModal({ source, onClose }: { source: MonitorSource | null; onClose: () => void }) {
-  const [gcpProject, setGcpProject] = useState('')
+function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false)
-  const commands = source ? setupCommands(source, gcpProject.trim(), pushEndpoint(source.id)) : ''
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(commands)
+      await navigator.clipboard.writeText(text)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
@@ -434,30 +570,58 @@ function SetupModal({ source, onClose }: { source: MonitorSource | null; onClose
     }
   }
   return (
-    <Modal open={source !== null} onOpenChange={value => { if (!value) onClose() }} size="xl" position="right">
+    <Button size="sm" variant="secondary" aria-label={label} leftIcon={<Copy className="h-4 w-4" />} onClick={copy}>
+      {copied ? 'Copied' : 'Copy'}
+    </Button>
+  )
+}
+
+function SetupModal({ setup, onClose }: { setup: { source: MonitorSource; gcpProject: string } | null; onClose: () => void }) {
+  const [edited, setEdited] = useState<string | null>(null)
+  const source = setup?.source ?? null
+  const gcpProject = (edited ?? setup?.gcpProject ?? '').trim()
+  const endpoint = source ? pushEndpoint(source.id) : ''
+  const steps = source ? setupSteps(source, gcpProject, endpoint) : []
+  const close = () => { setEdited(null); onClose() }
+  return (
+    <Modal open={source !== null} onOpenChange={value => { if (!value) close() }} size="xl" position="right">
       {source && (
         <div className="flex min-h-full flex-col">
           <ModalHeader className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <ModalTitle>Set up {source.name} in GCP</ModalTitle>
-              <ModalDescription>Run once in Cloud Shell. Every service in the project is covered, no code changes.</ModalDescription>
+              <ModalDescription>Run these once, in order, in Cloud Shell. Every service in the project is covered, with no code changes.</ModalDescription>
             </div>
-            <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={onClose} />
+            <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={close} />
           </ModalHeader>
           <ModalContent className="flex-1 space-y-4">
             <Field id="monitor-gcp-project" label="GCP project ID">
-              <Input id="monitor-gcp-project" className="font-mono" value={gcpProject} placeholder="my-project-123" onChange={e => setGcpProject(e.target.value)} />
+              <Input id="monitor-gcp-project" className="font-mono" value={edited ?? setup?.gcpProject ?? ''} placeholder="my-project-123" onChange={e => setEdited(e.target.value)} />
             </Field>
-            <pre aria-label="Setup commands" className="max-h-[60vh] overflow-auto whitespace-pre rounded-lg border border-border-primary bg-foreground/[0.04] p-4 font-mono text-[12px] leading-relaxed text-text-primary">
-              {commands}
-            </pre>
+            <ol aria-label="Setup steps" className="m-0 list-none space-y-4 p-0">
+              {steps.map((step, index) => (
+                <li key={step.title} className="rounded-lg border border-border-primary p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-text-primary">
+                        {index + 1}. {step.title}
+                        {step.optional && <span className="ml-2 font-normal text-text-tertiary">optional</span>}
+                      </p>
+                      <p className="mt-0.5 text-[12px] leading-normal text-text-secondary">{step.detail}</p>
+                    </div>
+                    <CopyButton text={step.command} label={`Copy step ${index + 1}`} />
+                  </div>
+                  <pre className="mt-3 overflow-x-auto whitespace-pre rounded-md bg-foreground/[0.04] p-3 font-mono text-[12px] leading-relaxed text-text-primary">{step.command}</pre>
+                </li>
+              ))}
+            </ol>
             <p className="text-[12px] text-text-tertiary">
-              Then press <strong>Test</strong> on the project card to check Slack and GitHub. The first real error shows up under Errors within a minute.
+              A command that says <em>already exists</em> is fine: move on to the next one.
             </p>
           </ModalContent>
           <ModalFooter>
-            <Button variant="secondary" leftIcon={<Copy className="h-4 w-4" />} onClick={copy}>{copied ? 'Copied' : 'Copy commands'}</Button>
-            <Button onClick={onClose}>Done</Button>
+            <CopyButton text={source ? setupCommands(source, gcpProject, endpoint) : ''} label="Copy all steps" />
+            <Button onClick={close}>Done</Button>
           </ModalFooter>
         </div>
       )}
