@@ -36,6 +36,7 @@ import {
   Flag,
   SlidersHorizontal,
   ChevronDown,
+  Activity,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -172,6 +173,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Search', href: '/search', icon: Search },
       { label: 'Dashboard', href: '/', icon: LayoutDashboard },
       { label: 'Usage', href: '/usage', icon: BarChart3, adminOnly: true },
+      { label: 'Monitoring', href: '/monitoring', icon: Activity, adminOnly: true, requiredPermission: 'settings:write' },
     ],
   },
   {

@@ -1784,3 +1784,55 @@ export interface FactoryWatchdog {
   last_sent_at: string | null
   last_daily_on: string | null
 }
+
+// ---------------------------------------------------------------- runtime error monitoring
+
+export interface MonitorSource {
+  id: string
+  org_id: string
+  project: string
+  name: string
+  service_account: string
+  slack_connector_id: string | null
+  github_connector_id: string | null
+  github_repo: string | null
+  throttle_minutes: number
+  enabled: boolean
+  created_at: string
+  /** The audience the Pub/Sub push subscription must be created with. */
+  audience: string
+}
+
+export interface MonitorSourceInput {
+  project: string
+  name: string
+  service_account: string
+  slack_connector_id: string | null
+  github_connector_id: string | null
+  github_repo: string | null
+  throttle_minutes: number
+  enabled: boolean
+}
+
+export type MonitorGroupStatus = 'open' | 'resolved' | 'muted'
+
+export interface MonitorGroup {
+  id: string
+  source_id: string
+  service: string
+  title: string
+  severity: string
+  count: number
+  first_seen: string
+  last_seen: string
+  /** JSON: { message, stack } (redacted). */
+  sample: string
+  log_url: string | null
+  issue_number: number | null
+  status: MonitorGroupStatus
+}
+
+export interface MonitorTestResult {
+  slack: string
+  github: string
+}
