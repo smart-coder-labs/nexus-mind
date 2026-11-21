@@ -273,7 +273,7 @@ pub fn audits_today(c: &Connection, source_id: &str) -> Result<i64> {
 pub fn start_audit(c: &Connection, group_id: &str, run_id: &str) -> Result<bool> {
     Ok(c.execute(
         "UPDATE monitor_groups SET audit_run_id=?2,audit_status='pending',audit_summary=NULL,audit_started_at=datetime('now')
-         WHERE id=?1 AND COALESCE(audit_status,'')<>'pending'",
+         WHERE id=?1 AND (COALESCE(audit_status,'')<>'pending' OR audit_started_at < datetime('now','-3 hours'))",
         params![group_id, run_id],
     )? > 0)
 }
@@ -381,6 +381,9 @@ mod tests {
         assert_eq!((found.audit_status.as_deref(), found.audit_run_id.as_deref()), (Some("pending"), Some("run-1")));
         finish_audit(&c, &group.id, "done", Some("cause")).unwrap();
         assert!(start_audit(&c, &group.id, "run-3").unwrap(), "a finished audit can be redone");
+        // A run that died without finishing must not keep the group pending forever.
+        c.execute("UPDATE monitor_groups SET audit_started_at=datetime('now','-4 hours') WHERE id=?1", [&group.id]).unwrap();
+        assert!(start_audit(&c, &group.id, "run-4").unwrap(), "a stale pending audit can be restarted");
     }
 
     #[test]
