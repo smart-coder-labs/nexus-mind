@@ -12,7 +12,7 @@ import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalT
 import { cn } from '../lib/utils'
 import type { AutonomousAgentConnector, MonitorAuditExecutor, MonitorGroup, MonitorGroupStatus, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
 import { TaskExecutorSelect } from './factory/agents/TaskExecutorSelect'
-import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, SELECT_CLASS, when } from './factory/govern/ui'
+import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, SELECT_CLASS } from './factory/govern/ui'
 
 const GCP_PROJECT = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/
 
