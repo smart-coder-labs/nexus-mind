@@ -351,6 +351,17 @@ pub async fn github_token_for_run(store: &SqliteStore, claim: &queries::ClaimedA
         run_source(&conn, claim)?
     };
     let connector = source.github_connector_id.as_deref().ok_or_else(|| anyhow::anyhow!("github_connector_required"))?;
+    worker_token(store, &source, connector).await
+}
+
+/// The source's GitHub token inside the autonomous worker. The operator's org
+/// authorization (`FACTORY_GITHUB_PUBLISH_ORG_ID`) is set only on the backend
+/// container, which checked it in `start` before creating this audit run; the
+/// worker cannot re-check it and must not fail the run for that.
+async fn worker_token(store: &SqliteStore, source: &MonitorSource, connector: &str) -> anyhow::Result<String> {
+    if connector == super::delivery::SERVER_GITHUB {
+        return crate::automation::worker::server_github_token().await;
+    }
     super::delivery::github_token(store, &source.org_id, connector).await
 }
 
@@ -452,7 +463,7 @@ async fn finish_inner(
     let fallback = source.github_repo.clone().unwrap_or_default();
     let (mut repository, mut routed) = choose_repository(outcome.as_ref(), &owner, &fallback);
     let connector = source.github_connector_id.clone().unwrap_or_default();
-    let token = super::delivery::github_token(store, &source.org_id, &connector).await?;
+    let token = worker_token(store, &source, &connector).await?;
     // The proposal must be a repository the credential can actually reach.
     if routed && crate::automation::connectors::get_github_repository(&token, &repository).await.is_err() {
         (repository, routed) = (fallback.clone(), false);
