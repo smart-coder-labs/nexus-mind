@@ -1756,6 +1756,10 @@ export class NexusMindClient {
     return this.request(`/v1/monitor/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) })
   }
 
+  setMonitorSourceEnabled(id: string, enabled: boolean): Promise<MonitorSource> {
+    return this.request(`/v1/monitor/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) })
+  }
+
   deleteMonitorSource(id: string): Promise<void> {
     return this.request(`/v1/monitor/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }

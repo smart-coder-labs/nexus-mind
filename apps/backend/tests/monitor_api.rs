@@ -141,6 +141,14 @@ async fn sources_and_groups_never_cross_organizations() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _) = send(&router, &b, "DELETE", &format!("/v1/monitor/sources/{id}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&router, &b, "PATCH", &format!("/v1/monitor/sources/{id}"), Some(json!({"enabled": false}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Org A pauses and resumes its own source.
+    let (status, paused) = send(&router, &a, "PATCH", &format!("/v1/monitor/sources/{id}"), Some(json!({"enabled": false}))).await;
+    assert_eq!((status, paused["enabled"].clone()), (StatusCode::OK, json!(false)));
+    let (_, resumed) = send(&router, &a, "PATCH", &format!("/v1/monitor/sources/{id}"), Some(json!({"enabled": true}))).await;
+    assert_eq!(resumed["enabled"], json!(true));
 
     let (_, groups) = send(&router, &a, "GET", "/v1/monitor/groups", None).await;
     assert_eq!(groups[0]["status"], "open");

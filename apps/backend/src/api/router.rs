@@ -76,7 +76,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
     let protected = Router::new()
         .route("/v1/monitor/options", get(monitor::options))
         .route("/v1/monitor/sources", get(monitor::list_sources).post(monitor::create_source))
-        .route("/v1/monitor/sources/:id", put(monitor::update_source).delete(monitor::delete_source))
+        .route("/v1/monitor/sources/:id", put(monitor::update_source).patch(monitor::set_source_enabled).delete(monitor::delete_source))
         .route("/v1/monitor/sources/:id/test", post(monitor::test_source))
         .route("/v1/monitor/groups", get(monitor::list_groups))
         .route("/v1/monitor/groups/:id", patch(monitor::set_group_status))

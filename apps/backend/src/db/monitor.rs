@@ -123,6 +123,11 @@ pub fn list_sources(c: &Connection, org_id: &str) -> Result<Vec<MonitorSource>> 
     Ok(rows)
 }
 
+/// Pause or resume. `Ok(false)` when the source is missing.
+pub fn set_source_enabled(c: &Connection, org_id: &str, id: &str, enabled: bool) -> Result<bool> {
+    Ok(c.execute("UPDATE monitor_sources SET enabled=?3 WHERE org_id=?1 AND id=?2", params![org_id, id, enabled as i64])? > 0)
+}
+
 pub fn delete_source(c: &Connection, org_id: &str, id: &str) -> Result<bool> {
     Ok(c.execute("DELETE FROM monitor_sources WHERE org_id=?1 AND id=?2", params![org_id, id])? > 0)
 }

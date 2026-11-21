@@ -164,3 +164,14 @@ causes it. The issue then opens in that repository instead of the source's fixed
   - The group records `issue_repo`, `audit_run_id`, `audit_status` and `audit_summary`.
 - **Failure:** a failed or inconclusive run still opens the issue in the default repository, saying
   the audit did not conclude.
+
+## Pause and terminal view
+
+- **Pause:** `PATCH /v1/monitor/sources/:id {enabled}` pauses or resumes a source without
+  re-validating it (like Factory intake sources). A paused source acknowledges Pub/Sub pushes and
+  drops them, so nothing is recorded, alerted or opened. The Pub/Sub subscription stays as it is,
+  so resuming needs no GCP change.
+- **Errors view:** a terminal-like list (monospace, `bg-muted`, status tokens only). One line per
+  error: last seen, severity, service, title, count, audit state and status. Each line is a
+  `<details>` that opens to the source, times, full message, stack, audit conclusion and run, issue
+  and log links, and the Resolve, Mute and Reopen actions.

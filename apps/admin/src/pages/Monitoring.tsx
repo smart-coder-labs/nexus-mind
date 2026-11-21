@@ -1,7 +1,7 @@
 import { StyledSelect } from '@/components/ui/Select/StyledSelect'
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, Copy, ExternalLink, Plus, Terminal, Trash2, X } from 'lucide-react'
+import { Activity, Copy, ExternalLink, Pause, Play, Plus, Terminal, Trash2, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Badge } from '../components/ui/Badge'
@@ -12,7 +12,7 @@ import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalT
 import { cn } from '../lib/utils'
 import type { AutonomousAgentConnector, MonitorAuditExecutor, MonitorGroup, MonitorGroupStatus, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
 import { TaskExecutorSelect } from './factory/agents/TaskExecutorSelect'
-import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, SELECT_CLASS, when } from './factory/govern/ui'
+import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, SELECT_CLASS } from './factory/govern/ui'
 
 const GCP_PROJECT = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/
 
@@ -246,6 +246,10 @@ export default function Monitoring() {
     },
   })
   const remove = useMutation({ mutationFn: (id: string) => client.deleteMonitorSource(id), onSuccess: refresh })
+  const toggle = useMutation({
+    mutationFn: (source: MonitorSource) => client.setMonitorSourceEnabled(source.id, !source.enabled),
+    onSuccess: refresh,
+  })
   const test = useMutation({
     mutationFn: (id: string) => client.testMonitorSource(id),
     onSuccess: (result, id) => setTests(current => ({ ...current, [id]: result })),
@@ -315,6 +319,9 @@ export default function Monitoring() {
                     <dt className="text-text-tertiary">Project</dt>
                     <dd className="break-words text-text-secondary">{source.project}</dd>
                   </dl>
+                  {!source.enabled && (
+                    <p role="status" className="text-[12px] text-text-secondary">Paused: errors from this project are dropped, with no alerts or issues, until you resume.</p>
+                  )}
                   {result && (
                     <p role="status" className="text-[12px] text-text-secondary">
                       Test: Slack {TEST_LABEL[result.slack] ?? result.slack} · GitHub {TEST_LABEL[result.github] ?? result.github}
@@ -324,6 +331,16 @@ export default function Monitoring() {
                     <Button size="sm" variant="secondary" leftIcon={<Terminal className="h-4 w-4" />} aria-label={`Setup commands for ${source.name}`} onClick={() => setSetupFor({ source, gcpProject: gcpProjectOf(source) })}>Setup</Button>
                     <Button size="sm" variant="secondary" aria-label={`Test ${source.name}`} disabled={test.isPending} onClick={() => test.mutate(source.id)}>Test</Button>
                     <Button size="sm" variant="secondary" aria-label={`Edit ${source.name}`} onClick={() => setDraft(draftFrom(source))}>Edit</Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      aria-label={`${source.enabled ? 'Pause' : 'Resume'} ${source.name}`}
+                      leftIcon={source.enabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                      disabled={toggle.isPending}
+                      onClick={() => toggle.mutate(source)}
+                    >
+                      {source.enabled ? 'Pause' : 'Resume'}
+                    </Button>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -338,7 +355,7 @@ export default function Monitoring() {
               )
             })}
           </ul>
-          {(remove.isError || test.isError) && <InlineAlert>That did not work: {message(remove.error ?? test.error)}.</InlineAlert>}
+          {(remove.isError || test.isError || toggle.isError) && <InlineAlert>That did not work: {message(remove.error ?? test.error ?? toggle.error)}.</InlineAlert>}
         </section>
       )}
 
@@ -357,31 +374,23 @@ export default function Monitoring() {
         {groups.isError && <InlineAlert onRetry={() => groups.refetch()}>Could not load the errors.</InlineAlert>}
         {groups.data && groups.data.length === 0 && <p className="text-sm text-text-secondary">No errors yet.</p>}
         {groups.data && groups.data.length > 0 && (
-          <div className="overflow-x-auto rounded-xl border border-border-primary">
-            <table className="admin-data-table w-full min-w-[48rem] text-sm" aria-label="Errors">
-              <thead>
-                <tr className="border-b border-border-secondary text-left text-[12px] text-text-tertiary">
-                  <th scope="col" className="px-4 py-2.5 font-medium">Error</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium">Service</th>
-                  <th scope="col" className="px-4 py-2.5 text-right font-medium">Count</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium">Last seen</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium">Links</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groups.data.map(group => (
-                  <GroupRow
-                    key={group.id}
-                    group={group}
-                    source={sources.data?.find(s => s.id === group.source_id)}
-                    sourceName={sourceName(group.source_id)}
-                    busy={setStatus.isPending}
-                    onStatus={status => setStatus.mutate({ id: group.id, status })}
-                  />
-                ))}
-              </tbody>
-            </table>
+          <div className="overflow-hidden rounded-xl border border-border-primary bg-muted font-mono text-[12px] leading-relaxed">
+            <div className="flex items-center gap-2 border-b border-border-secondary px-4 py-2 text-text-tertiary">
+              <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>monitoring — {sourceFilter ? sourceName(sourceFilter) : 'all projects'} — {groups.data.length} errors</span>
+            </div>
+            <ul aria-label="Errors" className="m-0 list-none p-0">
+              {groups.data.map(group => (
+                <ErrorLine
+                  key={group.id}
+                  group={group}
+                  source={sources.data?.find(s => s.id === group.source_id)}
+                  sourceName={sourceName(group.source_id)}
+                  busy={setStatus.isPending}
+                  onStatus={status => setStatus.mutate({ id: group.id, status })}
+                />
+              ))}
+            </ul>
           </div>
         )}
         {setStatus.isError && <InlineAlert>The status was not saved: {message(setStatus.error)}.</InlineAlert>}
@@ -404,7 +413,25 @@ export default function Monitoring() {
   )
 }
 
-function GroupRow({ group, source, sourceName, busy, onStatus }: {
+/** `22:42:57` today, `Nov 19 22:42` before. */
+function clock(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const today = new Date().toDateString() === date.toDateString()
+  return today
+    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+const SEVERITY_CLASS: Record<string, string> = {
+  CRITICAL: 'text-status-error',
+  ALERT: 'text-status-error',
+  EMERGENCY: 'text-status-error',
+  ERROR: 'text-status-error',
+}
+
+/** One error as a terminal line; opening it shows every detail. */
+function ErrorLine({ group, source, sourceName, busy, onStatus }: {
   group: MonitorGroup
   source: MonitorSource | undefined
   sourceName: string
@@ -413,41 +440,72 @@ function GroupRow({ group, source, sourceName, busy, onStatus }: {
 }) {
   const issueRepo = group.issue_repo ?? source?.github_repo
   const issueUrl = issueRepo && group.issue_number ? `https://github.com/${issueRepo}/issues/${group.issue_number}` : null
+  let sample: { message?: string; stack?: string | null } = {}
+  try { sample = JSON.parse(group.sample) } catch { sample = {} }
+  const status = group.status === 'open' ? 'open' : group.status === 'resolved' ? 'resolved' : 'muted'
+  const statusClass = group.status === 'open' ? 'text-status-error' : group.status === 'resolved' ? 'text-status-success' : 'text-text-tertiary'
+  const audit = group.audit_status === 'pending' ? 'auditing…'
+    : group.audit_status === 'done' ? (group.audit_summary ?? 'done')
+    : group.audit_status === 'failed' ? 'did not reach a conclusion' : null
   return (
-    <tr className="border-b border-border-secondary last:border-0 align-top">
-      <td className="max-w-[28rem] px-4 py-3">
-        <p className="break-words font-medium text-text-primary">{group.title}</p>
-        <p className="text-[12px] text-text-tertiary">{sourceName} · {group.severity}</p>
-        {group.audit_status === 'pending' && <p className="mt-1 text-[12px] text-text-secondary">🔎 Audit in progress; the issue opens when it ends.</p>}
-        {group.audit_status === 'done' && group.audit_summary && <p className="mt-1 break-words text-[12px] text-text-secondary">🔎 {group.audit_summary}</p>}
-        {group.audit_status === 'failed' && <p className="mt-1 text-[12px] text-text-secondary">🔎 The audit did not reach a conclusion.</p>}
-      </td>
-      <td className="px-4 py-3 font-mono text-[12px] text-text-secondary">{group.service}</td>
-      <td className="px-4 py-3 text-right tabular-nums text-text-primary">{group.count}</td>
-      <td className="px-4 py-3 text-text-secondary">{when(group.last_seen)}</td>
-      <td className="px-4 py-3">
-        <div className="flex flex-col gap-1">
-          {issueUrl && <a className={LINK_CLASS} href={issueUrl} target="_blank" rel="noreferrer">{group.issue_repo ? `${group.issue_repo.split('/')[1]} #${group.issue_number}` : `Issue #${group.issue_number}`}</a>}
-          {group.audit_run_id && <a className={LINK_CLASS} href={`/factory/runs?agent_run=${encodeURIComponent(group.audit_run_id)}`}>Audit run</a>}
-          {group.log_url && <a className={LINK_CLASS} href={group.log_url} target="_blank" rel="noreferrer">Logs <ExternalLink className="inline h-3 w-3" aria-hidden="true" /></a>}
-        </div>
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Badge role="none" size="sm" variant={group.status === 'open' ? 'error' : group.status === 'resolved' ? 'success' : 'default'}>
-            {group.status === 'open' ? 'Open' : group.status === 'resolved' ? 'Resolved' : 'Muted'}
-          </Badge>
-          {group.status === 'open' ? (
+    <li className="border-b border-border-secondary last:border-0">
+      <details className="group/line">
+        <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-3 gap-y-0.5 px-4 py-1.5 hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.06] focus-visible:outline-none [&::-webkit-details-marker]:hidden">
+          <span aria-hidden="true" className="text-text-tertiary transition-transform group-open/line:rotate-90">›</span>
+          <span className="tabular-nums text-text-tertiary">{clock(group.last_seen)}</span>
+          <span className={cn('font-semibold', SEVERITY_CLASS[group.severity] ?? 'text-status-warning')}>{group.severity}</span>
+          <span className="text-text-secondary">{group.service}</span>
+          <span className="min-w-0 flex-1 break-words text-text-primary">{group.title}</span>
+          <span className="tabular-nums text-text-secondary">×{group.count}</span>
+          {group.audit_status === 'pending' && <span className="text-status-warning">audit…</span>}
+          <span className={statusClass}>[{status}]</span>
+        </summary>
+        <dl className="m-0 grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-border-secondary bg-background-primary/40 px-4 py-3 pl-9">
+          <dt className="text-text-tertiary">source</dt>
+          <dd className="m-0 text-text-secondary">{sourceName}</dd>
+          <dt className="text-text-tertiary">seen</dt>
+          <dd className="m-0 text-text-secondary">{group.count}× · first {group.first_seen.replace('T', ' ').slice(0, 19)} · last {group.last_seen.replace('T', ' ').slice(0, 19)}</dd>
+          <dt className="text-text-tertiary">message</dt>
+          <dd className="m-0"><pre className="m-0 whitespace-pre-wrap break-words text-text-primary">{sample.message || group.title}</pre></dd>
+          {sample.stack && (
             <>
-              <Button size="sm" variant="ghost" disabled={busy} aria-label={`Resolve ${group.title}`} onClick={() => onStatus('resolved')}>Resolve</Button>
-              <Button size="sm" variant="ghost" disabled={busy} aria-label={`Mute ${group.title}`} onClick={() => onStatus('muted')}>Mute</Button>
+              <dt className="text-text-tertiary">stack</dt>
+              <dd className="m-0"><pre className="m-0 max-h-72 overflow-auto whitespace-pre text-text-secondary">{sample.stack}</pre></dd>
             </>
-          ) : (
-            <Button size="sm" variant="ghost" disabled={busy} aria-label={`Reopen ${group.title}`} onClick={() => onStatus('open')}>Reopen</Button>
           )}
-        </div>
-      </td>
-    </tr>
+          {audit && (
+            <>
+              <dt className="text-text-tertiary">audit</dt>
+              <dd className="m-0 break-words text-text-secondary">
+                {audit}
+                {group.audit_run_id && <> · <a className={LINK_CLASS} href={`/factory/runs?agent_run=${encodeURIComponent(group.audit_run_id)}`}>audit run</a></>}
+              </dd>
+            </>
+          )}
+          <dt className="text-text-tertiary">links</dt>
+          <dd className="m-0 flex flex-wrap gap-x-4">
+            {issueUrl ? (
+              <a className={LINK_CLASS} href={issueUrl} target="_blank" rel="noreferrer">
+                {group.issue_repo ? `${group.issue_repo.split('/')[1]} #${group.issue_number}` : `Issue #${group.issue_number}`}
+              </a>
+            ) : <span className="text-text-tertiary">no issue yet</span>}
+            {group.log_url && <a className={LINK_CLASS} href={group.log_url} target="_blank" rel="noreferrer">Logs <ExternalLink className="inline h-3 w-3" aria-hidden="true" /></a>}
+          </dd>
+          <dt className="text-text-tertiary">status</dt>
+          <dd className="m-0 flex flex-wrap items-center gap-2">
+            <span className={statusClass}>{status}</span>
+            {group.status === 'open' ? (
+              <>
+                <Button size="sm" variant="ghost" disabled={busy} aria-label={`Resolve ${group.title}`} onClick={() => onStatus('resolved')}>Resolve</Button>
+                <Button size="sm" variant="ghost" disabled={busy} aria-label={`Mute ${group.title}`} onClick={() => onStatus('muted')}>Mute</Button>
+              </>
+            ) : (
+              <Button size="sm" variant="ghost" disabled={busy} aria-label={`Reopen ${group.title}`} onClick={() => onStatus('open')}>Reopen</Button>
+            )}
+          </dd>
+        </dl>
+      </details>
+    </li>
   )
 }
 
