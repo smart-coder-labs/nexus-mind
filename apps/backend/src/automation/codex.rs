@@ -13,10 +13,10 @@
 use serde_json::{json, Value};
 
 /// All managed templates. Codex always runs in a credential-free task pod.
-pub const CODEX_TEMPLATES: [&str; 11] = [
+pub const CODEX_TEMPLATES: [&str; 12] = [
     "github_issue_resolver", "github_pr_reviewer", "qa", "judge", "ux_review",
     "lead_generation", "ai_content_manager", "security_scan", "security_dast",
-    "product_strategist", "domain_research",
+    "product_strategist", "domain_research", "error_audit",
 ];
 
 /// The pod-side invocation: the prompt goes on stdin (`-`), never in the exec

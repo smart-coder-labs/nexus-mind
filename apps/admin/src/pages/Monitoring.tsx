@@ -10,7 +10,8 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { Input } from '../components/ui/Input'
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
 import { cn } from '../lib/utils'
-import type { AutonomousAgentConnector, MonitorGroup, MonitorGroupStatus, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
+import type { AutonomousAgentConnector, MonitorAuditExecutor, MonitorGroup, MonitorGroupStatus, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
+import { TaskExecutorSelect } from './factory/agents/TaskExecutorSelect'
 import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, SELECT_CLASS, when } from './factory/govern/ui'
 
 const GCP_PROJECT = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/
@@ -124,6 +125,8 @@ export function setupCommands(source: Pick<MonitorSource, 'id' | 'service_accoun
     .join('\n\n')
 }
 
+const EXECUTOR_LABEL: Record<MonitorAuditExecutor, string> = { claude: 'Claude', codex: 'Codex', pi: 'Pi', nexus: 'Nexus' }
+
 const SERVER_SLACK = 'server_slack_mcp'
 const SERVER_GITHUB = 'server_gh_cli'
 const SLACK_CHANNEL_ID = /^[CGD][A-Z0-9]{8,19}$/
@@ -146,9 +149,12 @@ interface Draft {
   repo: string
   throttle: string
   enabled: boolean
+  /** Empty = no error audit. */
+  auditExecutor: MonitorAuditExecutor | ''
+  auditModel: string
 }
 
-const EMPTY: Draft = { id: null, name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true }
+const EMPTY: Draft = { id: null, name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '' }
 
 function draftFrom(source: MonitorSource): Draft {
   return {
@@ -163,6 +169,8 @@ function draftFrom(source: MonitorSource): Draft {
     repo: source.github_repo ?? '',
     throttle: String(source.throttle_minutes),
     enabled: source.enabled,
+    auditExecutor: source.audit_executor ?? '',
+    auditModel: source.audit_model ?? '',
   }
 }
 
@@ -177,6 +185,8 @@ function sourceInput(draft: Draft): MonitorSourceInput {
     github_repo: draft.github ? draft.repo.trim() : null,
     throttle_minutes: Number(draft.throttle) || 30,
     enabled: draft.enabled,
+    audit_executor: draft.github && draft.auditExecutor ? draft.auditExecutor : null,
+    audit_model: draft.github && draft.auditExecutor && draft.auditModel.trim() ? draft.auditModel.trim() : null,
   }
 }
 
@@ -298,6 +308,8 @@ export default function Monitoring() {
                       {source.github_repo ? <span className="font-mono text-text-primary">{source.github_repo}</span> : <span className="text-text-secondary">Off</span>}
                       {source.github_connector_id === SERVER_GITHUB && <span className="text-text-tertiary"> · server gh</span>}
                     </dd>
+                    <dt className="text-text-tertiary">Error audit</dt>
+                    <dd className="text-text-secondary">{source.audit_executor ? `${EXECUTOR_LABEL[source.audit_executor]}${source.audit_model ? ` · ${source.audit_model}` : ''} · up to 10 a day` : 'Off'}</dd>
                     <dt className="text-text-tertiary">Repeat alerts</dt>
                     <dd className="text-text-secondary">At most every {source.throttle_minutes} min per error</dd>
                     <dt className="text-text-tertiary">Project</dt>
@@ -399,19 +411,24 @@ function GroupRow({ group, source, sourceName, busy, onStatus }: {
   busy: boolean
   onStatus: (status: MonitorGroupStatus) => void
 }) {
-  const issueUrl = source?.github_repo && group.issue_number ? `https://github.com/${source.github_repo}/issues/${group.issue_number}` : null
+  const issueRepo = group.issue_repo ?? source?.github_repo
+  const issueUrl = issueRepo && group.issue_number ? `https://github.com/${issueRepo}/issues/${group.issue_number}` : null
   return (
     <tr className="border-b border-border-secondary last:border-0 align-top">
       <td className="max-w-[28rem] px-4 py-3">
         <p className="break-words font-medium text-text-primary">{group.title}</p>
         <p className="text-[12px] text-text-tertiary">{sourceName} · {group.severity}</p>
+        {group.audit_status === 'pending' && <p className="mt-1 text-[12px] text-text-secondary">🔎 Audit in progress; the issue opens when it ends.</p>}
+        {group.audit_status === 'done' && group.audit_summary && <p className="mt-1 break-words text-[12px] text-text-secondary">🔎 {group.audit_summary}</p>}
+        {group.audit_status === 'failed' && <p className="mt-1 text-[12px] text-text-secondary">🔎 The audit did not reach a conclusion.</p>}
       </td>
       <td className="px-4 py-3 font-mono text-[12px] text-text-secondary">{group.service}</td>
       <td className="px-4 py-3 text-right tabular-nums text-text-primary">{group.count}</td>
       <td className="px-4 py-3 text-text-secondary">{when(group.last_seen)}</td>
       <td className="px-4 py-3">
         <div className="flex flex-col gap-1">
-          {issueUrl && <a className={LINK_CLASS} href={issueUrl} target="_blank" rel="noreferrer">Issue #{group.issue_number}</a>}
+          {issueUrl && <a className={LINK_CLASS} href={issueUrl} target="_blank" rel="noreferrer">{group.issue_repo ? `${group.issue_repo.split('/')[1]} #${group.issue_number}` : `Issue #${group.issue_number}`}</a>}
+          {group.audit_run_id && <a className={LINK_CLASS} href={`/factory/runs?agent_run=${encodeURIComponent(group.audit_run_id)}`}>Audit run</a>}
           {group.log_url && <a className={LINK_CLASS} href={group.log_url} target="_blank" rel="noreferrer">Logs <ExternalLink className="inline h-3 w-3" aria-hidden="true" /></a>}
         </div>
       </td>
@@ -534,10 +551,41 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
                 </StyledSelect>
               </Field>
               {draft.github && (
-                <Field id="monitor-repo" label="Repository for issues">
+                <Field id="monitor-repo" label={draft.auditExecutor ? 'Default repository for issues' : 'Repository for issues'} hint={draft.auditExecutor ? 'Used when the audit cannot name the repository that causes the error. Its owner is where the audit may look.' : undefined}>
                   <Input id="monitor-repo" className="font-mono" value={draft.repo} placeholder="owner/repo" onChange={e => set('repo', e.target.value)} />
                 </Field>
               )}
+            </FieldGroup>
+            <FieldGroup
+              title="Error audit"
+              description="Before opening the issue, an agent reads the code to find why the error happens and which repository causes it, then the issue opens there. Only for new and regressed errors, up to 10 audits a day; past that, issues open without one."
+            >
+              {!draft.github ? (
+                <p className="text-[13px] text-text-secondary">Turn on GitHub issues first: the audit decides which repository gets them.</p>
+              ) : (
+                <>
+                  <label className="flex items-center gap-2 text-sm text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={!!draft.auditExecutor}
+                      onChange={e => setDraft({ ...draft, auditExecutor: e.target.checked ? 'claude' : '', auditModel: e.target.checked ? draft.auditModel : '' })}
+                    />
+                    Audit new errors before opening the issue
+                  </label>
+                  {draft.auditExecutor && (
+                    <>
+                      <Field id="monitor-audit-executor" label="Executor">
+                        <TaskExecutorSelect value={draft.auditExecutor} template="error_audit" onChange={value => set('auditExecutor', value)} />
+                      </Field>
+                      <Field id="monitor-audit-model" label="Model (optional)" hint="Leave empty for the executor's default model.">
+                        <Input id="monitor-audit-model" className="font-mono" value={draft.auditModel} placeholder={draft.auditExecutor === 'claude' ? 'sonnet' : ''} onChange={e => set('auditModel', e.target.value)} />
+                      </Field>
+                    </>
+                  )}
+                </>
+              )}
+            </FieldGroup>
+            <FieldGroup title="Repeats">
               <Field id="monitor-throttle" label="Alert again for the same error at most every (minutes)">
                 <Input id="monitor-throttle" type="number" min={1} max={1440} value={draft.throttle} onChange={e => set('throttle', e.target.value)} />
               </Field>

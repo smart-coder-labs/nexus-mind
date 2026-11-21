@@ -72,6 +72,7 @@ const TEMPLATE_NAMES: Record<string, string> = {
   security_dast: 'Live security scan',
   product_strategist: 'Product strategist',
   domain_research: 'Domain research',
+  error_audit: 'Error audit',
   ux_review: 'UI/UX reviewer',
 }
 export const templateName = (key: string) => TEMPLATE_NAMES[key] ?? humanize(key)

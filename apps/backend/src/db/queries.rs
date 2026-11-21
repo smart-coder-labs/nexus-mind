@@ -16740,6 +16740,7 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
         "security_scan" => vec!["repository:read", "finding:write", "delivery:write"],
         "product_strategist" => vec!["repository:read", "finding:write", "delivery:write"],
         "domain_research" => vec!["web:search", "memory:write"],
+        "error_audit" => vec!["repository:read"],
         "ux_review" => vec!["repository:read", "finding:write", "delivery:write"],
         "security_dast" => vec!["scan:active", "finding:write", "delivery:write"],
         _ => anyhow::bail!("invalid_template"),
@@ -17435,6 +17436,15 @@ pub fn validate_autonomous_agent_definition(
             if !strings("routes", 30, &|r| r.starts_with('/') && r.len() <= 200) { errors.push("invalid_routes") }
             if !strings("viewports", 4, &|v| v.split_once('x').is_some_and(|(w, h)| w.parse::<u16>().is_ok_and(|w| (320..=2560).contains(&w)) && h.parse::<u16>().is_ok_and(|h| (480..=1600).contains(&h)))) { errors.push("invalid_viewports") }
             if !strings("themes", 2, &|t| matches!(t, "light" | "dark")) { errors.push("invalid_themes") }
+        }
+        "error_audit" => {
+            let owner = current.revision.config.get("github_owner").and_then(|v| v.as_str()).unwrap_or_default();
+            if crate::automation::connectors::validate_repository(&format!("{owner}/x")).is_err() {
+                errors.push("github_owner_required")
+            }
+            if current.revision.config.get("monitor_source_id").and_then(|v| v.as_str()).is_none_or(|v| v.trim().is_empty()) {
+                errors.push("monitor_source_required")
+            }
         }
         "domain_research" => {
             if current.revision.config.get("domain").and_then(|v| v.as_str()).is_none_or(|v| v.trim().is_empty()) {

@@ -268,6 +268,20 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
             ],
         },
         AutonomousAgentTemplate {
+            key: "error_audit".into(),
+            version: 1,
+            name: "Error Audit".into(),
+            description: "Managed by Monitoring: reads the code of the candidate repositories to find why a runtime error happens and which repository causes it. Read-only; Monitoring opens the GitHub issue.".into(),
+            capabilities: vec!["repository:read".into()],
+            default_budgets: serde_json::json!({"wall_time_seconds": 1200, "max_attempts": 1, "max_cost_usd": 3, "max_definition_concurrency": 2, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({"github_owner":{"type":"string","required":true,"description":"GitHub owner whose repositories may be audited"},"monitor_source_id":{"type":"string","required":true,"description":"The Monitoring source this agent audits"}}),
+            workflow: vec![
+                "checkout_candidates".into(),
+                "investigate".into(),
+                "route".into(),
+            ],
+        },
+        AutonomousAgentTemplate {
             key: "domain_research".into(),
             version: 1,
             name: "Domain Research".into(),

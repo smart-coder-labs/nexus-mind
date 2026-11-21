@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 116;
+pub const LATEST_USER_VERSION: i32 = 118;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -119,6 +119,8 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v114(conn)?;
     run_v115(conn)?;
     run_v116(conn)?;
+    run_v117(conn)?;
+    run_v118(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -285,6 +287,86 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
 
         PRAGMA foreign_keys = ON;
         PRAGMA user_version = 113;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v118: error audits. A monitor source names the executor (and
+/// optional model) of its managed `error_audit` agent; a group records its
+/// audit run and outcome.
+pub fn run_v118(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 118 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (table, column) in [
+        ("monitor_sources", "audit_executor"),
+        ("monitor_sources", "audit_model"),
+        ("monitor_sources", "audit_agent_id"),
+        ("monitor_groups", "audit_run_id"),
+        ("monitor_groups", "audit_status"),
+        ("monitor_groups", "audit_summary"),
+        ("monitor_groups", "audit_started_at"),
+        ("monitor_groups", "issue_repo"),
+    ] {
+        let has: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+            rusqlite::params![table, column],
+            |row| row.get(0),
+        )?;
+        if !has {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS monitor_groups_audit_run ON monitor_groups(audit_run_id);
+         PRAGMA user_version=118;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v117: allow the `error_audit` agent template (runtime error
+/// monitoring audits). Same table rebuild as run_v114.
+pub fn run_v117(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 117 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE autonomous_agent_definitions_new (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT,
+            template_key TEXT NOT NULL CHECK(template_key IN ('qa','github_issue_resolver','github_pr_reviewer','lead_generation','judge','ai_content_manager','security_scan','security_dast','product_strategist','ux_review','domain_research','error_audit')),
+            template_version INTEGER NOT NULL CHECK(template_version > 0),
+            status TEXT NOT NULL DEFAULT 'disabled' CHECK(status IN ('disabled','enabled','archived')),
+            current_revision INTEGER NOT NULL DEFAULT 1 CHECK(current_revision > 0),
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, name)
+        );
+
+        INSERT INTO autonomous_agent_definitions_new
+            (id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at)
+        SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
+        FROM autonomous_agent_definitions;
+
+        DROP TABLE autonomous_agent_definitions;
+        ALTER TABLE autonomous_agent_definitions_new RENAME TO autonomous_agent_definitions;
+
+        CREATE INDEX IF NOT EXISTS idx_autonomous_agent_definitions_org_status
+            ON autonomous_agent_definitions(org_id, status);
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 117;
         ",
     )?;
     Ok(())

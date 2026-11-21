@@ -110,6 +110,9 @@ pub struct SourceRequest {
     pub github_repo: Option<String>,
     pub throttle_minutes: Option<i64>,
     pub enabled: Option<bool>,
+    /// `claude`, `codex`, `pi` or `nexus`; absent or empty = no error audit.
+    pub audit_executor: Option<String>,
+    pub audit_model: Option<String>,
 }
 
 fn blank_to_none(value: Option<String>) -> Option<String> {
@@ -141,6 +144,19 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
     let throttle_minutes = input.throttle_minutes.unwrap_or(30);
     if !(1..=1440).contains(&throttle_minutes) {
         return Err(invalid("throttle_minutes must be between 1 and 1440"));
+    }
+    let audit_executor = blank_to_none(input.audit_executor);
+    let audit_model = blank_to_none(input.audit_model);
+    if let Some(executor) = &audit_executor {
+        if !crate::monitor::audit::EXECUTORS.contains(&executor.as_str()) {
+            return Err(invalid("audit_executor must be claude, codex, pi or nexus"));
+        }
+        if input.github_connector_id.as_deref().is_none_or(|v| v.trim().is_empty()) || input.github_repo.as_deref().is_none_or(|v| v.trim().is_empty()) {
+            return Err(invalid("an error audit needs GitHub issues: its default repository sets the owner it may audit"));
+        }
+    }
+    if audit_model.as_ref().is_some_and(|m| m.len() > 80 || audit_executor.is_none()) {
+        return Err(invalid("audit_model needs an audit_executor and at most 80 characters"));
     }
     let slack_connector_id = blank_to_none(input.slack_connector_id);
     let server_allowed = crate::monitor::delivery::server_integrations_allowed(org_id);
@@ -205,7 +221,34 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
         github_repo,
         throttle_minutes,
         enabled: input.enabled.unwrap_or(true),
+        audit_executor,
+        audit_model,
     })
+}
+
+/// Brings the source's managed audit agent in line with its settings.
+fn sync_audit(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource) -> ApiResult<MonitorSource> {
+    let agent = crate::monitor::audit::sync_agent(conn, user_id, source).map_err(|e| {
+        error(StatusCode::UNPROCESSABLE_ENTITY, "audit_agent_invalid", format!("The error audit could not be set up: {e}"))
+    })?;
+    store_monitor::set_audit_agent(conn, &source.org_id, &source.id, agent.as_deref()).map_err(internal)?;
+    store_monitor::get_source(conn, &source.org_id, &source.id).map_err(internal)?.ok_or_else(not_found)
+}
+
+fn write_of(source: &MonitorSource) -> SourceWrite {
+    SourceWrite {
+        project: source.project.clone(),
+        name: source.name.clone(),
+        service_account: source.service_account.clone(),
+        slack_connector_id: source.slack_connector_id.clone(),
+        slack_channel: source.slack_channel.clone(),
+        github_connector_id: source.github_connector_id.clone(),
+        github_repo: source.github_repo.clone(),
+        throttle_minutes: source.throttle_minutes,
+        enabled: source.enabled,
+        audit_executor: source.audit_executor.clone(),
+        audit_model: source.audit_model.clone(),
+    }
 }
 
 fn name_taken() -> (StatusCode, Json<ApiError>) {
@@ -246,7 +289,14 @@ pub async fn create_source(
     let source = store_monitor::create_source(&conn, &auth.org_id, &auth.user_id, &write)
         .map_err(internal)?
         .ok_or_else(name_taken)?;
-    Ok((StatusCode::CREATED, Json(source)))
+    match sync_audit(&conn, &auth.user_id, &source) {
+        Ok(source) => Ok((StatusCode::CREATED, Json(source))),
+        Err(error) => {
+            // No half-configured source: it is created with its audit or not at all.
+            let _ = store_monitor::delete_source(&conn, &auth.org_id, &source.id);
+            Err(error)
+        }
+    }
 }
 
 pub async fn update_source(
@@ -258,12 +308,20 @@ pub async fn update_source(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_permission(&conn, &auth, None, PERMISSION)?;
-    store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
+    let previous = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
     let write = validate(&conn, &auth.org_id, input)?;
     if !store_monitor::update_source(&conn, &auth.org_id, &id, &write).map_err(internal)? {
         return Err(name_taken());
     }
-    store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.map(Json).ok_or_else(not_found)
+    let source = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
+    match sync_audit(&conn, &auth.user_id, &source) {
+        Ok(source) => Ok(Json(source)),
+        Err(error) => {
+            // Keep the settings that still match the agent.
+            let _ = store_monitor::update_source(&conn, &auth.org_id, &id, &write_of(&previous));
+            Err(error)
+        }
+    }
 }
 
 pub async fn delete_source(
@@ -274,6 +332,10 @@ pub async fn delete_source(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_permission(&conn, &auth, None, PERMISSION)?;
+    // Its managed audit agent stops with it (kept for the run history).
+    if let Some(agent) = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.and_then(|s| s.audit_agent_id) {
+        let _ = crate::db::queries::set_autonomous_agent_status(&conn, &auth.org_id, &agent, "disabled");
+    }
     if store_monitor::delete_source(&conn, &auth.org_id, &id).map_err(internal)? {
         Ok(StatusCode::NO_CONTENT)
     } else {
