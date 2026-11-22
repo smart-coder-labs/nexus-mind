@@ -5447,6 +5447,8 @@ pub fn fetch_daily_stats(conn: &Connection, org_id: &str) -> Result<DailyStats> 
 
 /// Insert or update a code_project row for (org_id, name).
 /// Returns the `id` (ROWID) of the project.
+/// Re-indexing an archived project restores it: otherwise the index completes
+/// but the project stays hidden from the admin list and search.
 pub fn upsert_code_project(
     conn: &Connection,
     org_id: &str,
@@ -5456,7 +5458,7 @@ pub fn upsert_code_project(
     conn.execute(
         "INSERT INTO code_projects (org_id, name, root_path)
          VALUES (?1, ?2, ?3)
-         ON CONFLICT(org_id, name) DO UPDATE SET root_path = excluded.root_path",
+         ON CONFLICT(org_id, name) DO UPDATE SET root_path = excluded.root_path, archived_at = NULL",
         rusqlite::params![org_id, name, root_path],
     )?;
     let id: i64 = conn.query_row(
@@ -12735,6 +12737,19 @@ mod tests {
             1,
             "re-index must not duplicate the visible project"
         );
+    }
+
+    #[test]
+    fn upsert_code_project_restores_an_archived_project() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let id = upsert_code_project(&conn, &org_id, "myapp", "/ws/a").unwrap();
+        archive_code_project(&conn, &org_id, id).unwrap();
+        assert_eq!(upsert_code_project(&conn, &org_id, "myapp", "/ws/a").unwrap(), id);
+        let archived: Option<String> = conn
+            .query_row("SELECT archived_at FROM code_projects WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert!(archived.is_none(), "re-indexing must unarchive the project");
     }
 
     #[test]
