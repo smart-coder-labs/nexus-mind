@@ -191,6 +191,8 @@ pub struct SourceRequest {
     /// `claude`, `codex`, `pi` or `nexus`; absent or empty = no error audit.
     pub audit_executor: Option<String>,
     pub audit_model: Option<String>,
+    /// Hand each opened issue to an agent that opens a draft PR.
+    pub autofix: Option<bool>,
 }
 
 fn blank_to_none(value: Option<String>) -> Option<String> {
@@ -297,6 +299,11 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: So
         }
         _ => return Err(invalid("github_connector_id and github_repo go together")),
     }
+    let autofix = input.autofix.unwrap_or(false);
+    // The resolver publishes with the server's gh account: never on another org's credential.
+    if autofix && github_connector_id.as_deref() != Some(SERVER_GITHUB) {
+        return Err(invalid("autofix needs GitHub issues through the server's gh account"));
+    }
     Ok(SourceWrite {
         project,
         name,
@@ -311,15 +318,20 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: So
         audit_model,
         provider: provider.to_string(),
         provider_ref,
+        autofix,
     })
 }
 
-/// Brings the source's managed audit agent in line with its settings.
+/// Brings the source's managed audit and auto-fix agents in line with its settings.
 fn sync_audit(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource) -> ApiResult<MonitorSource> {
     let agent = crate::monitor::audit::sync_agent(conn, user_id, source).map_err(|e| {
         error(StatusCode::UNPROCESSABLE_ENTITY, "audit_agent_invalid", format!("The error audit could not be set up: {e}"))
     })?;
     store_monitor::set_audit_agent(conn, &source.org_id, &source.id, agent.as_deref()).map_err(internal)?;
+    let fixer = crate::monitor::autofix::sync_agent(conn, user_id, source).map_err(|e| {
+        error(StatusCode::UNPROCESSABLE_ENTITY, "autofix_agent_invalid", format!("Auto-fix could not be set up: {e}"))
+    })?;
+    store_monitor::set_autofix_agent(conn, &source.org_id, &source.id, fixer.as_deref()).map_err(internal)?;
     store_monitor::get_source(conn, &source.org_id, &source.id).map_err(internal)?.ok_or_else(not_found)
 }
 
@@ -338,6 +350,7 @@ fn write_of(source: &MonitorSource) -> SourceWrite {
         audit_model: source.audit_model.clone(),
         provider: source.provider.clone(),
         provider_ref: source.provider_ref.clone(),
+        autofix: source.autofix,
     }
 }
 
@@ -454,9 +467,11 @@ pub async fn delete_source(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_permission(&conn, &auth, None, PERMISSION)?;
-    // Its managed audit agent stops with it (kept for the run history).
-    if let Some(agent) = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.and_then(|s| s.audit_agent_id) {
-        let _ = crate::db::queries::set_autonomous_agent_status(&conn, &auth.org_id, &agent, "disabled");
+    // Its managed agents stop with it (kept for the run history).
+    if let Some(source) = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)? {
+        for agent in [source.audit_agent_id, source.autofix_agent_id].into_iter().flatten() {
+            let _ = crate::db::queries::set_autonomous_agent_status(&conn, &auth.org_id, &agent, "disabled");
+        }
     }
     if store_monitor::delete_source(&conn, &auth.org_id, &id).map_err(internal)? {
         Ok(StatusCode::NO_CONTENT)
@@ -498,8 +513,8 @@ pub async fn test_source(
             match source.slack_channel.as_deref() {
                 _ if !allowed => "not_authorized".into(),
                 None => "channel_missing".into(),
-                Some(channel) => match crate::monitor::delivery::send_slack_via_mcp(&config.claude_code_bin, channel, &text).await {
-                    Ok(()) => "ok".into(),
+                Some(channel) => match crate::monitor::delivery::send_slack_via_mcp(&config.claude_code_bin, channel, &text, None).await {
+                    Ok(_) => "ok".into(),
                     Err(_) => "send_failed".into(),
                 },
             }

@@ -5912,6 +5912,15 @@ async fn execute_claim(
             }
             Err(error) => return ("blocked_policy".into(), json!({"code": error.to_string()})),
         }
+    } else if crate::monitor::autofix::is_managed(claim) {
+        // Monitoring's resolver works only on the issue it was handed.
+        match crate::monitor::autofix::scope_claim(store, claim) {
+            Ok(scoped) => {
+                audit_claim = scoped;
+                &audit_claim
+            }
+            Err(error) => return ("blocked_policy".into(), json!({"code": error.to_string()})),
+        }
     } else {
         claim
     };
@@ -9779,6 +9788,10 @@ async fn run_claim(store: SqliteStore, config: Arc<Config>, claim: queries::Clai
     // Monitoring opens the audited error's issue, whatever the run's outcome.
     if claim.template_key == crate::monitor::audit::TEMPLATE {
         crate::monitor::audit::finish(&store, &config, &claim, &status, &result).await;
+    }
+    // Monitoring posts the fix's PR (or why there is none) in the alert's thread.
+    if crate::monitor::autofix::is_managed(&claim) {
+        crate::monitor::autofix::finish(&store, &config, &claim, &status, &result).await;
     }
     let db = store.conn();
     if let Ok(conn) = db.lock() {

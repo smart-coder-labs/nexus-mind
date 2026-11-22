@@ -196,9 +196,10 @@ interface Draft {
   /** Empty = no error audit. */
   auditExecutor: MonitorAuditExecutor | ''
   auditModel: string
+  autofix: boolean
 }
 
-const EMPTY: Draft = { id: null, provider: 'gcp', providerRef: '', name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '' }
+const EMPTY: Draft = { id: null, provider: 'gcp', providerRef: '', name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '', autofix: false }
 
 function draftFrom(source: MonitorSource): Draft {
   return {
@@ -217,6 +218,7 @@ function draftFrom(source: MonitorSource): Draft {
     enabled: source.enabled,
     auditExecutor: source.audit_executor ?? '',
     auditModel: source.audit_model ?? '',
+    autofix: source.autofix,
   }
 }
 
@@ -236,6 +238,7 @@ function sourceInput(draft: Draft): MonitorSourceInput {
     enabled: draft.enabled,
     audit_executor: draft.github && draft.auditExecutor ? draft.auditExecutor : null,
     audit_model: draft.github && draft.auditExecutor && draft.auditModel.trim() ? draft.auditModel.trim() : null,
+    autofix: draft.github === SERVER_GITHUB && draft.autofix,
   }
 }
 
@@ -368,6 +371,8 @@ export default function Monitoring() {
                     </dd>
                     <dt className="text-text-tertiary">Error audit</dt>
                     <dd className="text-text-secondary">{source.audit_executor ? `${EXECUTOR_LABEL[source.audit_executor]}${source.audit_model ? ` · ${source.audit_model}` : ''} · up to 10 a day` : 'Off'}</dd>
+                    <dt className="text-text-tertiary">Auto-fix</dt>
+                    <dd className="text-text-secondary">{source.autofix ? 'Draft PR per issue · up to 10 a day' : 'Off'}</dd>
                     <dt className="text-text-tertiary">Repeat alerts</dt>
                     <dd className="text-text-secondary">At most every {source.throttle_minutes} min per error</dd>
                     <dt className="text-text-tertiary">Project</dt>
@@ -512,6 +517,8 @@ function ErrorLine({ group, source, sourceName, busy, onStatus }: {
           <span className="min-w-0 flex-1 break-words text-text-primary">{group.title}</span>
           <span className="tabular-nums text-text-secondary">×{group.count}</span>
           {group.audit_status === 'pending' && <span className="text-status-warning">audit…</span>}
+          {group.fix_status === 'pending' && <span className="text-status-warning">fixing…</span>}
+          {group.fix_status === 'pr_open' && <span className="text-status-success">PR</span>}
           <span className={statusClass}>[{status}]</span>
         </summary>
         <dl className="m-0 grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-border-secondary bg-background-primary/40 px-4 py-3 pl-9">
@@ -543,6 +550,8 @@ function ErrorLine({ group, source, sourceName, busy, onStatus }: {
                 {group.issue_repo ? `${group.issue_repo.split('/')[1]} #${group.issue_number}` : `Issue #${group.issue_number}`}
               </a>
             ) : <span className="text-text-tertiary">no issue yet</span>}
+            {group.fix_pr_url && <a className={LINK_CLASS} href={group.fix_pr_url} target="_blank" rel="noreferrer">Fix PR</a>}
+            {group.fix_status === 'failed' && group.fix_run_id && <a className={LINK_CLASS} href={`/factory/runs?agent_run=${encodeURIComponent(group.fix_run_id)}`}>fix run (no PR)</a>}
             {group.log_url && <a className={LINK_CLASS} href={group.log_url} target="_blank" rel="noreferrer">Logs <ExternalLink className="inline h-3 w-3" aria-hidden="true" /></a>}
           </dd>
           <dt className="text-text-tertiary">status</dt>
@@ -723,6 +732,19 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
                     </>
                   )}
                 </>
+              )}
+            </FieldGroup>
+            <FieldGroup
+              title="Auto-fix"
+              description="Each issue Monitoring opens goes to an agent that writes a fix and opens a draft PR that closes the issue. The PR is posted in the Slack thread of the alert for someone to review; nothing is merged automatically. Up to 10 a day. Uses the audit's executor, or Claude."
+            >
+              {draft.github !== SERVER_GITHUB ? (
+                <p className="text-[13px] text-text-secondary">Needs GitHub issues through the server&apos;s gh account: the agent opens the PR with it.</p>
+              ) : (
+                <label className="flex items-center gap-2 text-sm text-text-secondary">
+                  <input type="checkbox" checked={draft.autofix} onChange={e => set('autofix', e.target.checked)} />
+                  Open a draft PR for each issue
+                </label>
               )}
             </FieldGroup>
             <FieldGroup title="Repeats">

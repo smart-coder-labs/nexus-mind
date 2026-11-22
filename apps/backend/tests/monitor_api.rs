@@ -275,6 +275,36 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
         conn.query_row("SELECT status FROM autonomous_agent_definitions WHERE id=?1", [&agent], |r| r.get(0)).unwrap()
     };
     assert_eq!(agent_status, "disabled");
+
+    // Auto-fix creates an enabled, managed resolver on the default repository,
+    // marked so webhook and reconciliation intake leave it alone.
+    let mut fixing = json!({
+        "project": "kasymir", "name": "server",
+        "service_account": "nexusmind-push@my-proj-1.iam.gserviceaccount.com",
+        "github_connector_id": "server_gh_cli", "github_repo": "acme/app",
+        "autofix": true
+    });
+    let (status, source) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(fixing.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{source}");
+    assert_eq!(source["autofix"], json!(true));
+    let fixer = source["autofix_agent_id"].as_str().expect("managed resolver").to_string();
+    let (fixer_row, fixer_repo, fixer_source): (String, String, String) = {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        conn.query_row(
+            "SELECT d.template_key||':'||d.status, json_extract(r.config_json,'$.repository'), json_extract(r.config_json,'$.monitor_source_id')
+               FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
+              WHERE d.id=?1 AND d.org_id=?2",
+            [&fixer, &org_a],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!((fixer_row.as_str(), fixer_repo.as_str(), fixer_source.as_str()), ("github_issue_resolver:enabled", "acme/app", id.as_str()));
+    // Without GitHub issues there is nothing to fix.
+    fixing["github_connector_id"] = json!(null);
+    fixing["github_repo"] = json!(null);
+    let (status, _) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(fixing)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     std::env::remove_var("FACTORY_GITHUB_PUBLISH_ORG_ID");
     let _ = std::fs::remove_file(path);
 }

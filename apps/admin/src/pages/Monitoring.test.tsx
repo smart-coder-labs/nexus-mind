@@ -41,6 +41,8 @@ const source: MonitorSource = {
   audit_agent_id: null,
   provider: 'gcp',
   provider_ref: null,
+  autofix: false,
+  autofix_agent_id: null,
 }
 const group: MonitorGroup = {
   id: 'g1',
@@ -59,6 +61,10 @@ const group: MonitorGroup = {
   audit_status: null,
   audit_summary: null,
   issue_repo: null,
+  slack_ts: null,
+  fix_run_id: null,
+  fix_status: null,
+  fix_pr_url: null,
 }
 
 function renderPage() {
@@ -218,6 +224,21 @@ describe('Monitoring page', () => {
       github_repo: 'acme/app',
     }))
     expect(await screen.findByRole('list', { name: 'Setup steps' })).toBeInTheDocument()
+  })
+
+  it('turns auto-fix on only with the server gh, and links the fix PR', async () => {
+    const serverSource = { ...source, github_connector_id: 'server_gh_cli' }
+    api.listMonitorSources.mockResolvedValue([serverSource])
+    api.getMonitorOptions.mockResolvedValue({ server_slack_mcp: true, server_github: true })
+    api.listMonitorGroups.mockResolvedValue([{ ...group, fix_status: 'pr_open', fix_run_id: 'run-4', fix_pr_url: 'https://github.com/acme/app/pull/9' }])
+    api.updateMonitorSource.mockResolvedValue({ ...serverSource, autofix: true })
+    renderPage()
+    await userEvent.click(await screen.findByText('Order <n> not found'))
+    expect(screen.getByRole('link', { name: 'Fix PR' })).toHaveAttribute('href', 'https://github.com/acme/app/pull/9')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Kasymir beta' }))
+    await userEvent.click(screen.getByLabelText('Open a draft PR for each issue'))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(api.updateMonitorSource).toHaveBeenCalledWith('src-1', expect.objectContaining({ github_connector_id: 'server_gh_cli', autofix: true }))
   })
 
   it('connects a Vercel drain and shows its token once, with no GCP fields', async () => {
