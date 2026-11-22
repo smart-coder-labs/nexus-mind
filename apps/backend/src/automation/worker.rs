@@ -2531,10 +2531,16 @@ pub(crate) fn authenticated_git(token: &str) -> Command {
     // credentials". This is the same scheme gh's credential helper uses, so it
     // works for clone, fetch and push against private repositories.
     let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+    // The empty credential.helper clears every host helper (incl. URL-scoped
+    // `gh auth git-credential`): if the token is rejected, git must fail
+    // instead of silently retrying as the server's gh account.
     command
-        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_COUNT", "2")
         .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-        .env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {basic}"));
+        .env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {basic}"))
+        .env("GIT_CONFIG_KEY_1", "credential.helper")
+        .env("GIT_CONFIG_VALUE_1", "")
+        .env("GIT_TERMINAL_PROMPT", "0");
     command
 }
 
