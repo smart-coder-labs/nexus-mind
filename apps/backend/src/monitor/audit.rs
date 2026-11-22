@@ -511,6 +511,10 @@ mod tests {
             audit_status: None,
             audit_summary: None,
             issue_repo: None,
+            slack_ts: None,
+            fix_run_id: None,
+            fix_status: None,
+            fix_pr_url: None,
         }
     }
 

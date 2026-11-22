@@ -1813,6 +1813,10 @@ export interface MonitorSource {
   provider_ref: string | null
   /** A drain's bearer token: only in the create response, never again. */
   ingest_token?: string
+  /** Each opened issue goes to an agent that opens a draft PR. */
+  autofix: boolean
+  /** The managed `github_issue_resolver` (Factory › Agents). */
+  autofix_agent_id: string | null
 }
 
 /** Where errors come from: GCP Pub/Sub push, or a Supabase/Vercel log drain. */
@@ -1836,6 +1840,7 @@ export interface MonitorSourceInput {
   enabled: boolean
   audit_executor: MonitorAuditExecutor | null
   audit_model: string | null
+  autofix: boolean
 }
 
 /** What the connect form may offer: the server's own Slack MCP and `gh` are
@@ -1866,6 +1871,12 @@ export interface MonitorGroup {
   audit_summary: string | null
   /** Where the issue was opened (the audit may route it). */
   issue_repo: string | null
+  /** The Slack alert follow-ups reply to (server Slack MCP only). */
+  slack_ts: string | null
+  /** The auto-fix run: `pending`, `pr_open` or `failed`, and its draft PR. */
+  fix_run_id: string | null
+  fix_status: 'pending' | 'pr_open' | 'failed' | null
+  fix_pr_url: string | null
 }
 
 export interface MonitorTestResult {

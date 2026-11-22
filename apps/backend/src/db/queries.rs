@@ -19021,7 +19021,9 @@ pub fn enqueue_github_webhook_agents(
         "SELECT d.id,r.config_json FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
          ON r.definition_id=d.id AND r.revision=d.current_revision
          WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key=?2
-           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'",
+           AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'
+           -- Monitoring's managed resolver only works on the issues it is handed.
+           AND json_extract(r.config_json,'$.monitor_source_id') IS NULL",
     )?;
     let ids = stmt
         .query_map(rusqlite::params![org_id, template], |row| {
@@ -19181,6 +19183,7 @@ pub fn list_github_reconciliation_sources(
            AND (SELECT v.status FROM autonomous_agent_validations v WHERE v.revision_id=r.id AND v.config_hash=r.config_hash ORDER BY v.created_at DESC,v.id DESC LIMIT 1)='valid'
            AND (c.health='ready' OR json_extract(r.config_json,'$.github_connector_id') IS NULL)
            AND d.template_key IN('github_issue_resolver','github_pr_reviewer')
+           AND json_extract(r.config_json,'$.monitor_source_id') IS NULL
            AND (json_extract(r.config_json,'$.repository') IS NOT NULL OR (d.template_key='github_pr_reviewer' AND json_extract(r.config_json,'$.project_id') IS NOT NULL))
          ORDER BY d.org_id,d.template_key,r.config_json
          LIMIT 100",

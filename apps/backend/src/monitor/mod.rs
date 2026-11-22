@@ -8,6 +8,7 @@
 //! Everything in a payload is untrusted runtime text.
 
 pub mod audit;
+pub mod autofix;
 pub mod delivery;
 pub mod drains;
 pub mod oidc;

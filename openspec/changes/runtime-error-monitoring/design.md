@@ -190,3 +190,22 @@ causes it. The issue then opens in that repository instead of the source's fixed
   - Request lines drop the query string.
   - At most 50 errors per batch.
 - The log link formats (`supabase.com/dashboard/project/<ref>/logs/explorer`, `vercel.com/<team>/<project>/logs?requestIds=<id>`) are not documented by the providers. Shortcut: if one breaks, the alert still works without the link.
+
+## Auto-fix and Slack threads (v120)
+
+- `monitor_sources.autofix` (boolean) creates a managed `github_issue_resolver` (`autofix_agent_id`). Its config is the default repository, the audit's executor and model (Claude if there is no audit), and `monitor_source_id`.
+- Auto-fix requires the server `gh` (`server_gh_cli`): the resolver publishes with the server account, so it never acts on another org's credential.
+- When `open_issue_in` records an issue (with or without an audit), `autofix::start` enqueues the resolver with `trigger {explicit, kind: github_issue, repository, number, monitor_source_id, monitor_group_id}`.
+  - Limits: at most 10 a day per source, and one pending fix per group. A run that dies frees its group after 3 hours.
+  - The group records `fix_run_id` and `fix_status`, which is `pending`, `pr_open` or `failed`.
+- The managed resolver only works on issues Monitoring hands it:
+  - It is excluded from webhook and reconciliation intake (`monitor_source_id IS NULL` filters).
+  - The worker refuses any run of it without a matching monitor trigger.
+  - The worker sets `config.repository` to the issue's repository, which may be one the audit routed to, as long as it is inside the default repository's owner.
+- The resolver's existing gates still apply (verification, secret scan, diff limits, publish authority). It opens a **draft** PR whose body starts with `Closes #N`. Nothing merges automatically.
+- When the run ends, `autofix::finish` records `fix_pr_url` and posts one of these in the alert's thread:
+  - the PR,
+  - "nothing to change" (no-op; the resolver comments on the issue),
+  - or "could not open a fix", with the run link.
+- **Threads.** The server Slack MCP run now replies with the sent message's `ts`, parsed and validated as `\d{9,11}\.\d{6}`. A new or regressed alert stores it as `monitor_groups.slack_ts`. Audit and fix follow-ups pass it as `thread_ts`. Incoming webhooks can't thread, so with a webhook connector follow-ups are separate messages, as before.
+- **Fix.** Follow-ups run in the autonomous worker, which lacks the operator's org flag (the same issue as #519). They skip that re-check, because the backend checked it when the source was saved and when the run was started.

@@ -36,6 +36,9 @@ pub struct MonitorSource {
     pub provider: String,
     /// Supabase project ref or Vercel team slug, for log links.
     pub provider_ref: Option<String>,
+    /// Hand each new issue to the managed resolver, which opens a draft PR.
+    pub autofix: bool,
+    pub autofix_agent_id: Option<String>,
     /// SHA-256 (hex) of a drain source's bearer token; never serialized.
     #[serde(skip)]
     pub ingest_token_hash: Option<String>,
@@ -57,9 +60,10 @@ pub struct SourceWrite {
     /// Set on create only: a source keeps its provider.
     pub provider: String,
     pub provider_ref: Option<String>,
+    pub autofix: bool,
 }
 
-const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel,audit_executor,audit_model,audit_agent_id,provider,ingest_token_hash,provider_ref";
+const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel,audit_executor,audit_model,audit_agent_id,provider,ingest_token_hash,provider_ref,autofix,autofix_agent_id";
 
 fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
     let id: String = row.get(0)?;
@@ -83,6 +87,8 @@ fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
         provider: row.get(15)?,
         ingest_token_hash: row.get(16)?,
         provider_ref: row.get(17)?,
+        autofix: row.get::<_, i64>(18)? != 0,
+        autofix_agent_id: row.get(19)?,
     })
 }
 
@@ -92,11 +98,11 @@ pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrit
     let id = Uuid::new_v4().to_string();
     let inserted = c.execute(
         "INSERT OR IGNORE INTO monitor_sources
-           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel,audit_executor,audit_model,provider,ingest_token_hash,provider_ref)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel,audit_executor,audit_model,provider,ingest_token_hash,provider_ref,autofix)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
         params![id, org_id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
                 w.github_repo, w.throttle_minutes, w.enabled as i64, user_id, w.slack_channel, w.audit_executor, w.audit_model,
-                w.provider, token_hash, w.provider_ref],
+                w.provider, token_hash, w.provider_ref, w.autofix as i64],
     )?;
     if inserted == 0 {
         return Ok(None);
@@ -109,10 +115,10 @@ pub fn update_source(c: &Connection, org_id: &str, id: &str, w: &SourceWrite) ->
     let updated = c.execute(
         "UPDATE OR IGNORE monitor_sources SET project=?3,name=?4,service_account=?5,slack_connector_id=?6,
            github_connector_id=?7,github_repo=?8,throttle_minutes=?9,enabled=?10,slack_channel=?11,
-           audit_executor=?12,audit_model=?13,provider_ref=?14
+           audit_executor=?12,audit_model=?13,provider_ref=?14,autofix=?15
          WHERE org_id=?1 AND id=?2",
         params![org_id, id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel, w.audit_executor, w.audit_model, w.provider_ref],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel, w.audit_executor, w.audit_model, w.provider_ref, w.autofix as i64],
     )?;
     Ok(updated > 0)
 }
@@ -168,10 +174,16 @@ pub struct MonitorGroup {
     /// Where the group's issue lives (the audit may route it away from the
     /// source's default repository).
     pub issue_repo: Option<String>,
+    /// The Slack alert follow-ups reply to (server Slack MCP only).
+    pub slack_ts: Option<String>,
+    /// The auto-fix run, its state (`pending`, `pr_open`, `failed`) and draft PR.
+    pub fix_run_id: Option<String>,
+    pub fix_status: Option<String>,
+    pub fix_pr_url: Option<String>,
 }
 
 const GROUP_COLUMNS: &str =
-    "id,source_id,service,title,severity,count,first_seen,last_seen,sample,log_url,issue_number,status,audit_run_id,audit_status,audit_summary,issue_repo";
+    "id,source_id,service,title,severity,count,first_seen,last_seen,sample,log_url,issue_number,status,audit_run_id,audit_status,audit_summary,issue_repo,slack_ts,fix_run_id,fix_status,fix_pr_url";
 
 fn group_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorGroup> {
     Ok(MonitorGroup {
@@ -191,6 +203,10 @@ fn group_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorGroup> {
         audit_status: row.get(13)?,
         audit_summary: row.get(14)?,
         issue_repo: row.get(15)?,
+        slack_ts: row.get(16)?,
+        fix_run_id: row.get(17)?,
+        fix_status: row.get(18)?,
+        fix_pr_url: row.get(19)?,
     })
 }
 
@@ -270,6 +286,11 @@ pub fn set_group_status(c: &Connection, org_id: &str, id: &str, status: &str) ->
     Ok(c.execute("UPDATE monitor_groups SET status=?3 WHERE org_id=?1 AND id=?2", params![org_id, id, status])? > 0)
 }
 
+pub fn set_autofix_agent(c: &Connection, org_id: &str, source_id: &str, agent_id: Option<&str>) -> Result<()> {
+    c.execute("UPDATE monitor_sources SET autofix_agent_id=?3 WHERE org_id=?1 AND id=?2", params![org_id, source_id, agent_id])?;
+    Ok(())
+}
+
 pub fn set_audit_agent(c: &Connection, org_id: &str, source_id: &str, agent_id: Option<&str>) -> Result<()> {
     c.execute("UPDATE monitor_sources SET audit_agent_id=?3 WHERE org_id=?1 AND id=?2", params![org_id, source_id, agent_id])?;
     Ok(())
@@ -301,6 +322,45 @@ pub fn group_for_audit_run(c: &Connection, org_id: &str, run_id: &str) -> Result
         group_from_row,
     )
     .optional()?)
+}
+
+pub fn set_slack_ts(c: &Connection, group_id: &str, ts: &str) -> Result<()> {
+    c.execute("UPDATE monitor_groups SET slack_ts=?2 WHERE id=?1", params![group_id, ts])?;
+    Ok(())
+}
+
+/// Auto-fixes a source started since UTC midnight (the daily cap counts these).
+pub fn fixes_today(c: &Connection, source_id: &str) -> Result<i64> {
+    Ok(c.query_row(
+        "SELECT COUNT(*) FROM monitor_groups WHERE source_id=?1 AND fix_started_at >= date('now')",
+        params![source_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Claims the group for one fix run. `false` while another fix is pending
+/// (a run that died without finishing frees it after 3 hours).
+pub fn start_fix(c: &Connection, group_id: &str, run_id: &str) -> Result<bool> {
+    Ok(c.execute(
+        "UPDATE monitor_groups SET fix_run_id=?2,fix_status='pending',fix_pr_url=NULL,fix_started_at=datetime('now')
+         WHERE id=?1 AND (COALESCE(fix_status,'')<>'pending' OR fix_started_at < datetime('now','-3 hours'))",
+        params![group_id, run_id],
+    )? > 0)
+}
+
+/// The group a fix run belongs to, inside its organization.
+pub fn group_for_fix_run(c: &Connection, org_id: &str, run_id: &str) -> Result<Option<MonitorGroup>> {
+    Ok(c.query_row(
+        &format!("SELECT {GROUP_COLUMNS} FROM monitor_groups WHERE org_id=?1 AND fix_run_id=?2"),
+        params![org_id, run_id],
+        group_from_row,
+    )
+    .optional()?)
+}
+
+pub fn finish_fix(c: &Connection, group_id: &str, status: &str, pr_url: Option<&str>) -> Result<()> {
+    c.execute("UPDATE monitor_groups SET fix_status=?2,fix_pr_url=?3 WHERE id=?1", params![group_id, status, pr_url])?;
+    Ok(())
 }
 
 pub fn finish_audit(c: &Connection, group_id: &str, status: &str, summary: Option<&str>) -> Result<()> {
@@ -337,6 +397,7 @@ mod tests {
             audit_model: None,
             provider: "gcp".into(),
             provider_ref: None,
+            autofix: false,
         }
     }
 
@@ -382,6 +443,25 @@ mod tests {
         assert_eq!((action, group.status.as_str(), group.count), (Action::Regressed, "open", 5));
         assert_eq!(list_groups(&c, "o1", Some(&source.id), 10).unwrap().len(), 1);
         assert!(list_groups(&c, "other", None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fixes_start_once_record_their_pr_and_count_per_day() {
+        let c = conn();
+        let source = create_source(&c, "o1", "u1", &write("gcp"), None).unwrap().unwrap();
+        let (_, group) = record(&c, &source, "fp", &error("boom"), Utc::now()).unwrap();
+        assert!(start_fix(&c, &group.id, "fix-1").unwrap());
+        assert!(!start_fix(&c, &group.id, "fix-2").unwrap(), "one pending fix per group");
+        assert_eq!(fixes_today(&c, &source.id).unwrap(), 1);
+        assert!(group_for_fix_run(&c, "other", "fix-1").unwrap().is_none());
+        set_slack_ts(&c, &group.id, "1730000000.000100").unwrap();
+        finish_fix(&c, &group.id, "pr_open", Some("https://github.com/acme/app/pull/9")).unwrap();
+        let found = group_for_fix_run(&c, "o1", "fix-1").unwrap().unwrap();
+        assert_eq!(
+            (found.fix_status.as_deref(), found.fix_pr_url.as_deref(), found.slack_ts.as_deref()),
+            (Some("pr_open"), Some("https://github.com/acme/app/pull/9"), Some("1730000000.000100"))
+        );
+        assert!(start_fix(&c, &group.id, "fix-3").unwrap(), "a finished fix can be redone (regression)");
     }
 
     #[test]
