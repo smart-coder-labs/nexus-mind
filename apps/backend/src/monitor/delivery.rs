@@ -164,7 +164,7 @@ pub async fn deliver(
             let db = store.conn();
             if let Ok(conn) = db.lock() {
                 let _ = store_monitor::set_slack_ts(&conn, &group.id, &ts);
-            }
+            };
         }
         Ok(_) => {}
         Err(error) => tracing::warn!(group = %group.id, "Monitor Slack alert failed: {error:#}"),
