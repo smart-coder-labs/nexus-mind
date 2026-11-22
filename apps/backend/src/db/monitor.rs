@@ -32,6 +32,13 @@ pub struct MonitorSource {
     pub audit_model: Option<String>,
     /// The managed `error_audit` agent that runs the audits.
     pub audit_agent_id: Option<String>,
+    /// `gcp`, `supabase` or `vercel`.
+    pub provider: String,
+    /// Supabase project ref or Vercel team slug, for log links.
+    pub provider_ref: Option<String>,
+    /// SHA-256 (hex) of a drain source's bearer token; never serialized.
+    #[serde(skip)]
+    pub ingest_token_hash: Option<String>,
 }
 
 pub struct SourceWrite {
@@ -47,9 +54,12 @@ pub struct SourceWrite {
     pub enabled: bool,
     pub audit_executor: Option<String>,
     pub audit_model: Option<String>,
+    /// Set on create only: a source keeps its provider.
+    pub provider: String,
+    pub provider_ref: Option<String>,
 }
 
-const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel,audit_executor,audit_model,audit_agent_id";
+const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel,audit_executor,audit_model,audit_agent_id,provider,ingest_token_hash,provider_ref";
 
 fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
     let id: String = row.get(0)?;
@@ -70,18 +80,23 @@ fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
         audit_executor: row.get(12)?,
         audit_model: row.get(13)?,
         audit_agent_id: row.get(14)?,
+        provider: row.get(15)?,
+        ingest_token_hash: row.get(16)?,
+        provider_ref: row.get(17)?,
     })
 }
 
 /// `None` when the name is taken in this org.
-pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrite) -> Result<Option<MonitorSource>> {
+/// `token_hash`: the drain bearer token's SHA-256 (none for GCP sources).
+pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrite, token_hash: Option<&str>) -> Result<Option<MonitorSource>> {
     let id = Uuid::new_v4().to_string();
     let inserted = c.execute(
         "INSERT OR IGNORE INTO monitor_sources
-           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel,audit_executor,audit_model)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel,audit_executor,audit_model,provider,ingest_token_hash,provider_ref)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
         params![id, org_id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64, user_id, w.slack_channel, w.audit_executor, w.audit_model],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, user_id, w.slack_channel, w.audit_executor, w.audit_model,
+                w.provider, token_hash, w.provider_ref],
     )?;
     if inserted == 0 {
         return Ok(None);
@@ -94,10 +109,10 @@ pub fn update_source(c: &Connection, org_id: &str, id: &str, w: &SourceWrite) ->
     let updated = c.execute(
         "UPDATE OR IGNORE monitor_sources SET project=?3,name=?4,service_account=?5,slack_connector_id=?6,
            github_connector_id=?7,github_repo=?8,throttle_minutes=?9,enabled=?10,slack_channel=?11,
-           audit_executor=?12,audit_model=?13
+           audit_executor=?12,audit_model=?13,provider_ref=?14
          WHERE org_id=?1 AND id=?2",
         params![org_id, id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel, w.audit_executor, w.audit_model],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel, w.audit_executor, w.audit_model, w.provider_ref],
     )?;
     Ok(updated > 0)
 }
@@ -320,6 +335,8 @@ mod tests {
             enabled: true,
             audit_executor: None,
             audit_model: None,
+            provider: "gcp".into(),
+            provider_ref: None,
         }
     }
 
@@ -338,9 +355,9 @@ mod tests {
     #[test]
     fn sources_are_org_scoped_and_names_unique() {
         let c = conn();
-        let source = create_source(&c, "o1", "u1", &write("gcp")).unwrap().unwrap();
+        let source = create_source(&c, "o1", "u1", &write("gcp"), None).unwrap().unwrap();
         assert_eq!(source.audience, format!("nexusmind-monitor:{}", source.id));
-        assert!(create_source(&c, "o1", "u1", &write("gcp")).unwrap().is_none());
+        assert!(create_source(&c, "o1", "u1", &write("gcp"), None).unwrap().is_none());
         assert!(get_source(&c, "other", &source.id).unwrap().is_none());
         assert_eq!(get_source_by_id(&c, &source.id).unwrap().unwrap().id, source.id);
         assert!(!delete_source(&c, "other", &source.id).unwrap());
@@ -350,7 +367,7 @@ mod tests {
     #[test]
     fn repeats_count_and_alert_once_per_window_then_regress_after_resolve() {
         let c = conn();
-        let source = create_source(&c, "o1", "u1", &write("gcp")).unwrap().unwrap();
+        let source = create_source(&c, "o1", "u1", &write("gcp"), None).unwrap().unwrap();
         let now = Utc::now();
         let (action, group) = record(&c, &source, "fp", &error("boom"), now).unwrap();
         assert_eq!((action, group.count), (Action::New, 1));
@@ -370,7 +387,7 @@ mod tests {
     #[test]
     fn audits_start_once_and_count_per_day() {
         let c = conn();
-        let source = create_source(&c, "o1", "u1", &write("gcp")).unwrap().unwrap();
+        let source = create_source(&c, "o1", "u1", &write("gcp"), None).unwrap().unwrap();
         let (_, group) = record(&c, &source, "fp", &error("boom"), Utc::now()).unwrap();
         assert_eq!(audits_today(&c, &source.id).unwrap(), 0);
         assert!(start_audit(&c, &group.id, "run-1").unwrap());
@@ -389,7 +406,7 @@ mod tests {
     #[test]
     fn stored_samples_are_redacted() {
         let c = conn();
-        let source = create_source(&c, "o1", "u1", &write("gcp")).unwrap().unwrap();
+        let source = create_source(&c, "o1", "u1", &write("gcp"), None).unwrap().unwrap();
         let (_, group) = record(&c, &source, "fp", &error("auth failed token=ghp_abcdefghijklmnopqrstuvwxyz0123456789"), Utc::now()).unwrap();
         assert!(!group.sample.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
         assert!(!group.title.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));

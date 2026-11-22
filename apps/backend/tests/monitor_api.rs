@@ -278,3 +278,62 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
     std::env::remove_var("FACTORY_GITHUB_PUBLISH_ORG_ID");
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn drains_authenticate_with_their_own_token_and_record_errors() {
+    let (router, path) = app();
+    let a = login(&router, "a@test.com").await;
+    let b = login(&router, "b@test.com").await;
+    let body = json!({"provider": "vercel", "project": "shop", "provider_ref": "acme", "name": "Shop", "throttle_minutes": 30});
+    let (status, source) = send(&router, &a, "POST", "/v1/monitor/sources", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{source}");
+    let id = source["id"].as_str().unwrap().to_string();
+    let token = source["ingest_token"].as_str().unwrap().to_string();
+    assert!(token.starts_with("nmd_"));
+    assert_eq!((source["provider"].clone(), source["provider_ref"].clone()), (json!("vercel"), json!("acme")));
+    // Shown once: never listed again, and the hash is never serialized.
+    let (_, listed) = send(&router, &a, "GET", "/v1/monitor/sources", None).await;
+    assert!(listed[0].get("ingest_token").is_none() && listed[0].get("ingest_token_hash").is_none());
+    // Org B's token never opens org A's drain.
+    let (_, other) = send(&router, &b, "POST", "/v1/monitor/sources", Some(body)).await;
+    let other_token = other["ingest_token"].as_str().unwrap().to_string();
+
+    let batch = json!([
+        {"projectName": "shop", "level": "error", "message": "TypeError: boom", "statusCode": 500, "requestId": "r1"},
+        {"projectName": "shop", "level": "info", "message": "ok", "statusCode": 200}
+    ]);
+    let drain = |uri: String, auth: Option<String>| {
+        let mut request = Request::builder().method("POST").uri(uri).header("Content-Type", "application/json");
+        if let Some(auth) = auth {
+            request = request.header("Authorization", auth);
+        }
+        request.body(Body::from(batch.to_string())).unwrap()
+    };
+    let uri = format!("/v1/monitor/drain/{id}");
+    for auth in [None, Some("Bearer nmd_wrong".to_string()), Some(format!("Bearer {other_token}"))] {
+        let response = router.clone().oneshot(drain(uri.clone(), auth)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    let response = router.clone().oneshot(drain(uri.clone(), Some(format!("Bearer {token}")))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, groups) = send(&router, &a, "GET", "/v1/monitor/groups", None).await;
+    assert_eq!(groups.as_array().unwrap().len(), 1, "only the error becomes a group: {groups}");
+    assert_eq!(groups[0]["service"], "vercel-shop");
+    let (_, groups) = send(&router, &b, "GET", "/v1/monitor/groups", None).await;
+    assert_eq!(groups, json!([]));
+
+    // A drain source is not a Pub/Sub target, and a GCP source is not a drain.
+    let response = router.clone().oneshot(drain(format!("/v1/monitor/gcp/{id}"), Some(format!("Bearer {token}")))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let (_, gcp) = send(&router, &a, "POST", "/v1/monitor/sources", Some(source_body("gcp"))).await;
+    assert!(gcp.get("ingest_token").is_none());
+    let gcp_id = gcp["id"].as_str().unwrap();
+    let response = router.clone().oneshot(drain(format!("/v1/monitor/drain/{gcp_id}"), Some(format!("Bearer {token}")))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let (status, _) = send(&router, &a, "POST", "/v1/monitor/sources", Some(json!({"provider": "datadog", "project": "x", "name": "Bad"}))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, _) = send(&router, &a, "POST", "/v1/monitor/sources", Some(json!({"provider": "supabase", "project": "x", "provider_ref": "../x", "name": "Bad ref"}))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let _ = std::fs::remove_file(path);
+}

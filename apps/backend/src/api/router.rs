@@ -924,6 +924,8 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/health", get(health::handler))
         // Public Pub/Sub push target; every request carries a Google OIDC token.
         .route("/v1/monitor/gcp/:source_id", post(monitor::gcp_push))
+        // Public Supabase/Vercel log drain target; bearer token per source.
+        .route("/v1/monitor/drain/:source_id", post(monitor::drain_push))
         .route("/v1/autonomous-agents/github/webhook/:connector", post(autonomous_webhooks::github_cli_webhook))
         .route("/v1/factory/runner/workspaces", get(workflows::runner_workspaces))
         .route("/v1/factory/runner/workspaces/:id/inventory", post(workflows::report_inventory))

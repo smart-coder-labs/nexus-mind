@@ -58,6 +58,14 @@ pub fn issue_url(group: &MonitorGroup, source: &MonitorSource) -> Option<(i64, S
     Some((number, format!("https://github.com/{repo}/issues/{number}")))
 }
 
+fn provider_label(source: &MonitorSource) -> &'static str {
+    match source.provider.as_str() {
+        "supabase" => "Supabase",
+        "vercel" => "Vercel",
+        _ => "GCP",
+    }
+}
+
 pub fn slack_summary(action: Action, group: &MonitorGroup, source: &MonitorSource, note: &str) -> String {
     let headline = match action {
         Action::New => "🔴 New error",
@@ -65,7 +73,7 @@ pub fn slack_summary(action: Action, group: &MonitorGroup, source: &MonitorSourc
         _ => "🟠 Still happening",
     };
     let issue = issue_url(group, source).map(|(n, url)| format!(" · <{url}|issue #{n}>")).unwrap_or_default();
-    let logs = group.log_url.as_deref().map(|u| format!("\n<{u}|View logs in GCP>")).unwrap_or_default();
+    let logs = group.log_url.as_deref().map(|u| format!("\n<{u}|View logs in {}>", provider_label(source))).unwrap_or_default();
     format!(
         "*{headline}* in `{}` ({})\n*{}*\n{}× since {}{issue}{note}{logs}",
         slack_escape(&group.service),
@@ -87,7 +95,7 @@ pub fn issue_body(group: &MonitorGroup, source: &MonitorSource, previous: Option
     let sample: serde_json::Value = serde_json::from_str(&group.sample).unwrap_or_default();
     let message = sample["message"].as_str().unwrap_or_default();
     let stack = sample["stack"].as_str().map(|s| format!("\n**Stack**\n{}\n", fenced(s))).unwrap_or_default();
-    let logs = group.log_url.as_deref().map(|u| format!("\n[View logs in GCP]({u})\n")).unwrap_or_default();
+    let logs = group.log_url.as_deref().map(|u| format!("\n[View logs in {}]({u})\n", provider_label(source))).unwrap_or_default();
     let regression = previous.map(|n| format!("\nThis came back after {n} was closed.\n")).unwrap_or_default();
     format!(
         "Reported by NexusMind monitoring (source **{}**, service `{}`, {}).\n\n\
@@ -429,6 +437,9 @@ mod tests {
             audit_executor: None,
             audit_model: None,
             audit_agent_id: None,
+            provider: "gcp".into(),
+            provider_ref: None,
+            ingest_token_hash: None,
         }
     }
 

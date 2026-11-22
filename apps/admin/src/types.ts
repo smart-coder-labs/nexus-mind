@@ -1808,12 +1808,23 @@ export interface MonitorSource {
   audit_model: string | null
   /** The managed `error_audit` agent (Factory › Agents). */
   audit_agent_id: string | null
+  provider: MonitorProvider
+  /** Supabase project ref or Vercel team slug (log links only). */
+  provider_ref: string | null
+  /** A drain's bearer token: only in the create response, never again. */
+  ingest_token?: string
 }
+
+/** Where errors come from: GCP Pub/Sub push, or a Supabase/Vercel log drain. */
+export type MonitorProvider = 'gcp' | 'supabase' | 'vercel'
 
 export type MonitorAuditExecutor = 'claude' | 'codex' | 'pi' | 'nexus'
 
 
 export interface MonitorSourceInput {
+  /** Fixed after creation. */
+  provider: MonitorProvider
+  provider_ref: string | null
   project: string
   name: string
   service_account: string
