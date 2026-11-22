@@ -10,7 +10,7 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { Input } from '../components/ui/Input'
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
 import { cn } from '../lib/utils'
-import type { AutonomousAgentConnector, MonitorAuditExecutor, MonitorGroup, MonitorGroupStatus, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
+import type { AutonomousAgentConnector, MonitorAuditExecutor, MonitorGroup, MonitorGroupStatus, MonitorProvider, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
 import { TaskExecutorSelect } from './factory/agents/TaskExecutorSelect'
 import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, SELECT_CLASS } from './factory/govern/ui'
 
@@ -19,6 +19,48 @@ const GCP_PROJECT = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/
 /** The public URL Pub/Sub pushes to for one source. */
 export function pushEndpoint(sourceId: string, apiBase = import.meta.env.VITE_API_URL || window.location.origin): string {
   return `${apiBase.replace(/\/+$/, '')}/v1/monitor/gcp/${sourceId}`
+}
+
+/** The public URL a Supabase or Vercel log drain posts to for one source. */
+export function drainEndpoint(sourceId: string, apiBase = import.meta.env.VITE_API_URL || window.location.origin): string {
+  return `${apiBase.replace(/\/+$/, '')}/v1/monitor/drain/${sourceId}`
+}
+
+const PROVIDER_LABEL: Record<MonitorProvider, string> = { gcp: 'GCP', supabase: 'Supabase', vercel: 'Vercel' }
+const PROVIDER_REF_LABEL: Record<Exclude<MonitorProvider, 'gcp'>, string> = { supabase: 'Supabase project ref', vercel: 'Vercel team slug' }
+
+/**
+ * Where to add the drain in Supabase or Vercel, as numbered steps. The token
+ * is only known right after creating the source.
+ */
+export function drainSteps(provider: Exclude<MonitorProvider, 'gcp'>, endpoint: string, token: string | undefined): SetupStep[] {
+  const header = `Authorization: Bearer ${token ?? 'TOKEN_SHOWN_WHEN_CONNECTED'}`
+  const where = provider === 'supabase'
+    ? {
+        title: 'Add a log drain in Supabase',
+        detail: 'Needs the Pro plan or above. Project Settings › Log Drains › Add destination › Custom Endpoint. Paste the URL, choose HTTP/1.1, and add the header below. Gzip on or off both work.',
+      }
+    : {
+        title: 'Add a log drain in Vercel',
+        detail: 'Needs the Pro plan or above. Team Settings › Drains › Add Drain › Logs. Pick the projects, the sources (Functions, Edge, Builds…) and the environments, then Custom Endpoint with format JSON. Paste the URL and add the header below as a custom header.',
+      }
+  return [
+    { ...where, command: endpoint },
+    {
+      title: 'Add the authorization header',
+      detail: token
+        ? 'NexusMind only accepts deliveries with this header. Copy it now: the token is shown only once.'
+        : 'The token was shown only when the source was connected. If you lost it, delete the source and connect it again.',
+      command: header,
+    },
+    {
+      title: 'Send a test',
+      detail: provider === 'supabase'
+        ? 'Only errors become alerts: Postgres ERROR/FATAL, 5xx responses and error-level logs. Trigger one (for example a failing query) and it appears under Errors within a minute.'
+        : 'Use Test in the drain settings: it must answer 200. Only errors become alerts: error/fatal logs, 5xx responses and crashed functions.',
+      command: provider === 'supabase' ? 'select * from nexusmind_missing_table;' : endpoint,
+    },
+  ]
 }
 
 export interface SetupStep {
@@ -138,6 +180,8 @@ export function suggestedAccount(gcpProject: string): string {
 
 interface Draft {
   id: string | null
+  provider: MonitorProvider
+  providerRef: string
   name: string
   project: string
   /** Only used to fill the setup commands; not stored. */
@@ -154,11 +198,13 @@ interface Draft {
   auditModel: string
 }
 
-const EMPTY: Draft = { id: null, name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '' }
+const EMPTY: Draft = { id: null, provider: 'gcp', providerRef: '', name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '' }
 
 function draftFrom(source: MonitorSource): Draft {
   return {
     id: source.id,
+    provider: source.provider,
+    providerRef: source.provider_ref ?? '',
     name: source.name,
     project: source.project,
     gcpProject: source.service_account.match(/@([a-z][a-z0-9-]+)\.iam\.gserviceaccount\.com$/)?.[1] ?? '',
@@ -175,10 +221,13 @@ function draftFrom(source: MonitorSource): Draft {
 }
 
 function sourceInput(draft: Draft): MonitorSourceInput {
+  const gcp = draft.provider === 'gcp'
   return {
+    provider: draft.provider,
+    provider_ref: !gcp && draft.providerRef.trim() ? draft.providerRef.trim() : null,
     name: draft.name.trim(),
     project: draft.project.trim(),
-    service_account: draft.serviceAccount.trim(),
+    service_account: gcp ? draft.serviceAccount.trim() : '',
     slack_connector_id: draft.slack || null,
     slack_channel: draft.slack === SERVER_SLACK ? draft.slackChannel.trim() : null,
     github_connector_id: draft.github || null,
@@ -208,7 +257,8 @@ const TEST_LABEL: Record<string, string> = {
 
 /**
  * Runtime error monitoring: GCP projects whose ERROR logs reach NexusMind
- * through a log sink and Pub/Sub push. A new error alerts Slack and opens a
+ * through a log sink and Pub/Sub push, and Supabase/Vercel projects through a
+ * log drain with a bearer token. A new error alerts Slack and opens a
  * GitHub issue; repeats only count, and alert again at most once per window.
  */
 export default function Monitoring() {
@@ -241,7 +291,8 @@ export default function Monitoring() {
     onSuccess: (source, current) => {
       setDraft(null)
       refresh()
-      // A new source is useless until GCP is set up: show the commands right away.
+      // A new source is useless until GCP or the drain is set up: show the steps right away
+      // (a drain's token comes only in this response).
       if (!current.id) setSetupFor({ source, gcpProject: current.gcpProject.trim() })
     },
   })
@@ -260,7 +311,7 @@ export default function Monitoring() {
   })
 
   if (!allowed) {
-    return <PermissionDenied title="Monitoring" permission="settings:write" what="connect GCP projects and see their errors" />
+    return <PermissionDenied title="Monitoring" permission="settings:write" what="connect GCP, Supabase and Vercel projects and see their errors" />
   }
 
   const slackLabel = (source: MonitorSource) =>
@@ -276,8 +327,8 @@ export default function Monitoring() {
     <div className="p-6 md:p-8 min-w-0 max-w-7xl mx-auto space-y-6">
       <PageHeader
         title="Monitoring"
-        subtitle="Errors from your GCP services, grouped. A new error alerts Slack and opens a GitHub issue."
-        action={<Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setDraft(EMPTY)}>Connect GCP project</Button>}
+        subtitle="Errors from your GCP, Supabase and Vercel services, grouped. A new error alerts Slack and opens a GitHub issue."
+        action={<Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setDraft(EMPTY)}>Connect project</Button>}
       />
 
       {sources.isLoading && <CardListSkeleton count={2} height="h-36" />}
@@ -285,8 +336,8 @@ export default function Monitoring() {
       {sources.data && sources.data.length === 0 && (
         <EmptyState
           icon={<Activity />}
-          title="No GCP project connected"
-          description="Connect a project, paste the setup commands into Cloud Shell, and every ERROR log from its services reaches you here."
+          title="No project connected"
+          description="Connect a GCP project with a few Cloud Shell commands, or a Supabase or Vercel project with a log drain, and its errors reach you here."
         />
       )}
       {sources.data && sources.data.length > 0 && (
@@ -300,8 +351,11 @@ export default function Monitoring() {
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <p className="break-words text-[15px] font-semibold tracking-[-0.2px] text-text-primary">{source.name}</p>
-                      <p className="break-all text-[12px] text-text-tertiary">{source.service_account}</p>
+                      <p className="break-all text-[12px] text-text-tertiary">
+                        {source.provider === 'gcp' ? source.service_account : `${PROVIDER_LABEL[source.provider]} log drain${source.provider_ref ? ` · ${source.provider_ref}` : ''}`}
+                      </p>
                     </div>
+                    <Badge role="none" size="sm" variant="default">{PROVIDER_LABEL[source.provider]}</Badge>
                     {source.enabled ? <Badge role="none" size="sm" variant="success" dot>Active</Badge> : <Badge role="none" size="sm" variant="default">Paused</Badge>}
                   </div>
                   <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
@@ -524,7 +578,8 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => draft && setDraft({ ...draft, [key]: value })
   const suggestion = draft ? suggestedAccount(draft.gcpProject.trim()) : ''
   const channelOk = !draft || draft.slack !== SERVER_SLACK || SLACK_CHANNEL_ID.test(draft.slackChannel.trim())
-  const complete = !!draft && !!draft.name.trim() && !!draft.project.trim() && !!draft.serviceAccount.trim()
+  const gcp = draft?.provider === 'gcp'
+  const complete = !!draft && !!draft.name.trim() && !!draft.project.trim() && (!gcp || !!draft.serviceAccount.trim())
     && (!draft.github || !!draft.repo.trim()) && channelOk
   return (
     <Modal open={draft !== null} onOpenChange={value => { if (!value) onClose() }} size="xl" position="right">
@@ -532,13 +587,33 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
         <div className="flex min-h-full flex-col">
           <ModalHeader className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <ModalTitle>{draft.id ? `Edit ${draft.name}` : 'Connect a GCP project'}</ModalTitle>
+              <ModalTitle>{draft.id ? `Edit ${draft.name}` : 'Connect a project'}</ModalTitle>
               <ModalDescription>Log text is untrusted: it is redacted and shown as data in Slack and GitHub.</ModalDescription>
             </div>
             <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={onClose} />
           </ModalHeader>
           <ModalContent className="flex-1 space-y-6">
             {!draft.id && (
+              <Field id="monitor-provider" label="Errors come from" hint="Fixed once connected.">
+                <StyledSelect id="monitor-provider" className={SELECT_CLASS} value={draft.provider} onChange={e => set('provider', e.target.value as MonitorProvider)}>
+                  <option value="gcp">GCP (Cloud Run, GKE, Cloud SQL…)</option>
+                  <option value="supabase">Supabase (log drain)</option>
+                  <option value="vercel">Vercel (log drain)</option>
+                </StyledSelect>
+              </Field>
+            )}
+            {!draft.id && !gcp && (
+              <section aria-labelledby="monitor-how-title" className="rounded-lg border border-border-primary bg-foreground/[0.03] p-4">
+                <h3 id="monitor-how-title" className="text-sm font-semibold text-text-primary">How it works</h3>
+                <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[13px] leading-normal text-text-secondary">
+                  <li>Choose where alerts go: Slack and, optionally, a repository for GitHub issues.</li>
+                  <li>Press <strong>Connect</strong>. You get the drain URL and a token, shown only once.</li>
+                  <li>Add a log drain in {PROVIDER_LABEL[draft.provider]} with that URL and the token as an <code className="font-mono">Authorization</code> header. Needs the Pro plan.</li>
+                  <li>Only errors become alerts; the rest of the logs are dropped.</li>
+                </ol>
+              </section>
+            )}
+            {!draft.id && gcp && (
               <section aria-labelledby="monitor-how-title" className="rounded-lg border border-border-primary bg-foreground/[0.03] p-4">
                 <h3 id="monitor-how-title" className="text-sm font-semibold text-text-primary">How it works</h3>
                 <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[13px] leading-normal text-text-secondary">
@@ -557,6 +632,12 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
               <Field id="monitor-project" label="NexusMind project">
                 <Input id="monitor-project" value={draft.project} placeholder="kasymir" onChange={e => set('project', e.target.value)} />
               </Field>
+              {draft.provider !== 'gcp' && (
+                <Field id="monitor-provider-ref" label={`${PROVIDER_REF_LABEL[draft.provider]} (optional)`} hint="Only used to link each error to its logs.">
+                  <Input id="monitor-provider-ref" className="font-mono" value={draft.providerRef} placeholder={draft.provider === 'supabase' ? 'abcdefghijklmnopqrst' : 'my-team'} onChange={e => set('providerRef', e.target.value.trim())} />
+                </Field>
+              )}
+              {gcp && <>
               <Field id="monitor-gcp" label="GCP project ID" hint="Fills the service account and the setup commands. Find it in the GCP console project picker.">
                 <Input
                   id="monitor-gcp"
@@ -579,6 +660,7 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
               >
                 <Input id="monitor-sa" value={draft.serviceAccount} placeholder={suggestion || 'nexusmind-push@my-project-123.iam.gserviceaccount.com'} onChange={e => set('serviceAccount', e.target.value)} />
               </Field>
+              </>}
             </FieldGroup>
             <FieldGroup title="Where alerts go">
               <Field
@@ -686,8 +768,9 @@ function SetupModal({ setup, onClose }: { setup: { source: MonitorSource; gcpPro
   const [edited, setEdited] = useState<string | null>(null)
   const source = setup?.source ?? null
   const gcpProject = (edited ?? setup?.gcpProject ?? '').trim()
-  const endpoint = source ? pushEndpoint(source.id) : ''
-  const steps = source ? setupSteps(source, gcpProject, endpoint) : []
+  const drain = source && source.provider !== 'gcp' ? source.provider : null
+  const endpoint = source ? (drain ? drainEndpoint(source.id) : pushEndpoint(source.id)) : ''
+  const steps = !source ? [] : drain ? drainSteps(drain, endpoint, source.ingest_token) : setupSteps(source, gcpProject, endpoint)
   const close = () => { setEdited(null); onClose() }
   return (
     <Modal open={source !== null} onOpenChange={value => { if (!value) close() }} size="xl" position="right">
@@ -695,15 +778,19 @@ function SetupModal({ setup, onClose }: { setup: { source: MonitorSource; gcpPro
         <div className="flex min-h-full flex-col">
           <ModalHeader className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <ModalTitle>Set up {source.name} in GCP</ModalTitle>
-              <ModalDescription>Run these once, in order, in Cloud Shell. Every service in the project is covered, with no code changes.</ModalDescription>
+              <ModalTitle>Set up {source.name} in {PROVIDER_LABEL[source.provider]}</ModalTitle>
+              <ModalDescription>
+                {drain ? 'Add one log drain. Every function, database and request log of the project is covered, with no code changes.' : 'Run these once, in order, in Cloud Shell. Every service in the project is covered, with no code changes.'}
+              </ModalDescription>
             </div>
             <Button size="sm" variant="ghost" aria-label="Close" leftIcon={<X className="h-4 w-4" />} onClick={close} />
           </ModalHeader>
           <ModalContent className="flex-1 space-y-4">
-            <Field id="monitor-gcp-project" label="GCP project ID">
-              <Input id="monitor-gcp-project" className="font-mono" value={edited ?? setup?.gcpProject ?? ''} placeholder="my-project-123" onChange={e => setEdited(e.target.value)} />
-            </Field>
+            {!drain && (
+              <Field id="monitor-gcp-project" label="GCP project ID">
+                <Input id="monitor-gcp-project" className="font-mono" value={edited ?? setup?.gcpProject ?? ''} placeholder="my-project-123" onChange={e => setEdited(e.target.value)} />
+              </Field>
+            )}
             <ol aria-label="Setup steps" className="m-0 list-none space-y-4 p-0">
               {steps.map((step, index) => (
                 <li key={step.title} className="rounded-lg border border-border-primary p-4">
@@ -721,12 +808,14 @@ function SetupModal({ setup, onClose }: { setup: { source: MonitorSource; gcpPro
                 </li>
               ))}
             </ol>
-            <p className="text-[12px] text-text-tertiary">
-              A command that says <em>already exists</em> is fine: move on to the next one.
-            </p>
+            {!drain && (
+              <p className="text-[12px] text-text-tertiary">
+                A command that says <em>already exists</em> is fine: move on to the next one.
+              </p>
+            )}
           </ModalContent>
           <ModalFooter>
-            <CopyButton text={source ? setupCommands(source, gcpProject, endpoint) : ''} label="Copy all steps" />
+            {!drain && <CopyButton text={source ? setupCommands(source, gcpProject, endpoint) : ''} label="Copy all steps" />}
             <Button onClick={close}>Done</Button>
           </ModalFooter>
         </div>

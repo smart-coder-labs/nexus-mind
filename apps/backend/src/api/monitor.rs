@@ -1,5 +1,6 @@
-//! Runtime error monitoring API: the public Pub/Sub push endpoint and the
-//! admin endpoints for sources and error groups.
+//! Runtime error monitoring API: the public intake endpoints (GCP Pub/Sub
+//! push, Supabase/Vercel log drains) and the admin endpoints for sources and
+//! error groups.
 
 use std::sync::Arc;
 
@@ -58,6 +59,7 @@ pub async fn gcp_push(
         let conn = db.lock().map_err(|_| lock_error())?;
         store_monitor::get_source_by_id(&conn, &source_id).map_err(internal)?
     }
+    .filter(|s| s.provider == "gcp")
     .ok_or_else(not_found)?;
     let token = headers
         .get("authorization")
@@ -80,29 +82,105 @@ pub async fn gcp_push(
             return Ok(StatusCode::NO_CONTENT);
         }
     };
-    let fingerprint = crate::monitor::fingerprint(&source.id, &runtime_error);
-    let (action, group) = {
+    record_and_deliver(&store, &config, &source, vec![runtime_error])?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Groups each error and hands the alert/issue work to the background.
+fn record_and_deliver(
+    store: &SqliteStore,
+    config: &Config,
+    source: &MonitorSource,
+    errors: Vec<crate::monitor::RuntimeError>,
+) -> ApiResult<()> {
+    let recorded = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_error())?;
-        store_monitor::record(&conn, &source, &fingerprint, &runtime_error, chrono::Utc::now()).map_err(internal)?
+        errors
+            .iter()
+            .map(|e| {
+                let fingerprint = crate::monitor::fingerprint(&source.id, e);
+                store_monitor::record(&conn, source, &fingerprint, e, chrono::Utc::now())
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(internal)?
     };
-    tokio::spawn(crate::monitor::delivery::deliver(
-        store.clone(),
-        source,
-        action,
-        group,
-        config.app_base_url.clone(),
-        config.claude_code_bin.clone(),
-    ));
-    Ok(StatusCode::NO_CONTENT)
+    for (action, group) in recorded {
+        tokio::spawn(crate::monitor::delivery::deliver(
+            store.clone(),
+            source.clone(),
+            action,
+            group,
+            config.app_base_url.clone(),
+            config.claude_code_bin.clone(),
+        ));
+    }
+    Ok(())
+}
+
+fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// `POST /v1/monitor/drain/:source_id`: a Supabase or Vercel log drain batch,
+/// authenticated by the source's bearer token. Always 200 once authenticated:
+/// Vercel disables a drain whose deliveries keep failing.
+pub async fn drain_push(
+    State(store): State<SqliteStore>,
+    Extension(config): Extension<Arc<Config>>,
+    Path(source_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<StatusCode> {
+    let source = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        store_monitor::get_source_by_id(&conn, &source_id).map_err(internal)?
+    }
+    .filter(|s| s.provider != "gcp")
+    .ok_or_else(not_found)?;
+    let presented = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|token| token_hash(token.trim()));
+    // Both sides are hashes of the same length, so the comparison leaks nothing useful.
+    if presented.is_none() || presented != source.ingest_token_hash {
+        tracing::warn!(source = %source.id, "Monitor drain rejected: bad token");
+        return Err(error(StatusCode::UNAUTHORIZED, "unauthorized", "Invalid drain token"));
+    }
+    if !source.enabled {
+        return Ok(StatusCode::OK);
+    }
+    let gzip = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("gzip"));
+    let events = match crate::monitor::drains::events(&body, gzip) {
+        Ok(events) => events,
+        Err(reason) => {
+            tracing::warn!(source = %source.id, "Monitor drain dropped: {reason}");
+            return Ok(StatusCode::OK);
+        }
+    };
+    let errors = crate::monitor::drains::errors(&source.provider, source.provider_ref.as_deref().unwrap_or_default(), &events);
+    record_and_deliver(&store, &config, &source, errors)?;
+    Ok(StatusCode::OK)
 }
 
 // ---------------------------------------------------------------- sources
 
 #[derive(Deserialize)]
 pub struct SourceRequest {
+    /// `gcp` (default), `supabase` or `vercel`; fixed after creation.
+    pub provider: Option<String>,
     pub project: String,
+    /// Supabase project ref or Vercel team slug (log links only).
+    pub provider_ref: Option<String>,
     pub name: String,
+    /// GCP only: the push subscription's service account.
+    #[serde(default)]
     pub service_account: String,
     pub slack_connector_id: Option<String>,
     pub slack_channel: Option<String>,
@@ -127,7 +205,7 @@ pub fn valid_service_account(email: &str) -> bool {
         && domain.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
 }
 
-fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> ApiResult<SourceWrite> {
+fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: SourceRequest) -> ApiResult<SourceWrite> {
     let invalid = |message: &str| error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", message);
     let name = input.name.trim().to_string();
     let project = input.project.trim().to_string();
@@ -137,9 +215,17 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
     if project.is_empty() || project.chars().count() > 100 {
         return Err(invalid("project must be 1-100 characters"));
     }
-    let service_account = input.service_account.trim().to_ascii_lowercase();
-    if !valid_service_account(&service_account) {
+    if !crate::monitor::drains::PROVIDERS.contains(&provider) {
+        return Err(invalid("provider must be gcp, supabase or vercel"));
+    }
+    // Drains authenticate with their token: no service account.
+    let service_account = if provider == "gcp" { input.service_account.trim().to_ascii_lowercase() } else { String::new() };
+    if provider == "gcp" && !valid_service_account(&service_account) {
         return Err(invalid("service_account must be a Google service account email"));
+    }
+    let provider_ref = blank_to_none(input.provider_ref.clone()).filter(|_| provider != "gcp");
+    if provider_ref.as_ref().is_some_and(|r| r.len() > 100 || !r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) {
+        return Err(invalid("provider_ref must be a Supabase project ref or Vercel team slug"));
     }
     let throttle_minutes = input.throttle_minutes.unwrap_or(30);
     if !(1..=1440).contains(&throttle_minutes) {
@@ -223,6 +309,8 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, input: SourceRequest) -> 
         enabled: input.enabled.unwrap_or(true),
         audit_executor,
         audit_model,
+        provider: provider.to_string(),
+        provider_ref,
     })
 }
 
@@ -248,6 +336,8 @@ fn write_of(source: &MonitorSource) -> SourceWrite {
         enabled: source.enabled,
         audit_executor: source.audit_executor.clone(),
         audit_model: source.audit_model.clone(),
+        provider: source.provider.clone(),
+        provider_ref: source.provider_ref.clone(),
     }
 }
 
@@ -281,16 +371,25 @@ pub async fn create_source(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<SourceRequest>,
-) -> ApiResult<(StatusCode, Json<MonitorSource>)> {
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_permission(&conn, &auth, None, PERMISSION)?;
-    let write = validate(&conn, &auth.org_id, input)?;
-    let source = store_monitor::create_source(&conn, &auth.org_id, &auth.user_id, &write)
+    let provider = input.provider.clone().map(|p| p.trim().to_ascii_lowercase()).filter(|p| !p.is_empty()).unwrap_or_else(|| "gcp".into());
+    let write = validate(&conn, &auth.org_id, &provider, input)?;
+    // A drain's bearer token is shown once, here; only its hash is stored.
+    let token = (provider != "gcp").then(|| format!("nmd_{}", hex::encode(rand::random::<[u8; 24]>())));
+    let source = store_monitor::create_source(&conn, &auth.org_id, &auth.user_id, &write, token.as_deref().map(token_hash).as_deref())
         .map_err(internal)?
         .ok_or_else(name_taken)?;
     match sync_audit(&conn, &auth.user_id, &source) {
-        Ok(source) => Ok((StatusCode::CREATED, Json(source))),
+        Ok(source) => {
+            let mut body = serde_json::to_value(source).map_err(|e| internal(e.into()))?;
+            if let Some(token) = token {
+                body["ingest_token"] = token.into();
+            }
+            Ok((StatusCode::CREATED, Json(body)))
+        }
         Err(error) => {
             // No half-configured source: it is created with its audit or not at all.
             let _ = store_monitor::delete_source(&conn, &auth.org_id, &source.id);
@@ -309,7 +408,7 @@ pub async fn update_source(
     let conn = db.lock().map_err(|_| lock_error())?;
     require_permission(&conn, &auth, None, PERMISSION)?;
     let previous = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
-    let write = validate(&conn, &auth.org_id, input)?;
+    let write = validate(&conn, &auth.org_id, &previous.provider, input)?;
     if !store_monitor::update_source(&conn, &auth.org_id, &id, &write).map_err(internal)? {
         return Err(name_taken());
     }

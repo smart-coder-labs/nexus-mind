@@ -175,3 +175,18 @@ causes it. The issue then opens in that repository instead of the source's fixed
   error: last seen, severity, service, title, count, audit state and status. Each line is a
   `<details>` that opens to the source, times, full message, stack, audit conclusion and run, issue
   and log links, and the Resolve, Mute and Reopen actions.
+
+## Supabase and Vercel log drains (v119)
+
+- `monitor_sources.provider` is `gcp` (default), `supabase` or `vercel`, and it is fixed at creation. `provider_ref` holds the Supabase project ref or the Vercel team slug. It is used only to build log links, and only when it is a plain slug.
+- Drains post to the public `POST /v1/monitor/drain/:source_id` with `Authorization: Bearer nmd_…`. The token is generated on create and returned once (`ingest_token`). Only its SHA-256 is stored (`ingest_token_hash`, never serialized).
+  - The GCP route rejects drain sources, and the drain route rejects GCP sources (404).
+- Supabase signs nothing (as of 2026-11), so the token is the only protection. Each source has its own token.
+- The body can be a JSON array, a single object or NDJSON, optionally gzip (inflated output capped at 16 MB).
+- Once the token checks out, every request gets a 200, because Vercel disables a drain that keeps failing.
+- Errors only (`monitor/drains.rs`):
+  - **Supabase:** Postgres `error_severity` ERROR/FATAL/PANIC, `error`/`fatal` levels, and 5xx statuses.
+  - **Vercel:** `error`/`fatal` levels, 5xx statuses (direct or proxy), and `statusCode -1`, which means the function crashed and is reported as CRITICAL.
+  - Request lines drop the query string.
+  - At most 50 errors per batch.
+- The log link formats (`supabase.com/dashboard/project/<ref>/logs/explorer`, `vercel.com/<team>/<project>/logs?requestIds=<id>`) are not documented by the providers. Shortcut: if one breaks, the alert still works without the link.

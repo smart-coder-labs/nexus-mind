@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import Monitoring, { pushEndpoint, setupCommands, setupSteps, suggestedAccount } from './Monitoring'
+import Monitoring, { drainEndpoint, drainSteps, pushEndpoint, setupCommands, setupSteps, suggestedAccount } from './Monitoring'
 import type { MonitorGroup, MonitorSource } from '../types'
 import { chooseSelectOption } from '../test/select'
 
@@ -39,6 +39,8 @@ const source: MonitorSource = {
   audit_executor: null,
   audit_model: null,
   audit_agent_id: null,
+  provider: 'gcp',
+  provider_ref: null,
 }
 const group: MonitorGroup = {
   id: 'g1',
@@ -181,7 +183,7 @@ describe('Monitoring page', () => {
   it('fills the service account from the GCP project and offers server accounts only when allowed', async () => {
     api.listMonitorSources.mockResolvedValue([])
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: 'Connect GCP project' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect project' }))
     expect(screen.getByRole('heading', { name: 'How it works' })).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('GCP project ID'), 'my-proj-1')
     expect(screen.getByLabelText('Push service account')).toHaveValue('nexusmind-push@my-proj-1.iam.gserviceaccount.com')
@@ -198,7 +200,7 @@ describe('Monitoring page', () => {
     api.getMonitorOptions.mockResolvedValue({ server_slack_mcp: true, server_github: true })
     api.createMonitorSource.mockResolvedValue({ ...source, id: 'src-2' })
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: 'Connect GCP project' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect project' }))
     await userEvent.type(screen.getByLabelText('Name'), 'Beta')
     await userEvent.type(screen.getByLabelText('NexusMind project'), 'kasymir')
     await userEvent.type(screen.getByLabelText('GCP project ID'), 'my-proj-1')
@@ -216,5 +218,32 @@ describe('Monitoring page', () => {
       github_repo: 'acme/app',
     }))
     expect(await screen.findByRole('list', { name: 'Setup steps' })).toBeInTheDocument()
+  })
+
+  it('connects a Vercel drain and shows its token once, with no GCP fields', async () => {
+    api.listMonitorSources.mockResolvedValue([])
+    api.createMonitorSource.mockResolvedValue({ ...source, id: 'src-3', provider: 'vercel', provider_ref: 'acme', service_account: '', ingest_token: 'nmd_secret' })
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect project' }))
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Errors come from'), /Vercel/)
+    expect(screen.queryByLabelText('GCP project ID')).not.toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Name'), 'Shop')
+    await userEvent.type(screen.getByLabelText('NexusMind project'), 'shop')
+    await userEvent.type(screen.getByLabelText('Vercel team slug (optional)'), 'acme')
+    await userEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(api.createMonitorSource).toHaveBeenCalledWith(expect.objectContaining({ provider: 'vercel', provider_ref: 'acme', service_account: '' }))
+    const steps = await screen.findByRole('list', { name: 'Setup steps' })
+    expect(steps.textContent).toContain('/v1/monitor/drain/src-3')
+    expect(steps.textContent).toContain('Authorization: Bearer nmd_secret')
+  })
+})
+
+describe('drain setup', () => {
+  it('builds the drain endpoint and never invents a token', () => {
+    expect(drainEndpoint('s1', 'https://api.example.com/')).toBe('https://api.example.com/v1/monitor/drain/s1')
+    const steps = drainSteps('supabase', 'https://api.example.com/v1/monitor/drain/s1', undefined)
+    expect(steps[0].title).toBe('Add a log drain in Supabase')
+    expect(steps[1].command).toBe('Authorization: Bearer TOKEN_SHOWN_WHEN_CONNECTED')
+    expect(steps[1].detail).toMatch(/delete the source and connect it again/)
   })
 })

@@ -9,6 +9,7 @@
 
 pub mod audit;
 pub mod delivery;
+pub mod drains;
 pub mod oidc;
 
 use std::sync::OnceLock;

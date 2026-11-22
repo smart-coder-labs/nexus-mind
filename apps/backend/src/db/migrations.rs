@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 118;
+pub const LATEST_USER_VERSION: i32 = 119;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -121,6 +121,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v116(conn)?;
     run_v117(conn)?;
     run_v118(conn)?;
+    run_v119(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -289,6 +290,30 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 113;
         ",
     )?;
+    Ok(())
+}
+
+/// Migration v119: log drain sources. `provider` is `gcp` (Pub/Sub push with
+/// OIDC), `supabase` or `vercel` (drains with a bearer token, stored hashed);
+/// `provider_ref` is the Supabase project ref or Vercel team slug for log links.
+pub fn run_v119(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 119 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (column, definition) in [("provider", "TEXT NOT NULL DEFAULT 'gcp'"), ("ingest_token_hash", "TEXT"), ("provider_ref", "TEXT")] {
+        let has: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('monitor_sources') WHERE name=?1)",
+            rusqlite::params![column],
+            |row| row.get(0),
+        )?;
+        if !has {
+            tx.execute_batch(&format!("ALTER TABLE monitor_sources ADD COLUMN {column} {definition};"))?;
+        }
+    }
+    tx.execute_batch("PRAGMA user_version=119;")?;
+    tx.commit()?;
     Ok(())
 }
 
