@@ -175,7 +175,10 @@ function StatusBadge({ project }: { project: CodeProject }) {
   if (project.index_status === 'error') {
     return (
       <span className="flex items-center gap-1 text-[10px] text-status-error" title={project.last_index_error ?? ''}>
-        <AlertCircle className="w-3 h-3" /> Error
+        <AlertCircle className="w-3 h-3 shrink-0" />
+        <span className="truncate max-w-[24rem]">
+          {project.last_index_error ? `Error: ${project.last_index_error.replace(/^PRIVATE_REPO_AUTH_FAILURE: /, '')}` : 'Error'}
+        </span>
       </span>
     )
   }

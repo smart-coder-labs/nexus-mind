@@ -154,7 +154,7 @@ async fn check_repo_access(
 /// Clone (or `git pull`, if already cloned) `bare_url` into `dest`.
 ///
 /// `token` is an optional GitHub credential (PAT or OAuth token). When provided it
-/// is injected via a shell credential helper that reads from the `GIT_TOKEN` env var —
+/// is injected as an `http.extraHeader` through `GIT_CONFIG_*` env vars —
 /// the secret is **never embedded in the URL**, so it never appears in `.git/config`,
 /// process argv, or error messages.
 ///
@@ -170,14 +170,22 @@ fn clone_or_pull(bare_url: &str, token: Option<&str>, dest: &str) -> Result<(), 
             .output();
     }
 
-    // Inject the token via a credential helper that reads GIT_TOKEN from the environment.
-    // This keeps the secret out of the command line (not visible in `ps aux`) and out of
-    // .git/config (which git clone writes the remote URL into verbatim).
-    const CRED_HELPER: &str = r#"credential.helper=!f() { echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f"#;
-
+    // Send the token as a Basic auth header via GIT_CONFIG_* env vars: keeps it out of
+    // argv and .git/config, and — unlike a `-c credential.helper` — it cannot be
+    // overridden by a host's URL-scoped helper (e.g. `gh auth git-credential`), which
+    // git consults first and would clone as the wrong GitHub account.
     let mut cmd = git_cmd();
     if let Some(tok) = token {
-        cmd.env("GIT_TOKEN", tok).arg("-c").arg(CRED_HELPER);
+        use base64::Engine as _;
+        let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{tok}"));
+        // Empty credential.helper clears host helpers so a rejected token fails
+        // instead of silently retrying as the server's gh account.
+        cmd.env("GIT_CONFIG_COUNT", "2")
+            .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+            .env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {basic}"))
+            .env("GIT_CONFIG_KEY_1", "credential.helper")
+            .env("GIT_CONFIG_VALUE_1", "")
+            .env("GIT_TERMINAL_PROMPT", "0");
     }
 
     let output = if already_cloned {
@@ -510,7 +518,7 @@ pub async fn post_index(
     // Resolve the clone token independently of the URL. Priority:
     //   1. Provided PAT (per-request, validated above)
     //   2. Org-level GitHub OAuth connection
-    // The token is passed to clone_or_pull via GIT_TOKEN env var, never embedded in the URL.
+    // The token is passed to clone_or_pull via GIT_CONFIG_* env vars, never embedded in the URL.
     let clone_token: Option<String> = if has_repo {
         let url = input.repo_url.as_ref().unwrap().trim();
         if url.starts_with("https://github.com/") {
@@ -1698,7 +1706,7 @@ pub async fn post_reindex(
     let repo_url = project.repo_url.clone();
 
     // Resolve the clone token BEFORE spawning. Priority: stored PAT → org OAuth.
-    // The token is injected via GIT_TOKEN env var in clone_or_pull — never embedded in the URL.
+    // The token is injected via GIT_CONFIG_* env vars in clone_or_pull — never embedded in the URL.
     let clone_token: Option<String> = if repo_url
         .as_deref()
         .map(|u| u.trim().starts_with("https://github.com/"))
