@@ -10,7 +10,7 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { Input } from '../components/ui/Input'
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
 import { cn } from '../lib/utils'
-import type { AutonomousAgentConnector, MonitorAuditExecutor, MonitorGroup, MonitorGroupStatus, MonitorProvider, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
+import type { AutonomousAgentConnector, AutonomousAgentDefinition, MonitorAuditExecutor, MonitorGroup, MonitorGroupStatus, MonitorProvider, MonitorSource, MonitorSourceInput, MonitorTestResult } from '../types'
 import { TaskExecutorSelect } from './factory/agents/TaskExecutorSelect'
 import { CardListSkeleton, Field, FieldGroup, InlineAlert, LINK_CLASS, PageHeader, PANEL_CLASS, PermissionDenied, SectionHeading, SELECT_CLASS } from './factory/govern/ui'
 
@@ -198,12 +198,20 @@ interface Draft {
   /** Empty = no error audit. */
   auditExecutor: MonitorAuditExecutor | ''
   auditModel: string
+  /** `new` or an existing `error_audit` agent id. */
+  auditAgent: string
+  auditLimit: string
   autofix: boolean
+  /** '' = none, `new` or an existing `github_issue_resolver` id. */
+  fixAgent: string
+  fixLimit: string
+  /** This project's own (managed) agents, left out of the "existing" lists. */
+  ownAgents: string[]
   /** Only with `github = NEW_GITHUB_TOKEN`; sent to the connector, never to the source. */
   newToken: string
 }
 
-const EMPTY: Draft = { id: null, provider: 'gcp', providerRef: '', name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '', autofix: false, newToken: '' }
+const EMPTY: Draft = { id: null, provider: 'gcp', providerRef: '', name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '', auditAgent: 'new', auditLimit: '10', autofix: false, fixAgent: '', fixLimit: '10', ownAgents: [], newToken: '' }
 
 function draftFrom(source: MonitorSource): Draft {
   return {
@@ -222,7 +230,12 @@ function draftFrom(source: MonitorSource): Draft {
     enabled: source.enabled,
     auditExecutor: source.audit_executor ?? '',
     auditModel: source.audit_model ?? '',
+    auditAgent: source.audit_agent_id && !source.audit_agent_managed ? source.audit_agent_id : 'new',
+    auditLimit: String(source.audit_daily_limit),
     autofix: source.autofix,
+    fixAgent: !source.autofix_agent_id ? '' : source.autofix_agent_managed ? 'new' : source.autofix_agent_id,
+    fixLimit: String(source.autofix_daily_limit),
+    ownAgents: [source.audit_agent_managed && source.audit_agent_id, source.autofix_agent_managed && source.autofix_agent_id].filter((id): id is string => !!id),
     newToken: '',
   }
 }
@@ -242,8 +255,12 @@ function sourceInput(draft: Draft): MonitorSourceInput {
     throttle_minutes: Number(draft.throttle) || 30,
     enabled: draft.enabled,
     audit_executor: draft.github && draft.auditExecutor ? draft.auditExecutor : null,
-    audit_model: draft.github && draft.auditExecutor && draft.auditModel.trim() ? draft.auditModel.trim() : null,
-    autofix: draft.github === SERVER_GITHUB && draft.autofix,
+    audit_model: draft.github && draft.auditExecutor && draft.auditAgent === 'new' && draft.auditModel.trim() ? draft.auditModel.trim() : null,
+    audit_agent: draft.github && draft.auditExecutor ? draft.auditAgent : null,
+    autofix_agent: draft.github && draft.fixAgent ? draft.fixAgent : null,
+    autofix: !!draft.github && !!draft.fixAgent && draft.autofix,
+    audit_daily_limit: Number(draft.auditLimit) || 10,
+    autofix_daily_limit: Number(draft.fixLimit) || 10,
   }
 }
 
@@ -288,6 +305,9 @@ export default function Monitoring() {
   })
   const options = useQuery({ queryKey: ['monitor-options'], queryFn: () => client.getMonitorOptions(), enabled: allowed })
   const connectors = useQuery({ queryKey: ['autonomous-connectors'], queryFn: () => client.listAutonomousAgentConnectors(), enabled: allowed })
+  const agents = useQuery({ queryKey: ['autonomous-agents'], queryFn: () => client.listAutonomousAgents(), enabled: allowed })
+  const enabledAgents = (agents.data ?? []).filter(a => a.status === 'enabled')
+  const agentName = (id: string | null) => agents.data?.find(a => a.id === id)?.name ?? 'Chosen agent'
   const usable = (connectors.data ?? []).filter(c => c.health !== 'revoked')
   const slackConnectors = usable.filter(c => c.kind === 'slack')
   const githubConnectors = usable.filter(isGithub)
@@ -327,6 +347,10 @@ export default function Monitoring() {
   const test = useMutation({
     mutationFn: (id: string) => client.testMonitorSource(id),
     onSuccess: (result, id) => setTests(current => ({ ...current, [id]: result })),
+  })
+  const fix = useMutation({
+    mutationFn: (id: string) => client.fixMonitorGroup(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor-groups'] }),
   })
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: MonitorGroupStatus }) => client.setMonitorGroupStatus(id, status),
@@ -390,9 +414,12 @@ export default function Monitoring() {
                       {source.github_connector_id === SERVER_GITHUB && <span className="text-text-tertiary"> · server gh</span>}
                     </dd>
                     <dt className="text-text-tertiary">Error audit</dt>
-                    <dd className="text-text-secondary">{source.audit_executor ? `${EXECUTOR_LABEL[source.audit_executor]}${source.audit_model ? ` · ${source.audit_model}` : ''} · up to 10 a day` : 'Off'}</dd>
+                    <dd className="text-text-secondary">{source.audit_executor ? `${source.audit_agent_managed ? EXECUTOR_LABEL[source.audit_executor] : agentName(source.audit_agent_id)}${source.audit_model ? ` · ${source.audit_model}` : ''} · up to ${source.audit_daily_limit} a day` : 'Off'}</dd>
                     <dt className="text-text-tertiary">Auto-fix</dt>
-                    <dd className="text-text-secondary">{source.autofix ? 'Draft PR per issue · up to 10 a day' : 'Off'}</dd>
+                    <dd className="text-text-secondary">
+                      {!source.autofix_agent_id ? 'Off'
+                        : `${source.autofix_agent_managed ? 'Managed agent' : agentName(source.autofix_agent_id)} · ${source.autofix ? `every new issue, up to ${source.autofix_daily_limit} a day` : 'from the Resolve issue button'}`}
+                    </dd>
                     <dt className="text-text-tertiary">Repeat alerts</dt>
                     <dd className="text-text-secondary">At most every {source.throttle_minutes} min per error</dd>
                     <dt className="text-text-tertiary">Project</dt>
@@ -467,12 +494,15 @@ export default function Monitoring() {
                   sourceName={sourceName(group.source_id)}
                   busy={setStatus.isPending}
                   onStatus={status => setStatus.mutate({ id: group.id, status })}
+                  fixing={fix.isPending && fix.variables === group.id}
+                  onFix={() => fix.mutate(group.id)}
                 />
               ))}
             </ul>
           </div>
         )}
         {setStatus.isError && <InlineAlert>The status was not saved: {message(setStatus.error)}.</InlineAlert>}
+        {fix.isError && <InlineAlert>The fix did not start: {message(fix.error)}.</InlineAlert>}
       </section>
 
       <SourceEditor
@@ -482,6 +512,8 @@ export default function Monitoring() {
         githubConnectors={githubConnectors}
         serverSlack={options.data?.server_slack_mcp ?? false}
         serverGithub={options.data?.server_github ?? false}
+        auditAgents={enabledAgents.filter(a => a.template_key === 'error_audit')}
+        resolverAgents={enabledAgents.filter(a => a.template_key === 'github_issue_resolver')}
         saving={save.isPending}
         error={save.isError ? message(save.error) : null}
         onSave={() => draft && save.mutate(draft)}
@@ -510,12 +542,14 @@ const SEVERITY_CLASS: Record<string, string> = {
 }
 
 /** One error as a terminal line; opening it shows every detail. */
-function ErrorLine({ group, source, sourceName, busy, onStatus }: {
+function ErrorLine({ group, source, sourceName, busy, onStatus, fixing, onFix }: {
   group: MonitorGroup
   source: MonitorSource | undefined
   sourceName: string
   busy: boolean
   onStatus: (status: MonitorGroupStatus) => void
+  fixing: boolean
+  onFix: () => void
 }) {
   const issueRepo = group.issue_repo ?? source?.github_repo
   const issueUrl = issueRepo && group.issue_number ? `https://github.com/${issueRepo}/issues/${group.issue_number}` : null
@@ -577,6 +611,11 @@ function ErrorLine({ group, source, sourceName, busy, onStatus }: {
           <dt className="text-text-tertiary">status</dt>
           <dd className="m-0 flex flex-wrap items-center gap-2">
             <span className={statusClass}>{status}</span>
+            {source?.autofix_agent_id && group.fix_status !== 'pending' && (
+              <Button size="sm" variant="secondary" disabled={fixing} aria-label={`Open a fix PR for ${group.title}`} onClick={onFix}>
+                {fixing ? 'Starting…' : group.issue_number ? 'Resolve issue' : 'Open issue and resolve'}
+              </Button>
+            )}
             {group.status === 'open' ? (
               <>
                 <Button size="sm" variant="ghost" disabled={busy} aria-label={`Resolve ${group.title}`} onClick={() => onStatus('resolved')}>Resolve</Button>
@@ -592,13 +631,15 @@ function ErrorLine({ group, source, sourceName, busy, onStatus }: {
   )
 }
 
-function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serverSlack, serverGithub, saving, error, onSave, onClose }: {
+function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serverSlack, serverGithub, auditAgents, resolverAgents, saving, error, onSave, onClose }: {
   draft: Draft | null
   setDraft: (draft: Draft | null) => void
   slackConnectors: AutonomousAgentConnector[]
   githubConnectors: AutonomousAgentConnector[]
   serverSlack: boolean
   serverGithub: boolean
+  auditAgents: AutonomousAgentDefinition[]
+  resolverAgents: AutonomousAgentDefinition[]
   saving: boolean
   error: string | null
   onSave: () => void
@@ -734,7 +775,7 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
             </FieldGroup>
             <FieldGroup
               title="Error audit"
-              description="Before opening the issue, an agent reads the code to find why the error happens and which repository causes it, then the issue opens there. Only for new and regressed errors, up to 10 audits a day; past that, issues open without one."
+              description="Before opening the issue, an agent reads the code to find why the error happens and which repository causes it, then the issue opens there. Only for new and regressed errors, up to the daily limit; past it, issues open without one."
             >
               {!draft.github ? (
                 <p className="text-[13px] text-text-secondary">Turn on GitHub issues first: the audit decides which repository gets them.</p>
@@ -750,6 +791,19 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
                   </label>
                   {draft.auditExecutor && (
                     <>
+                      <Field id="monitor-audit-agent" label="Audit agent" hint="A new agent is created and kept in sync from here. An existing one is used as it is.">
+                        <StyledSelect id="monitor-audit-agent" className={SELECT_CLASS} value={draft.auditAgent} onChange={e => set('auditAgent', e.target.value)}>
+                          <option value="new">New agent</option>
+                          {auditAgents.filter(a => !draft.ownAgents.includes(a.id)).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </StyledSelect>
+                      </Field>
+                      <Field id="monitor-audit-limit" label="Automatic audits per day">
+                        <Input id="monitor-audit-limit" type="number" min={1} max={500} value={draft.auditLimit} onChange={e => set('auditLimit', e.target.value)} />
+                      </Field>
+                    </>
+                  )}
+                  {draft.auditExecutor && draft.auditAgent === 'new' && (
+                    <>
                       <Field id="monitor-audit-executor" label="Executor">
                         <TaskExecutorSelect value={draft.auditExecutor} template="error_audit" onChange={value => set('auditExecutor', value)} />
                       </Field>
@@ -762,16 +816,38 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
               )}
             </FieldGroup>
             <FieldGroup
-              title="Auto-fix"
-              description="Each issue Monitoring opens goes to an agent that writes a fix and opens a draft PR that closes the issue. The PR is posted in the Slack thread of the alert for someone to review; nothing is merged automatically. Up to 10 a day. Uses the audit's executor, or Claude."
+              title="Resolve issues"
+              description="An agent writes a fix and opens a draft PR that closes the issue. The PR is posted in the Slack thread of the alert for someone to review; nothing is merged automatically. Use it from the Resolve issue button on each error (no limit), or on every new issue (up to the daily limit)."
             >
-              {draft.github !== SERVER_GITHUB ? (
-                <p className="text-[13px] text-text-secondary">Needs GitHub issues through the server&apos;s gh account: the agent opens the PR with it.</p>
+              {!draft.github ? (
+                <p className="text-[13px] text-text-secondary">Turn on GitHub issues first: the agent resolves those issues.</p>
               ) : (
-                <label className="flex items-center gap-2 text-sm text-text-secondary">
-                  <input type="checkbox" checked={draft.autofix} onChange={e => set('autofix', e.target.checked)} />
-                  Open a draft PR for each issue
-                </label>
+                <>
+                  <Field
+                    id="monitor-fix-agent"
+                    label="Agent that resolves issues"
+                    hint="Any GitHub Issue Resolver of this organization works on its own repositories. A new agent follows the issue to any repository of the owner, and needs the server's gh account."
+                  >
+                    <StyledSelect id="monitor-fix-agent" className={SELECT_CLASS} value={draft.fixAgent} onChange={e => setDraft({ ...draft, fixAgent: e.target.value, autofix: e.target.value ? draft.autofix : false })}>
+                      <option value="">None</option>
+                      {draft.github === SERVER_GITHUB && <option value="new">New agent (uses the audit&apos;s executor, or Claude)</option>}
+                      {resolverAgents.filter(a => !draft.ownAgents.includes(a.id)).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </StyledSelect>
+                  </Field>
+                  {draft.fixAgent && (
+                    <>
+                      <label className="flex items-center gap-2 text-sm text-text-secondary">
+                        <input type="checkbox" checked={draft.autofix} onChange={e => set('autofix', e.target.checked)} />
+                        Resolve every new issue automatically
+                      </label>
+                      {draft.autofix && (
+                        <Field id="monitor-fix-limit" label="Automatic fixes per day" hint="Fixes from the Resolve issue button don't count and have no limit.">
+                          <Input id="monitor-fix-limit" type="number" min={1} max={500} value={draft.fixLimit} onChange={e => set('fixLimit', e.target.value)} />
+                        </Field>
+                      )}
+                    </>
+                  )}
+                </>
               )}
             </FieldGroup>
             <FieldGroup title="Repeats">

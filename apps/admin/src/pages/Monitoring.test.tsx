@@ -19,6 +19,8 @@ const api = vi.hoisted(() => ({
   setMonitorSourceEnabled: vi.fn(),
   testMonitorSource: vi.fn(),
   setMonitorGroupStatus: vi.fn(),
+  listAutonomousAgents: vi.fn(),
+  fixMonitorGroup: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ createClient: () => api }))
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ session: { user: { permissions: ['settings:write'] } } }) }))
@@ -44,6 +46,10 @@ const source: MonitorSource = {
   provider_ref: null,
   autofix: false,
   autofix_agent_id: null,
+  audit_agent_managed: false,
+  autofix_agent_managed: false,
+  audit_daily_limit: 10,
+  autofix_daily_limit: 10,
 }
 const group: MonitorGroup = {
   id: 'g1',
@@ -119,6 +125,7 @@ describe('Monitoring page', () => {
     api.listMonitorSources.mockResolvedValue([source])
     api.listMonitorGroups.mockResolvedValue([group])
     api.listAutonomousAgentConnectors.mockResolvedValue([])
+    api.listAutonomousAgents.mockResolvedValue([])
     api.setMonitorGroupStatus.mockResolvedValue(undefined)
     api.getMonitorOptions.mockResolvedValue({ server_slack_mcp: false, server_github: false })
   })
@@ -237,9 +244,42 @@ describe('Monitoring page', () => {
     await userEvent.click(await screen.findByText('Order <n> not found'))
     expect(screen.getByRole('link', { name: 'Fix PR' })).toHaveAttribute('href', 'https://github.com/acme/app/pull/9')
     await userEvent.click(screen.getByRole('button', { name: 'Edit Kasymir beta' }))
-    await userEvent.click(screen.getByLabelText('Open a draft PR for each issue'))
+    await waitFor(() => expect(api.getMonitorOptions).toHaveBeenCalled())
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Agent that resolves issues'), /New agent/)
+    await userEvent.click(screen.getByLabelText('Resolve every new issue automatically'))
+    await userEvent.clear(screen.getByLabelText('Automatic fixes per day'))
+    await userEvent.type(screen.getByLabelText('Automatic fixes per day'), '4')
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(api.updateMonitorSource).toHaveBeenCalledWith('src-1', expect.objectContaining({ github_connector_id: 'server_gh_cli', autofix: true }))
+    expect(api.updateMonitorSource).toHaveBeenCalledWith('src-1', expect.objectContaining({
+      github_connector_id: 'server_gh_cli', autofix_agent: 'new', autofix: true, autofix_daily_limit: 4,
+    }))
+  })
+
+  it('picks an existing GitHub Issue Resolver for the project', async () => {
+    const resolver = { id: 'res-1', org_id: 'o1', name: 'Resolver · app', description: null, template_key: 'github_issue_resolver', template_version: 1, status: 'enabled', current_revision: 1, created_by: 'u', created_at: '', updated_at: '', validation_status: 'valid' }
+    api.listAutonomousAgents.mockResolvedValue([resolver])
+    api.updateMonitorSource.mockResolvedValue({ ...source, autofix_agent_id: 'res-1' })
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Kasymir beta' }))
+    await waitFor(() => expect(api.listAutonomousAgents).toHaveBeenCalled())
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('Agent that resolves issues'), 'Resolver · app')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(api.updateMonitorSource).toHaveBeenCalledWith('src-1', expect.objectContaining({ autofix_agent: 'res-1', autofix: false }))
+  })
+
+  it('resolves an old error from its button when the project has a fix agent', async () => {
+    api.listMonitorSources.mockResolvedValue([{ ...source, autofix_agent_id: 'res-1' }])
+    api.fixMonitorGroup.mockResolvedValue({ ...group, fix_status: 'pending' })
+    renderPage()
+    await userEvent.click(await screen.findByText('Order <n> not found'))
+    await userEvent.click(await screen.findByRole('button', { name: 'Open a fix PR for Order <n> not found' }))
+    expect(api.fixMonitorGroup).toHaveBeenCalledWith('g1')
+  })
+
+  it('has no Resolve issue button without a fix agent', async () => {
+    renderPage()
+    await userEvent.click(await screen.findByText('Order <n> not found'))
+    expect(screen.queryByRole('button', { name: 'Open a fix PR for Order <n> not found' })).not.toBeInTheDocument()
   })
 
   it('opens issues with a new GitHub token, stored as a connector before the source', async () => {

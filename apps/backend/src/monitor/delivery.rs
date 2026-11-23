@@ -425,7 +425,7 @@ pub async fn open_issue_in(
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     store_monitor::set_issue(&conn, &group.id, number, repository)?;
     // The fix follows the issue; a failure to start it never loses the issue.
-    if let Err(error) = super::autofix::start(&conn, source, group, repository, number) {
+    if let Err(error) = super::autofix::start(&conn, source, group, repository, number, false) {
         tracing::warn!(group = %group.id, "Monitor auto-fix did not start: {error:#}");
     }
     Ok(number)
@@ -482,6 +482,10 @@ mod tests {
             provider_ref: None,
             autofix: false,
             autofix_agent_id: None,
+            audit_agent_managed: false,
+            autofix_agent_managed: false,
+            audit_daily_limit: 10,
+            autofix_daily_limit: 10,
             ingest_token_hash: None,
         }
     }

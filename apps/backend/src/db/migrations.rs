@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 120;
+pub const LATEST_USER_VERSION: i32 = 121;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -123,6 +123,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v118(conn)?;
     run_v119(conn)?;
     run_v120(conn)?;
+    run_v121(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -291,6 +292,33 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
         PRAGMA user_version = 113;
         ",
     )?;
+    Ok(())
+}
+
+/// Migration v121: per-source daily caps for automatic audits and fixes, and
+/// whether a fix was started by hand (manual fixes have no cap and don't count).
+pub fn run_v121(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 121 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (table, column, definition) in [
+        ("monitor_sources", "audit_daily_limit", "INTEGER NOT NULL DEFAULT 10"),
+        ("monitor_sources", "autofix_daily_limit", "INTEGER NOT NULL DEFAULT 10"),
+        ("monitor_groups", "fix_manual", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        let has: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+            rusqlite::params![table, column],
+            |row| row.get(0),
+        )?;
+        if !has {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))?;
+        }
+    }
+    tx.execute_batch("PRAGMA user_version=121;")?;
+    tx.commit()?;
     Ok(())
 }
 

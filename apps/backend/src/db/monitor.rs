@@ -39,6 +39,13 @@ pub struct MonitorSource {
     /// Hand each new issue to the managed resolver, which opens a draft PR.
     pub autofix: bool,
     pub autofix_agent_id: Option<String>,
+    /// Whether each agent was created by Monitoring for this source (`false`:
+    /// an existing agent the user picked, which Monitoring never edits).
+    pub audit_agent_managed: bool,
+    pub autofix_agent_managed: bool,
+    /// Automatic audits and fixes per UTC day (manual fixes are not capped).
+    pub audit_daily_limit: i64,
+    pub autofix_daily_limit: i64,
     /// SHA-256 (hex) of a drain source's bearer token; never serialized.
     #[serde(skip)]
     pub ingest_token_hash: Option<String>,
@@ -61,9 +68,15 @@ pub struct SourceWrite {
     pub provider: String,
     pub provider_ref: Option<String>,
     pub autofix: bool,
+    pub audit_daily_limit: i64,
+    pub autofix_daily_limit: i64,
 }
 
-const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel,audit_executor,audit_model,audit_agent_id,provider,ingest_token_hash,provider_ref,autofix,autofix_agent_id";
+const SOURCE_COLUMNS: &str = "id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_at,slack_channel,audit_executor,audit_model,audit_agent_id,provider,ingest_token_hash,provider_ref,autofix,autofix_agent_id,audit_daily_limit,autofix_daily_limit,
+  (SELECT json_extract(r.config_json,'$.monitor_source_id')=monitor_sources.id FROM autonomous_agent_definitions d
+     JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision WHERE d.id=monitor_sources.audit_agent_id),
+  (SELECT json_extract(r.config_json,'$.monitor_source_id')=monitor_sources.id FROM autonomous_agent_definitions d
+     JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision WHERE d.id=monitor_sources.autofix_agent_id)";
 
 fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
     let id: String = row.get(0)?;
@@ -89,6 +102,10 @@ fn source_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorSource> {
         provider_ref: row.get(17)?,
         autofix: row.get::<_, i64>(18)? != 0,
         autofix_agent_id: row.get(19)?,
+        audit_daily_limit: row.get(20)?,
+        autofix_daily_limit: row.get(21)?,
+        audit_agent_managed: row.get::<_, Option<i64>>(22)?.unwrap_or(0) != 0,
+        autofix_agent_managed: row.get::<_, Option<i64>>(23)?.unwrap_or(0) != 0,
     })
 }
 
@@ -98,11 +115,11 @@ pub fn create_source(c: &Connection, org_id: &str, user_id: &str, w: &SourceWrit
     let id = Uuid::new_v4().to_string();
     let inserted = c.execute(
         "INSERT OR IGNORE INTO monitor_sources
-           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel,audit_executor,audit_model,provider,ingest_token_hash,provider_ref,autofix)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+           (id,org_id,project,name,service_account,slack_connector_id,github_connector_id,github_repo,throttle_minutes,enabled,created_by,slack_channel,audit_executor,audit_model,provider,ingest_token_hash,provider_ref,autofix,audit_daily_limit,autofix_daily_limit)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![id, org_id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
                 w.github_repo, w.throttle_minutes, w.enabled as i64, user_id, w.slack_channel, w.audit_executor, w.audit_model,
-                w.provider, token_hash, w.provider_ref, w.autofix as i64],
+                w.provider, token_hash, w.provider_ref, w.autofix as i64, w.audit_daily_limit, w.autofix_daily_limit],
     )?;
     if inserted == 0 {
         return Ok(None);
@@ -115,10 +132,11 @@ pub fn update_source(c: &Connection, org_id: &str, id: &str, w: &SourceWrite) ->
     let updated = c.execute(
         "UPDATE OR IGNORE monitor_sources SET project=?3,name=?4,service_account=?5,slack_connector_id=?6,
            github_connector_id=?7,github_repo=?8,throttle_minutes=?9,enabled=?10,slack_channel=?11,
-           audit_executor=?12,audit_model=?13,provider_ref=?14,autofix=?15
+           audit_executor=?12,audit_model=?13,provider_ref=?14,autofix=?15,audit_daily_limit=?16,autofix_daily_limit=?17
          WHERE org_id=?1 AND id=?2",
         params![org_id, id, w.project, w.name, w.service_account, w.slack_connector_id, w.github_connector_id,
-                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel, w.audit_executor, w.audit_model, w.provider_ref, w.autofix as i64],
+                w.github_repo, w.throttle_minutes, w.enabled as i64, w.slack_channel, w.audit_executor, w.audit_model, w.provider_ref, w.autofix as i64,
+                w.audit_daily_limit, w.autofix_daily_limit],
     )?;
     Ok(updated > 0)
 }
@@ -282,6 +300,11 @@ pub fn list_groups(c: &Connection, org_id: &str, source_id: Option<&str>, limit:
 }
 
 /// `status`: open, resolved or muted. `Ok(false)` when the group is missing.
+pub fn get_group(c: &Connection, org_id: &str, id: &str) -> Result<Option<MonitorGroup>> {
+    Ok(c.query_row(&format!("SELECT {GROUP_COLUMNS} FROM monitor_groups WHERE org_id=?1 AND id=?2"), params![org_id, id], group_from_row)
+        .optional()?)
+}
+
 pub fn set_group_status(c: &Connection, org_id: &str, id: &str, status: &str) -> Result<bool> {
     Ok(c.execute("UPDATE monitor_groups SET status=?3 WHERE org_id=?1 AND id=?2", params![org_id, id, status])? > 0)
 }
@@ -329,10 +352,11 @@ pub fn set_slack_ts(c: &Connection, group_id: &str, ts: &str) -> Result<()> {
     Ok(())
 }
 
-/// Auto-fixes a source started since UTC midnight (the daily cap counts these).
+/// Automatic fixes a source started since UTC midnight (the daily cap counts
+/// these; fixes started by hand don't count).
 pub fn fixes_today(c: &Connection, source_id: &str) -> Result<i64> {
     Ok(c.query_row(
-        "SELECT COUNT(*) FROM monitor_groups WHERE source_id=?1 AND fix_started_at >= date('now')",
+        "SELECT COUNT(*) FROM monitor_groups WHERE source_id=?1 AND fix_started_at >= date('now') AND fix_manual=0",
         params![source_id],
         |row| row.get(0),
     )?)
@@ -340,11 +364,11 @@ pub fn fixes_today(c: &Connection, source_id: &str) -> Result<i64> {
 
 /// Claims the group for one fix run. `false` while another fix is pending
 /// (a run that died without finishing frees it after 3 hours).
-pub fn start_fix(c: &Connection, group_id: &str, run_id: &str) -> Result<bool> {
+pub fn start_fix(c: &Connection, group_id: &str, run_id: &str, manual: bool) -> Result<bool> {
     Ok(c.execute(
-        "UPDATE monitor_groups SET fix_run_id=?2,fix_status='pending',fix_pr_url=NULL,fix_started_at=datetime('now')
+        "UPDATE monitor_groups SET fix_run_id=?2,fix_status='pending',fix_pr_url=NULL,fix_started_at=datetime('now'),fix_manual=?3
          WHERE id=?1 AND (COALESCE(fix_status,'')<>'pending' OR fix_started_at < datetime('now','-3 hours'))",
-        params![group_id, run_id],
+        params![group_id, run_id, manual as i64],
     )? > 0)
 }
 
@@ -398,6 +422,8 @@ mod tests {
             provider: "gcp".into(),
             provider_ref: None,
             autofix: false,
+            audit_daily_limit: 10,
+            autofix_daily_limit: 10,
         }
     }
 
@@ -450,8 +476,8 @@ mod tests {
         let c = conn();
         let source = create_source(&c, "o1", "u1", &write("gcp"), None).unwrap().unwrap();
         let (_, group) = record(&c, &source, "fp", &error("boom"), Utc::now()).unwrap();
-        assert!(start_fix(&c, &group.id, "fix-1").unwrap());
-        assert!(!start_fix(&c, &group.id, "fix-2").unwrap(), "one pending fix per group");
+        assert!(start_fix(&c, &group.id, "fix-1", false).unwrap());
+        assert!(!start_fix(&c, &group.id, "fix-2", true).unwrap(), "one pending fix per group");
         assert_eq!(fixes_today(&c, &source.id).unwrap(), 1);
         assert!(group_for_fix_run(&c, "other", "fix-1").unwrap().is_none());
         set_slack_ts(&c, &group.id, "1730000000.000100").unwrap();
@@ -461,7 +487,8 @@ mod tests {
             (found.fix_status.as_deref(), found.fix_pr_url.as_deref(), found.slack_ts.as_deref()),
             (Some("pr_open"), Some("https://github.com/acme/app/pull/9"), Some("1730000000.000100"))
         );
-        assert!(start_fix(&c, &group.id, "fix-3").unwrap(), "a finished fix can be redone (regression)");
+        assert!(start_fix(&c, &group.id, "fix-3", true).unwrap(), "a finished fix can be redone (regression)");
+        assert_eq!(fixes_today(&c, &source.id).unwrap(), 0, "a fix started by hand doesn't use the daily cap");
     }
 
     #[test]

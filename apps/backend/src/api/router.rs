@@ -80,6 +80,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/monitor/sources/:id/test", post(monitor::test_source))
         .route("/v1/monitor/groups", get(monitor::list_groups))
         .route("/v1/monitor/groups/:id", patch(monitor::set_group_status))
+        .route("/v1/monitor/groups/:id/fix", post(monitor::fix_group))
         .route("/v1/memory/store", post(memory::store))
         .route("/v1/memory/search", post(memory::search))
         .route("/v1/memory/export", get(memory::export))

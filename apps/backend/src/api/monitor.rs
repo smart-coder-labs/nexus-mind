@@ -191,8 +191,25 @@ pub struct SourceRequest {
     /// `claude`, `codex`, `pi` or `nexus`; absent or empty = no error audit.
     pub audit_executor: Option<String>,
     pub audit_model: Option<String>,
-    /// Hand each opened issue to an agent that opens a draft PR.
+    /// The audit agent: `new` (or absent, with `audit_executor`) = one
+    /// Monitoring creates; an id = an existing `error_audit` agent of the org.
+    pub audit_agent: Option<String>,
+    /// Hand each opened issue to the fix agent automatically.
     pub autofix: Option<bool>,
+    /// The agent that resolves issues (automatically or from the "Resolve
+    /// issue" button): absent = none, `new` = one Monitoring creates (server
+    /// `gh` only), an id = an existing `github_issue_resolver` of the org.
+    pub autofix_agent: Option<String>,
+    /// Automatic audits and fixes per day (1-500, default 10). Manual fixes are not capped.
+    pub audit_daily_limit: Option<i64>,
+    pub autofix_daily_limit: Option<i64>,
+}
+
+/// The agents a source's settings ask for, applied after the source is saved.
+pub struct AgentChoice {
+    /// An existing audit agent to use as it is (`None`: managed or off).
+    pub audit: Option<String>,
+    pub fix: crate::monitor::autofix::FixAgent,
 }
 
 fn blank_to_none(value: Option<String>) -> Option<String> {
@@ -207,7 +224,7 @@ pub fn valid_service_account(email: &str) -> bool {
         && domain.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
 }
 
-fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: SourceRequest) -> ApiResult<SourceWrite> {
+fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: SourceRequest) -> ApiResult<(SourceWrite, AgentChoice)> {
     let invalid = |message: &str| error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", message);
     let name = input.name.trim().to_string();
     let project = input.project.trim().to_string();
@@ -233,8 +250,32 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: So
     if !(1..=1440).contains(&throttle_minutes) {
         return Err(invalid("throttle_minutes must be between 1 and 1440"));
     }
-    let audit_executor = blank_to_none(input.audit_executor);
-    let audit_model = blank_to_none(input.audit_model);
+    let limit = |value: Option<i64>, what: &str| -> ApiResult<i64> {
+        let value = value.unwrap_or(10);
+        if (1..=500).contains(&value) { Ok(value) } else { Err(invalid(&format!("{what} must be between 1 and 500"))) }
+    };
+    let audit_daily_limit = limit(input.audit_daily_limit, "audit_daily_limit")?;
+    let autofix_daily_limit = limit(input.autofix_daily_limit, "autofix_daily_limit")?;
+    // An existing agent of this org, enabled, of the given template.
+    let agent = |id: &str, template: &str| -> ApiResult<crate::models::types::AutonomousAgentDetail> {
+        crate::db::queries::get_autonomous_agent_detail(conn, org_id, id)
+            .map_err(internal)?
+            .filter(|a| a.definition.template_key == template && a.definition.status == "enabled")
+            .ok_or_else(|| invalid(&format!("the chosen agent must be an enabled {template} agent of this organization")))
+    };
+    let audit_choice = blank_to_none(input.audit_agent).filter(|v| v != "new");
+    let mut audit_executor = blank_to_none(input.audit_executor);
+    let mut audit_model = blank_to_none(input.audit_model);
+    if let Some(id) = &audit_choice {
+        let chosen = agent(id, crate::monitor::audit::TEMPLATE)?;
+        let owner = input.github_repo.as_deref().and_then(|r| r.trim().split_once('/')).map(|(o, _)| o.to_ascii_lowercase());
+        if chosen.revision.config["github_owner"].as_str().map(str::to_ascii_lowercase) != owner {
+            return Err(invalid("the chosen audit agent works on another GitHub owner than the issues repository"));
+        }
+        // Shown on the card; the chosen agent keeps its own settings.
+        audit_executor = Some(chosen.revision.config["executor"].as_str().unwrap_or("claude").to_string());
+        audit_model = None;
+    }
     if let Some(executor) = &audit_executor {
         if !crate::monitor::audit::EXECUTORS.contains(&executor.as_str()) {
             return Err(invalid("audit_executor must be claude, codex, pi or nexus"));
@@ -300,11 +341,21 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: So
         _ => return Err(invalid("github_connector_id and github_repo go together")),
     }
     let autofix = input.autofix.unwrap_or(false);
-    // The resolver publishes with the server's gh account: never on another org's credential.
-    if autofix && github_connector_id.as_deref() != Some(SERVER_GITHUB) {
-        return Err(invalid("autofix needs GitHub issues through the server's gh account"));
+    use crate::monitor::autofix::FixAgent;
+    let fix = match blank_to_none(input.autofix_agent).as_deref() {
+        None if autofix => FixAgent::Managed,
+        None => FixAgent::None,
+        Some("new") => FixAgent::Managed,
+        Some(id) => FixAgent::Existing(agent(id, crate::monitor::autofix::TEMPLATE)?.definition.id),
+    };
+    if fix != FixAgent::None && github_repo.is_none() {
+        return Err(invalid("resolving issues needs GitHub issues"));
     }
-    Ok(SourceWrite {
+    // A managed resolver publishes with the server's gh account: never on another org's credential.
+    if fix == FixAgent::Managed && github_connector_id.as_deref() != Some(SERVER_GITHUB) {
+        return Err(invalid("a new fix agent needs GitHub issues through the server's gh account; choose an existing resolver instead"));
+    }
+    let write = SourceWrite {
         project,
         name,
         service_account,
@@ -319,16 +370,19 @@ fn validate(conn: &rusqlite::Connection, org_id: &str, provider: &str, input: So
         provider: provider.to_string(),
         provider_ref,
         autofix,
-    })
+        audit_daily_limit,
+        autofix_daily_limit,
+    };
+    Ok((write, AgentChoice { audit: audit_choice, fix }))
 }
 
-/// Brings the source's managed audit and auto-fix agents in line with its settings.
-fn sync_audit(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource) -> ApiResult<MonitorSource> {
-    let agent = crate::monitor::audit::sync_agent(conn, user_id, source).map_err(|e| {
+/// Brings the source's audit and fix agents in line with its settings.
+fn sync_audit(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource, choice: &AgentChoice) -> ApiResult<MonitorSource> {
+    let agent = crate::monitor::audit::sync_agent(conn, user_id, source, choice.audit.as_deref()).map_err(|e| {
         error(StatusCode::UNPROCESSABLE_ENTITY, "audit_agent_invalid", format!("The error audit could not be set up: {e}"))
     })?;
     store_monitor::set_audit_agent(conn, &source.org_id, &source.id, agent.as_deref()).map_err(internal)?;
-    let fixer = crate::monitor::autofix::sync_agent(conn, user_id, source).map_err(|e| {
+    let fixer = crate::monitor::autofix::sync_agent(conn, user_id, source, &choice.fix).map_err(|e| {
         error(StatusCode::UNPROCESSABLE_ENTITY, "autofix_agent_invalid", format!("Auto-fix could not be set up: {e}"))
     })?;
     store_monitor::set_autofix_agent(conn, &source.org_id, &source.id, fixer.as_deref()).map_err(internal)?;
@@ -351,6 +405,8 @@ fn write_of(source: &MonitorSource) -> SourceWrite {
         provider: source.provider.clone(),
         provider_ref: source.provider_ref.clone(),
         autofix: source.autofix,
+        audit_daily_limit: source.audit_daily_limit,
+        autofix_daily_limit: source.autofix_daily_limit,
     }
 }
 
@@ -389,13 +445,13 @@ pub async fn create_source(
     let conn = db.lock().map_err(|_| lock_error())?;
     require_permission(&conn, &auth, None, PERMISSION)?;
     let provider = input.provider.clone().map(|p| p.trim().to_ascii_lowercase()).filter(|p| !p.is_empty()).unwrap_or_else(|| "gcp".into());
-    let write = validate(&conn, &auth.org_id, &provider, input)?;
+    let (write, choice) = validate(&conn, &auth.org_id, &provider, input)?;
     // A drain's bearer token is shown once, here; only its hash is stored.
     let token = (provider != "gcp").then(|| format!("nmd_{}", hex::encode(rand::random::<[u8; 24]>())));
     let source = store_monitor::create_source(&conn, &auth.org_id, &auth.user_id, &write, token.as_deref().map(token_hash).as_deref())
         .map_err(internal)?
         .ok_or_else(name_taken)?;
-    match sync_audit(&conn, &auth.user_id, &source) {
+    match sync_audit(&conn, &auth.user_id, &source, &choice) {
         Ok(source) => {
             let mut body = serde_json::to_value(source).map_err(|e| internal(e.into()))?;
             if let Some(token) = token {
@@ -421,12 +477,12 @@ pub async fn update_source(
     let conn = db.lock().map_err(|_| lock_error())?;
     require_permission(&conn, &auth, None, PERMISSION)?;
     let previous = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
-    let write = validate(&conn, &auth.org_id, &previous.provider, input)?;
+    let (write, choice) = validate(&conn, &auth.org_id, &previous.provider, input)?;
     if !store_monitor::update_source(&conn, &auth.org_id, &id, &write).map_err(internal)? {
         return Err(name_taken());
     }
     let source = store_monitor::get_source(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
-    match sync_audit(&conn, &auth.user_id, &source) {
+    match sync_audit(&conn, &auth.user_id, &source, &choice) {
         Ok(source) => Ok(Json(source)),
         Err(error) => {
             // Keep the settings that still match the agent.
@@ -570,6 +626,52 @@ pub async fn list_groups(
 #[derive(Deserialize)]
 pub struct GroupStatus {
     pub status: String,
+}
+
+/// `POST /v1/monitor/groups/:id/fix`: the "Resolve issue" button. Hands the
+/// error's issue (opened first if it has none) to the source's fix agent,
+/// which opens a draft PR. By hand there is no daily limit.
+pub async fn fix_group(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<MonitorGroup>> {
+    let (source, mut group) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        require_permission(&conn, &auth, None, PERMISSION)?;
+        let group = store_monitor::get_group(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
+        let source = store_monitor::get_source(&conn, &auth.org_id, &group.source_id).map_err(internal)?.ok_or_else(not_found)?;
+        (source, group)
+    };
+    let invalid = |message: &str| error(StatusCode::UNPROCESSABLE_ENTITY, "validation_error", message);
+    if source.autofix_agent_id.is_none() {
+        return Err(invalid("choose the agent that resolves issues in the project settings first"));
+    }
+    let (Some(connector), Some(default_repo)) = (source.github_connector_id.clone(), source.github_repo.clone()) else {
+        return Err(invalid("resolving issues needs GitHub issues"));
+    };
+    let repository = crate::monitor::delivery::issue_repository(&group, &source).unwrap_or(&default_repo).to_string();
+    if group.issue_number.is_none() {
+        let token = crate::monitor::delivery::github_token(&store, &auth.org_id, &connector).await.map_err(|e| {
+            error(StatusCode::BAD_GATEWAY, "github_unavailable", format!("GitHub could not be reached: {e}"))
+        })?;
+        let number = crate::monitor::delivery::open_issue_in(&store, &source, &group, &token, &repository, "").await.map_err(|e| {
+            error(StatusCode::BAD_GATEWAY, "issue_create_failed", format!("The issue could not be opened: {e:#}"))
+        })?;
+        group.issue_number = Some(number);
+        group.issue_repo = Some(repository.clone());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    let number = group.issue_number.unwrap_or_default();
+    let started = crate::monitor::autofix::start(&conn, &source, &group, &repository, number, true).map_err(internal)?;
+    let current = store_monitor::get_group(&conn, &auth.org_id, &id).map_err(internal)?.ok_or_else(not_found)?;
+    // Opening the issue may already have started an automatic fix.
+    if !started && current.fix_status.as_deref() != Some("pending") {
+        return Err(error(StatusCode::CONFLICT, "fix_not_started", "A fix for this error could not be started"));
+    }
+    Ok(Json(current))
 }
 
 pub async fn set_group_status(

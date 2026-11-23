@@ -16,7 +16,6 @@ use crate::store::sqlite::SqliteStore;
 
 pub const TEMPLATE: &str = "error_audit";
 /// Audits started per source per UTC day; beyond it the issue opens unaudited.
-pub const DAILY_AUDITS: i64 = 10;
 /// Repositories checked out for one audit (the first is the working directory).
 const MAX_CANDIDATES: usize = 5;
 pub const EXECUTORS: [&str; 4] = ["claude", "codex", "pi", "nexus"];
@@ -193,11 +192,15 @@ pub fn in_owner(repository: &str, owner: &str) -> bool {
 
 /// Creates, updates or disables the source's managed `error_audit` agent so it
 /// matches the source's audit settings. Returns the agent id to store.
-pub fn sync_agent(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource) -> anyhow::Result<Option<String>> {
-    let existing = match source.audit_agent_id.as_deref() {
-        Some(id) => queries::get_autonomous_agent_detail(conn, &source.org_id, id)?.map(|_| id.to_string()),
-        None => None,
-    };
+pub fn sync_agent(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource, selected: Option<&str>) -> anyhow::Result<Option<String>> {
+    // Only an agent Monitoring created for this source is ever edited or disabled here.
+    let existing = source.audit_agent_id.as_deref().filter(|_| source.audit_agent_managed).map(str::to_string);
+    if let Some(selected) = selected {
+        if let Some(own) = existing.as_deref().filter(|own| *own != selected) {
+            queries::set_autonomous_agent_status(conn, &source.org_id, own, "disabled")?;
+        }
+        return Ok(Some(selected.to_string()));
+    }
     let Some(executor) = source.audit_executor.as_deref() else {
         if let Some(id) = &existing {
             queries::set_autonomous_agent_status(conn, &source.org_id, id, "disabled")?;
@@ -281,13 +284,14 @@ pub async fn start(store: &SqliteStore, source: &MonitorSource, group: &MonitorG
     {
         let db = store.conn();
         let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        if store_monitor::audits_today(&conn, &source.id)? >= DAILY_AUDITS {
+        if store_monitor::audits_today(&conn, &source.id)? >= source.audit_daily_limit {
             return Ok(false);
         }
     }
     let token = super::delivery::github_token(store, &source.org_id, connector_id).await?;
     let candidates = candidates(&token, &owner, fallback, group).await;
-    let input = trigger(source, group, &candidates);
+    let mut input = trigger(source, group, &candidates);
+    input["trigger"]["recent_changes"] = json!(recent_changes(&token, &candidates, &group.first_seen).await);
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     let run = queries::enqueue_autonomous_agent_run(
@@ -374,11 +378,134 @@ pub struct Outcome {
     pub routing_evidence: String,
     pub suggested_fix: String,
     pub confidence: String,
+    /// The commit from `trigger.recent_changes` the agent blames, and why.
+    pub culprit_commit: String,
+    pub culprit_reason: String,
+}
+
+/// A recent change the audit blames, checked against the commits Monitoring
+/// handed it (the agent can't invent one).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Culprit {
+    pub repository: String,
+    pub sha: String,
+    pub title: String,
+    pub author: String,
+    pub pr: Option<i64>,
+    pub reason: String,
+}
+
+impl Culprit {
+    /// The PR when the commit names one, else the commit.
+    pub fn url(&self) -> String {
+        match self.pr {
+            Some(n) => format!("https://github.com/{}/pull/{n}", self.repository),
+            None => format!("https://github.com/{}/commit/{}", self.repository, self.sha),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        let short: String = self.sha.chars().take(7).collect();
+        match self.pr {
+            Some(n) => format!("PR #{n} in {} ({short})", self.repository),
+            None => format!("commit {short} in {}", self.repository),
+        }
+    }
+}
+
+/// The blamed commit, only when it is one of the recent changes handed to the
+/// audit (matched by a sha prefix of at least 7 characters).
+pub fn culprit(outcome: Option<&Outcome>, recent: Option<&Value>) -> Option<Culprit> {
+    let o = outcome?;
+    let sha = o.culprit_commit.trim().to_ascii_lowercase();
+    if sha.len() < 7 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    recent?.as_array()?.iter().find_map(|change| {
+        let full = change["sha"].as_str()?;
+        full.to_ascii_lowercase().starts_with(&sha).then(|| Culprit {
+            repository: change["repository"].as_str().unwrap_or_default().to_string(),
+            sha: full.to_string(),
+            title: change["title"].as_str().unwrap_or_default().to_string(),
+            author: change["author"].as_str().unwrap_or_default().to_string(),
+            pr: change["pr"].as_i64(),
+            reason: o.culprit_reason.clone(),
+        })
+    })
+}
+
+/// The PR a commit title names: `Merge pull request #12 ...` or a squash `... (#12)`.
+pub fn pr_number(title: &str) -> Option<i64> {
+    static PR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pr = PR.get_or_init(|| regex::Regex::new(r"(?:pull request #|\(#)(\d{1,7})").expect("valid pattern"));
+    pr.captures(title)?.get(1)?.as_str().parse().ok()
+}
+
+/// Commits per candidate repository handed to the audit, and how many candidates.
+const RECENT_COMMITS: usize = 8;
+const RECENT_REPOSITORIES: usize = 3;
+
+/// The commits that landed in the top candidates in the two weeks before the
+/// error first appeared, newest first, with the files each touched: the audit
+/// says whether one of them introduced the error. Best effort: GitHub errors
+/// just leave a repository out.
+pub async fn recent_changes(token: &str, candidates: &[String], first_seen: &str) -> Vec<Value> {
+    let Ok(first) = chrono::DateTime::parse_from_rfc3339(first_seen) else { return Vec::new() };
+    let first = first.with_timezone(&chrono::Utc);
+    let format = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let (since, until) = (format(first - chrono::Duration::days(14)), format(first + chrono::Duration::hours(1)));
+    let mut changes = Vec::new();
+    for repo in candidates.iter().take(RECENT_REPOSITORIES) {
+        let path = format!("/repos/{repo}/commits?since={since}&until={until}&per_page={RECENT_COMMITS}");
+        let Ok(list) = crate::automation::connectors::github_get(token, &path).await else { continue };
+        for commit in list.as_array().into_iter().flatten().take(RECENT_COMMITS) {
+            let Some(sha) = commit["sha"].as_str().filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())) else { continue };
+            let title: String = commit
+                .pointer("/commit/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(160)
+                .collect();
+            let files: Vec<String> = crate::automation::connectors::github_get(token, &format!("/repos/{repo}/commits/{sha}"))
+                .await
+                .ok()
+                .map(|detail| {
+                    detail["files"].as_array().into_iter().flatten().filter_map(|f| f["filename"].as_str().map(str::to_string)).take(25).collect()
+                })
+                .unwrap_or_default();
+            changes.push(json!({
+                "repository": repo,
+                "sha": sha,
+                "date": commit.pointer("/commit/committer/date").and_then(Value::as_str).unwrap_or_default(),
+                "author": commit.pointer("/author/login").or_else(|| commit.pointer("/commit/author/name")).and_then(Value::as_str).unwrap_or_default(),
+                "pr": pr_number(&title),
+                "title": title,
+                "files": files,
+            }));
+        }
+    }
+    changes
+}
+
+/// The agent's final JSON: an object, or (Claude's `--output-format json`) a
+/// string holding it, possibly wrapped in prose or a code fence.
+fn json_in_text(text: &str) -> Option<Value> {
+    let parsed = serde_json::from_str::<Value>(text.trim()).ok().filter(Value::is_object);
+    parsed.or_else(|| {
+        let (start, end) = (text.find('{')?, text.rfind('}')?);
+        serde_json::from_str::<Value>(text.get(start..=end)?).ok().filter(Value::is_object)
+    })
 }
 
 /// Reads the agent's final JSON. `None` when it is not a usable conclusion.
 pub fn parse_outcome(result: &Value) -> Option<Outcome> {
-    let structured = result.get("result").filter(|v| v.is_object()).unwrap_or(result);
+    let inner = result.get("result");
+    let from_text = inner.and_then(Value::as_str).and_then(json_in_text);
+    let structured = inner.filter(|v| v.is_object()).or(from_text.as_ref()).unwrap_or(result);
     let text = |key: &str, max: usize| -> String {
         structured.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().chars().take(max).collect()
     };
@@ -397,6 +524,8 @@ pub fn parse_outcome(result: &Value) -> Option<Outcome> {
         routing_evidence: text("routing_evidence", 2000),
         suggested_fix: text("suggested_fix", 4000),
         confidence,
+        culprit_commit: text("culprit_commit", 40),
+        culprit_reason: text("culprit_reason", 2000),
     })
 }
 
@@ -411,7 +540,7 @@ pub fn choose_repository(outcome: Option<&Outcome>, owner: &str, fallback: &str)
 
 /// The issue section with the audit's conclusion (fenced: model output that
 /// read attacker-influenced logs).
-pub fn issue_section(outcome: Option<&Outcome>, routed: bool, executor: &str, run_link: &str) -> String {
+pub fn issue_section(outcome: Option<&Outcome>, culprit: Option<&Culprit>, routed: bool, executor: &str, run_link: &str) -> String {
     let Some(o) = outcome else {
         return format!("\n## Audit\nThe automatic audit ({executor}) did not reach a conclusion; see [the run]({run_link}).\n");
     };
@@ -422,8 +551,20 @@ pub fn issue_section(outcome: Option<&Outcome>, routed: bool, executor: &str, ru
         "The audit did not name a repository it could support, so this is the source's default repository.\n".into()
     };
     let fix = if o.suggested_fix.is_empty() { String::new() } else { format!("\n**Suggested fix**\n{}\n", fence(&o.suggested_fix)) };
+    let suspect = culprit
+        .map(|c| {
+            let by = if c.author.is_empty() { String::new() } else { format!(" by `{}`", c.author.replace('`', "")) };
+            format!(
+                "\n> [!WARNING]\n> **Suspected change:** [{}]({}){by}: `{}`\n\n**Why this change**\n{}\n",
+                c.label(),
+                c.url(),
+                c.title.replace('`', "'"),
+                fence(&c.reason),
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "\n## Audit ({executor}, confidence: {})\n**Root cause**\n{}\n\n{routing}{fix}\n[Audit run]({run_link})\n",
+        "\n## Audit ({executor}, confidence: {})\n**Root cause**\n{}\n{suspect}\n{routing}{fix}\n[Audit run]({run_link})\n",
         o.confidence,
         fence(&o.root_cause),
     )
@@ -477,13 +618,15 @@ async fn finish_inner(
     }
     let run_link = format!("{}/factory/runs?agent_run={}", config.app_base_url.trim_end_matches('/'), claim.run.id);
     let executor = source.audit_executor.clone().unwrap_or_else(|| "agent".into());
-    let section = issue_section(outcome.as_ref(), routed, &executor, &run_link);
+    let suspect = culprit(outcome.as_ref(), claim.config.pointer("/trigger/recent_changes"));
+    let section = issue_section(outcome.as_ref(), suspect.as_ref(), routed, &executor, &run_link);
     let number = super::delivery::open_issue_in(store, &source, &group, &token, &repository, &section).await?;
     let mut group = group;
     group.issue_number = Some(number);
     group.issue_repo = Some(repository);
+    let suspect_line = suspect.as_ref().map(|c| format!("\n⚠️ Suspected change: {} {}", c.label(), c.url())).unwrap_or_default();
     let headline = match &summary {
-        Some(s) => format!("🔎 Audit: {}", super::delivery::mcp_safe(s)),
+        Some(s) => format!("🔎 Audit: {}{suspect_line}", super::delivery::mcp_safe(s)),
         None => "🔎 The audit did not reach a conclusion; the issue has the details.".into(),
     };
     super::delivery::alert_followup(store, &source, &group, &headline, &config.app_base_url, &config.claude_code_bin).await
@@ -561,6 +704,8 @@ mod tests {
             routing_evidence: evidence.into(),
             suggested_fix: String::new(),
             confidence: "high".into(),
+            culprit_commit: String::new(),
+            culprit_reason: String::new(),
         }
     }
 
@@ -584,10 +729,51 @@ mod tests {
 
     #[test]
     fn the_issue_section_fences_model_text() {
-        let section = issue_section(Some(&outcome("k/r", "``` @team")), true, "codex", "https://x/run");
+        let section = issue_section(Some(&outcome("k/r", "``` @team")), None, true, "codex", "https://x/run");
         assert!(section.contains("## Audit (codex, confidence: high)"));
         assert!(section.contains("```\n''' @team\n```"));
-        assert!(issue_section(None, false, "pi", "https://x/run").contains("did not reach a conclusion"));
+        assert!(!section.contains("Suspected change"));
+        assert!(issue_section(None, None, false, "pi", "https://x/run").contains("did not reach a conclusion"));
+    }
+
+    #[test]
+    fn claudes_json_string_result_is_parsed() {
+        // What `claude -p --output-format json` returns: the agent's JSON as a string.
+        let text = r#"{"confidence":"high","repository":"kasymir/kasymir-iam-service","root_cause":"signIn throws a 500","routing_evidence":"iam.service.ts:1645","summary":"s","culprit_commit":"abc1234","culprit_reason":"it added the throw"}"#;
+        let parsed = parse_outcome(&json!({"type": "result", "result": text})).unwrap();
+        assert_eq!(parsed.repository.as_deref(), Some("kasymir/kasymir-iam-service"));
+        assert_eq!(parsed.culprit_commit, "abc1234");
+        let fenced = format!("Here it is:\n```json\n{text}\n```");
+        assert_eq!(parse_outcome(&json!({"result": fenced})).unwrap().routing_evidence, "iam.service.ts:1645");
+        assert_eq!(parse_outcome(&json!({"result": "no json here"})), None);
+    }
+
+    #[test]
+    fn only_a_handed_commit_can_be_blamed_and_it_is_marked_in_the_issue() {
+        let recent = json!([
+            {"repository": "kasymir/iam", "sha": "abc1234def5678901234567890123456789abcde", "title": "Throw on bad login (#42)", "author": "dev1", "pr": 42, "files": ["src/iam.ts"]},
+            {"repository": "kasymir/iam", "sha": "1111111222222233333334444444555555566666", "title": "docs", "author": "dev2", "pr": null, "files": []}
+        ]);
+        let mut o = outcome("kasymir/iam", "e");
+        o.culprit_commit = "ABC1234".into();
+        o.culprit_reason = "added the throw".into();
+        let c = culprit(Some(&o), Some(&recent)).unwrap();
+        assert_eq!((c.pr, c.url()), (Some(42), "https://github.com/kasymir/iam/pull/42".to_string()));
+        let section = issue_section(Some(&o), Some(&c), true, "claude", "https://x/run");
+        assert!(section.contains("**Suspected change:** [PR #42 in kasymir/iam (abc1234)](https://github.com/kasymir/iam/pull/42) by `dev1`"));
+        o.culprit_commit = "1111111".into();
+        assert_eq!(culprit(Some(&o), Some(&recent)).unwrap().url(), "https://github.com/kasymir/iam/commit/1111111222222233333334444444555555566666");
+        for invented in ["deadbee", "abc12", "zzzzzzz", ""] {
+            o.culprit_commit = invented.into();
+            assert!(culprit(Some(&o), Some(&recent)).is_none(), "{invented}");
+        }
+    }
+
+    #[test]
+    fn pr_numbers_come_from_merge_and_squash_titles() {
+        assert_eq!(pr_number("Merge pull request #12 from acme/fix"), Some(12));
+        assert_eq!(pr_number("fix(iam): login errors (#345)"), Some(345));
+        assert_eq!(pr_number("refs issue #9 in text"), None);
     }
 
     #[test]

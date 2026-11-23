@@ -305,6 +305,61 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
     fixing["github_repo"] = json!(null);
     let (status, _) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(fixing)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Another source picks that resolver as it is: Monitoring never edits it,
+    // and its limits are configurable.
+    let b = login(&router, "b@test.com").await;
+    let picking = json!({
+        "project": "kasymir", "name": "picker",
+        "service_account": "nexusmind-push@my-proj-1.iam.gserviceaccount.com",
+        "github_connector_id": "server_gh_cli", "github_repo": "acme/app",
+        "autofix_agent": fixer, "autofix_daily_limit": 3, "audit_daily_limit": 2
+    });
+    let (status, picker) = send(&router, &a, "POST", "/v1/monitor/sources", Some(picking.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{picker}");
+    assert_eq!((picker["autofix_agent_id"].as_str(), picker["autofix_agent_managed"].clone()), (Some(fixer.as_str()), json!(false)));
+    assert_eq!((picker["autofix_daily_limit"].clone(), picker["audit_daily_limit"].clone(), picker["autofix"].clone()), (json!(3), json!(2), json!(false)));
+    let mut zero = picking.clone();
+    zero["name"] = json!("zero");
+    zero["autofix_daily_limit"] = json!(0);
+    let (status, _) = send(&router, &a, "POST", "/v1/monitor/sources", Some(zero)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let mut wrong = picking.clone();
+    wrong["name"] = json!("wrong");
+    wrong["autofix_agent"] = json!(agent); // an error_audit agent, not a resolver
+    let (status, _) = send(&router, &a, "POST", "/v1/monitor/sources", Some(wrong)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // "Resolve issue" on an error that has its issue: a manual fix starts, with
+    // no daily limit and without using it.
+    let picker_id = picker["id"].as_str().unwrap().to_string();
+    let group_id = {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        let stored = monitor::get_source_by_id(&conn, &picker_id).unwrap().unwrap();
+        let error = RuntimeError {
+            service: "sales".into(), severity: "ERROR".into(), title: "boom".into(), message: "boom".into(),
+            stack: None, log_url: None, group_hint: None,
+        };
+        let group = monitor::record(&conn, &stored, "fp-fix", &error, chrono::Utc::now()).unwrap().1;
+        monitor::set_issue(&conn, &group.id, 7, "acme/app").unwrap();
+        group.id
+    };
+    let uri = format!("/v1/monitor/groups/{group_id}/fix");
+    let (status, _) = send(&router, &b, "POST", &uri, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "another org can't fix it");
+    let (status, fixed) = send(&router, &a, "POST", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{fixed}");
+    assert_eq!(fixed["fix_status"], "pending");
+    let (manual, run_definition): (i64, String) = {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        conn.query_row(
+            "SELECT g.fix_manual, r.definition_id FROM monitor_groups g JOIN autonomous_agent_runs r ON r.id=g.fix_run_id WHERE g.id=?1",
+            [&group_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!((manual, run_definition), (1, fixer.clone()));
     std::env::remove_var("FACTORY_GITHUB_PUBLISH_ORG_ID");
     let _ = std::fs::remove_file(path);
 }
