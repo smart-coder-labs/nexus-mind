@@ -1815,8 +1815,14 @@ export interface MonitorSource {
   ingest_token?: string
   /** Each opened issue goes to an agent that opens a draft PR. */
   autofix: boolean
-  /** The managed `github_issue_resolver` (Factory › Agents). */
+  /** The `github_issue_resolver` that resolves issues (Factory › Agents). */
   autofix_agent_id: string | null
+  /** Whether each agent was created by Monitoring for this project (false: an existing agent that was picked). */
+  audit_agent_managed: boolean
+  autofix_agent_managed: boolean
+  /** Automatic audits and fixes per day; fixes from the Resolve issue button are not capped. */
+  audit_daily_limit: number
+  autofix_daily_limit: number
 }
 
 /** Where errors come from: GCP Pub/Sub push, or a Supabase/Vercel log drain. */
@@ -1840,7 +1846,14 @@ export interface MonitorSourceInput {
   enabled: boolean
   audit_executor: MonitorAuditExecutor | null
   audit_model: string | null
+  /** `new` = Monitoring creates one; an id = an existing `error_audit` agent. */
+  audit_agent: string | null
+  /** Resolve each opened issue automatically with `autofix_agent`. */
   autofix: boolean
+  /** null = none, `new` = Monitoring creates one (server gh only), an id = an existing resolver. */
+  autofix_agent: string | null
+  audit_daily_limit: number
+  autofix_daily_limit: number
 }
 
 /** What the connect form may offer: the server's own Slack MCP and `gh` are

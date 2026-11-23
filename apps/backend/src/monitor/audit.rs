@@ -16,7 +16,6 @@ use crate::store::sqlite::SqliteStore;
 
 pub const TEMPLATE: &str = "error_audit";
 /// Audits started per source per UTC day; beyond it the issue opens unaudited.
-pub const DAILY_AUDITS: i64 = 10;
 /// Repositories checked out for one audit (the first is the working directory).
 const MAX_CANDIDATES: usize = 5;
 pub const EXECUTORS: [&str; 4] = ["claude", "codex", "pi", "nexus"];
@@ -193,11 +192,15 @@ pub fn in_owner(repository: &str, owner: &str) -> bool {
 
 /// Creates, updates or disables the source's managed `error_audit` agent so it
 /// matches the source's audit settings. Returns the agent id to store.
-pub fn sync_agent(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource) -> anyhow::Result<Option<String>> {
-    let existing = match source.audit_agent_id.as_deref() {
-        Some(id) => queries::get_autonomous_agent_detail(conn, &source.org_id, id)?.map(|_| id.to_string()),
-        None => None,
-    };
+pub fn sync_agent(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSource, selected: Option<&str>) -> anyhow::Result<Option<String>> {
+    // Only an agent Monitoring created for this source is ever edited or disabled here.
+    let existing = source.audit_agent_id.as_deref().filter(|_| source.audit_agent_managed).map(str::to_string);
+    if let Some(selected) = selected {
+        if let Some(own) = existing.as_deref().filter(|own| *own != selected) {
+            queries::set_autonomous_agent_status(conn, &source.org_id, own, "disabled")?;
+        }
+        return Ok(Some(selected.to_string()));
+    }
     let Some(executor) = source.audit_executor.as_deref() else {
         if let Some(id) = &existing {
             queries::set_autonomous_agent_status(conn, &source.org_id, id, "disabled")?;
@@ -281,7 +284,7 @@ pub async fn start(store: &SqliteStore, source: &MonitorSource, group: &MonitorG
     {
         let db = store.conn();
         let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        if store_monitor::audits_today(&conn, &source.id)? >= DAILY_AUDITS {
+        if store_monitor::audits_today(&conn, &source.id)? >= source.audit_daily_limit {
             return Ok(false);
         }
     }

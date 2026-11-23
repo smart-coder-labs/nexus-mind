@@ -209,3 +209,22 @@ causes it. The issue then opens in that repository instead of the source's fixed
   - or "could not open a fix", with the run link.
 - **Threads.** The server Slack MCP run now replies with the sent message's `ts`, parsed and validated as `\d{9,11}\.\d{6}`. A new or regressed alert stores it as `monitor_groups.slack_ts`. Audit and fix follow-ups pass it as `thread_ts`. Incoming webhooks can't thread, so with a webhook connector follow-ups are separate messages, as before.
 - **Fix.** Follow-ups run in the autonomous worker, which lacks the operator's org flag (the same issue as #519). They skip that re-check, because the backend checked it when the source was saved and when the run was started.
+
+## Agent choice, daily limits and the Resolve issue button (v121)
+
+- **Audit agent**:
+  - `audit_agent` is `new`, or absent with `audit_executor`: Monitoring creates the agent and keeps it in sync.
+  - An id means an existing, enabled `error_audit` agent with the same GitHub owner, used as it is. The source shows its executor.
+- **Fix agent**:
+  - `autofix_agent` absent means none.
+  - `new` means a managed resolver, which needs the server `gh`. It follows the issue to any repository of the owner.
+  - An id means any enabled `github_issue_resolver` of the org, used as it is.
+  - A chosen resolver only takes issues in its own repositories (`repository`, plus `project_repositories` when project-scoped). Any other issue is refused at claim.
+  - `autofix` (boolean) now only means "hand every new issue over automatically".
+- **Ownership:** `audit_agent_managed` and `autofix_agent_managed` are computed in the SELECT: the agent's `config.monitor_source_id` equals the source. Monitoring only edits or disables agents it owns, never chosen ones.
+- **Daily limits:** `audit_daily_limit` and `autofix_daily_limit` are set per source (1-500, default 10) and apply to automatic runs only.
+- **Resolve issue button** (`POST /v1/monitor/groups/:id/fix`):
+  - Hands the error's issue to the source's fix agent. If there is no issue yet, it opens one first.
+  - No daily limit. `monitor_groups.fix_manual=1`, so the fix doesn't count toward the automatic limit.
+  - Still one pending fix per group.
+  - 404 across orgs, 422 without a fix agent or GitHub issues.

@@ -1773,6 +1773,11 @@ export class NexusMindClient {
     return this.request(`/v1/monitor/groups${query}`)
   }
 
+  /** The "Resolve issue" button: hands the error's issue to the project's fix agent (no daily limit). */
+  fixMonitorGroup(id: string): Promise<MonitorGroup> {
+    return this.request(`/v1/monitor/groups/${encodeURIComponent(id)}/fix`, { method: 'POST' })
+  }
+
   setMonitorGroupStatus(id: string, status: MonitorGroupStatus): Promise<void> {
     return this.request(`/v1/monitor/groups/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status }) })
   }
