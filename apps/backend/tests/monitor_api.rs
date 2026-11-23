@@ -302,6 +302,30 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
     assert_eq!((fixer_row.as_str(), fixer_repo.as_str(), fixer_source.as_str()), ("github_issue_resolver:enabled", "acme/app", id.as_str()));
     // No audit model set: the resolver still must not route through the factory gateway.
     assert_eq!(fixer_model_source, "agent");
+    // The runtime (harnesses a person chose on the agent) survives saving the source again.
+    {
+        let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        // Revisions are append-only: a person's edit is a new revision.
+        conn.execute(
+            "INSERT INTO autonomous_agent_revisions (id, definition_id, revision, config_json, config_hash, capabilities_json, budgets_json, created_by)
+             SELECT r.id||'-runtime', r.definition_id, r.revision+1,
+                    json_set(r.config_json,'$.runtime',json('{\"nexusmind_profile\":\"only_context\",\"harnesses\":[],\"components\":[]}')),
+                    r.config_hash||'-runtime', r.capabilities_json, r.budgets_json, r.created_by
+               FROM autonomous_agent_revisions r JOIN autonomous_agent_definitions d ON d.id=r.definition_id AND r.revision=d.current_revision
+              WHERE d.id=?1",
+            [&fixer],
+        )
+        .unwrap();
+        conn.execute("UPDATE autonomous_agent_definitions SET current_revision=current_revision+1 WHERE id=?1", [&fixer]).unwrap();
+    }
+    let (status, again) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(fixing.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    let kept: String = connection::connect(path.to_str().unwrap()).unwrap().query_row(
+        "SELECT json_extract(r.config_json,'$.runtime.nexusmind_profile') FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision WHERE d.id=?1",
+        [&fixer],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(kept, "only_context");
     // Without GitHub issues there is nothing to fix.
     fixing["github_connector_id"] = json!(null);
     fixing["github_repo"] = json!(null);
