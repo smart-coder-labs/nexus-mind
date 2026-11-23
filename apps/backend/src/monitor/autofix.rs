@@ -58,6 +58,10 @@ pub fn sync_agent(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSo
     }
     let id = match existing {
         Some(id) => {
+            // Harnesses chosen on the agent itself (approved by a person) survive a source save.
+            if let Some(runtime) = queries::get_autonomous_agent_detail(conn, &source.org_id, &id)?.and_then(|d| d.revision.config.get("runtime").cloned()) {
+                config["runtime"] = runtime;
+            }
             let update = crate::models::types::UpdateAutonomousAgentRequest { name: None, description: None, config: Some(config), budgets: None };
             queries::update_autonomous_agent_definition(conn, &source.org_id, user_id, &id, &update)?;
             id
