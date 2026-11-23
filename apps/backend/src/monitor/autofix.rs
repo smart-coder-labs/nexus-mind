@@ -219,8 +219,13 @@ async fn finish_inner(
         store_monitor::finish_fix(&conn, &group.id, if pr.is_some() { "pr_open" } else { "failed" }, pr.as_ref().map(|(_, url)| url.as_str()))?;
     }
     let run_link = format!("{}/factory/runs?agent_run={}", config.app_base_url.trim_end_matches('/'), claim.run.id);
+    let reviewer = match &pr {
+        Some((number, url)) => request_reviewer(store, &source, url, *number).await,
+        None => None,
+    };
+    let reviewer_line = reviewer.map(|login| format!(" Review requested from {login}.")).unwrap_or_default();
     let headline = match &pr {
-        Some((number, url)) => format!("🛠️ Fix ready for review: PR #{number} {url} (it closes the issue when merged). Review it on GitHub before merging."),
+        Some((number, url)) => format!("🛠️ Fix ready for review: PR #{number} {url} (it closes the issue when merged).{reviewer_line} Review it on GitHub before merging."),
         None if result.get("no_op").and_then(Value::as_bool) == Some(true) => {
             format!("🛠️ The agent found nothing to change for this error and left a comment on the issue. Run: {run_link}")
         }
@@ -229,9 +234,89 @@ async fn finish_inner(
     super::delivery::alert_followup(store, &source, &group, &headline, &config.app_base_url, &config.claude_code_bin).await
 }
 
+/// Asks the best-placed person to review the fix: of those who can push to the
+/// repository (never the PR's author or a bot), whoever changed the PR's files
+/// most often recently, else whoever committed most recently. Best effort.
+async fn request_reviewer(store: &SqliteStore, source: &MonitorSource, url: &str, number: i64) -> Option<String> {
+    use crate::automation::connectors;
+    let repository = url.strip_prefix("https://github.com/")?.split("/pull/").next()?.to_string();
+    connectors::validate_repository(&repository).ok()?;
+    let connector = source.github_connector_id.as_deref()?;
+    let commit_authors = |commits: Value| -> Vec<String> {
+        commits.as_array().into_iter().flatten()
+            .filter_map(|c| c.pointer("/author/login").and_then(Value::as_str).map(str::to_string))
+            .collect()
+    };
+    let result = async {
+        let token = super::delivery::github_token(store, &source.org_id, connector).await?;
+        let pull = connectors::get_github_pull(&token, &repository, number).await?;
+        let pr_author = pull.pointer("/user/login").and_then(Value::as_str).unwrap_or_default().to_string();
+        let collaborators: Vec<String> = connectors::github_get(&token, &format!("/repos/{repository}/collaborators?permission=push&per_page=100"))
+            .await?
+            .as_array().into_iter().flatten()
+            .filter_map(|u| u["login"].as_str().map(str::to_string))
+            .collect();
+        let mut authors = Vec::new();
+        for file in connectors::list_github_pull_files(&token, &repository, number).await?.iter().take(10) {
+            let mut query = reqwest::Url::parse("https://api.github.com").expect("static url");
+            query.set_path(&format!("/repos/{repository}/commits"));
+            query.query_pairs_mut().append_pair("path", &file.filename).append_pair("per_page", "10");
+            let path = format!("{}?{}", query.path(), query.query().unwrap_or_default());
+            if let Ok(commits) = connectors::github_get(&token, &path).await {
+                authors.extend(commit_authors(commits));
+            }
+        }
+        let mut reviewer = pick_reviewer(&authors, &collaborators, &pr_author);
+        if reviewer.is_none() {
+            let recent = connectors::github_get(&token, &format!("/repos/{repository}/commits?per_page=30")).await?;
+            reviewer = pick_reviewer(&commit_authors(recent), &collaborators, &pr_author);
+        }
+        let Some(reviewer) = reviewer else { return Ok(None) };
+        connectors::github_post(&token, &format!("/repos/{repository}/pulls/{number}/requested_reviewers"), json!({"reviewers": [reviewer]})).await?;
+        Ok::<_, anyhow::Error>(Some(reviewer))
+    }
+    .await;
+    result.unwrap_or_else(|error| {
+        tracing::warn!(pr = %url, "Monitor fix reviewer not requested: {error:#}");
+        None
+    })
+}
+
+/// The commit author (newest first, repeated per commit) who can review: has
+/// push access, is not the PR's author and is not a bot. Most commits wins; a
+/// tie goes to the most recent.
+pub fn pick_reviewer(authors: &[String], collaborators: &[String], pr_author: &str) -> Option<String> {
+    let can_review = |login: &str| {
+        !login.eq_ignore_ascii_case(pr_author)
+            && !login.ends_with("[bot]")
+            && collaborators.iter().any(|c| c.eq_ignore_ascii_case(login))
+    };
+    let mut best: Option<(&String, usize)> = None;
+    for login in authors.iter().filter(|login| can_review(login)) {
+        let commits = authors.iter().filter(|other| other.eq_ignore_ascii_case(login)).count();
+        if best.is_none_or(|(_, most)| commits > most) {
+            best = Some((login, commits));
+        }
+    }
+    best.map(|(login, _)| login.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reviewer_is_the_collaborator_who_changed_the_code_most() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let collaborators = s(&["ana", "Luis", "bot-account"]);
+        // Most commits wins; the PR author, bots and non-collaborators never do.
+        assert_eq!(pick_reviewer(&s(&["luis", "ana", "luis", "bot-account", "bot-account", "bot-account"]), &collaborators, "bot-account"), Some("luis".into()));
+        assert_eq!(pick_reviewer(&s(&["outsider", "outsider", "ana"]), &collaborators, "x"), Some("ana".into()));
+        assert_eq!(pick_reviewer(&s(&["dependabot[bot]"]), &s(&["dependabot[bot]"]), "x"), None);
+        // A tie goes to the most recent author.
+        assert_eq!(pick_reviewer(&s(&["ana", "luis"]), &collaborators, "x"), Some("ana".into()));
+        assert_eq!(pick_reviewer(&[], &collaborators, "x"), None);
+    }
 
     #[test]
     fn only_a_published_github_pr_counts() {
