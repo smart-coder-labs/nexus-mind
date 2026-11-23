@@ -228,3 +228,16 @@ causes it. The issue then opens in that repository instead of the source's fixed
   - No daily limit. `monitor_groups.fix_manual=1`, so the fix doesn't count toward the automatic limit.
   - Still one pending fix per group.
   - 404 across orgs, 422 without a fix agent or GitHub issues.
+
+### Fix: audits always landed in the default repository
+
+- **Root cause.** `claude -p --output-format json` returns the agent's JSON as a **string** in `result`, and `parse_outcome` only accepted an object. Every audit was therefore recorded as `failed`, and its issue went to the default repository, even though the agent had named the right one (for example `kasymir/kasymir-iam-service`).
+- **Fix.** `parse_outcome` now also reads that string, including when it is wrapped in prose or a code fence.
+
+### Suspected change (culprit commit/PR)
+
+- The audit runs read-only (`Read,Grep,Glob`), with shallow context clones, so the backend gathers the history for it.
+- `audit::start` adds `trigger.recent_changes` to the run input: the commits in the top 3 candidates from 14 days before `first_seen` to 1 hour after, at most 8 per repository. Each entry has the sha, date, author, title, PR number (`Merge pull request #N` or `(#N)`) and the files it touched.
+- The agent may name `culprit_commit` (one sha from that list) and `culprit_reason`.
+- `audit::culprit` accepts the sha only when it prefixes, with at least 7 characters, one of the handed commits. An invented sha is dropped.
+- **Where it shows.** The issue gets a `> [!WARNING] Suspected change` block linking the PR, or the commit when there is no PR, plus the author and the reason. The Slack follow-up adds `⚠️ Suspected change: PR #N in repo (sha) <url>`.
