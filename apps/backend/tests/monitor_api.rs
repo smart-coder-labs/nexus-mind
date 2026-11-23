@@ -288,7 +288,7 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
     assert_eq!(status, StatusCode::OK, "{source}");
     assert_eq!(source["autofix"], json!(true));
     let fixer = source["autofix_agent_id"].as_str().expect("managed resolver").to_string();
-    let (fixer_row, fixer_repo, fixer_source, fixer_models): (String, String, String, String) = {
+    let (fixer_row, fixer_repo, fixer_source, fixer_model_source): (String, String, String, String) = {
         let conn = connection::connect(path.to_str().unwrap()).unwrap();
         conn.query_row(
             "SELECT d.template_key||':'||d.status, json_extract(r.config_json,'$.repository'), json_extract(r.config_json,'$.monitor_source_id'), json_extract(r.config_json,'$.model_source')
@@ -300,8 +300,8 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
         .unwrap()
     };
     assert_eq!((fixer_row.as_str(), fixer_repo.as_str(), fixer_source.as_str()), ("github_issue_resolver:enabled", "acme/app", id.as_str()));
-    // Its executor's own subscription, never the org's Factory role providers.
-    assert_eq!(fixer_models, "agent");
+    // No audit model set: the resolver still must not route through the factory gateway.
+    assert_eq!(fixer_model_source, "agent");
     // Without GitHub issues there is nothing to fix.
     fixing["github_connector_id"] = json!(null);
     fixing["github_repo"] = json!(null);

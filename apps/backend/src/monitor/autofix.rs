@@ -49,8 +49,8 @@ pub fn sync_agent(conn: &rusqlite::Connection, user_id: &str, source: &MonitorSo
         "executor": source.audit_executor.as_deref().unwrap_or("claude"),
         "repository": repository,
         "monitor_source_id": source.id,
-        // The executor's own subscription, never the org's Factory role
-        // providers: those may be an unconnected ChatGPT plan.
+        // Without it a resolver goes through the unwired factory model gateway
+        // and every run blocks with factory_chatgpt_oauth_not_connected.
         "model_source": "agent",
     });
     if let Some(model) = source.audit_model.as_deref() {
