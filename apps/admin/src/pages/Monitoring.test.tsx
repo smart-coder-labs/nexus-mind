@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   listMonitorSources: vi.fn(),
   listMonitorGroups: vi.fn(),
   listAutonomousAgentConnectors: vi.fn(),
+  putAutonomousAgentConnector: vi.fn(),
   createMonitorSource: vi.fn(),
   updateMonitorSource: vi.fn(),
   deleteMonitorSource: vi.fn(),
@@ -239,6 +240,25 @@ describe('Monitoring page', () => {
     await userEvent.click(screen.getByLabelText('Open a draft PR for each issue'))
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(api.updateMonitorSource).toHaveBeenCalledWith('src-1', expect.objectContaining({ github_connector_id: 'server_gh_cli', autofix: true }))
+  })
+
+  it('opens issues with a new GitHub token, stored as a connector before the source', async () => {
+    api.putAutonomousAgentConnector.mockResolvedValue({ id: 'gh-new', kind: 'target_secret', name: 'x', metadata: { purpose: 'github_token' } })
+    api.updateMonitorSource.mockResolvedValue({ ...source, github_connector_id: 'gh-new' })
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Kasymir beta' }))
+    await chooseSelectOption(userEvent.setup(), screen.getByLabelText('GitHub issues'), /New GitHub token/)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('GitHub token'), ' ghp_secret ')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(api.putAutonomousAgentConnector).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'target_secret',
+      secret: 'ghp_secret',
+      metadata: { purpose: 'github_token' },
+      scopes: ['target:use'],
+    }))
+    await waitFor(() => expect(api.updateMonitorSource).toHaveBeenCalledWith('src-1', expect.objectContaining({ github_connector_id: 'gh-new', github_repo: 'acme/app' })))
+    expect(JSON.stringify(api.updateMonitorSource.mock.calls)).not.toContain('ghp_secret')
   })
 
   it('connects a Vercel drain and shows its token once, with no GCP fields', async () => {

@@ -171,6 +171,8 @@ const EXECUTOR_LABEL: Record<MonitorAuditExecutor, string> = { claude: 'Claude',
 
 const SERVER_SLACK = 'server_slack_mcp'
 const SERVER_GITHUB = 'server_gh_cli'
+/** Select value: paste a token, stored as an org connector when saving. */
+const NEW_GITHUB_TOKEN = '__new_github_token'
 const SLACK_CHANNEL_ID = /^[CGD][A-Z0-9]{8,19}$/
 
 /** The service account to suggest for a GCP project. */
@@ -197,9 +199,11 @@ interface Draft {
   auditExecutor: MonitorAuditExecutor | ''
   auditModel: string
   autofix: boolean
+  /** Only with `github = NEW_GITHUB_TOKEN`; sent to the connector, never to the source. */
+  newToken: string
 }
 
-const EMPTY: Draft = { id: null, provider: 'gcp', providerRef: '', name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '', autofix: false }
+const EMPTY: Draft = { id: null, provider: 'gcp', providerRef: '', name: '', project: '', gcpProject: '', serviceAccount: '', slack: '', slackChannel: '', github: '', repo: '', throttle: '30', enabled: true, auditExecutor: '', auditModel: '', autofix: false, newToken: '' }
 
 function draftFrom(source: MonitorSource): Draft {
   return {
@@ -219,6 +223,7 @@ function draftFrom(source: MonitorSource): Draft {
     auditExecutor: source.audit_executor ?? '',
     auditModel: source.audit_model ?? '',
     autofix: source.autofix,
+    newToken: '',
   }
 }
 
@@ -289,8 +294,23 @@ export default function Monitoring() {
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['monitor-sources'] })
   const save = useMutation({
-    mutationFn: (current: Draft) =>
-      current.id ? client.updateMonitorSource(current.id, sourceInput(current)) : client.createMonitorSource(sourceInput(current)),
+    mutationFn: async (current: Draft) => {
+      if (current.github === NEW_GITHUB_TOKEN) {
+        const connector = await client.putAutonomousAgentConnector({
+          kind: 'target_secret',
+          // A unique name: the connector upsert by name must never overwrite another token.
+          name: `monitor: ${current.name.trim()} · ${Date.now().toString(36)}`,
+          secret: current.newToken.trim(),
+          metadata: { purpose: 'github_token' },
+          scopes: ['target:use'],
+        })
+        current = { ...current, github: connector.id, newToken: '' }
+        // A retry after a failed save reuses this connector instead of making another.
+        setDraft(latest => latest && { ...latest, github: connector.id, newToken: '' })
+        queryClient.invalidateQueries({ queryKey: ['autonomous-connectors'] })
+      }
+      return current.id ? client.updateMonitorSource(current.id, sourceInput(current)) : client.createMonitorSource(sourceInput(current))
+    },
     onSuccess: (source, current) => {
       setDraft(null)
       refresh()
@@ -590,6 +610,7 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
   const gcp = draft?.provider === 'gcp'
   const complete = !!draft && !!draft.name.trim() && !!draft.project.trim() && (!gcp || !!draft.serviceAccount.trim())
     && (!draft.github || !!draft.repo.trim()) && channelOk
+    && (draft.github !== NEW_GITHUB_TOKEN || !!draft.newToken.trim())
   return (
     <Modal open={draft !== null} onOpenChange={value => { if (!value) onClose() }} size="xl" position="right">
       {draft && (
@@ -692,13 +713,19 @@ function SourceEditor({ draft, setDraft, slackConnectors, githubConnectors, serv
                   <Input id="monitor-slack-channel" className="font-mono" value={draft.slackChannel} placeholder="C0123ABCDE" onChange={e => set('slackChannel', e.target.value.trim().toUpperCase())} />
                 </Field>
               )}
-              <Field id="monitor-github" label="GitHub issues" hint={serverGithub ? 'The server\'s gh account, or a GitHub App or token connector of this organization.' : 'A GitHub App or token connector of this organization.'}>
+              <Field id="monitor-github" label="GitHub issues" hint={serverGithub ? 'The server\'s gh account, a GitHub App or token connector of this organization, or a new token.' : 'A GitHub App or token connector of this organization, or a new token.'}>
                 <StyledSelect id="monitor-github" className={SELECT_CLASS} value={draft.github} onChange={e => set('github', e.target.value)}>
                   <option value="">No GitHub issues</option>
                   {serverGithub && <option value={SERVER_GITHUB}>Server GitHub (authenticated gh)</option>}
                   {githubConnectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  <option value={NEW_GITHUB_TOKEN}>New GitHub token…</option>
                 </StyledSelect>
               </Field>
+              {draft.github === NEW_GITHUB_TOKEN && (
+                <Field id="monitor-github-token" label="GitHub token" hint="Fine-grained token with Issues: read and write (and Contents: read for audits) on the repositories. Stored encrypted as a connector and never shown again.">
+                  <Input id="monitor-github-token" type="password" autoComplete="off" className="font-mono" value={draft.newToken} placeholder="github_pat_…" onChange={e => set('newToken', e.target.value)} />
+                </Field>
+              )}
               {draft.github && (
                 <Field id="monitor-repo" label={draft.auditExecutor ? 'Default repository for issues' : 'Repository for issues'} hint={draft.auditExecutor ? 'Used when the audit cannot name the repository that causes the error. Its owner is where the audit may look.' : undefined}>
                   <Input id="monitor-repo" className="font-mono" value={draft.repo} placeholder="owner/repo" onChange={e => set('repo', e.target.value)} />
