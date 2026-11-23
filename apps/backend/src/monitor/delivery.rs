@@ -401,7 +401,7 @@ async fn open_issue(
             return Ok(None);
         }
     }
-    let number = open_issue_in(store, source, group, &token, &current, "", None).await?;
+    let number = open_issue_in(store, source, group, &token, &current, "", None, true).await?;
     Ok(Some((number, group.issue_number.is_some())))
 }
 
@@ -416,6 +416,7 @@ pub async fn open_issue_in(
     repository: &str,
     audit: &str,
     summary: Option<&str>,
+    autofix: bool,
 ) -> anyhow::Result<i64> {
     let previous = group.issue_number.map(|n| match issue_repository(group, source) {
         Some(repo) if !repo.eq_ignore_ascii_case(repository) => format!("{repo}#{n}"),
@@ -449,6 +450,9 @@ pub async fn open_issue_in(
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     store_monitor::set_issue(&conn, &group.id, number, repository)?;
     // The fix follows the issue; a failure to start it never loses the issue.
+    if !autofix {
+        return Ok(number);
+    }
     if let Err(error) = super::autofix::start(&conn, source, group, repository, number, false) {
         tracing::warn!(group = %group.id, "Monitor auto-fix did not start: {error:#}");
     }

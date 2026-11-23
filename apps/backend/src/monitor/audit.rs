@@ -537,6 +537,13 @@ pub fn parse_outcome(result: &Value) -> Option<Outcome> {
     })
 }
 
+/// An automatic fix only follows an audit sure of the cause: a guess (a
+/// request line with no exception, say) becomes a PR that fixes the wrong
+/// thing. Anything less waits for a person to press Fix.
+pub fn auto_fixes(outcome: Option<&Outcome>) -> bool {
+    outcome.is_some_and(|o| o.confidence == "high")
+}
+
 /// The repository the issue goes to: the agent's proposal when it is inside the
 /// owner and carries evidence, else the source's default repository.
 pub fn choose_repository(outcome: Option<&Outcome>, owner: &str, fallback: &str) -> (String, bool) {
@@ -636,7 +643,7 @@ async fn finish_inner(
     let suspect = culprit(outcome.as_ref(), claim.config.pointer("/trigger/recent_changes"));
     let section = issue_section(outcome.as_ref(), suspect.as_ref(), routed, &executor, &run_link, &owner);
     let title = outcome.as_ref().map(|o| o.summary.as_str()).filter(|s| !s.is_empty());
-    let number = super::delivery::open_issue_in(store, &source, &group, &token, &repository, &section, title).await?;
+    let number = super::delivery::open_issue_in(store, &source, &group, &token, &repository, &section, title, auto_fixes(outcome.as_ref())).await?;
     let mut group = group;
     group.issue_number = Some(number);
     group.issue_repo = Some(repository);
@@ -754,6 +761,15 @@ mod tests {
         low.confidence = "low".into();
         assert!(issue_section(Some(&low), None, false, "pi", "https://x/run", "k").contains("Low confidence"));
         assert!(issue_section(None, None, false, "pi", "https://x/run", "k").contains("did not reach a conclusion"));
+    }
+
+    #[test]
+    fn only_a_sure_audit_starts_a_fix_on_its_own() {
+        let mut o = outcome("k/r", "e");
+        assert!(auto_fixes(Some(&o)));
+        o.confidence = "medium".into();
+        assert!(!auto_fixes(Some(&o)));
+        assert!(!auto_fixes(None));
     }
 
     #[test]
