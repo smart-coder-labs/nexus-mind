@@ -305,12 +305,18 @@ async fn server_slack_and_github_are_only_for_the_operator_org() {
     // The runtime (harnesses a person chose on the agent) survives saving the source again.
     {
         let conn = connection::connect(path.to_str().unwrap()).unwrap();
+        // Revisions are append-only: a person's edit is a new revision.
         conn.execute(
-            "UPDATE autonomous_agent_revisions SET config_json=json_set(config_json,'$.runtime',json('{\"nexusmind_profile\":\"only_context\",\"harnesses\":[],\"components\":[]}'))
-              WHERE definition_id=?1 AND revision=(SELECT current_revision FROM autonomous_agent_definitions WHERE id=?1)",
+            "INSERT INTO autonomous_agent_revisions (id, definition_id, revision, config_json, config_hash, capabilities_json, budgets_json, created_by)
+             SELECT r.id||'-runtime', r.definition_id, r.revision+1,
+                    json_set(r.config_json,'$.runtime',json('{\"nexusmind_profile\":\"only_context\",\"harnesses\":[],\"components\":[]}')),
+                    r.config_hash||'-runtime', r.capabilities_json, r.budgets_json, r.created_by
+               FROM autonomous_agent_revisions r JOIN autonomous_agent_definitions d ON d.id=r.definition_id AND r.revision=d.current_revision
+              WHERE d.id=?1",
             [&fixer],
         )
         .unwrap();
+        conn.execute("UPDATE autonomous_agent_definitions SET current_revision=current_revision+1 WHERE id=?1", [&fixer]).unwrap();
     }
     let (status, again) = send(&router, &a, "PUT", &format!("/v1/monitor/sources/{id}"), Some(fixing.clone())).await;
     assert_eq!(status, StatusCode::OK, "{again}");
