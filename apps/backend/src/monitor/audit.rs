@@ -503,6 +503,10 @@ fn json_in_text(text: &str) -> Option<Value> {
 
 /// Reads the agent's final JSON. `None` when it is not a usable conclusion.
 pub fn parse_outcome(result: &Value) -> Option<Outcome> {
+    // The worker hands over {"code","result":<claude envelope>}: read the envelope.
+    if let Some(envelope) = result.get("result").filter(|v| v.get("result").is_some()) {
+        return parse_outcome(envelope);
+    }
     let inner = result.get("result");
     let from_text = inner.and_then(Value::as_str).and_then(json_in_text);
     let structured = inner.filter(|v| v.is_object()).or(from_text.as_ref()).unwrap_or(result);
@@ -746,6 +750,9 @@ mod tests {
         let fenced = format!("Here it is:\n```json\n{text}\n```");
         assert_eq!(parse_outcome(&json!({"result": fenced})).unwrap().routing_evidence, "iam.service.ts:1645");
         assert_eq!(parse_outcome(&json!({"result": "no json here"})), None);
+        // What the worker actually passes to `finish`: the envelope wrapped in its run result.
+        let wrapped = json!({"code": "completed", "result": {"type": "result", "result": text}, "stream": {}});
+        assert_eq!(parse_outcome(&wrapped).unwrap().repository.as_deref(), Some("kasymir/kasymir-iam-service"));
     }
 
     #[test]

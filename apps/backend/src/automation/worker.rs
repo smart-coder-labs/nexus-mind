@@ -5921,7 +5921,19 @@ async fn execute_claim(
     } else if crate::monitor::autofix::is_monitor_run(claim) {
         // Monitoring's resolver works only on the issue it was handed.
         match crate::monitor::autofix::scope_claim(store, claim) {
-            Ok(scoped) => {
+            Ok(mut scoped) => {
+                if crate::monitor::autofix::needs_default_branch(&scoped.config) {
+                    let repository = scoped.config["repository"].as_str().unwrap_or_default().to_string();
+                    let branch = match github_access(store, &scoped).await {
+                        Ok(Some(token)) => super::connectors::get_github_repository(&token, &repository).await.ok()
+                            .and_then(|repo| repo["default_branch"].as_str().map(str::to_string)),
+                        _ => None,
+                    };
+                    let Some(branch) = branch else {
+                        return ("blocked_runtime".into(), json!({"code": "default_branch_unavailable"}));
+                    };
+                    scoped.config["base_branch"] = json!(branch);
+                }
                 audit_claim = scoped;
                 &audit_claim
             }
