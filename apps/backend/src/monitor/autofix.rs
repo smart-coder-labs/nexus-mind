@@ -162,6 +162,13 @@ pub fn scope_claim(store: &SqliteStore, claim: &queries::ClaimedAutonomousRun) -
     Ok(scoped)
 }
 
+/// Whether the run must branch from its repository's default branch: a managed
+/// resolver follows the issue to any repository of the owner (`main`, `master`…),
+/// so a fixed base never fits; a chosen one keeps the base it was configured with.
+pub fn needs_default_branch(config: &Value) -> bool {
+    config.get("monitor_source_id").is_some() || config.get("base_branch").and_then(Value::as_str).is_none()
+}
+
 /// The repositories a chosen resolver works on: its own and, when it is
 /// project-scoped, the project's.
 pub fn own_repositories(config: &Value) -> Vec<String> {
@@ -232,5 +239,12 @@ mod tests {
         assert_eq!(pull_request(&published), Some((9, "https://github.com/acme/app/pull/9".into())));
         assert_eq!(pull_request(&json!({"published": {"draft_pull_request": {"number": 9, "html_url": "https://evil.example/pull/9"}}})), None);
         assert_eq!(pull_request(&json!({"no_op": true})), None);
+    }
+
+    #[test]
+    fn a_managed_resolver_always_uses_the_repository_default_branch() {
+        assert!(needs_default_branch(&json!({"monitor_source_id": "s", "base_branch": "main"})));
+        assert!(needs_default_branch(&json!({"repository": "acme/app"})));
+        assert!(!needs_default_branch(&json!({"repository": "acme/app", "base_branch": "develop"})));
     }
 }
