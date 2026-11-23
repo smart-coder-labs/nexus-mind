@@ -408,6 +408,7 @@ async fn open_issue(
 /// Opens the group's issue in `repository` (with an optional audit section)
 /// and records it. A group that had a closed issue gets a regression issue
 /// that points at it.
+#[allow(clippy::too_many_arguments)]
 pub async fn open_issue_in(
     store: &SqliteStore,
     source: &MonitorSource,
