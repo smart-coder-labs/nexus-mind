@@ -546,35 +546,42 @@ pub fn choose_repository(outcome: Option<&Outcome>, owner: &str, fallback: &str)
     }
 }
 
-/// The issue section with the audit's conclusion (fenced: model output that
-/// read attacker-influenced logs).
-pub fn issue_section(outcome: Option<&Outcome>, culprit: Option<&Culprit>, routed: bool, executor: &str, run_link: &str) -> String {
+/// The issue's lead, written like a person's report: What / Why / Possible fix.
+/// Model text is markdown made safe by `safe_markdown` (it read logs an
+/// attacker can write to); links survive only into `owner`'s repositories.
+pub fn issue_section(outcome: Option<&Outcome>, culprit: Option<&Culprit>, routed: bool, executor: &str, run_link: &str, owner: &str) -> String {
     let Some(o) = outcome else {
-        return format!("\n## Audit\nThe automatic audit ({executor}) did not reach a conclusion; see [the run]({run_link}).\n");
+        return format!("## What\nThe automatic audit ({executor}) did not reach a conclusion; see [the run]({run_link}). The log evidence is below.\n");
     };
-    let fence = |t: &str| format!("```\n{}\n```", t.replace("```", "'''"));
-    let routing = if routed {
-        format!("**Why this repository**\n{}\n", fence(&o.routing_evidence))
+    let md = |t: &str| super::delivery::safe_markdown(t, owner);
+    let what = if o.summary.is_empty() { String::new() } else { format!("## What\n{}\n\n", md(&o.summary)) };
+    let doubt = if o.confidence == "low" {
+        "> [!NOTE]\n> Low confidence: the audit could not confirm the cause. What it could not check is in **Why**.\n\n"
     } else {
-        "The audit did not name a repository it could support, so this is the source's default repository.\n".into()
+        ""
     };
-    let fix = if o.suggested_fix.is_empty() { String::new() } else { format!("\n**Suggested fix**\n{}\n", fence(&o.suggested_fix)) };
     let suspect = culprit
         .map(|c| {
             let by = if c.author.is_empty() { String::new() } else { format!(" by `{}`", c.author.replace('`', "")) };
             format!(
-                "\n> [!WARNING]\n> **Suspected change:** [{}]({}){by}: `{}`\n\n**Why this change**\n{}\n",
+                "> [!WARNING]\n> **Suspected change:** [{}]({}){by}: `{}`\n\n{}\n\n",
                 c.label(),
                 c.url(),
                 c.title.replace('`', "'"),
-                fence(&c.reason),
+                md(&c.reason),
             )
         })
         .unwrap_or_default();
+    let fix = if o.suggested_fix.is_empty() { String::new() } else { format!("## Possible fix\n{}\n\n", md(&o.suggested_fix)) };
+    let routing = if routed {
+        format!("## Why this repository\n{}\n\n", md(&o.routing_evidence))
+    } else {
+        "## Why this repository\nThe audit did not name a repository it could support, so this is the source's default repository.\n\n".into()
+    };
     format!(
-        "\n## Audit ({executor}, confidence: {})\n**Root cause**\n{}\n{suspect}\n{routing}{fix}\n[Audit run]({run_link})\n",
+        "{what}{doubt}## Why\n{}\n\n{suspect}{fix}{routing}<sub>Audit by {executor} · confidence: {} · [run]({run_link})</sub>\n",
+        md(&o.root_cause),
         o.confidence,
-        fence(&o.root_cause),
     )
 }
 
@@ -627,8 +634,9 @@ async fn finish_inner(
     let run_link = format!("{}/factory/runs?agent_run={}", config.app_base_url.trim_end_matches('/'), claim.run.id);
     let executor = source.audit_executor.clone().unwrap_or_else(|| "agent".into());
     let suspect = culprit(outcome.as_ref(), claim.config.pointer("/trigger/recent_changes"));
-    let section = issue_section(outcome.as_ref(), suspect.as_ref(), routed, &executor, &run_link);
-    let number = super::delivery::open_issue_in(store, &source, &group, &token, &repository, &section).await?;
+    let section = issue_section(outcome.as_ref(), suspect.as_ref(), routed, &executor, &run_link, &owner);
+    let title = outcome.as_ref().map(|o| o.summary.as_str()).filter(|s| !s.is_empty());
+    let number = super::delivery::open_issue_in(store, &source, &group, &token, &repository, &section, title).await?;
     let mut group = group;
     group.issue_number = Some(number);
     group.issue_repo = Some(repository);
@@ -736,12 +744,16 @@ mod tests {
     }
 
     #[test]
-    fn the_issue_section_fences_model_text() {
-        let section = issue_section(Some(&outcome("k/r", "``` @team")), None, true, "codex", "https://x/run");
-        assert!(section.contains("## Audit (codex, confidence: high)"));
-        assert!(section.contains("```\n''' @team\n```"));
-        assert!(!section.contains("Suspected change"));
-        assert!(issue_section(None, None, false, "pi", "https://x/run").contains("did not reach a conclusion"));
+    fn the_issue_section_reads_like_a_report_with_safe_model_text() {
+        let section = issue_section(Some(&outcome("k/r", "see [iam.ts](https://github.com/k/r/blob/x/iam.ts#L3) @team")), None, true, "codex", "https://x/run", "k");
+        assert!(section.starts_with("## What\ns\n\n## Why\nthe cause\n"));
+        assert!(section.contains("## Why this repository\nsee [iam.ts](https://github.com/k/r/blob/x/iam.ts#L3) ＠team"));
+        assert!(section.contains("confidence: high · [run](https://x/run)"));
+        assert!(!section.contains("Suspected change") && !section.contains("Low confidence"));
+        let mut low = outcome("k/r", "e");
+        low.confidence = "low".into();
+        assert!(issue_section(Some(&low), None, false, "pi", "https://x/run", "k").contains("Low confidence"));
+        assert!(issue_section(None, None, false, "pi", "https://x/run", "k").contains("did not reach a conclusion"));
     }
 
     #[test]
@@ -770,7 +782,7 @@ mod tests {
         o.culprit_reason = "added the throw".into();
         let c = culprit(Some(&o), Some(&recent)).unwrap();
         assert_eq!((c.pr, c.url()), (Some(42), "https://github.com/kasymir/iam/pull/42".to_string()));
-        let section = issue_section(Some(&o), Some(&c), true, "claude", "https://x/run");
+        let section = issue_section(Some(&o), Some(&c), true, "claude", "https://x/run", "kasymir");
         assert!(section.contains("**Suspected change:** [PR #42 in kasymir/iam (abc1234)](https://github.com/kasymir/iam/pull/42) by `dev1`"));
         o.culprit_commit = "1111111".into();
         assert_eq!(culprit(Some(&o), Some(&recent)).unwrap().url(), "https://github.com/kasymir/iam/commit/1111111222222233333334444444555555566666");
