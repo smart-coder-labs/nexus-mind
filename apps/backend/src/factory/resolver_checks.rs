@@ -74,6 +74,7 @@ pub fn from_manifests(
             .and_then(|p| p.to_str())
             .unwrap_or(".");
         let mut manager = "npm";
+        let mut declared = None;
         for version in versions {
             if let Some(spec) = version["packageManager"].as_str() {
                 manager = if spec.starts_with("pnpm@") {
@@ -85,6 +86,7 @@ pub fn from_manifests(
                 } else {
                     "npm"
                 };
+                declared = Some(manager);
             }
         }
         let mut ancestor = Path::new(directory);
@@ -94,20 +96,30 @@ pub fn from_manifests(
             } else {
                 format!("{}/", ancestor.to_string_lossy())
             };
-            let lock = if files.contains(&format!("{prefix}pnpm-lock.yaml")) {
-                Some(("pnpm", "pnpm-lock.yaml"))
-            } else if files.contains(&format!("{prefix}yarn.lock")) {
-                Some(("yarn", "yarn.lock"))
-            } else if files.contains(&format!("{prefix}bun.lock"))
-                || files.contains(&format!("{prefix}bun.lockb"))
-            {
-                Some(("bun", "bun.lock"))
-            } else if files.contains(&format!("{prefix}package-lock.json")) {
-                Some(("npm", "package-lock.json"))
-            } else {
-                None
+            let present: Vec<&str> = [
+                ("pnpm", "pnpm-lock.yaml"),
+                ("yarn", "yarn.lock"),
+                ("bun", "bun.lock"),
+                ("bun", "bun.lockb"),
+                ("npm", "package-lock.json"),
+            ]
+            .iter()
+            .filter(|(_, file)| files.contains(&format!("{prefix}{file}")))
+            .map(|(manager, _)| *manager)
+            .collect();
+            // Two lockfiles: `packageManager` decides; without it the npm lockfile
+            // wins, since the other one is usually stale (and npm is always present).
+            let lock = match present.as_slice() {
+                [] => None,
+                [only] => Some(*only),
+                several => Some(
+                    declared
+                        .filter(|d| several.contains(d))
+                        .or_else(|| several.contains(&"npm").then_some("npm"))
+                        .unwrap_or(several[0]),
+                ),
             };
-            if let Some((selected, _)) = lock {
+            if let Some(selected) = lock {
                 manager = selected;
                 let dir = if prefix.is_empty() {
                     "."
@@ -571,6 +583,23 @@ mod tests {
         assert!(p.roles.contains_key("lint"));
         assert!(p.roles.contains_key("typecheck"));
         assert_eq!(p.commands[0][1], "ci");
+    }
+    #[test]
+    fn a_stale_second_lockfile_does_not_pick_the_package_manager() {
+        let m = BTreeMap::from([("package.json".into(), vec![json!({"scripts":{"test":"jest","build":"nest build"}})])]);
+        let both = BTreeSet::from(["bun.lockb".into(), "package-lock.json".into()]);
+        assert_eq!(from_manifests(&m, &both, &json!({})).unwrap().commands[0][1], "ci");
+        let pnpm_too = BTreeSet::from(["pnpm-lock.yaml".into(), "package-lock.json".into()]);
+        assert_eq!(from_manifests(&m, &pnpm_too, &json!({})).unwrap().commands[0][1], "ci");
+        // A declared packageManager wins over the npm lockfile.
+        let declared = BTreeMap::from([(
+            "package.json".into(),
+            vec![json!({"packageManager":"pnpm@9.0.0","scripts":{"test":"jest","build":"tsc"}})],
+        )]);
+        assert!(from_manifests(&declared, &pnpm_too, &json!({})).unwrap().commands[0].contains(&"pnpm".to_string()));
+        // A single lockfile still decides on its own.
+        let bun = BTreeSet::from(["bun.lockb".into()]);
+        assert!(from_manifests(&m, &bun, &json!({})).unwrap().commands[0].contains(&"bun".to_string()));
     }
     #[test]
     fn cannot_replace_real_tests_with_an_echo() {
