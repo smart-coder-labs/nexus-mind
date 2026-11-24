@@ -544,6 +544,20 @@ pub fn mark_task_started(conn: &Connection, org_id: &str, task_id: &str) -> Resu
     Ok(())
 }
 
+/// The task behind a GitHub issue follows it: closed as completed (`resolved`)
+/// is done, closed as not planned is cancelled. Finished tasks are left alone.
+pub fn close_tasks_for_github_issue(conn: &Connection, org_id: &str, repository: &str, number: i64, issue_status: &str) -> Result<usize> {
+    let status = if issue_status == "resolved" { "done" } else { "cancelled" };
+    Ok(conn.execute(
+        "UPDATE tasks SET status=?4, updated_at=datetime('now')
+          WHERE org_id=?1 AND status NOT IN ('done','cancelled')
+            AND id IN (SELECT nexus_task_id FROM factory_intake_items
+                        WHERE org_id=?1 AND repository=?2 COLLATE NOCASE AND issue_number=?3
+                          AND nexus_task_id IS NOT NULL)",
+        params![org_id, repository, number, status],
+    )?)
+}
+
 /// Whether a pull request was opened by a run started from an untrusted intake
 /// item: such a PR is never merged without a person.
 pub fn untrusted_intake_pull(conn: &Connection, org_id: &str, repository: &str, number: i64) -> Result<bool> {
@@ -712,6 +726,38 @@ mod tests {
         )
         .unwrap();
         (conn, org, user)
+    }
+
+    #[test]
+    fn a_closed_issue_closes_the_task_behind_it() {
+        let (conn, org, user) = setup();
+        for (task, status, repo, issue) in [
+            ("t-done", "in_progress", "acme/app", 7),
+            ("t-already", "done", "acme/app", 7),
+            ("t-other-issue", "todo", "acme/app", 8),
+            ("t-other-repo", "todo", "acme/web", 7),
+            ("t-planned", "backlog", "acme/app", 9),
+        ] {
+            conn.execute(
+                "INSERT INTO tasks (id,org_id,project,title,status,created_by) VALUES (?1,?2,'app',?1,?3,?4)",
+                params![task, org, status, user],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO factory_intake_items (org_id,task_id,source_ref,nexus_task_id,task_class,origin_trust,repository,start_decision,start_reason,issue_number)
+                 VALUES (?1,?2,?2,?2,'bugfix','trusted',?3,'started','test',?4)",
+                params![org, task, repo, issue],
+            )
+            .unwrap();
+        }
+        let status = |id: &str| conn.query_row("SELECT status FROM tasks WHERE id=?1", [id], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(close_tasks_for_github_issue(&conn, "other-org", "acme/app", 7, "resolved").unwrap(), 0);
+        assert_eq!(close_tasks_for_github_issue(&conn, &org, "ACME/APP", 7, "resolved").unwrap(), 1);
+        assert_eq!(close_tasks_for_github_issue(&conn, &org, "acme/app", 9, "ignored").unwrap(), 1);
+        assert_eq!(
+            ["t-done", "t-already", "t-other-issue", "t-other-repo", "t-planned"].map(status),
+            ["done", "done", "todo", "todo", "cancelled"].map(String::from),
+        );
     }
 
     fn resolver(conn: &Connection, org: &str, user: &str) -> String {

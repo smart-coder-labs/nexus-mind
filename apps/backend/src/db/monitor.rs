@@ -313,6 +313,21 @@ pub fn set_group_status(c: &Connection, org_id: &str, id: &str, status: &str) ->
     Ok(c.execute("UPDATE monitor_groups SET status=?3 WHERE org_id=?1 AND id=?2", params![org_id, id, status])? > 0)
 }
 
+/// A closed GitHub issue resolves the open errors it was filed for, in the
+/// repository it lives in (a group without `issue_repo` filed in its source's
+/// default repository). A recurrence comes back as a regression; muted groups
+/// stay muted.
+pub fn resolve_groups_for_issue(c: &Connection, org_id: &str, repository: &str, number: i64) -> Result<usize> {
+    Ok(c.execute(
+        "UPDATE monitor_groups SET status='resolved'
+          WHERE org_id=?1 AND issue_number=?3 AND status='open'
+            AND (issue_repo=?2 COLLATE NOCASE
+                 OR (issue_repo IS NULL AND source_id IN
+                     (SELECT id FROM monitor_sources WHERE org_id=?1 AND github_repo=?2 COLLATE NOCASE)))",
+        params![org_id, repository, number],
+    )?)
+}
+
 pub fn set_autofix_agent(c: &Connection, org_id: &str, source_id: &str, agent_id: Option<&str>) -> Result<()> {
     c.execute("UPDATE monitor_sources SET autofix_agent_id=?3 WHERE org_id=?1 AND id=?2", params![org_id, source_id, agent_id])?;
     Ok(())
@@ -441,6 +456,30 @@ mod tests {
             log_url: None,
             group_hint: None,
         }
+    }
+
+    #[test]
+    fn a_closed_issue_resolves_only_its_own_open_groups() {
+        let c = conn();
+        let mut w = write("gcp");
+        w.github_repo = Some("acme/app".into());
+        let source = create_source(&c, "o1", "u1", &w, None).unwrap().unwrap();
+        let now = Utc::now();
+        let group = |fp: &str| record(&c, &source, fp, &error(fp), now).unwrap().1.id;
+        let (routed, default_repo, other_issue, muted, other_repo) = (group("a"), group("b"), group("c"), group("d"), group("e"));
+        set_issue(&c, &routed, 7, "acme/api").unwrap();
+        // Filed before issue_repo existed: it lives in the source's repository.
+        c.execute("UPDATE monitor_groups SET issue_number=7 WHERE id=?1", [&default_repo]).unwrap();
+        set_issue(&c, &other_issue, 8, "acme/api").unwrap();
+        set_issue(&c, &muted, 7, "acme/api").unwrap();
+        set_group_status(&c, "o1", &muted, "muted").unwrap();
+        set_issue(&c, &other_repo, 7, "acme/web").unwrap();
+        let status = |id: &str| get_group(&c, "o1", id).unwrap().unwrap().status;
+        assert_eq!(resolve_groups_for_issue(&c, "other-org", "acme/api", 7).unwrap(), 0);
+        assert_eq!(resolve_groups_for_issue(&c, "o1", "ACME/API", 7).unwrap(), 1);
+        assert_eq!(resolve_groups_for_issue(&c, "o1", "acme/app", 7).unwrap(), 1);
+        assert_eq!((status(&routed).as_str(), status(&default_repo).as_str()), ("resolved", "resolved"));
+        assert_eq!((status(&other_issue).as_str(), status(&muted).as_str(), status(&other_repo).as_str()), ("open", "muted", "open"));
     }
 
     #[test]
