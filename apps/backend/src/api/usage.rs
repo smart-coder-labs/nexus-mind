@@ -93,7 +93,7 @@ pub struct SummaryParams {
     pub project_id: Option<String>,
 }
 
-const SUMMARY_LEVELS: [&str; 6] = ["task", "project", "client", "org", "model", "user"];
+const SUMMARY_LEVELS: [&str; 7] = ["task", "project", "client", "org", "model", "user", "agent"];
 
 const TIMESERIES_BUCKETS: [&str; 3] = ["hour", "day", "week"];
 

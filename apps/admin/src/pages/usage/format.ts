@@ -8,6 +8,12 @@ import type { UsageBucket, UsageBucketSize } from '../../types'
  *   3_780_000  → "1h 3m"
  * Zero / negative collapses to "0ms".
  */
+/** USD with cents; sub-cent amounts keep two significant digits. */
+export function formatUsd(usd: number): string {
+  if (!usd || usd <= 0) return '$0'
+  return usd < 0.01 ? `$${usd.toPrecision(2)}` : `$${usd.toFixed(2)}`
+}
+
 export function formatDuration(ms: number): string {
   if (!ms || ms <= 0) return '0ms'
   if (ms < 1000) return `${Math.round(ms)}ms`
@@ -99,6 +105,7 @@ const EMPTY_BUCKET = {
   tokens_total: 0,
   duration_ms: 0,
   event_count: 0,
+  cost_usd: 0,
 } as const
 
 /**

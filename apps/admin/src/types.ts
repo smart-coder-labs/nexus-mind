@@ -227,7 +227,7 @@ export interface UsageStats {
 // grouped entity plus additive token/time/count aggregates, and org-wide totals.
 
 /** The additive rollup granularities the summary can be grouped by. */
-export type UsageLevel = 'task' | 'project' | 'client' | 'org' | 'model' | 'user'
+export type UsageLevel = 'task' | 'project' | 'client' | 'org' | 'model' | 'user' | 'agent'
 
 /** Time-bucket granularities of `GET /v1/usage/timeseries`. */
 export type UsageBucketSize = 'hour' | 'day' | 'week'
@@ -241,6 +241,8 @@ export interface UsageSummaryRow {
   tokens_total: number
   duration_ms: number
   event_count: number
+  /** USD; only agent runs carry a cost. */
+  cost_usd: number
 }
 
 /**
@@ -255,6 +257,7 @@ export interface UsageBucket {
   tokens_total: number
   duration_ms: number
   event_count: number
+  cost_usd: number
 }
 
 /**
@@ -275,6 +278,7 @@ export interface UsageSummaryResponse {
     tokens_total: number
     duration_ms: number
     event_count: number
+    cost_usd: number
   }
 }
 

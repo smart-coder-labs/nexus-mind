@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 121;
+pub const LATEST_USER_VERSION: i32 = 122;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -124,6 +124,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v119(conn)?;
     run_v120(conn)?;
     run_v121(conn)?;
+    run_v122(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -297,6 +298,48 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
 
 /// Migration v121: per-source daily caps for automatic audits and fixes, and
 /// whether a fix was started by hand (manual fixes have no cap and don't count).
+/// Migration v122: agent runs count as usage. Every finished run already has
+/// its tokens, cost and duration in `factory_run_metrics`; Usage only read
+/// `usage_events` (what MCP clients report), so agents, audits and fixes never
+/// showed. A run's usage row carries the agent and the cost, unique per run;
+/// the past runs are copied once here.
+pub fn run_v122(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 122 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for column in ["agent TEXT", "cost_usd REAL", "run_id TEXT"] {
+        let name = column.split(' ').next().unwrap_or_default();
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_events') WHERE name=?1)",
+            [name],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            tx.execute_batch(&format!("ALTER TABLE usage_events ADD COLUMN {column};"))?;
+        }
+    }
+    tx.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_run ON usage_events(run_id) WHERE run_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_usage_events_agent ON usage_events(org_id, agent);
+         INSERT OR IGNORE INTO usage_events
+            (id, org_id, user_id, model, tokens_in, tokens_out, duration_ms, source, event_ts, agent, cost_usd, run_id)
+         SELECT lower(hex(randomblob(16))), m.org_id,
+                (SELECT u.id FROM users u WHERE u.id = r.requested_by),
+                m.model,
+                COALESCE(m.input_tokens,0) + COALESCE(m.cached_input_tokens,0) + COALESCE(m.cache_write_tokens,0),
+                COALESCE(m.output_tokens,0), COALESCE(m.duration_ms,0), 'agent_run', m.created_at,
+                COALESCE(d.name, m.template_key), m.cost_usd, m.run_id
+           FROM factory_run_metrics m
+           LEFT JOIN autonomous_agent_runs r ON r.id = m.run_id
+           LEFT JOIN autonomous_agent_definitions d ON d.id = r.definition_id;
+         PRAGMA user_version = 122;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn run_v121(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 121 {
