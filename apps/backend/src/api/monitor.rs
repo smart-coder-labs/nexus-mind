@@ -656,7 +656,7 @@ pub async fn fix_group(
         let token = crate::monitor::delivery::github_token(&store, &auth.org_id, &connector).await.map_err(|e| {
             error(StatusCode::BAD_GATEWAY, "github_unavailable", format!("GitHub could not be reached: {e}"))
         })?;
-        let number = crate::monitor::delivery::open_issue_in(&store, &source, &group, &token, &repository, "", None).await.map_err(|e| {
+        let number = crate::monitor::delivery::open_issue_in(&store, &source, &group, &token, &repository, "", None, true).await.map_err(|e| {
             error(StatusCode::BAD_GATEWAY, "issue_create_failed", format!("The issue could not be opened: {e:#}"))
         })?;
         group.issue_number = Some(number);
