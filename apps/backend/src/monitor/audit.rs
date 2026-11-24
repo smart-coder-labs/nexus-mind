@@ -681,6 +681,7 @@ mod tests {
             fix_run_id: None,
             fix_status: None,
             fix_pr_url: None,
+            context_log_url: None,
         }
     }
 

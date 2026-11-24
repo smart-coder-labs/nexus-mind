@@ -183,6 +183,8 @@ pub struct MonitorGroup {
     pub last_seen: String,
     pub sample: String,
     pub log_url: Option<String>,
+    /// The service's logs around the latest occurrence (GCP only).
+    pub context_log_url: Option<String>,
     pub issue_number: Option<i64>,
     pub status: String,
     /// The error audit's agent run, its state (`pending`, `done`, `failed`) and conclusion.
@@ -204,17 +206,19 @@ const GROUP_COLUMNS: &str =
     "id,source_id,service,title,severity,count,first_seen,last_seen,sample,log_url,issue_number,status,audit_run_id,audit_status,audit_summary,issue_repo,slack_ts,fix_run_id,fix_status,fix_pr_url";
 
 fn group_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitorGroup> {
+    let (service, last_seen, log_url): (String, String, Option<String>) = (row.get(2)?, row.get(7)?, row.get(9)?);
     Ok(MonitorGroup {
+        context_log_url: crate::monitor::context_log_url(log_url.as_deref(), &service, &last_seen),
         id: row.get(0)?,
         source_id: row.get(1)?,
-        service: row.get(2)?,
+        service,
         title: row.get(3)?,
         severity: row.get(4)?,
         count: row.get(5)?,
         first_seen: row.get(6)?,
-        last_seen: row.get(7)?,
+        last_seen,
         sample: row.get(8)?,
-        log_url: row.get(9)?,
+        log_url,
         issue_number: row.get(10)?,
         status: row.get(11)?,
         audit_run_id: row.get(12)?,

@@ -607,6 +607,7 @@ function ErrorLine({ group, source, sourceName, busy, onStatus, fixing, onFix }:
             {group.fix_pr_url && <a className={LINK_CLASS} href={group.fix_pr_url} target="_blank" rel="noreferrer">Fix PR</a>}
             {group.fix_status === 'failed' && group.fix_run_id && <a className={LINK_CLASS} href={`/factory/runs?agent_run=${encodeURIComponent(group.fix_run_id)}`}>fix run (no PR)</a>}
             {group.log_url && <a className={LINK_CLASS} href={group.log_url} target="_blank" rel="noreferrer">Logs <ExternalLink className="inline h-3 w-3" aria-hidden="true" /></a>}
+            {group.context_log_url && <a className={LINK_CLASS} href={group.context_log_url} target="_blank" rel="noreferrer">Logs around it <ExternalLink className="inline h-3 w-3" aria-hidden="true" /></a>}
           </dd>
           <dt className="text-text-tertiary">status</dt>
           <dd className="m-0 flex flex-wrap items-center gap-2">
