@@ -1877,6 +1877,8 @@ export interface MonitorGroup {
   /** JSON: { message, stack } (redacted). */
   sample: string
   log_url: string | null
+  /** The service's logs around the latest occurrence (GCP only). */
+  context_log_url: string | null
   issue_number: number | null
   status: MonitorGroupStatus
   audit_run_id: string | null

@@ -62,6 +62,7 @@ const group: MonitorGroup = {
   last_seen: '2026-11-20T10:05:00+00:00',
   sample: '{"message":"Order 42 not found"}',
   log_url: 'https://console.cloud.google.com/logs/query;query=x?project=my-proj-1',
+  context_log_url: null,
   issue_number: 7,
   status: 'open',
   audit_run_id: null,

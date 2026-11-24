@@ -117,6 +117,32 @@ pub fn from_log_entry(entry: &Value) -> Option<RuntimeError> {
     })
 }
 
+/// The service's logs from 10 minutes before to 5 after `at`, for a GCP log
+/// link only: what happened around the error, not just the error line.
+pub fn context_log_url(log_url: Option<&str>, service: &str, at: &str) -> Option<String> {
+    let (_, project) = log_url?.strip_prefix("https://console.cloud.google.com/logs/query;")?.rsplit_once("?project=")?;
+    if project.is_empty() || !project.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    let at = DateTime::parse_from_rfc3339(at).ok()?.with_timezone(&Utc);
+    let service = service.replace(['"', '\\'], "");
+    // The label that named the service is not stored: any of them matches
+    // (Cloud SQL's `database_id` is `project:instance`, hence `:`).
+    let mut query: Vec<String> = ["service_name", "container_name", "function_name", "job_name", "module_id"]
+        .iter()
+        .map(|label| format!("resource.labels.{label}=\"{service}\""))
+        .collect();
+    query.push(format!("resource.labels.database_id:\"{service}\""));
+    let time = |t: DateTime<Utc>| percent_encode(&t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    Some(format!(
+        "https://console.cloud.google.com/logs/query;query={};timeRange={}%2F{};cursorTimestamp={}?project={project}",
+        percent_encode(&query.join(" OR ")),
+        time(at - chrono::Duration::minutes(10)),
+        time(at + chrono::Duration::minutes(5)),
+        time(at),
+    ))
+}
+
 /// Percent-encodes everything but unreserved URL characters.
 fn percent_encode(text: &str) -> String {
     text.bytes()
@@ -316,6 +342,19 @@ mod tests {
         let mut slower = entry.clone();
         slower["httpRequest"]["latency"] = json!("12.1s");
         assert_eq!(fingerprint("s", &error), fingerprint("s", &from_log_entry(&slower).unwrap()));
+    }
+
+    #[test]
+    fn context_links_cover_the_minutes_around_a_gcp_error() {
+        let log = "https://console.cloud.google.com/logs/query;query=insertId%3D%22a%22;duration=P7D?project=my-proj-1";
+        let url = context_log_url(Some(log), "kasymir-beta-sales", "2026-11-24T03:28:59.736+00:00").unwrap();
+        assert!(url.starts_with("https://console.cloud.google.com/logs/query;query=resource.labels.service_name%3D%22kasymir-beta-sales%22%20OR%20"));
+        assert!(url.ends_with(";timeRange=2026-11-24T03%3A18%3A59Z%2F2026-11-24T03%3A33%3A59Z;cursorTimestamp=2026-11-24T03%3A28%3A59Z?project=my-proj-1"));
+        // Quotes in a service name cannot break out of the query.
+        assert!(context_log_url(Some(log), "a\" OR x=\"", "2026-11-24T03:28:59Z").unwrap().contains("service_name%3D%22a%20OR%20x%3D%22%20OR"));
+        assert_eq!(context_log_url(Some("https://vercel.com/acme/shop/logs"), "s", "2026-11-24T03:28:59Z"), None);
+        assert_eq!(context_log_url(Some("https://console.cloud.google.com/logs/query;query=x?project=a&b"), "s", "2026-11-24T03:28:59Z"), None);
+        assert_eq!(context_log_url(None, "s", "2026-11-24T03:28:59Z"), None);
     }
 
     #[test]

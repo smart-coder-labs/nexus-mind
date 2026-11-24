@@ -94,8 +94,9 @@ pub fn slack_summary(action: Action, group: &MonitorGroup, source: &MonitorSourc
     };
     let issue = issue_url(group, source).map(|(n, url)| format!(" · <{url}|issue #{n}>")).unwrap_or_default();
     let logs = group.log_url.as_deref().map(|u| format!("\n<{u}|View logs in {}>", provider_label(source))).unwrap_or_default();
+    let around = group.context_log_url.as_deref().map(|u| format!(" · <{u}|logs around it>")).unwrap_or_default();
     format!(
-        "*{headline}* in `{}` ({})\n*{}*\n{}× since {}{issue}{note}{logs}",
+        "*{headline}* in `{}` ({})\n*{}*\n{}× since {}{issue}{note}{logs}{around}",
         slack_escape(&group.service),
         slack_escape(&source.name),
         slack_escape(&group.title),
@@ -117,7 +118,8 @@ pub fn issue_body(group: &MonitorGroup, source: &MonitorSource, previous: Option
     let sample: serde_json::Value = serde_json::from_str(&group.sample).unwrap_or_default();
     let message = sample["message"].as_str().unwrap_or_default();
     let stack = sample["stack"].as_str().map(|s| format!("\n**Stack**\n{}\n", fenced(s))).unwrap_or_default();
-    let logs = group.log_url.as_deref().map(|u| format!("\n[View logs in {}]({u})\n", provider_label(source))).unwrap_or_default();
+    let around = group.context_log_url.as_deref().map(|u| format!(" · [the service's logs 10 minutes before and 5 after]({u})")).unwrap_or_default();
+    let logs = group.log_url.as_deref().map(|u| format!("\n[View logs in {}]({u}){around}\n", provider_label(source))).unwrap_or_default();
     let regression = previous.map(|n| format!("\nThis came back after {n} was closed.\n")).unwrap_or_default();
     let evidence = if audit.is_empty() { "" } else { "\n## Evidence\n" };
     format!(
@@ -268,7 +270,8 @@ pub fn mcp_summary(action: Action, group: &MonitorGroup, source: &MonitorSource,
         _ => "🟠 Still happening",
     };
     let issue = issue_url(group, source).map(|(n, url)| format!("\nIssue #{n}: {url}")).unwrap_or_default();
-    let logs = group.log_url.as_deref().map(|u| format!("\nLogs: {u}")).unwrap_or_default();
+    let around = group.context_log_url.as_deref().map(|u| format!("\nLogs around it: {u}")).unwrap_or_default();
+    let logs = group.log_url.as_deref().map(|u| format!("\nLogs: {u}{around}")).unwrap_or_default();
     format!(
         "*{headline}* in `{}` ({})\n*{}*\n{}× since {}{issue}{note}\nNexusMind: {link}{logs}",
         mcp_safe(&group.service).replace('`', ""),
@@ -486,6 +489,7 @@ mod tests {
             fix_run_id: None,
             fix_status: None,
             fix_pr_url: None,
+            context_log_url: None,
         }
     }
 
