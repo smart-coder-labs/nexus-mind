@@ -380,6 +380,10 @@ fn process_delivery(
                 .ok_or_else(|| anyhow::anyhow!("issue_number_missing"))?;
             // Derive the delivery URL from the repository already scoped to the signed connector.
             queries::close_findings_for_github_issue(c, org, &format!("https://github.com/{repo}/issues/{number}"), status)?;
+            // The monitor error and the Factory task behind the issue are finished too,
+            // whether a person closed it or merging its fix PR did.
+            crate::db::monitor::resolve_groups_for_issue(c, org, repo, number)?;
+            crate::db::factory_intake::close_tasks_for_github_issue(c, org, repo, number, status)?;
         }
     }
     if event == "workflow_run" && !merged_prs.is_empty() {
