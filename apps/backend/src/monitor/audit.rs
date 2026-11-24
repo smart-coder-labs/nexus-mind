@@ -295,7 +295,25 @@ pub async fn start(store: &SqliteStore, source: &MonitorSource, group: &MonitorG
     let token = super::delivery::github_token(store, &source.org_id, connector_id).await?;
     let candidates = candidates(&token, &owner, fallback, group).await;
     let mut input = trigger(source, group, &candidates);
-    input["trigger"]["recent_changes"] = json!(recent_changes(&token, &candidates, &group.first_seen).await);
+    // A regression: hand over the closed issue and the PR that fixed it, and the
+    // commits since that fix (what may have brought the error back) instead of
+    // the ones before the error first appeared.
+    let previous = if group.issue_number.is_some() { previous_fix(&token, source, group).await } else { None };
+    let window = match previous.as_ref().and_then(|p| p["since"].as_str()).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
+        Some(since) => Some((since.with_timezone(&chrono::Utc), chrono::Utc::now())),
+        None => chrono::DateTime::parse_from_rfc3339(&group.first_seen).ok().map(|first| {
+            let first = first.with_timezone(&chrono::Utc);
+            (first - chrono::Duration::days(14), first + chrono::Duration::hours(1))
+        }),
+    };
+    if let Some(previous) = previous {
+        input["trigger"]["previous"] = previous;
+    }
+    let changes = match window {
+        Some((since, until)) => recent_changes(&token, &candidates, since, until).await,
+        None => Vec::new(),
+    };
+    input["trigger"]["recent_changes"] = json!(changes);
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     let run = queries::enqueue_autonomous_agent_run(
@@ -385,6 +403,8 @@ pub struct Outcome {
     /// The commit from `trigger.recent_changes` the agent blames, and why.
     pub culprit_commit: String,
     pub culprit_reason: String,
+    /// A regression only: why the error came back after its fix.
+    pub regression: String,
 }
 
 /// A recent change the audit blames, checked against the commits Monitoring
@@ -445,19 +465,86 @@ pub fn pr_number(title: &str) -> Option<i64> {
     pr.captures(title)?.get(1)?.as_str().parse().ok()
 }
 
+/// `owner/repo` and number of a `https://github.com/owner/repo/pull/N` link.
+pub fn pull_from_url(url: &str) -> Option<(String, i64)> {
+    let (repo, number) = url.strip_prefix("https://github.com/")?.split_once("/pull/")?;
+    let number = number.split(['/', '#', '?']).next()?.parse().ok()?;
+    crate::automation::connectors::validate_repository(repo).ok()?;
+    Some((repo.to_string(), number))
+}
+
+/// For a regression: the error's closed issue and the merged PR that closed it
+/// (Monitoring's own fix PR, else the commit GitHub closed the issue with), with
+/// the files it changed. `since`: when that fix landed, the start of the commits
+/// worth reading. `None` when the issue is not closed. Best effort.
+pub async fn previous_fix(token: &str, source: &MonitorSource, group: &MonitorGroup) -> Option<Value> {
+    use crate::automation::connectors;
+    let number = group.issue_number?;
+    let repo = super::delivery::issue_repository(group, source)?.to_string();
+    connectors::validate_repository(&repo).ok()?;
+    let issue = connectors::get_github_issue(token, &repo, number).await.ok()?;
+    let closed_at = issue["closed_at"].as_str()?.to_string();
+    let mut pull = group.fix_pr_url.as_deref().and_then(pull_from_url);
+    if pull.is_none() {
+        let events = connectors::github_get(token, &format!("/repos/{repo}/issues/{number}/events?per_page=100")).await.ok();
+        let closing = events.as_ref().and_then(|e| e.as_array()).and_then(|e| e.iter().rev().find(|e| e["event"] == "closed"));
+        if let Some((sha, commit_repo)) = closing.and_then(|e| {
+            let sha = e["commit_id"].as_str()?;
+            let commit_repo = e["commit_url"].as_str()?.strip_prefix("https://api.github.com/repos/")?.split("/commits/").next()?;
+            Some((sha.to_string(), commit_repo.to_string()))
+        }) {
+            if connectors::validate_repository(&commit_repo).is_ok() {
+                if let Ok(pulls) = connectors::list_github_commit_pulls(token, &commit_repo, &sha).await {
+                    pull = pulls.as_array().into_iter().flatten().find(|p| !p["merged_at"].is_null()).and_then(|p| p["number"].as_i64()).map(|n| (commit_repo, n));
+                }
+            }
+        }
+    }
+    let mut fix = Value::Null;
+    let mut since = closed_at.clone();
+    if let Some((fix_repo, fix_number)) = pull {
+        if let Ok(pr) = connectors::get_github_pull(token, &fix_repo, fix_number).await {
+            if let Some(merged_at) = pr["merged_at"].as_str() {
+                let files: Vec<String> = connectors::list_github_pull_files(token, &fix_repo, fix_number)
+                    .await
+                    .map(|files| files.into_iter().map(|f| f.filename).take(30).collect())
+                    .unwrap_or_default();
+                since = merged_at.to_string();
+                fix = json!({
+                    "repository": fix_repo,
+                    "number": fix_number,
+                    "url": format!("https://github.com/{fix_repo}/pull/{fix_number}"),
+                    "title": pr["title"].as_str().unwrap_or_default().chars().take(200).collect::<String>(),
+                    "merged_at": merged_at,
+                    "files": files,
+                });
+            }
+        }
+    }
+    Some(json!({
+        "issue": {
+            "repository": repo,
+            "number": number,
+            "url": format!("https://github.com/{repo}/issues/{number}"),
+            "closed_at": closed_at,
+            "state_reason": issue["state_reason"],
+        },
+        "fix": fix,
+        "since": since,
+    }))
+}
+
 /// Commits per candidate repository handed to the audit, and how many candidates.
 const RECENT_COMMITS: usize = 8;
 const RECENT_REPOSITORIES: usize = 3;
 
-/// The commits that landed in the top candidates in the two weeks before the
-/// error first appeared, newest first, with the files each touched: the audit
-/// says whether one of them introduced the error. Best effort: GitHub errors
-/// just leave a repository out.
-pub async fn recent_changes(token: &str, candidates: &[String], first_seen: &str) -> Vec<Value> {
-    let Ok(first) = chrono::DateTime::parse_from_rfc3339(first_seen) else { return Vec::new() };
-    let first = first.with_timezone(&chrono::Utc);
+/// The commits that landed in the top candidates between `since` and `until`,
+/// newest first, with the files each touched: the audit says whether one of
+/// them introduced the error. Best effort: GitHub errors just leave a
+/// repository out.
+pub async fn recent_changes(token: &str, candidates: &[String], since: chrono::DateTime<chrono::Utc>, until: chrono::DateTime<chrono::Utc>) -> Vec<Value> {
     let format = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let (since, until) = (format(first - chrono::Duration::days(14)), format(first + chrono::Duration::hours(1)));
+    let (since, until) = (format(since), format(until));
     let mut changes = Vec::new();
     for repo in candidates.iter().take(RECENT_REPOSITORIES) {
         let path = format!("/repos/{repo}/commits?since={since}&until={until}&per_page={RECENT_COMMITS}");
@@ -534,6 +621,7 @@ pub fn parse_outcome(result: &Value) -> Option<Outcome> {
         confidence,
         culprit_commit: text("culprit_commit", 40),
         culprit_reason: text("culprit_reason", 2000),
+        regression: text("regression", 3000),
     })
 }
 
@@ -579,6 +667,7 @@ pub fn issue_section(outcome: Option<&Outcome>, culprit: Option<&Culprit>, route
             )
         })
         .unwrap_or_default();
+    let came_back = if o.regression.is_empty() { String::new() } else { format!("## Why it came back\n{}\n\n", md(&o.regression)) };
     let fix = if o.suggested_fix.is_empty() { String::new() } else { format!("## Possible fix\n{}\n\n", md(&o.suggested_fix)) };
     let routing = if routed {
         format!("## Why this repository\n{}\n\n", md(&o.routing_evidence))
@@ -586,7 +675,7 @@ pub fn issue_section(outcome: Option<&Outcome>, culprit: Option<&Culprit>, route
         "## Why this repository\nThe audit did not name a repository it could support, so this is the source's default repository.\n\n".into()
     };
     format!(
-        "{what}{doubt}## Why\n{}\n\n{suspect}{fix}{routing}<sub>Audit by {executor} · confidence: {} · [run]({run_link})</sub>\n",
+        "{what}{doubt}## Why\n{}\n\n{came_back}{suspect}{fix}{routing}<sub>Audit by {executor} · confidence: {} · [run]({run_link})</sub>\n",
         md(&o.root_cause),
         o.confidence,
     )
@@ -730,6 +819,7 @@ mod tests {
             confidence: "high".into(),
             culprit_commit: String::new(),
             culprit_reason: String::new(),
+            regression: String::new(),
         }
     }
 
@@ -771,6 +861,19 @@ mod tests {
         o.confidence = "medium".into();
         assert!(!auto_fixes(Some(&o)));
         assert!(!auto_fixes(None));
+    }
+
+    #[test]
+    fn a_regression_explains_why_it_came_back() {
+        let parsed = parse_outcome(&json!({"result": {"root_cause": "c", "regression": "PR #12 guarded `a` but not `b`"}})).unwrap();
+        assert_eq!(parsed.regression, "PR #12 guarded `a` but not `b`");
+        let section = issue_section(Some(&parsed), None, false, "claude", "https://x/run", "k");
+        assert!(section.contains("## Why it came back\nPR #12 guarded `a` but not `b`"));
+        assert!(!issue_section(Some(&outcome("k/r", "e")), None, true, "claude", "https://x/run", "k").contains("Why it came back"));
+        assert_eq!(pull_from_url("https://github.com/kasymir/iam/pull/42"), Some(("kasymir/iam".into(), 42)));
+        assert_eq!(pull_from_url("https://github.com/kasymir/iam/pull/42/files#diff"), Some(("kasymir/iam".into(), 42)));
+        assert_eq!(pull_from_url("https://github.com/kasymir/iam/issues/42"), None);
+        assert_eq!(pull_from_url("https://evil.test/kasymir/iam/pull/42"), None);
     }
 
     #[test]
