@@ -223,7 +223,7 @@ pub fn record_agent_run_usage(conn: &Connection, org_id: &str, run_id: &str) -> 
             model = excluded.model, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
             duration_ms = excluded.duration_ms, event_ts = excluded.event_ts, agent = excluded.agent,
             cost_usd = excluded.cost_usd",
-        params![org_id, run_id],
+        rusqlite::params![org_id, run_id],
     )?;
     Ok(())
 }

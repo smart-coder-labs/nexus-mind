@@ -125,7 +125,7 @@ describe('Usage', () => {
     expect(within(chartCard).getByText('Tokens out')).toBeInTheDocument()
 
     // The detail table keeps the auditable per-row numbers.
-    expect(screen.getByText('Detail by project')).toBeInTheDocument()
+    expect(screen.getByText('Detail by agent')).toBeInTheDocument()
     expect(screen.getAllByText('acme-web').length).toBeGreaterThan(0)
   })
 
