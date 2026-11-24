@@ -31,7 +31,7 @@ describe('chart data and accessible alternatives', () => {
     expect(screen.queryByText(/healthy/i)).not.toBeInTheDocument()
   })
   it('retains both token series and changes units when the selected metric changes', () => {
-    const buckets = [{ bucket_ts: '2026-10-09', tokens_in: 20, tokens_out: 12, tokens_total: 32, duration_ms: 2000, event_count: 3 }]
+    const buckets = [{ bucket_ts: '2026-10-09', tokens_in: 20, tokens_out: 12, tokens_total: 32, duration_ms: 2000, event_count: 3, cost_usd: 0 }]
     const { rerender } = render(<UsageTrendChart buckets={buckets} size="day" metric="tokens" />)
     let table = screen.getByRole('table', { name: /Tokens by day/ })
     expect(within(table).getByRole('cell', { name: '20' })).toBeInTheDocument()

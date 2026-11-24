@@ -278,6 +278,7 @@ export interface UsageSummaryResponse {
     tokens_total: number
     duration_ms: number
     event_count: number
+    cost_usd: number
   }
 }
 
