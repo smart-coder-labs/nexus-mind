@@ -783,6 +783,9 @@ pub struct UsageSummaryRow {
     pub tokens_total: i64,
     pub duration_ms: i64,
     pub event_count: i64,
+    /// USD, from agent runs; MCP-reported usage carries no cost.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -805,6 +808,8 @@ pub struct UsageBucket {
     pub tokens_total: i64,
     pub duration_ms: i64,
     pub event_count: i64,
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// Response of `GET /v1/usage/timeseries`. Only non-empty buckets are returned

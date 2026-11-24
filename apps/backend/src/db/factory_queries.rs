@@ -840,6 +840,7 @@ pub fn record_run_metrics(
             provider,
         ],
     )?;
+    crate::db::usage_queries::record_agent_run_usage(conn, org_id, run_id)?;
     Ok(())
 }
 

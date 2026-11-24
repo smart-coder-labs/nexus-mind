@@ -202,6 +202,32 @@ pub fn insert_usage_event(
     Ok(id)
 }
 
+/// Copies a finished run's telemetry (`factory_run_metrics`) into Usage, so
+/// agents, audits and fixes count next to what MCP clients report. Upserts by
+/// run: a retried finish replaces the row instead of double-counting.
+pub fn record_agent_run_usage(conn: &Connection, org_id: &str, run_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO usage_events
+            (id, org_id, user_id, model, tokens_in, tokens_out, duration_ms, source, event_ts, agent, cost_usd, run_id)
+         SELECT lower(hex(randomblob(16))), m.org_id,
+                (SELECT u.id FROM users u WHERE u.id = r.requested_by),
+                m.model,
+                COALESCE(m.input_tokens,0) + COALESCE(m.cached_input_tokens,0) + COALESCE(m.cache_write_tokens,0),
+                COALESCE(m.output_tokens,0), COALESCE(m.duration_ms,0), 'agent_run', m.created_at,
+                COALESCE(d.name, m.template_key), m.cost_usd, m.run_id
+           FROM factory_run_metrics m
+           LEFT JOIN autonomous_agent_runs r ON r.id = m.run_id
+           LEFT JOIN autonomous_agent_definitions d ON d.id = r.definition_id
+          WHERE m.org_id = ?1 AND m.run_id = ?2
+         ON CONFLICT(run_id) WHERE run_id IS NOT NULL DO UPDATE SET
+            model = excluded.model, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
+            duration_ms = excluded.duration_ms, event_ts = excluded.event_ts, agent = excluded.agent,
+            cost_usd = excluded.cost_usd",
+        params![org_id, run_id],
+    )?;
+    Ok(())
+}
+
 /// Aggregates usage at the requested rollup level.
 ///
 /// `viewer_user_id`:
@@ -253,6 +279,13 @@ pub fn usage_summary(
         ),
         // `user` attributes usage to the operator. Backfilled rows carry no
         // user_id (sessions have no author), hence the '(system)' bucket.
+        // `agent` groups agent runs (audits, fixes, reviews…) by the agent's name;
+        // usage reported by MCP clients has none.
+        "agent" => (
+            "e.agent",
+            "COALESCE(NULLIF(TRIM(e.agent), ''), '(not an agent)')",
+            "",
+        ),
         "user" => (
             "e.user_id",
             "COALESCE(NULLIF(TRIM(u.name), ''), u.email, '(system)')",
@@ -267,7 +300,8 @@ pub fn usage_summary(
                 COALESCE(SUM(e.tokens_in), 0),
                 COALESCE(SUM(e.tokens_out), 0),
                 COALESCE(SUM(e.duration_ms), 0),
-                COUNT(*)
+                COUNT(*),
+                COALESCE(SUM(e.cost_usd), 0)
            FROM usage_events e
            {name_join}
           WHERE e.org_id = ?1"
@@ -307,6 +341,7 @@ pub fn usage_summary(
                 tokens_total: tokens_in + tokens_out,
                 duration_ms: r.get(4)?,
                 event_count: r.get(5)?,
+                cost_usd: r.get(6)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -320,6 +355,7 @@ pub fn usage_summary(
             tokens_total: 0,
             duration_ms: 0,
             event_count: 0,
+            cost_usd: 0.0,
         },
         |mut acc, r| {
             acc.tokens_in += r.tokens_in;
@@ -327,6 +363,7 @@ pub fn usage_summary(
             acc.tokens_total += r.tokens_total;
             acc.duration_ms += r.duration_ms;
             acc.event_count += r.event_count;
+            acc.cost_usd += r.cost_usd;
             acc
         },
     );
@@ -370,7 +407,8 @@ pub fn usage_timeseries(
                 COALESCE(SUM(e.tokens_in), 0),
                 COALESCE(SUM(e.tokens_out), 0),
                 COALESCE(SUM(e.duration_ms), 0),
-                COUNT(*)
+                COUNT(*),
+                COALESCE(SUM(e.cost_usd), 0)
            FROM usage_events e
           WHERE e.org_id = ?1"
     );
@@ -406,6 +444,7 @@ pub fn usage_timeseries(
                 tokens_total: tokens_in + tokens_out,
                 duration_ms: r.get(3)?,
                 event_count: r.get(4)?,
+                cost_usd: r.get(5)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -822,6 +861,38 @@ mod tests {
             scoped.buckets[0].tokens_total, 100,
             "the hidden project's tokens must not leak into the trend"
         );
+    }
+
+    #[test]
+    fn agent_runs_count_as_usage_once_with_their_agent_and_cost() {
+        let conn = setup();
+        seed_org(&conn, "o1");
+        seed_org(&conn, "o2");
+        let metrics = crate::factory::telemetry::RunMetrics {
+            model: Some("sonnet".into()),
+            input_tokens: Some(100),
+            cached_input_tokens: Some(900),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(50),
+            cost_usd: Some(0.25),
+            duration_ms: Some(60_000),
+            num_turns: Some(3),
+        };
+        let record = |org: &str, run: &str| {
+            crate::db::factory_queries::record_run_metrics(&conn, org, run, "error_audit", None, "claude-code", "succeeded", &metrics).unwrap()
+        };
+        record("o1", "run-1");
+        // A retried finish replaces the row instead of counting twice.
+        record("o1", "run-1");
+        record("o2", "run-2");
+        let summary = usage_summary(&conn, "o1", "agent", None, None, None, None, None).unwrap();
+        assert_eq!(summary.rows.len(), 1);
+        let row = &summary.rows[0];
+        // No agent definition for this run: the template names it.
+        assert_eq!((row.key_name.as_str(), row.tokens_in, row.tokens_out, row.event_count), ("error_audit", 1000, 50, 1));
+        assert!((summary.totals.cost_usd - 0.25).abs() < 1e-9);
+        let series = usage_timeseries(&conn, "o1", "day", None, None, None, None, None).unwrap();
+        assert_eq!((series.buckets.len(), series.buckets[0].duration_ms), (1, 60_000));
     }
 
     #[test]

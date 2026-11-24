@@ -33,7 +33,7 @@ function summary(rows: unknown[], totals: Record<string, number>) {
 }
 
 const EMPTY_TOTALS = {
-  tokens_in: 0, tokens_out: 0, tokens_total: 0, duration_ms: 0, event_count: 0,
+  tokens_in: 0, tokens_out: 0, tokens_total: 0, duration_ms: 0, event_count: 0, cost_usd: 0,
 }
 
 describe('Usage', () => {
@@ -57,7 +57,7 @@ describe('Usage', () => {
 
     // The summary is scoped to the same window — the KPI totals and the chart
     // must never describe different ranges.
-    const summaryCall = getUsageSummary.mock.calls.find(c => c[0].level === 'project')![0]
+    const summaryCall = getUsageSummary.mock.calls.find(c => c[0].level === 'agent')![0]
     expect(summaryCall.from).toBe(call.from)
     expect(summaryCall.to).toBe(call.to)
   })
@@ -78,10 +78,10 @@ describe('Usage', () => {
 
   const ROW = {
     key_id: 'p1', key_name: 'acme-web',
-    tokens_in: 60, tokens_out: 40, tokens_total: 100, duration_ms: 500, event_count: 2,
+    tokens_in: 60, tokens_out: 40, tokens_total: 100, duration_ms: 500, event_count: 2, cost_usd: 0,
   }
   const ROW_TOTALS = {
-    tokens_in: 60, tokens_out: 40, tokens_total: 100, duration_ms: 500, event_count: 2,
+    tokens_in: 60, tokens_out: 40, tokens_total: 100, duration_ms: 500, event_count: 2, cost_usd: 0,
   }
   const ONE_BUCKET = {
     bucket: 'day',

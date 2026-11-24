@@ -9,7 +9,7 @@ function bucket(bucket_ts: string, tokens_total = 10): UsageBucket {
     tokens_out: 0,
     tokens_total,
     duration_ms: 0,
-    event_count: 1,
+    event_count: 1, cost_usd: 0,
   }
 }
 

@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import {
-  BarChart3, Coins, Clock, Activity, DatabaseZap, Loader2, Gauge, ArrowUpRight,
+  BarChart3, Bot, Coins, Clock, Activity, DatabaseZap, DollarSign, Loader2, Gauge, ArrowUpRight,
   ArrowDownRight, Minus, Cpu, Building2, FolderKanban, ListTodo, UserRound, Building,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
@@ -19,7 +19,7 @@ import { EmptyState } from '../components/ui/EmptyState/EmptyState'
 import { UsageTrendChart, type TrendMetric } from './usage/UsageTrendChart'
 import { RankedBars } from './usage/RankedBars'
 import {
-  addDaysIso, daysBetween, fillBuckets, formatDuration, todayIso,
+  addDaysIso, daysBetween, fillBuckets, formatDuration, formatUsd, todayIso,
 } from './usage/format'
 import type { UsageBucketSize, UsageLevel, UsageSummaryRow } from '../types'
 
@@ -33,6 +33,7 @@ const ALL = '__all__'
 // `model` is intentionally absent: it gets its own dedicated card, so offering
 // it here too would render the same numbers twice side by side.
 const LEVELS: { value: UsageLevel; label: string }[] = [
+  { value: 'agent', label: 'Agent' },
   { value: 'project', label: 'Project' },
   { value: 'client', label: 'Client' },
   { value: 'task', label: 'Task' },
@@ -41,6 +42,7 @@ const LEVELS: { value: UsageLevel; label: string }[] = [
 ]
 
 const LEVEL_PRESENTATION: Record<UsageLevel, { icon: ReactNode; description: string }> = {
+  agent: { icon: <Bot />, description: 'Compare agent runs: audits, fixes, reviews…' },
   project: { icon: <FolderKanban />, description: 'Compare usage by project.' },
   client: { icon: <Building2 />, description: 'Compare usage by client.' },
   task: { icon: <ListTodo />, description: 'Compare usage by task.' },
@@ -143,7 +145,7 @@ export default function Usage() {
   const qc = useQueryClient()
   const client = useMemo(() => createClient(), [session])
 
-  const [level, setLevel] = useState<UsageLevel>('project')
+  const [level, setLevel] = useState<UsageLevel>('agent')
   const [preset, setPreset] = useState<RangePreset>('30d')
   const [custom, setCustom] = useState({ from: '', to: '' })
   const [bucket, setBucket] = useState<UsageBucketSize>('day')
@@ -245,6 +247,13 @@ export default function Usage() {
           sub: <DeltaChip delta={pctDelta(totals.tokens_total, prevTotals?.tokens_total ?? 0)} />,
           icon: Coins,
           sparkline: buckets.map(b => b.tokens_total),
+        },
+        {
+          label: 'Cost',
+          value: formatUsd(totals.cost_usd),
+          sub: <DeltaChip delta={pctDelta(totals.cost_usd, prevTotals?.cost_usd ?? 0)} />,
+          icon: DollarSign,
+          sparkline: buckets.map(b => b.cost_usd),
         },
         {
           label: 'Tokens out',
@@ -577,6 +586,7 @@ export default function Usage() {
                           <th className="text-right font-semibold px-4 py-2.5">Total tokens</th>
                           <th className="text-right font-semibold px-4 py-2.5">Share</th>
                           <th className="text-right font-semibold px-4 py-2.5">Duration</th>
+                          <th className="text-right font-semibold px-4 py-2.5">Cost</th>
                           <th className="text-right font-semibold px-5 py-2.5">Events</th>
                         </tr>
                       </thead>
@@ -595,6 +605,7 @@ export default function Usage() {
                                 {share > 0 && share < 1 ? '<1' : Math.round(share)}%
                               </td>
                               <td className="px-4 py-3 text-right text-text-secondary tabular-nums">{formatDuration(row.duration_ms)}</td>
+                              <td className="px-4 py-3 text-right text-text-secondary tabular-nums">{formatUsd(row.cost_usd)}</td>
                               <td className="px-5 py-3 text-right text-text-secondary tabular-nums">{row.event_count.toLocaleString()}</td>
                             </tr>
                           )
@@ -609,6 +620,7 @@ export default function Usage() {
                             <td className="px-4 py-3 text-right tabular-nums">{totals.tokens_total.toLocaleString()}</td>
                             <td className="px-4 py-3 text-right tabular-nums">100%</td>
                             <td className="px-4 py-3 text-right tabular-nums">{formatDuration(totals.duration_ms)}</td>
+                            <td className="px-4 py-3 text-right tabular-nums">{formatUsd(totals.cost_usd)}</td>
                             <td className="px-5 py-3 text-right tabular-nums">{totals.event_count.toLocaleString()}</td>
                           </tr>
                         </tfoot>
