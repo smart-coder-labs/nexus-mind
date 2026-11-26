@@ -3,10 +3,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Transparent, always-on-top, draggable floating desktop companion panel.
+/// Overrides `canBecomeKey` so TextFields inside QuickCommandBar accept keyboard input cleanly.
 final class FloatingCompanionPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
     init<Content: View>(rootView: Content) {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 140),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 320),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -18,6 +22,7 @@ final class FloatingCompanionPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false
         isMovableByWindowBackground = true
+        hidesOnDeactivate = false
 
         let hosting = NSHostingView(rootView: rootView)
         hosting.wantsLayer = true
@@ -26,8 +31,13 @@ final class FloatingCompanionPanel: NSPanel {
 
         if let screen = NSScreen.main {
             let visible = screen.visibleFrame
-            setFrameOrigin(NSPoint(x: visible.maxX - 340, y: visible.minY + 36))
+            setFrameOrigin(NSPoint(x: visible.maxX - 360, y: visible.minY + 32))
         }
+    }
+
+    func focusForTyping() {
+        NSApp.activate(ignoringOtherApps: true)
+        makeKeyAndOrderFront(nil)
     }
 }
 
@@ -37,6 +47,8 @@ struct FloatingCompanionRootView: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
+            Spacer(minLength: 0)
+
             if let approval = viewModel.pendingApprovals.first {
                 ApprovalPillView(approval: approval) { approved in
                     Task { await viewModel.resolveApproval(id: approval.id, approved: approved) }
@@ -49,7 +61,7 @@ struct FloatingCompanionRootView: View {
 
             HStack {
                 Spacer()
-                SynapticOrbView(state: viewModel.visualState, size: 78)
+                SynapticOrbView(state: viewModel.visualState, size: 78, animated: true)
                     .overlay(
                         Circle()
                             .strokeBorder(
@@ -58,15 +70,16 @@ struct FloatingCompanionRootView: View {
                             )
                     )
                     .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            viewModel.showQuickPrompt.toggle()
-                        }
+                        viewModel.toggleQuickPrompt()
                     }
                     .onDrop(of: [.fileURL, .plainText], isTargeted: $isDropTargeted) { providers in
                         viewModel.handleDroppedItems(providers)
                         return true
                     }
                     .contextMenu {
+                        Button(viewModel.showQuickPrompt ? "Ocultar chat" : "Abrir chat (⌘⇧N)") {
+                            viewModel.toggleQuickPrompt()
+                        }
                         Button(viewModel.privacyShield ? "Desactivar Modo Privado" : "Activar Modo Privado (⌘⇧P)") {
                             Task { await viewModel.togglePrivacyShield() }
                         }
@@ -77,7 +90,9 @@ struct FloatingCompanionRootView: View {
             }
         }
         .padding(8)
+        .frame(width: 340, height: 320, alignment: .bottomTrailing)
         .background(Color.clear)
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -153,7 +168,7 @@ struct ApprovalPillView: View {
             }
         }
         .padding(14)
-        .frame(width: 300)
+        .frame(width: 310)
         .background(NexusTokens.bodyObsidian)
         .clipShape(RoundedRectangle(cornerRadius: NexusTokens.radiusCard))
         .overlay(
@@ -165,6 +180,7 @@ struct ApprovalPillView: View {
 
 struct QuickCommandBarView: View {
     @ObservedObject var viewModel: MascotViewModel
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -173,6 +189,7 @@ struct QuickCommandBarView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .foregroundStyle(.white)
+                    .focused($inputFocused)
                     .onSubmit {
                         Task { await viewModel.sendPrompt() }
                     }
@@ -205,12 +222,15 @@ struct QuickCommandBarView: View {
             }
         }
         .padding(12)
-        .frame(width: 300)
+        .frame(width: 310)
         .background(NexusTokens.bodyObsidian)
         .clipShape(RoundedRectangle(cornerRadius: NexusTokens.radiusCard))
         .overlay(
             RoundedRectangle(cornerRadius: NexusTokens.radiusCard)
                 .stroke(NexusTokens.surfaceBorder, lineWidth: 1)
         )
+        .onAppear {
+            inputFocused = true
+        }
     }
 }

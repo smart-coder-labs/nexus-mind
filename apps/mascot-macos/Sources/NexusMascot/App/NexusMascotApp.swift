@@ -3,6 +3,8 @@ import SwiftUI
 
 @MainActor
 final class MascotViewModel: ObservableObject {
+    static let shared = MascotViewModel()
+
     @Published var mascotName: String = "Nexi"
     @Published var visualState: MascotVisualState = .idle
     @Published var decisionMode: DecisionMode = .hybrid
@@ -21,15 +23,22 @@ final class MascotViewModel: ObservableObject {
     @Published var promptDraft: String = ""
     @Published var lastReply: String?
 
+    weak var floatingPanel: FloatingCompanionPanel?
+
     private let client = MascotDaemonClient()
     private let observer = ActiveContextObserver()
-    private var pollTask: Task<Void, Never>?
+    private var statusPollTask: Task<Void, Never>?
+    private var osJobPollTask: Task<Void, Never>?
     private var lastActiveApp: String?
+    private var started = false
 
     func start() {
+        guard !started else { return }
+        started = true
+
         // Register global system-wide hotkeys (⌘⇧N, ⌘⇧P, ⌘⇧⎋)
         GlobalHotkeys.shared.onQuickCommand = { [weak self] in
-            Task { @MainActor in self?.showQuickPrompt.toggle() }
+            Task { @MainActor in self?.toggleQuickPrompt() }
         }
         GlobalHotkeys.shared.onPrivacyShield = { [weak self] in
             Task { @MainActor in await self?.togglePrivacyShield() }
@@ -53,33 +62,70 @@ final class MascotViewModel: ObservableObject {
             }
         }
 
-        pollTask = Task {
+        // Poll daemon status calmly (only updates @Published when values actually change)
+        statusPollTask = Task {
             while !Task.isCancelled {
                 await refresh()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+
+        // Fast background OS-bridge worker (never triggers UI re-renders unless needed)
+        osJobPollTask = Task {
+            while !Task.isCancelled {
                 await processPendingOsJobs()
                 try? await Task.sleep(for: .milliseconds(750))
             }
         }
     }
 
+    func toggleQuickPrompt() {
+        showQuickPrompt.toggle()
+        if showQuickPrompt {
+            floatingPanel?.focusForTyping()
+        }
+    }
+
+    func openQuickPrompt() {
+        showQuickPrompt = true
+        floatingPanel?.focusForTyping()
+    }
+
     func refresh() async {
-        permissions = MacOSPermissions.snapshot()
+        let newPerms = MacOSPermissions.snapshot()
+        if newPerms.accessibilityGranted != permissions.accessibilityGranted
+            || newPerms.screenRecordingGranted != permissions.screenRecordingGranted {
+            permissions = newPerms
+        }
+
         do {
             let status = try await client.getStatus()
-            daemonConnected = true
-            mascotName = status.mascotName
-            visualState = status.visualState
-            decisionMode = status.decisionMode
-            autonomyLevel = status.autonomyLevel
-            privacyShield = status.privacyShield
-            killSwitchActive = status.killSwitch
-            learnedSkillsCount = status.learnedSkills ?? 0
-            mcpToolsCount = status.mcpTools ?? 0
-            pendingApprovals = (try? await client.listPendingApprovals()) ?? []
-            outcomeTape = (try? await client.getOutcomeTape(limit: 14)) ?? []
-            suggestions = (try? await client.listSuggestions()) ?? []
+            if !daemonConnected { daemonConnected = true }
+            if mascotName != status.mascotName { mascotName = status.mascotName }
+            if visualState != status.visualState { visualState = status.visualState }
+            if decisionMode != status.decisionMode { decisionMode = status.decisionMode }
+            if autonomyLevel != status.autonomyLevel { autonomyLevel = status.autonomyLevel }
+            if privacyShield != status.privacyShield { privacyShield = status.privacyShield }
+            if killSwitchActive != status.killSwitch { killSwitchActive = status.killSwitch }
+            let skillsCount = status.learnedSkills ?? 0
+            if learnedSkillsCount != skillsCount { learnedSkillsCount = skillsCount }
+            let mcpCount = status.mcpTools ?? 0
+            if mcpToolsCount != mcpCount { mcpToolsCount = mcpCount }
+
+            let newApprovals = (try? await client.listPendingApprovals()) ?? []
+            if newApprovals.map(\.id) != pendingApprovals.map(\.id) {
+                pendingApprovals = newApprovals
+            }
+            let newTape = (try? await client.getOutcomeTape(limit: 14)) ?? []
+            if newTape.map(\.id) != outcomeTape.map(\.id) {
+                outcomeTape = newTape
+            }
+            let newSuggestions = (try? await client.listSuggestions()) ?? []
+            if newSuggestions.map(\.id) != suggestions.map(\.id) {
+                suggestions = newSuggestions
+            }
         } catch {
-            daemonConnected = false
+            if daemonConnected { daemonConnected = false }
         }
     }
 
@@ -164,7 +210,7 @@ final class MascotViewModel: ObservableObject {
     }
 
     func handleDroppedItems(_ providers: [NSItemProvider]) {
-        showQuickPrompt = true
+        openQuickPrompt()
         for provider in providers {
             if provider.canLoadObject(ofClass: URL.self) {
                 _ = provider.loadObject(ofClass: URL.self) { [weak self] url, _ in
@@ -178,24 +224,32 @@ final class MascotViewModel: ObservableObject {
     }
 }
 
+final class MascotAppDelegate: NSObject, NSApplicationDelegate {
+    var panel: FloatingCompanionPanel?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Essential when running via `swift run` (without .app bundle) so MenuBarExtra & NSPanel behave cleanly
+        NSApp.setActivationPolicy(.accessory)
+
+        Task { @MainActor in
+            let vm = MascotViewModel.shared
+            vm.start()
+            let p = FloatingCompanionPanel(rootView: FloatingCompanionRootView(viewModel: vm))
+            vm.floatingPanel = p
+            p.orderFrontRegardless()
+            self.panel = p
+        }
+    }
+}
+
 @main
 struct NexusMascotApp: App {
-    @StateObject private var viewModel = MascotViewModel()
-    @State private var panel: FloatingCompanionPanel?
+    @NSApplicationDelegateAdaptor(MascotAppDelegate.self) private var appDelegate
+    @ObservedObject private var viewModel = MascotViewModel.shared
 
     var body: some Scene {
         MenuBarExtra {
             MenuBarPopoverView(viewModel: viewModel)
-                .task {
-                    if panel == nil {
-                        viewModel.start()
-                        let p = FloatingCompanionPanel(
-                            rootView: FloatingCompanionRootView(viewModel: viewModel)
-                        )
-                        p.orderFrontRegardless()
-                        panel = p
-                    }
-                }
         } label: {
             Image(systemName: viewModel.privacyShield ? "eye.slash.circle" : "circle.hexagongrid.fill")
                 .symbolRenderingMode(.hierarchical)

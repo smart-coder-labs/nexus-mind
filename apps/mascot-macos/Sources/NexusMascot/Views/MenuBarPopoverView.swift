@@ -2,33 +2,37 @@ import SwiftUI
 
 /// Menu Bar Popover featuring live Laya/Jev engine control, autonomy level,
 /// NexusMind's signature Outcome Tape (last 14 runs), Privacy Shield & Kill Switch.
+/// Uses strictly fixed sizing so macOS `MenuBarExtra(.window)` never jitters or clips.
 struct MenuBarPopoverView: View {
     @ObservedObject var viewModel: MascotViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Header
+            // Header (static orb icon to keep MenuBarExtra layout 100% stable)
             HStack(spacing: 10) {
-                SynapticOrbView(state: viewModel.visualState, size: 42)
+                SynapticOrbView(state: viewModel.visualState, size: 40, animated: false)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(viewModel.mascotName)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.white)
                     Text(viewModel.daemonConnected ? viewModel.visualState.label : "Daemon desconectado")
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.65))
+                        .lineLimit(1)
                 }
-                Spacer()
-                Button(viewModel.privacyShield ? "Privado ON" : "Privado") {
+                Spacer(minLength: 8)
+                Button {
                     Task { await viewModel.togglePrivacyShield() }
+                } label: {
+                    Text(viewModel.privacyShield ? "Privado ON" : "Privado")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(viewModel.privacyShield ? NexusTokens.statusSlate.opacity(0.35) : Color.white.opacity(0.08))
+                        .clipShape(Capsule())
+                        .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(viewModel.privacyShield ? NexusTokens.statusSlate.opacity(0.3) : Color.white.opacity(0.06))
-                .clipShape(Capsule())
-                .foregroundStyle(.white)
             }
 
             Divider().overlay(NexusTokens.surfaceBorder)
@@ -47,6 +51,8 @@ struct MenuBarPopoverView: View {
                     }
                 }
                 .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             // Autonomy Level
@@ -63,6 +69,8 @@ struct MenuBarPopoverView: View {
                     }
                 }
                 .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             // Outcome Tape (signature NexusMind factory visual)
@@ -81,7 +89,7 @@ struct MenuBarPopoverView: View {
                         let entry = idx < viewModel.outcomeTape.count ? viewModel.outcomeTape[idx] : nil
                         RoundedRectangle(cornerRadius: 3)
                             .fill(tapeColor(for: entry?.outcome))
-                            .frame(width: 14, height: 14)
+                            .frame(width: 15, height: 15)
                             .help(entry?.summary ?? "Sin ejecución")
                     }
                 }
@@ -97,7 +105,24 @@ struct MenuBarPopoverView: View {
                 }
             }
             .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.white.opacity(0.72))
+            .foregroundStyle(.white.opacity(0.75))
+
+            // Quick open floating chat bar
+            Button {
+                viewModel.openQuickPrompt()
+            } label: {
+                HStack {
+                    Image(systemName: "bubble.left.and.text.bubble.right")
+                    Text("Hablar con \(viewModel.mascotName) (⌘⇧N)")
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(NexusTokens.accentLime)
+                .foregroundStyle(NexusTokens.accentLimeForeground)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
 
             // Permissions checklist shortcut
             if !viewModel.permissions.allCoreGranted {
@@ -110,13 +135,15 @@ struct MenuBarPopoverView: View {
                             Button("Activar Accesibilidad") {
                                 MacOSPermissions.requestAccessibility()
                             }
-                            .font(.system(size: 11))
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                         if !viewModel.permissions.screenRecordingGranted {
                             Button("Activar Pantalla") {
                                 MacOSPermissions.openScreenRecordingSettings()
                             }
-                            .font(.system(size: 11))
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                     }
                 }
@@ -130,16 +157,18 @@ struct MenuBarPopoverView: View {
 
             // Emergency Kill Switch + Quit
             HStack {
-                Button(viewModel.killSwitchActive ? "Reanudar mascota" : "Pausar todo (Kill Switch)") {
+                Button {
                     Task { await viewModel.toggleKillSwitch() }
+                } label: {
+                    Text(viewModel.killSwitchActive ? "Reanudar mascota" : "Pausar todo (Kill Switch)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(viewModel.killSwitchActive ? NexusTokens.accentLime : NexusTokens.statusRose.opacity(0.22))
+                        .foregroundStyle(viewModel.killSwitchActive ? NexusTokens.accentLimeForeground : NexusTokens.statusRose)
+                        .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .semibold))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(viewModel.killSwitchActive ? NexusTokens.accentLime : NexusTokens.statusRose.opacity(0.22))
-                .foregroundStyle(viewModel.killSwitchActive ? NexusTokens.accentLimeForeground : NexusTokens.statusRose)
-                .clipShape(Capsule())
 
                 Spacer()
 
@@ -148,12 +177,14 @@ struct MenuBarPopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.65))
+                .foregroundStyle(.white.opacity(0.70))
             }
         }
         .padding(16)
-        .frame(width: 310)
+        .frame(width: 320, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: true)
         .background(NexusTokens.bodyObsidian)
+        .preferredColorScheme(.dark)
     }
 
     private func tapeColor(for outcome: String?) -> Color {
@@ -162,7 +193,7 @@ struct MenuBarPopoverView: View {
         case "held", "warning": return NexusTokens.statusAmber
         case "error": return NexusTokens.statusRose
         case "cancelled": return NexusTokens.statusSlate
-        default: return Color.white.opacity(0.08)
+        default: return Color.white.opacity(0.10)
         }
     }
 }
