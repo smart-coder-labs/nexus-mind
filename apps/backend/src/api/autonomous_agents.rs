@@ -1045,7 +1045,7 @@ pub struct PutQaRepositoryGrant {
 }
 
 fn require_org_admin(auth: &AuthContext) -> ApiResult<()> {
-    if auth.role.is_admin() { Ok(()) } else { Err(error(StatusCode::FORBIDDEN, "org_admin_required", "Only an organization admin may manage QA repository grants.")) }
+    if auth.role.is_privileged() { Ok(()) } else { Err(error(StatusCode::FORBIDDEN, "org_admin_required", "Only an organization admin may manage QA repository grants.")) }
 }
 
 pub async fn list_qa_repository_grants(
@@ -1860,6 +1860,16 @@ pub async fn revoke_connector(
 mod tests {
     use super::*;
     use crate::db::{connection::connect, migrations};
+
+    #[test]
+    fn qa_repository_grants_allow_admin_and_super_user_only() {
+        use crate::models::types::{Role, UserRole};
+        let auth = |role| AuthContext { org_id: "o".into(), user_id: "u".into(), role };
+        assert!(require_org_admin(&auth(UserRole::Standard(Role::Admin))).is_ok());
+        assert!(require_org_admin(&auth(UserRole::Custom("super_user".into()))).is_ok());
+        assert!(require_org_admin(&auth(UserRole::Standard(Role::Member))).is_err());
+        assert!(require_org_admin(&auth(UserRole::Custom("qa_lead".into()))).is_err());
+    }
 
     fn fixture() -> (rusqlite::Connection, String, String) {
         let conn = connect(":memory:").unwrap();
