@@ -1,0 +1,405 @@
+//! Full End-to-End Integration Tests for NexusMind Mascot Daemon:
+//! 1. Multi-step ReAct loop over real Unix Domain Socket IPC with mock Laya `/v1/systemone`,
+//!    mock Claude tool-calling API, Held approval pause -> human approve -> automatic resume -> skill_save!
+//! 2. Real stdio MCP server handshake, tool discovery, and tool invocation with redaction.
+//! 3. Continuous learning pipeline: passive observations -> Laya worthiness -> idle consolidation -> proactive suggestion.
+
+use nexus_mascot_daemon::config::{LlmProviderKind, MascotConfig, McpServerConfig};
+use nexus_mascot_daemon::ipc::{dispatch_rpc_json, serve_unix_socket, DaemonState};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use systemone_client::DecisionMode;
+use tempfile::TempDir;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, UnixStream};
+
+/// Spawns a tiny HTTP server that reads one HTTP/1.1 request per connection and invokes `handler`.
+async fn spawn_http_mock<F>(handler: F) -> String
+where
+    F: Fn(Value) -> Value + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handler = Arc::new(handler);
+
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let h = Arc::clone(&handler);
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let header_end;
+                loop {
+                    let n = match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = pos + 4;
+                        break;
+                    }
+                }
+                let headers = String::from_utf8_lossy(&buf[..header_end]);
+                let content_len: usize = headers
+                    .lines()
+                    .find_map(|l| {
+                        let lower = l.to_ascii_lowercase();
+                        lower
+                            .strip_prefix("content-length:")
+                            .and_then(|v| v.trim().parse().ok())
+                    })
+                    .unwrap_or(0);
+                while buf.len() < header_end + content_len {
+                    let n = match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let body_val: Value =
+                    serde_json::from_slice(&buf[header_end..header_end + content_len])
+                        .unwrap_or(Value::Null);
+                let reply = h(body_val);
+                let payload = serde_json::to_vec(&reply).unwrap();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.write_all(&payload).await;
+            });
+        }
+    });
+
+    format!("http://{addr}")
+}
+
+async fn unix_rpc(sock_path: &std::path::Path, req: Value) -> Value {
+    let stream = UnixStream::connect(sock_path).await.unwrap();
+    let (r, mut w) = stream.into_split();
+    let mut line = serde_json::to_string(&req).unwrap();
+    line.push('\n');
+    w.write_all(line.as_bytes()).await.unwrap();
+    let mut reader = BufReader::new(r);
+    let mut resp = String::new();
+    reader.read_line(&mut resp).await.unwrap();
+    serde_json::from_str(&resp).unwrap()
+}
+
+#[tokio::test]
+async fn e2e_react_agent_loop_with_laya_held_approval_resume_and_skill_save() {
+    let dir = TempDir::new().unwrap();
+    let input_file = dir.path().join("notes.txt");
+    let output_file = dir.path().join("summary.md");
+    std::fs::write(&input_file, "Meeting note: always deploy on Tuesdays.").unwrap();
+
+    // 1. Mock local Laya /v1/systemone server handling route, risk, and completion_judge
+    let laya_base = spawn_http_mock(|req| {
+        let q = req.get("questions").and_then(Value::as_object);
+        if q.is_some_and(|m| m.contains_key("route")) {
+            json!({
+                "model": "laya-mlx-1.0",
+                "answers": { "route": { "type": "choice", "choice": "direct_os_tool", "confidence": 0.95 } }
+            })
+        } else if q.is_some_and(|m| m.contains_key("risk")) {
+            let summary = req.pointer("/state/summary").and_then(Value::as_str).unwrap_or("");
+            // Make fs_write medium-high risk so it triggers Held approval; skill_save low risk!
+            let score = if summary.contains("fs_write") { 2.1 } else { 0.2 };
+            json!({
+                "model": "laya-mlx-1.0",
+                "answers": {
+                    "action_class": { "type": "choice", "choice": "reversible_local", "confidence": 0.94 },
+                    "reversibility": { "type": "choice", "choice": "reversible", "confidence": 0.94 },
+                    "risk": { "type": "score", "score": score, "confidence": 0.94 }
+                }
+            })
+        } else {
+            json!({
+                "model": "laya-mlx-1.0",
+                "answers": {
+                    "next_action": { "type": "choice", "choice": "finish", "confidence": 0.96 },
+                    "task_is_incomplete": { "type": "noul", "noul": 0.04 }
+                }
+            })
+        }
+    })
+    .await;
+
+    // 2. Mock Claude Messages API driving a 4-step tool-calling loop
+    let turn_counter = Arc::new(AtomicUsize::new(0));
+    let tc = Arc::clone(&turn_counter);
+    let input_path_str = input_file.display().to_string();
+    let output_path_str = output_file.display().to_string();
+
+    let claude_base = spawn_http_mock(move |_req| {
+        let turn = tc.fetch_add(1, Ordering::SeqCst);
+        match turn {
+            0 => json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "fs_read",
+                    "input": { "path": input_path_str }
+                }]
+            }),
+            1 => json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_2",
+                    "name": "fs_write",
+                    "input": {
+                        "path": output_path_str,
+                        "content": "# Summary\nDeploy schedule: Tuesdays.\n"
+                    }
+                }]
+            }),
+            2 => json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_3",
+                    "name": "skill_save",
+                    "input": {
+                        "slug": "summarize-notes",
+                        "title": "Summarize meeting notes",
+                        "trigger_hint": "When user asks to summarize notes.txt",
+                        "steps_yaml": "steps:\n  - fs_read\n  - fs_write\n",
+                        "scope": "global_user"
+                    }
+                }]
+            }),
+            _ => json!({
+                "content": [{
+                    "type": "text",
+                    "text": "Listo: leí tus notas, guardé summary.md tras tu aprobación y aprendí la skill summarize-notes."
+                }]
+            }),
+        }
+    })
+    .await;
+
+    // 3. Boot real Unix socket IPC daemon
+    let sock_path = dir.path().join("mascot.sock");
+    let mut cfg = MascotConfig {
+        db_path: Some(dir.path().join("mascot.db")),
+        ipc_socket_path: Some(sock_path.clone()),
+        skills_dir: Some(dir.path().join("skills")),
+        ..Default::default()
+    };
+    cfg.decision_engine.mode = DecisionMode::LayaLocal;
+    cfg.decision_engine.laya.endpoint = format!("{laya_base}/v1/systemone");
+    cfg.llm.provider = LlmProviderKind::Claude;
+    cfg.llm.base_url = Some(format!("{claude_base}/v1/messages"));
+    cfg.llm.api_key_override = Some("test-anthropic-key".into());
+    cfg.nexusmind.enabled = false;
+
+    let state = DaemonState::new(cfg).unwrap();
+    let srv_state = Arc::clone(&state);
+    let srv_sock = sock_path.clone();
+    let server_handle = tokio::spawn(async move {
+        let _ = serve_unix_socket(&srv_sock, srv_state).await;
+    });
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // 4. Submit user prompt over real Unix socket -> should read file, then pause Held on fs_write
+    let resp1 = unix_rpc(
+        &sock_path,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "submit_prompt",
+            "params": { "prompt": "Resume notes.txt en summary.md y aprende este flujo", "active_app": "Notes" }
+        }),
+    )
+    .await;
+    assert_eq!(resp1["result"]["run"]["status"], json!("waiting_approval"));
+    let approval_id = resp1["result"]["run"]["pending_approval"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!output_file.exists(), "fs_write must NOT run before human approval");
+
+    // 5. Human clicks "Permitir una vez" -> daemon executes fs_write, resumes Claude, saves skill & finishes!
+    let resp2 = unix_rpc(
+        &sock_path,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resolve_approval",
+            "params": { "id": approval_id, "approved": true }
+        }),
+    )
+    .await;
+    assert_eq!(resp2["result"]["resumed_run"]["status"], json!("completed"));
+    assert_eq!(
+        resp2["result"]["resumed_run"]["completion_verdict"],
+        json!("finish")
+    );
+    assert!(output_file.exists(), "fs_write must run after approval");
+    assert!(std::fs::read_to_string(&output_file)
+        .unwrap()
+        .contains("Tuesdays"));
+
+    // 6. Verify reusable YAML skill file & SQLite skill registry & Outcome Tape
+    let skill_yaml = dir.path().join("skills").join("summarize-notes.yaml");
+    assert!(skill_yaml.exists(), "learned skill YAML file should be created");
+    let skills = state.store.list_skills().unwrap();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].slug, "summarize-notes");
+
+    let tape = state.store.outcome_tape(14).unwrap();
+    assert!(tape.iter().any(|e| e.outcome == "held"));
+    assert!(tape.iter().any(|e| e.outcome == "success"));
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn e2e_mcp_stdio_host_discovers_and_invokes_real_server() {
+    let dir = TempDir::new().unwrap();
+    let mut cfg = MascotConfig {
+        db_path: Some(dir.path().join("mascot.db")),
+        ..Default::default()
+    };
+    cfg.decision_engine.mode = DecisionMode::DeterministicOnly;
+    let state = DaemonState::new(cfg).unwrap();
+
+    // Minimal real JSON-RPC stdio MCP server in inline Python
+    let py_server = r#"
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    m = msg.get("method")
+    if "id" not in msg:
+        continue
+    rid = msg["id"]
+    if m == "initialize":
+        res = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "demo", "version": "1.0"}}
+    elif m == "tools/list":
+        res = {"tools": [{"name": "echo_upper", "description": "Uppercase text", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]}
+    elif m == "tools/call":
+        txt = msg["params"]["arguments"].get("text", "")
+        res = {"content": [{"type": "text", "text": txt.upper() + " sk-ant-api03-secretvalue1234567890"}]}
+    else:
+        res = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": res}) + "\n")
+    sys.stdout.flush()
+"#;
+
+    let count = state
+        .mcp
+        .connect_server(&McpServerConfig {
+            id: "demo-mcp".into(),
+            command: "python3".into(),
+            args: vec!["-u".into(), "-c".into(), py_server.into()],
+            env: HashMap::new(),
+            enabled: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let tools = state.mcp.list_tools().await;
+    assert_eq!(tools[0].qualified_name, "mcp__demo_mcp__echo_upper");
+
+    let output = state
+        .mcp
+        .call_tool("demo-mcp", "echo_upper", json!({ "text": "hello nexusmind" }))
+        .await
+        .unwrap();
+    assert!(output.contains("HELLO NEXUSMIND"));
+    assert!(
+        !output.contains("sk-ant-api03-secretvalue1234567890"),
+        "MCP tool output must be redacted locally"
+    );
+}
+
+#[tokio::test]
+async fn e2e_continuous_learning_and_proactive_suggestion_pipeline() {
+    let dir = TempDir::new().unwrap();
+
+    let laya_base = spawn_http_mock(|req| {
+        let q = req.get("questions").and_then(Value::as_object);
+        if q.is_some_and(|m| m.contains_key("worthiness")) {
+            let summary = req.pointer("/state/summary").and_then(Value::as_str).unwrap_or("");
+            if summary.contains("empty finder") {
+                json!({
+                    "model": "laya-mlx-1.0",
+                    "answers": {
+                        "worthiness": { "type": "choice", "choice": "ignore", "confidence": 0.97 },
+                        "importance": { "type": "score", "score": 0.0, "confidence": 0.97 }
+                    }
+                })
+            } else {
+                json!({
+                    "model": "laya-mlx-1.0",
+                    "answers": {
+                        "worthiness": { "type": "choice", "choice": "procedural_skill", "confidence": 0.92 },
+                        "importance": { "type": "score", "score": 2.4, "confidence": 0.91 }
+                    }
+                })
+            }
+        } else {
+            json!({
+                "model": "laya-mlx-1.0",
+                "answers": {
+                    "interrupt_action": { "type": "choice", "choice": "queue_for_idle", "confidence": 0.93 }
+                }
+            })
+        }
+    })
+    .await;
+
+    let mut cfg = MascotConfig {
+        db_path: Some(dir.path().join("mascot.db")),
+        ..Default::default()
+    };
+    cfg.decision_engine.mode = DecisionMode::LayaLocal;
+    cfg.decision_engine.laya.endpoint = format!("{laya_base}/v1/systemone");
+    cfg.nexusmind.enabled = false;
+    let state = DaemonState::new(cfg).unwrap();
+
+    // Noise event -> Laya returns ignore -> must NOT be stored
+    let noise: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":1,"method":"record_observation","params":{"source":"active_window","app_name":"Finder","summary":"empty finder window"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(noise["result"]["recorded"], json!(false));
+
+    // Repeated workflow observed 3x -> recorded -> consolidation creates proactive suggestion!
+    for i in 1..=3 {
+        let obs_req = json!({
+            "jsonrpc": "2.0",
+            "id": i + 1,
+            "method": "record_observation",
+            "params": {
+                "source": "terminal",
+                "app_name": "Terminal",
+                "summary": "Export weekly Stripe CSV and generate summary report",
+                "repeat_count": i
+            }
+        })
+        .to_string();
+        let res: Value = serde_json::from_str(&dispatch_rpc_json(&obs_req, &state).await).unwrap();
+        assert_eq!(res["result"]["recorded"], json!(true));
+    }
+
+    let cons: Value = serde_json::from_str(
+        &dispatch_rpc_json(r#"{"jsonrpc":"2.0","id":10,"method":"run_consolidation"}"#, &state)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(cons["result"]["consolidated_events"], json!(3));
+    assert_eq!(cons["result"]["suggestions_created"], json!(1));
+
+    let suggestions = state.store.list_suggestions().unwrap();
+    assert_eq!(suggestions.len(), 1);
+    assert_eq!(suggestions[0].delivery_mode, "queue_for_idle");
+}

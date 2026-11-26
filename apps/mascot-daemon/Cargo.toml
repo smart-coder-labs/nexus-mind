@@ -1,0 +1,28 @@
+[package]
+name = "nexus-mascot-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "Autonomous local-first desktop mascot daemon for NexusMind (macOS first, cross-platform core)"
+
+[[bin]]
+name = "nexus-mascot-daemon"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+systemone-client = { path = "../../crates/systemone-client" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,13 @@
+[package]
+name = "systemone-client"
+version = "0.1.0"
+edition = "2021"
+description = "Unified /v1/systemone decision client supporting local Laya, cloud TypeSafe Jev, and hybrid routing"
+
+[dependencies]
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time", "macros", "net", "io-util"] }
+tracing = "0.1"
