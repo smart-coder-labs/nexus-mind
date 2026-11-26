@@ -10,7 +10,7 @@ final class FloatingCompanionPanel: NSPanel {
 
     init<Content: View>(rootView: Content) {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 480),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -96,7 +96,7 @@ struct FloatingCompanionRootView: View {
             }
         }
         .padding(8)
-        .frame(width: 340, height: 320, alignment: .bottomTrailing)
+        .frame(width: 340, height: 480, alignment: .bottomTrailing)
         .background(Color.clear)
         .preferredColorScheme(.dark)
     }

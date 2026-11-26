@@ -451,7 +451,12 @@ fn handle_set_autonomy(state: &DaemonState, params: &Value) -> Result<Value> {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing 'level'"))?,
     )?;
-    state.config.write().unwrap().autonomy.level = level;
+    {
+        let mut cfg = state.config.write().unwrap();
+        cfg.autonomy.level = level;
+        let path = cfg.resolved_config_path();
+        let _ = cfg.write_to(&path);
+    }
     Ok(json!({ "autonomy_level": level }))
 }
 
@@ -465,6 +470,8 @@ fn handle_set_decision_mode(state: &DaemonState, params: &Value) -> Result<Value
     {
         let mut cfg = state.config.write().unwrap();
         cfg.decision_engine.mode = mode;
+        let path = cfg.resolved_config_path();
+        let _ = cfg.write_to(&path);
     }
     state.reload_clients()?;
     Ok(json!({ "decision_mode": mode }))

@@ -167,16 +167,23 @@ fn apply_autonomy_thresholds(
     env: DecisionEnvelope<ActionRiskAnswer>,
 ) -> PolicyVerdict {
     let ans = env.answer;
-    let max_allowed_risk = match autonomy.level {
-        AutonomyLevel::SupervisedAutonomous => autonomy.auto_approve_max_risk,
-        AutonomyLevel::FullAutonomous => 0.65_f64.max(autonomy.auto_approve_max_risk),
-        AutonomyLevel::Observer | AutonomyLevel::Copilot => 0.0,
+    let (max_allowed_risk, required_confidence) = match autonomy.level {
+        // In SupervisedAutonomous, allow low-risk reversible/app actions (Jev score confidence
+        // naturally dips around 0.55–0.75 when a score sits between rubric levels 0 and 1).
+        AutonomyLevel::SupervisedAutonomous => (
+            autonomy.auto_approve_max_risk.max(0.35),
+            autonomy.min_confidence.min(0.55),
+        ),
+        // In FullAutonomous, Deterministic Floors still guard destructive/sudo/secrets/finance;
+        // everything else up to risk 0.70 executes autonomously without nagging the user.
+        AutonomyLevel::FullAutonomous => (0.70_f64.max(autonomy.auto_approve_max_risk), 0.35),
+        AutonomyLevel::Observer | AutonomyLevel::Copilot => (0.0, 1.0),
     };
 
     let irreversible = ans.reversibility == "irreversible";
     let destructive = ans.action_class == "destructive_or_financial";
 
-    if destructive {
+    if destructive && ans.risk >= 0.60 {
         return PolicyVerdict::HoldForHuman {
             reason: format!(
                 "Classified as destructive/financial (risk {:.2}, model {}).",
@@ -198,7 +205,7 @@ fn apply_autonomy_thresholds(
         };
     }
 
-    if ans.risk <= max_allowed_risk && ans.risk_confidence >= autonomy.min_confidence {
+    if ans.risk <= max_allowed_risk && ans.risk_confidence >= required_confidence {
         PolicyVerdict::Allow {
             reason: format!(
                 "Auto-approved by {} ({}, risk {:.2}, confidence {:.2}, {} ms).",
