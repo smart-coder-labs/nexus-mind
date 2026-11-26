@@ -94,6 +94,31 @@ pub struct OsBridgeJob {
     pub result_json: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PetLogEntry {
+    pub id: String,
+    pub timestamp: DateTime<Utc>,
+    pub run_id: Option<String>,
+    pub event_kind: String,
+    pub action_kind: Option<String>,
+    pub decision_source: Option<String>,
+    pub risk: Option<f64>,
+    pub outcome: Option<String>,
+    pub summary: String,
+    pub detail_json: String,
+}
+
+pub struct NewPetLog<'a> {
+    pub run_id: Option<&'a str>,
+    pub event_kind: &'a str,
+    pub action_kind: Option<&'a str>,
+    pub decision_source: Option<&'a str>,
+    pub risk: Option<f64>,
+    pub outcome: Option<&'a str>,
+    pub summary: &'a str,
+    pub detail_json: &'a str,
+}
+
 pub struct LocalStore {
     conn: Mutex<Connection>,
 }
@@ -196,6 +221,20 @@ impl LocalStore {
                 status TEXT NOT NULL DEFAULT 'pending',
                 result_json TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS pet_logs (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                run_id TEXT,
+                event_kind TEXT NOT NULL,
+                action_kind TEXT,
+                decision_source TEXT,
+                risk REAL,
+                outcome TEXT,
+                summary TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_pet_logs_ts ON pet_logs(timestamp DESC);
             ",
         )?;
         Ok(Self {
@@ -379,6 +418,92 @@ impl LocalStore {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
+    }
+
+    pub fn list_agent_runs(&self, limit: usize) -> Result<Vec<AgentRunRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, created_at, updated_at, objective, status, route, steps_executed, tool_errors, state_json, final_reply
+             FROM agent_runs ORDER BY updated_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok(AgentRunRecord {
+                    id: r.get(0)?,
+                    created_at: parse_ts(r.get::<_, String>(1)?),
+                    updated_at: parse_ts(r.get::<_, String>(2)?),
+                    objective: r.get(3)?,
+                    status: r.get(4)?,
+                    route: r.get(5)?,
+                    steps_executed: r.get::<_, i64>(6)? as u32,
+                    tool_errors: r.get::<_, i64>(7)? as u32,
+                    state_json: r.get(8)?,
+                    final_reply: r.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn record_pet_log(&self, req: NewPetLog<'_>) -> Result<PetLogEntry> {
+        let entry = PetLogEntry {
+            id: Uuid::new_v4().to_string(),
+            timestamp: Utc::now(),
+            run_id: req.run_id.map(str::to_string),
+            event_kind: req.event_kind.into(),
+            action_kind: req.action_kind.map(str::to_string),
+            decision_source: req.decision_source.map(str::to_string),
+            risk: req.risk,
+            outcome: req.outcome.map(str::to_string),
+            summary: req.summary.into(),
+            detail_json: req.detail_json.into(),
+        };
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pet_logs
+             (id, timestamp, run_id, event_kind, action_kind, decision_source, risk, outcome, summary, detail_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                entry.id,
+                entry.timestamp.to_rfc3339(),
+                entry.run_id,
+                entry.event_kind,
+                entry.action_kind,
+                entry.decision_source,
+                entry.risk,
+                entry.outcome,
+                entry.summary,
+                entry.detail_json,
+            ],
+        )?;
+        Ok(entry)
+    }
+
+    pub fn list_pet_logs(&self, event_kind: Option<&str>, limit: usize) -> Result<Vec<PetLogEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, timestamp, run_id, event_kind, action_kind, decision_source, risk, outcome, summary, detail_json
+             FROM pet_logs
+             WHERE (?1 IS NULL OR event_kind = ?1)
+             ORDER BY timestamp DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![event_kind, limit as i64], |r| {
+                Ok(PetLogEntry {
+                    id: r.get(0)?,
+                    timestamp: parse_ts(r.get::<_, String>(1)?),
+                    run_id: r.get(2)?,
+                    event_kind: r.get(3)?,
+                    action_kind: r.get(4)?,
+                    decision_source: r.get(5)?,
+                    risk: r.get(6)?,
+                    outcome: r.get(7)?,
+                    summary: r.get(8)?,
+                    detail_json: r.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     pub fn record_episodic_event(

@@ -195,6 +195,7 @@ async fn e2e_react_agent_loop_with_laya_held_approval_resume_and_skill_save() {
     cfg.llm.base_url = Some(format!("{claude_base}/v1/messages"));
     cfg.llm.api_key_override = Some("test-anthropic-key".into());
     cfg.nexusmind.enabled = false;
+    cfg.nexusmind.require_connection = false;
 
     let state = DaemonState::new(cfg).unwrap();
     let srv_state = Arc::clone(&state);
@@ -360,6 +361,7 @@ async fn e2e_continuous_learning_and_proactive_suggestion_pipeline() {
     cfg.decision_engine.mode = DecisionMode::LayaLocal;
     cfg.decision_engine.laya.endpoint = format!("{laya_base}/v1/systemone");
     cfg.nexusmind.enabled = false;
+    cfg.nexusmind.require_connection = false;
     let state = DaemonState::new(cfg).unwrap();
 
     // Noise event -> Laya returns ignore -> must NOT be stored
@@ -402,4 +404,94 @@ async fn e2e_continuous_learning_and_proactive_suggestion_pipeline() {
     let suggestions = state.store.list_suggestions().unwrap();
     assert_eq!(suggestions.len(), 1);
     assert_eq!(suggestions[0].delivery_mode, "queue_for_idle");
+}
+
+#[tokio::test]
+async fn e2e_mandatory_nexusmind_gate_and_remote_audit_sync() {
+    let dir = TempDir::new().unwrap();
+    let heartbeats = Arc::new(AtomicUsize::new(0));
+    let events_seen = Arc::new(AtomicUsize::new(0));
+    let convs_seen = Arc::new(AtomicUsize::new(0));
+
+    let hb_c = Arc::clone(&heartbeats);
+    let ev_c = Arc::clone(&events_seen);
+    let cv_c = Arc::clone(&convs_seen);
+
+    let nm_base = spawn_http_mock(move |body| {
+        if body.get("pet_name").is_some() {
+            hb_c.fetch_add(1, Ordering::SeqCst);
+            json!({ "connected": true, "org_id": "org-1", "user_id": "user-1" })
+        } else if body.get("event_kind").is_some() {
+            ev_c.fetch_add(1, Ordering::SeqCst);
+            json!({ "ok": true })
+        } else if body.get("transcript_json").is_some() {
+            cv_c.fetch_add(1, Ordering::SeqCst);
+            json!({ "ok": true })
+        } else {
+            json!({ "ok": true, "results": [] })
+        }
+    })
+    .await;
+
+    // 1. Default config has require_connection = true and NO NexusMind API key -> MUST block usage
+    let mut cfg = MascotConfig {
+        db_path: Some(dir.path().join("mascot.db")),
+        ..Default::default()
+    };
+    cfg.decision_engine.mode = DecisionMode::DeterministicOnly;
+    cfg.nexusmind.base_url = nm_base.clone();
+    let state = DaemonState::new(cfg).unwrap();
+
+    let blocked: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":1,"method":"submit_prompt","params":{"prompt":"Hola"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert!(
+        blocked.get("error").is_some(),
+        "submit_prompt must fail when NexusMind is not connected"
+    );
+
+    // 2. Connect NexusMind via save_settings -> heartbeat succeeds and unlocks usage!
+    let save_req = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "save_settings",
+        "params": {
+            "nexusmind_base_url": nm_base,
+            "nexusmind_api_key": "nm_live_valid_key_12345"
+        }
+    })
+    .to_string();
+    let saved: Value = serde_json::from_str(&dispatch_rpc_json(&save_req, &state).await).unwrap();
+    assert_eq!(saved["result"]["nexusmind_connected"], json!(true));
+    assert!(heartbeats.load(Ordering::SeqCst) >= 1);
+
+    // 3. Now submit_prompt succeeds AND records local + remote audit logs & conversation
+    let ok_resp: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":3,"method":"submit_prompt","params":{"prompt":"Hola Nexi","active_app":"Terminal"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert!(ok_resp.get("error").is_none());
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(events_seen.load(Ordering::SeqCst) >= 1);
+    assert!(convs_seen.load(Ordering::SeqCst) >= 1);
+
+    // 4. Local audit endpoints list_conversations and list_activity_logs return records
+    let logs: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":4,"method":"list_activity_logs","params":{"limit":20}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert!(!logs["result"]["logs"].as_array().unwrap().is_empty());
 }

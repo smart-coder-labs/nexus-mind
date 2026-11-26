@@ -280,8 +280,13 @@ struct SettingsWindowView: View {
             openAiKey = ""
             jevKey = ""
             nexusmindKey = ""
-            isError = false
-            statusBanner = "Configuración y API keys guardadas y aplicadas en caliente."
+            if updated.nexusmindConnected == true {
+                isError = false
+                statusBanner = "Guardado y conectado a NexusMind correctamente."
+            } else {
+                isError = true
+                statusBanner = "Guardado, pero NexusMind no conectó: \(updated.nexusmindError ?? "verifica URL y API key")."
+            }
             await MascotViewModel.shared.refresh()
         } catch {
             isError = true

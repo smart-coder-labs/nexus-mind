@@ -83,6 +83,9 @@ struct FloatingCompanionRootView: View {
                         Button(viewModel.showQuickPrompt ? "Ocultar chat" : "Abrir chat (⌘⇧N)") {
                             viewModel.toggleQuickPrompt()
                         }
+                        Button("Ver Logs y Conversaciones…") {
+                            ActivityLogsWindowController.shared.open()
+                        }
                         Button("Configuración y API Keys…") {
                             SettingsWindowController.shared.open()
                         }
@@ -190,6 +193,31 @@ struct QuickCommandBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if viewModel.nexusmindRequired && !viewModel.nexusmindConnected {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.shield.fill")
+                            .foregroundStyle(NexusTokens.statusAmber)
+                        Text("Conecta NexusMind para usar \(viewModel.mascotName)")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(NexusTokens.statusAmber)
+                    }
+                    Text(viewModel.nexusmindError ?? "La conexión a NexusMind es obligatoria para auditar logs, conversaciones y memoria.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.75))
+                    Button("Conectar NexusMind ahora") {
+                        SettingsWindowController.shared.open()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(NexusTokens.accentLime)
+                    .foregroundStyle(NexusTokens.accentLimeForeground)
+                    .clipShape(Capsule())
+                }
+                .padding(6)
+            } else {
             HStack(spacing: 8) {
                 Button {
                     viewModel.toggleVoiceInput()
@@ -254,6 +282,7 @@ struct QuickCommandBarView: View {
                     .foregroundStyle(.white.opacity(0.88))
                     .lineLimit(5)
                     .padding(.horizontal, 4)
+            }
             }
         }
         .padding(12)

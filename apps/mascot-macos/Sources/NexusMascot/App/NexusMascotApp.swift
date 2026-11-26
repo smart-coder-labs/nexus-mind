@@ -12,6 +12,10 @@ final class MascotViewModel: ObservableObject {
     @Published var privacyShield: Bool = false
     @Published var killSwitchActive: Bool = false
     @Published var daemonConnected: Bool = false
+    @Published var nexusmindRequired: Bool = true
+    @Published var nexusmindConnected: Bool = false
+    @Published var nexusmindError: String?
+    @Published var deviceHostname: String = ""
     @Published var pendingApprovals: [PendingApproval] = []
     @Published var outcomeTape: [OutcomeEntry] = []
     @Published var suggestions: [ProactiveSuggestion] = []
@@ -146,6 +150,13 @@ final class MascotViewModel: ObservableObject {
             if autonomyLevel != status.autonomyLevel { autonomyLevel = status.autonomyLevel }
             if privacyShield != status.privacyShield { privacyShield = status.privacyShield }
             if killSwitchActive != status.killSwitch { killSwitchActive = status.killSwitch }
+            let nmReq = status.nexusmindRequired ?? true
+            if nexusmindRequired != nmReq { nexusmindRequired = nmReq }
+            let nmConn = status.nexusmindConnected ?? false
+            if nexusmindConnected != nmConn { nexusmindConnected = nmConn }
+            if nexusmindError != status.nexusmindError { nexusmindError = status.nexusmindError }
+            let host = status.hostname ?? status.deviceId
+            if deviceHostname != host { deviceHostname = host }
             let skillsCount = status.learnedSkills ?? 0
             if learnedSkillsCount != skillsCount { learnedSkillsCount = skillsCount }
             let mcpCount = status.mcpTools ?? 0

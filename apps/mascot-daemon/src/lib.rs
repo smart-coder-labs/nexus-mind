@@ -28,6 +28,7 @@ mod tests {
             ..Default::default()
         };
         cfg.decision_engine.mode = DecisionMode::DeterministicOnly;
+        cfg.nexusmind.require_connection = false;
         DaemonState::new(cfg).unwrap()
     }
 

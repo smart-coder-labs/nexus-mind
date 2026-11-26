@@ -74,6 +74,12 @@ struct DaemonStatus: Codable {
     let llmProvider: String
     let llmConfigured: Bool
     let nexusmindConfigured: Bool
+    let nexusmindRequired: Bool?
+    let nexusmindConnected: Bool?
+    let nexusmindError: String?
+    let hostname: String?
+    let osName: String?
+    let arch: String?
     let pendingApprovals: Int
     let learnedSkills: Int?
     let proactiveSuggestions: Int?
@@ -91,10 +97,61 @@ struct DaemonStatus: Codable {
         case llmProvider = "llm_provider"
         case llmConfigured = "llm_configured"
         case nexusmindConfigured = "nexusmind_configured"
+        case nexusmindRequired = "nexusmind_required"
+        case nexusmindConnected = "nexusmind_connected"
+        case nexusmindError = "nexusmind_error"
+        case hostname
+        case osName = "os_name"
+        case arch
         case pendingApprovals = "pending_approvals"
         case learnedSkills = "learned_skills"
         case proactiveSuggestions = "proactive_suggestions"
         case mcpTools = "mcp_tools"
+    }
+}
+
+struct ConversationRecord: Codable, Identifiable {
+    let id: String
+    let createdAt: String
+    let updatedAt: String
+    let objective: String
+    let status: String
+    let route: String?
+    let stepsExecuted: Int
+    let toolErrors: Int
+    let stateJson: String
+    let finalReply: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, objective, status, route
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case stepsExecuted = "steps_executed"
+        case toolErrors = "tool_errors"
+        case stateJson = "state_json"
+        case finalReply = "final_reply"
+    }
+}
+
+struct ActivityLogEntry: Codable, Identifiable {
+    let id: String
+    let timestamp: String
+    let runId: String?
+    let eventKind: String
+    let actionKind: String?
+    let decisionSource: String?
+    let risk: Double?
+    let outcome: String?
+    let summary: String
+    let detailJson: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, timestamp, risk, outcome, summary
+        case runId = "run_id"
+        case eventKind = "event_kind"
+        case actionKind = "action_kind"
+        case decisionSource = "decision_source"
+        case detailJson = "detail_json"
     }
 }
 
@@ -160,6 +217,8 @@ struct MascotSettings: Codable {
     var hasOpenAiKey: Bool
     var hasJevKey: Bool
     var hasNexusmindKey: Bool
+    var nexusmindConnected: Bool?
+    var nexusmindError: String?
 
     enum CodingKeys: String, CodingKey {
         case mascotName = "mascot_name"
@@ -175,6 +234,8 @@ struct MascotSettings: Codable {
         case hasOpenAiKey = "has_openai_key"
         case hasJevKey = "has_jev_key"
         case hasNexusmindKey = "has_nexusmind_key"
+        case nexusmindConnected = "nexusmind_connected"
+        case nexusmindError = "nexusmind_error"
     }
 }
 

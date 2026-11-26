@@ -3,7 +3,9 @@
 use crate::executors::{
     fs_list_dir, fs_move_to_trash, fs_read_text, fs_write_text, run_applescript, run_shell_command,
 };
-use crate::ipc::{DaemonState, MascotVisualState};
+use crate::ipc::{
+    audit_and_sync_event, sync_conversation_record, DaemonState, MascotVisualState,
+};
 use crate::learning::persist_learned_skill;
 use crate::llm::{AgentMessage, ToolCall, ToolSpec};
 use crate::nexusmind::MemoryPayload;
@@ -137,6 +139,18 @@ pub async fn start_agent_run(
         final_reply: None,
     };
     state.store.save_agent_run(&record)?;
+    sync_conversation_record(state, &record);
+    audit_and_sync_event(
+        state,
+        Some(&record.id),
+        "prompt",
+        Some("chat"),
+        None,
+        None,
+        Some("success"),
+        &format!("Prompt recibido: {}", preview(&record.objective, 120)),
+        json!({ "active_app": active_app, "route": record.route }),
+    );
 
     drive_loop(state, record, loop_state).await
 }
@@ -193,6 +207,22 @@ pub async fn resume_agent_run_after_approval(
     record.updated_at = Utc::now();
     record.state_json = serde_json::to_string(&loop_state)?;
     state.store.save_agent_run(&record)?;
+    sync_conversation_record(state, &record);
+    audit_and_sync_event(
+        state,
+        Some(&record.id),
+        "approval",
+        Some("human_decision"),
+        Some("human"),
+        None,
+        Some(if approved { "success" } else { "cancelled" }),
+        if approved {
+            "Usuario aprobó acción retenida; reanudando ejecución"
+        } else {
+            "Usuario denegó acción retenida"
+        },
+        json!({ "approved": approved }),
+    );
 
     drive_loop(state, record, loop_state).await
 }
@@ -311,6 +341,18 @@ async fn drive_loop(
             record.final_reply = Some(turn.text.clone());
             record.state_json = serde_json::to_string(&loop_state)?;
             state.store.save_agent_run(&record)?;
+            sync_conversation_record(state, &record);
+            audit_and_sync_event(
+                state,
+                Some(&record.id),
+                "reply",
+                Some("chat"),
+                None,
+                None,
+                Some("success"),
+                &format!("Respuesta completada ({} pasos): {}", record.steps_executed, preview(&turn.text, 120)),
+                json!({ "steps": record.steps_executed, "completion_verdict": completion_verdict }),
+            );
             state.set_visual_state(MascotVisualState::Idle);
 
             return Ok(AgentRunResult {
@@ -387,6 +429,17 @@ async fn process_single_tool_call(
                         risk,
                         "success",
                     );
+                    audit_and_sync_event(
+                        state,
+                        Some(&record.id),
+                        "action",
+                        Some(&proposed.action_kind),
+                        Some(source_label(source)),
+                        Some(risk),
+                        Some("success"),
+                        &proposed.summary,
+                        json!({ "tool": tc.name, "arguments": tc.arguments, "output_preview": preview(&out, 400) }),
+                    );
                     loop_state.messages.push(AgentMessage::ToolResult {
                         tool_call_id: tc.id,
                         tool_name: tc.name,
@@ -439,11 +492,23 @@ async fn process_single_tool_call(
                 risk,
                 "held",
             );
+            audit_and_sync_event(
+                state,
+                Some(&record.id),
+                "approval",
+                Some(&proposed.action_kind),
+                Some(source_label(source)),
+                Some(risk),
+                Some("held"),
+                &format!("Acción retenida: {}", proposed.summary),
+                json!({ "reason": reason, "tool": tc.name, "arguments": tc.arguments }),
+            );
             loop_state.pending_tool_call = Some(tc);
             record.status = "waiting_approval".into();
             record.updated_at = Utc::now();
             record.state_json = serde_json::to_string(&loop_state)?;
             state.store.save_agent_run(record)?;
+            sync_conversation_record(state, record);
             state.set_visual_state(MascotVisualState::Held);
 
             Ok(Some(AgentRunResult {

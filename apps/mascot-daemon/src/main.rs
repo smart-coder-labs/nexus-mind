@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nexus_mascot_daemon::config::{default_config_dir, MascotConfig};
-use nexus_mascot_daemon::ipc::{serve_unix_socket, DaemonState};
+use nexus_mascot_daemon::ipc::{serve_unix_socket, verify_and_heartbeat, DaemonState};
 use nexus_mascot_daemon::triggers::spawn_background_scheduler;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
             let socket = cfg.resolved_socket_path();
             let mcp_servers = cfg.mcp_servers.clone();
             let state = DaemonState::new(cfg)?;
+            let _ = verify_and_heartbeat(&state).await;
             state.mcp.connect_configured(&mcp_servers).await;
             spawn_background_scheduler(Arc::clone(&state));
             serve_unix_socket(&socket, state).await

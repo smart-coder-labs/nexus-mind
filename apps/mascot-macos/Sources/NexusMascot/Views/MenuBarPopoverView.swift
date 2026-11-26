@@ -37,6 +37,46 @@ struct MenuBarPopoverView: View {
 
             Divider().overlay(NexusTokens.surfaceBorder)
 
+            // Mandatory NexusMind Connection Status Banner
+            if viewModel.nexusmindRequired && !viewModel.nexusmindConnected {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.fill")
+                            .foregroundStyle(NexusTokens.statusRose)
+                        Text("NEXUSMIND REQUERIDO (BLOQUEADO)")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(NexusTokens.statusRose)
+                    }
+                    Text(viewModel.nexusmindError ?? "Conecta tu servidor NexusMind y API key para habilitar la mascota y su auditoría.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.8))
+                    Button("Conectar NexusMind") {
+                        SettingsWindowController.shared.open()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(NexusTokens.accentLime)
+                    .foregroundStyle(NexusTokens.accentLimeForeground)
+                    .clipShape(Capsule())
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(NexusTokens.statusRose.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: NexusTokens.radiusInput))
+            } else {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(NexusTokens.statusSuccess)
+                        .frame(width: 7, height: 7)
+                    Text("NexusMind conectado · \(viewModel.deviceHostname)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                }
+            }
+
             // Decision Engine Switcher (Laya local vs Jev cloud vs Hybrid)
             VStack(alignment: .leading, spacing: 6) {
                 Text("MOTOR DE DECISIONES (SYSTEM 1)")
@@ -180,14 +220,30 @@ struct MenuBarPopoverView: View {
             // Settings + Emergency Kill Switch + Quit
             HStack(spacing: 8) {
                 Button {
+                    ActivityLogsWindowController.shared.open()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "list.bullet.rectangle")
+                        Text("Logs")
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.08))
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
                     SettingsWindowController.shared.open()
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "key.fill")
-                        Text("API Keys")
+                        Text("Keys")
                     }
                     .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 9)
                     .padding(.vertical, 6)
                     .background(Color.white.opacity(0.08))
                     .foregroundStyle(.white)

@@ -12,7 +12,7 @@ use crate::api::{
     admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup, monitor,
     clients, code, context, conventions, docs, factory, factory_evals, factory_lookback,
     factory_model_config, factory_trajectory, github_auth, harnesses, health, internal, memory,
-    middleware as api_mw, migrations as migrations_api, policy, sdd, search, sessions,
+    middleware as api_mw, migrations as migrations_api, pets, policy, sdd, search, sessions,
     tasks, usage, users, webhooks, workflows, workflow_execution, github_review_hooks,
 };
 use crate::config::Config;
@@ -74,6 +74,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
     };
 
     let protected = Router::new()
+        .route("/v1/pets", get(pets::list_pets))
+        .route("/v1/pets/heartbeat", post(pets::heartbeat))
+        .route("/v1/pets/conversations", get(pets::list_conversations).post(pets::record_conversation))
+        .route("/v1/pets/events", get(pets::list_events).post(pets::record_event))
         .route("/v1/monitor/options", get(monitor::options))
         .route("/v1/monitor/sources", get(monitor::list_sources).post(monitor::create_source))
         .route("/v1/monitor/sources/:id", put(monitor::update_source).patch(monitor::set_source_enabled).delete(monitor::delete_source))

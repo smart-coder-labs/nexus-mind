@@ -4,7 +4,7 @@
 
 use crate::agent::start_agent_run;
 use crate::config::AutonomyLevel;
-use crate::ipc::DaemonState;
+use crate::ipc::{ensure_nexusmind_ready, verify_and_heartbeat, DaemonState};
 use crate::learning::run_idle_consolidation;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -15,11 +15,19 @@ use tracing::{info, warn};
 pub fn spawn_background_scheduler(state: Arc<DaemonState>) {
     tokio::spawn(async move {
         let mut last_consolidation = Instant::now();
+        let mut last_heartbeat = Instant::now() - Duration::from_secs(60);
         let mut last_routine_run: HashMap<String, Instant> = HashMap::new();
         let mut tick = tokio::time::interval(Duration::from_secs(30));
 
         loop {
             tick.tick().await;
+
+            // 0. Periodic live heartbeat to NexusMind (every 60s)
+            if last_heartbeat.elapsed() >= Duration::from_secs(60) {
+                last_heartbeat = Instant::now();
+                let _ = verify_and_heartbeat(&state).await;
+            }
+
             if state.kill_switch.load(Ordering::SeqCst) {
                 continue;
             }
@@ -41,7 +49,10 @@ pub fn spawn_background_scheduler(state: Arc<DaemonState>) {
                 }
             }
 
-            // 2. Scheduled autonomous routines (only active in SupervisedAutonomous / FullAutonomous)
+            // 2. Scheduled autonomous routines (requires mandatory NexusMind connection)
+            if ensure_nexusmind_ready(&state).await.is_err() {
+                continue;
+            }
             let (autonomy_level, routines) = {
                 let cfg = state.config.read().unwrap();
                 (cfg.autonomy.level, cfg.routines.clone())

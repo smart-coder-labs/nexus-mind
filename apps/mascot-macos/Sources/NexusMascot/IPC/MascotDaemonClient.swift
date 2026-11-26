@@ -117,6 +117,21 @@ final class MascotDaemonClient: @unchecked Sendable {
         return try JSONDecoder().decode(MascotSettings.self, from: data)
     }
 
+    func listConversations(limit: Int = 50) async throws -> [ConversationRecord] {
+        struct Wrapper: Codable { let conversations: [ConversationRecord] }
+        let data = try await call(method: "list_conversations", params: ["limit": limit])
+        return try JSONDecoder().decode(Wrapper.self, from: data).conversations
+    }
+
+    func listActivityLogs(eventKind: String = "all", limit: Int = 120) async throws -> [ActivityLogEntry] {
+        struct Wrapper: Codable { let logs: [ActivityLogEntry] }
+        let data = try await call(
+            method: "list_activity_logs",
+            params: ["event_kind": eventKind, "limit": limit]
+        )
+        return try JSONDecoder().decode(Wrapper.self, from: data).logs
+    }
+
     private func call(method: String, params: [String: Any]) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {

@@ -81,9 +81,18 @@ fn default_mascot_name() -> String {
 }
 
 fn default_device_id() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "macos-primary".into())
+    if let Ok(h) = std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")) {
+        if !h.trim().is_empty() {
+            return h.trim().to_string();
+        }
+    }
+    if let Ok(out) = std::process::Command::new("hostname").output() {
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !name.is_empty() {
+            return name;
+        }
+    }
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 pub fn default_config_dir() -> PathBuf {
@@ -409,6 +418,9 @@ impl Default for PrivacyConfig {
 pub struct NexusMindSyncConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// When true (default), the mascot refuses to run prompts/actions until NexusMind is connected.
+    #[serde(default = "default_true")]
+    pub require_connection: bool,
     #[serde(default = "default_nm_url")]
     pub base_url: String,
     #[serde(default = "default_nm_key_env")]
@@ -431,6 +443,7 @@ impl Default for NexusMindSyncConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            require_connection: true,
             base_url: default_nm_url(),
             api_key_env: default_nm_key_env(),
             project: default_nm_project(),

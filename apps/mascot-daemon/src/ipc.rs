@@ -9,11 +9,13 @@ use crate::executors::run_shell_command;
 use crate::learning::run_idle_consolidation;
 use crate::llm::LlmClient;
 use crate::mcp::McpHost;
-use crate::nexusmind::NexusMindClient;
+use crate::nexusmind::{
+    NexusMindClient, PetConversationPayload, PetEventPayload, PetHeartbeatPayload,
+};
 use crate::policy::{evaluate_action, PolicyVerdict, ProposedAction};
 use crate::redact::LocalRedactor;
 use crate::secrets::SecretsStore;
-use crate::storage::{LocalStore, NewApproval};
+use crate::storage::{AgentRunRecord, LocalStore, NewApproval, NewPetLog};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -49,6 +51,8 @@ pub struct DaemonState {
     pub nexusmind: RwLock<NexusMindClient>,
     pub mcp: McpHost,
     pub kill_switch: AtomicBool,
+    pub nexusmind_connected: AtomicBool,
+    pub nexusmind_last_error: RwLock<Option<String>>,
     pub visual_state: RwLock<MascotVisualState>,
 }
 
@@ -83,8 +87,30 @@ impl DaemonState {
             nexusmind: RwLock::new(nexusmind),
             mcp: McpHost::new(),
             kill_switch: AtomicBool::new(false),
+            nexusmind_connected: AtomicBool::new(false),
+            nexusmind_last_error: RwLock::new(None),
             visual_state: RwLock::new(initial_state),
         }))
+    }
+
+    pub fn is_nexusmind_connected(&self) -> bool {
+        self.nexusmind_connected.load(Ordering::SeqCst)
+    }
+
+    pub fn require_nexusmind(&self) -> bool {
+        self.config.read().unwrap().nexusmind.require_connection
+    }
+
+    pub fn hostname(&self) -> String {
+        self.config.read().unwrap().device_id.clone()
+    }
+
+    pub fn os_name(&self) -> &'static str {
+        std::env::consts::OS
+    }
+
+    pub fn arch_name(&self) -> &'static str {
+        std::env::consts::ARCH
     }
 
     pub fn current_llm(&self) -> LlmClient {
@@ -237,7 +263,27 @@ async fn dispatch_rpc(req: RpcRequest, state: &Arc<DaemonState>) -> RpcResponse 
         "ping" => Ok(json!({ "ok": true, "protocol": "mascot-ipc-v1" })),
         "get_status" => handle_get_status(state).await,
         "get_settings" => handle_get_settings(state),
-        "save_settings" => handle_save_settings(state, &req.params),
+        "save_settings" => handle_save_settings(state, &req.params).await,
+        "test_nexusmind_connection" => handle_test_nexusmind(state).await,
+        "list_conversations" => {
+            let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+            state
+                .store
+                .list_agent_runs(limit)
+                .map(|runs| json!({ "conversations": runs }))
+        }
+        "list_activity_logs" => {
+            let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(120) as usize;
+            let kind = req
+                .params
+                .get("event_kind")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty() && *s != "all");
+            state
+                .store
+                .list_pet_logs(kind, limit)
+                .map(|logs| json!({ "logs": logs }))
+        }
         "set_privacy_shield" => handle_set_privacy_shield(state, &req.params),
         "set_autonomy_level" => handle_set_autonomy(state, &req.params),
         "set_decision_mode" => handle_set_decision_mode(state, &req.params),
@@ -331,11 +377,172 @@ async fn handle_get_status(state: &Arc<DaemonState>) -> Result<Value> {
         "llm_provider": cfg.llm.provider,
         "llm_configured": state.current_llm().configured(),
         "nexusmind_configured": state.current_nexusmind().configured(),
+        "nexusmind_required": cfg.nexusmind.require_connection,
+        "nexusmind_connected": state.is_nexusmind_connected(),
+        "nexusmind_error": state.nexusmind_last_error.read().unwrap().clone(),
+        "hostname": cfg.device_id,
+        "os_name": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
         "pending_approvals": pending,
         "learned_skills": skills,
         "proactive_suggestions": suggestions,
         "mcp_tools": mcp_tools,
     }))
+}
+
+/// Sends a live authenticated heartbeat to NexusMind and updates connection state.
+pub async fn verify_and_heartbeat(state: &Arc<DaemonState>) -> Result<Value> {
+    let (cfg, vis, skills_count, mcp_count) = {
+        let cfg = state.config.read().unwrap().clone();
+        let vis = *state.visual_state.read().unwrap();
+        let skills_count = state.store.list_skills().map(|s| s.len() as i64).unwrap_or(0);
+        let mcp_count = state.mcp.list_tools().await.len() as i64;
+        (cfg, vis, skills_count, mcp_count)
+    };
+
+    let nm = state.current_nexusmind();
+    let payload = PetHeartbeatPayload {
+        device_id: cfg.device_id.clone(),
+        pet_name: cfg.mascot_name.clone(),
+        hostname: cfg.device_id.clone(),
+        os_name: std::env::consts::OS.to_string(),
+        os_version: os_version_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        autonomy_level: enum_snake(&cfg.autonomy.level),
+        decision_mode: enum_snake(&cfg.decision_engine.mode),
+        visual_state: enum_snake(&vis),
+        skills_count,
+        mcp_tools_count: mcp_count,
+    };
+
+    match nm.send_heartbeat(&payload).await {
+        Ok(ack) => {
+            state.nexusmind_connected.store(true, Ordering::SeqCst);
+            *state.nexusmind_last_error.write().unwrap() = None;
+            Ok(ack)
+        }
+        Err(err) => {
+            state.nexusmind_connected.store(false, Ordering::SeqCst);
+            *state.nexusmind_last_error.write().unwrap() = Some(err.to_string());
+            Err(err)
+        }
+    }
+}
+
+/// Enforces mandatory NexusMind connection before running prompts or actions.
+pub async fn ensure_nexusmind_ready(state: &Arc<DaemonState>) -> Result<()> {
+    if !state.require_nexusmind() {
+        return Ok(());
+    }
+    if state.is_nexusmind_connected() {
+        return Ok(());
+    }
+    match verify_and_heartbeat(state).await {
+        Ok(_) => Ok(()),
+        Err(err) => Err(anyhow::anyhow!(
+            "Conexión obligatoria a NexusMind requerida para usar la mascota ({err}). Abre Configuración → API Keys, conecta NexusMind y vuelve a intentar."
+        )),
+    }
+}
+
+/// Records an auditable event locally AND ships it asynchronously to NexusMind `/v1/pets/events`.
+#[allow(clippy::too_many_arguments)]
+pub fn audit_and_sync_event(
+    state: &Arc<DaemonState>,
+    run_id: Option<&str>,
+    event_kind: &str,
+    action_kind: Option<&str>,
+    decision_source: Option<&str>,
+    risk: Option<f64>,
+    outcome: Option<&str>,
+    summary: &str,
+    detail: Value,
+) {
+    let mut redactor = LocalRedactor::new();
+    let safe_summary = redactor.redact(summary);
+    let safe_detail = redactor.redact(&detail.to_string());
+
+    let _ = state.store.record_pet_log(NewPetLog {
+        run_id,
+        event_kind,
+        action_kind,
+        decision_source,
+        risk,
+        outcome,
+        summary: &safe_summary,
+        detail_json: &safe_detail,
+    });
+
+    let nm = state.current_nexusmind();
+    if nm.configured() {
+        let payload = PetEventPayload {
+            device_id: state.hostname(),
+            run_id: run_id.map(str::to_string),
+            event_kind: event_kind.to_string(),
+            action_kind: action_kind.map(str::to_string),
+            decision_source: decision_source.map(str::to_string),
+            risk,
+            outcome: outcome.map(str::to_string),
+            summary: safe_summary,
+            detail_json: safe_detail,
+        };
+        tokio::spawn(async move {
+            let _ = nm.push_event(&payload).await;
+        });
+    }
+}
+
+/// Ships a full redacted conversation transcript to NexusMind `/v1/pets/conversations`.
+pub fn sync_conversation_record(state: &Arc<DaemonState>, record: &AgentRunRecord) {
+    let nm = state.current_nexusmind();
+    if !nm.configured() {
+        return;
+    }
+    let mut redactor = LocalRedactor::new();
+    let payload = PetConversationPayload {
+        device_id: state.hostname(),
+        run_id: record.id.clone(),
+        objective: redactor.redact(&record.objective),
+        status: record.status.clone(),
+        route: record.route.clone(),
+        steps_executed: record.steps_executed as i64,
+        tool_errors: record.tool_errors as i64,
+        transcript_json: redactor.redact(&record.state_json),
+        final_reply: record.final_reply.as_deref().map(|s| redactor.redact(s)),
+    };
+    tokio::spawn(async move {
+        let _ = nm.push_conversation(&payload).await;
+    });
+}
+
+fn enum_snake<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|val| val.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn os_version_string() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+        {
+            let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    String::new()
+}
+
+async fn handle_test_nexusmind(state: &Arc<DaemonState>) -> Result<Value> {
+    match verify_and_heartbeat(state).await {
+        Ok(ack) => Ok(json!({ "connected": true, "ack": ack })),
+        Err(err) => Ok(json!({ "connected": false, "error": err.to_string() })),
+    }
 }
 
 fn handle_get_settings(state: &DaemonState) -> Result<Value> {
@@ -358,7 +565,7 @@ fn handle_get_settings(state: &DaemonState) -> Result<Value> {
     }))
 }
 
-fn handle_save_settings(state: &DaemonState, params: &Value) -> Result<Value> {
+async fn handle_save_settings(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
     {
         let mut cfg = state.config.write().unwrap();
         if let Some(name) = params.get("mascot_name").and_then(Value::as_str) {
@@ -427,7 +634,16 @@ fn handle_save_settings(state: &DaemonState, params: &Value) -> Result<Value> {
     }
 
     state.reload_clients()?;
-    handle_get_settings(state)
+    let heartbeat_err = verify_and_heartbeat(state).await.err().map(|e| e.to_string());
+    let mut settings = handle_get_settings(state)?;
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert(
+            "nexusmind_connected".into(),
+            json!(state.is_nexusmind_connected()),
+        );
+        obj.insert("nexusmind_error".into(), json!(heartbeat_err));
+    }
+    Ok(settings)
 }
 
 fn handle_set_privacy_shield(state: &DaemonState, params: &Value) -> Result<Value> {
@@ -516,7 +732,8 @@ fn handle_complete_os_job(state: &DaemonState, params: &Value) -> Result<Value> 
     Ok(json!({ "updated": updated }))
 }
 
-async fn handle_propose_action(state: &DaemonState, params: &Value) -> Result<Value> {
+async fn handle_propose_action(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
+    ensure_nexusmind_ready(state).await?;
     let action = ProposedAction {
         action_kind: params
             .get("action_kind")
@@ -635,6 +852,7 @@ async fn handle_propose_action(state: &DaemonState, params: &Value) -> Result<Va
 }
 
 async fn handle_resolve_approval(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
+    ensure_nexusmind_ready(state).await?;
     let id = params
         .get("id")
         .and_then(Value::as_str)
@@ -765,6 +983,7 @@ async fn handle_record_observation(state: &DaemonState, params: &Value) -> Resul
 }
 
 async fn handle_submit_prompt(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
+    ensure_nexusmind_ready(state).await?;
     let prompt = params
         .get("prompt")
         .and_then(Value::as_str)
