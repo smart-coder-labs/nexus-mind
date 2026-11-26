@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 122;
+pub const LATEST_USER_VERSION: i32 = 123;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -125,6 +125,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v120(conn)?;
     run_v121(conn)?;
     run_v122(conn)?;
+    run_v123(conn)?;
     // Chunks restored from a backup or written by a pre-v82 binary have no
     // lexical rows; a count mismatch triggers a rebuild.
     crate::retrieval::lexical::ensure_index(conn)?;
@@ -303,6 +304,78 @@ pub fn run_v113(conn: &Connection) -> Result<()> {
 /// `usage_events` (what MCP clients report), so agents, audits and fixes never
 /// showed. A run's usage row carries the agent and the cost, unique per run;
 /// the past runs are copied once here.
+/// Migration v123: desktop mascot (pet) registry, full conversation transcripts, and auditable event logs.
+pub fn run_v123(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 123 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS mascot_pets (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            pet_name TEXT NOT NULL,
+            hostname TEXT NOT NULL,
+            os_name TEXT NOT NULL,
+            os_version TEXT NOT NULL DEFAULT '',
+            arch TEXT NOT NULL DEFAULT '',
+            autonomy_level TEXT NOT NULL DEFAULT 'supervised_autonomous',
+            decision_mode TEXT NOT NULL DEFAULT 'hybrid',
+            visual_state TEXT NOT NULL DEFAULT 'idle',
+            skills_count INTEGER NOT NULL DEFAULT 0,
+            mcp_tools_count INTEGER NOT NULL DEFAULT 0,
+            last_seen_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(org_id, device_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mascot_pets_org ON mascot_pets(org_id, last_seen_at DESC);
+
+        CREATE TABLE IF NOT EXISTS mascot_pet_conversations (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            pet_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            status TEXT NOT NULL,
+            route TEXT,
+            steps_executed INTEGER NOT NULL DEFAULT 0,
+            tool_errors INTEGER NOT NULL DEFAULT 0,
+            transcript_json TEXT NOT NULL DEFAULT '[]',
+            final_reply TEXT,
+            started_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(org_id, pet_id, run_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mascot_pet_conv_org ON mascot_pet_conversations(org_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mascot_pet_conv_pet ON mascot_pet_conversations(pet_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS mascot_pet_events (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            pet_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            run_id TEXT,
+            event_kind TEXT NOT NULL,
+            action_kind TEXT,
+            decision_source TEXT,
+            risk REAL,
+            outcome TEXT,
+            summary TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mascot_pet_events_org ON mascot_pet_events(org_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mascot_pet_events_pet ON mascot_pet_events(pet_id, created_at DESC);
+        PRAGMA user_version = 123;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn run_v122(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 122 {

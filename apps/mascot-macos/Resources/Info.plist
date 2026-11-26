@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>es</string>
+  <key>CFBundleExecutable</key>
+  <string>NexusMascot</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.smartcoderlabs.nexusmind.mascot</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>NexusMascot</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>NexusMind Mascot necesita acceso al micrófono para escuchar tus comandos de voz.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>NexusMind Mascot usa el reconocimiento de voz local de macOS para transcribir tus órdenes.</string>
+</dict>
+</plist>

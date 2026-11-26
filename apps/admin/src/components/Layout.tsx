@@ -172,6 +172,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Search', href: '/search', icon: Search },
       { label: 'Dashboard', href: '/', icon: LayoutDashboard },
+      { label: 'Mascotas', href: '/pets', icon: Bot },
       { label: 'Usage', href: '/usage', icon: BarChart3, adminOnly: true },
       { label: 'Monitoring', href: '/monitoring', icon: Activity, adminOnly: true, requiredPermission: 'settings:write' },
     ],
