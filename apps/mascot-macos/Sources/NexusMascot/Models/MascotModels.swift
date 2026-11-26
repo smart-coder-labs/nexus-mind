@@ -122,6 +122,62 @@ struct ProactiveSuggestion: Codable, Identifiable {
     }
 }
 
+enum LlmProviderKind: String, Codable, CaseIterable, Identifiable {
+    case claude
+    case gemini
+    case openAi = "open_ai"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .claude: return "Claude (Anthropic)"
+        case .gemini: return "Gemini (Google)"
+        case .openAi: return "OpenAI (GPT)"
+        }
+    }
+
+    var defaultModel: String {
+        switch self {
+        case .claude: return "claude-sonnet-4-5"
+        case .gemini: return "gemini-2.5-pro"
+        case .openAi: return "gpt-4.1"
+        }
+    }
+}
+
+struct MascotSettings: Codable {
+    var mascotName: String
+    var decisionMode: DecisionMode
+    var layaEndpoint: String
+    var llmProvider: LlmProviderKind
+    var llmModel: String
+    var nexusmindEnabled: Bool
+    var nexusmindBaseUrl: String
+    var nexusmindProject: String
+    var hasAnthropicKey: Bool
+    var hasGeminiKey: Bool
+    var hasOpenAiKey: Bool
+    var hasJevKey: Bool
+    var hasNexusmindKey: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case mascotName = "mascot_name"
+        case decisionMode = "decision_mode"
+        case layaEndpoint = "laya_endpoint"
+        case llmProvider = "llm_provider"
+        case llmModel = "llm_model"
+        case nexusmindEnabled = "nexusmind_enabled"
+        case nexusmindBaseUrl = "nexusmind_base_url"
+        case nexusmindProject = "nexusmind_project"
+        case hasAnthropicKey = "has_anthropic_key"
+        case hasGeminiKey = "has_gemini_key"
+        case hasOpenAiKey = "has_openai_key"
+        case hasJevKey = "has_jev_key"
+        case hasNexusmindKey = "has_nexusmind_key"
+    }
+}
+
 struct PendingApproval: Codable, Identifiable {
     let id: String
     let summary: String

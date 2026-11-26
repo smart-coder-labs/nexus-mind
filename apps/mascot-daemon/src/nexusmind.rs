@@ -12,6 +12,7 @@ pub struct NexusMindClient {
     http: Client,
     config: NexusMindSyncConfig,
     device_id: String,
+    api_key_override: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,12 +25,17 @@ pub struct MemoryPayload {
 }
 
 impl NexusMindClient {
-    pub fn new(config: NexusMindSyncConfig, device_id: String) -> Result<Self> {
+    pub fn new(
+        config: NexusMindSyncConfig,
+        device_id: String,
+        api_key_override: Option<String>,
+    ) -> Result<Self> {
         let http = Client::builder().timeout(Duration::from_secs(10)).build()?;
         Ok(Self {
             http,
             config,
             device_id,
+            api_key_override,
         })
     }
 
@@ -38,6 +44,13 @@ impl NexusMindClient {
     }
 
     fn api_key(&self) -> Option<String> {
+        if let Some(v) = self
+            .api_key_override
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            return Some(v.trim().to_string());
+        }
         std::env::var(&self.config.api_key_env)
             .ok()
             .map(|v| v.trim().to_string())

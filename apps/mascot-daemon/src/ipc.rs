@@ -4,7 +4,7 @@
 //! and `apps/mascot-daemon` (Rust).
 
 use crate::agent::{resume_agent_run_after_approval, start_agent_run};
-use crate::config::{AutonomyLevel, MascotConfig};
+use crate::config::{AutonomyLevel, LlmProviderKind, MascotConfig};
 use crate::executors::run_shell_command;
 use crate::learning::run_idle_consolidation;
 use crate::llm::LlmClient;
@@ -12,6 +12,7 @@ use crate::mcp::McpHost;
 use crate::nexusmind::NexusMindClient;
 use crate::policy::{evaluate_action, PolicyVerdict, ProposedAction};
 use crate::redact::LocalRedactor;
+use crate::secrets::SecretsStore;
 use crate::storage::{LocalStore, NewApproval};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -41,10 +42,11 @@ pub enum MascotVisualState {
 
 pub struct DaemonState {
     pub config: RwLock<MascotConfig>,
+    pub secrets: RwLock<SecretsStore>,
     pub router: RwLock<SystemOneRouter>,
     pub store: LocalStore,
-    pub llm: LlmClient,
-    pub nexusmind: NexusMindClient,
+    pub llm: RwLock<LlmClient>,
+    pub nexusmind: RwLock<NexusMindClient>,
     pub mcp: McpHost,
     pub kill_switch: AtomicBool,
     pub visual_state: RwLock<MascotVisualState>,
@@ -52,10 +54,21 @@ pub struct DaemonState {
 
 impl DaemonState {
     pub fn new(config: MascotConfig) -> Result<Arc<Self>> {
-        let router = config.build_decision_router()?;
+        let secrets = SecretsStore::load(config.resolved_secrets_path());
+        let jev_key = secrets
+            .get(&config.decision_engine.jev.api_key_env)
+            .or_else(|| secrets.get("JEV_API_KEY"));
+        let router = config.build_decision_router_with_key(jev_key)?;
         let store = LocalStore::open(&config.resolved_db_path())?;
-        let llm = LlmClient::new(config.llm.clone())?;
-        let nexusmind = NexusMindClient::new(config.nexusmind.clone(), config.device_id.clone())?;
+
+        let mut llm_cfg = config.llm.clone();
+        if llm_cfg.api_key_override.is_none() {
+            llm_cfg.api_key_override = secrets.get(&llm_cfg.api_key_env);
+        }
+        let llm = LlmClient::new(llm_cfg)?;
+
+        let nm_key = secrets.get(&config.nexusmind.api_key_env);
+        let nexusmind = NexusMindClient::new(config.nexusmind.clone(), config.device_id.clone(), nm_key)?;
         let initial_state = if config.privacy.privacy_shield_enabled {
             MascotVisualState::PrivacyShield
         } else {
@@ -63,14 +76,47 @@ impl DaemonState {
         };
         Ok(Arc::new(Self {
             config: RwLock::new(config),
+            secrets: RwLock::new(secrets),
             router: RwLock::new(router),
             store,
-            llm,
-            nexusmind,
+            llm: RwLock::new(llm),
+            nexusmind: RwLock::new(nexusmind),
             mcp: McpHost::new(),
             kill_switch: AtomicBool::new(false),
             visual_state: RwLock::new(initial_state),
         }))
+    }
+
+    pub fn current_llm(&self) -> LlmClient {
+        self.llm.read().unwrap().clone()
+    }
+
+    pub fn current_nexusmind(&self) -> NexusMindClient {
+        self.nexusmind.read().unwrap().clone()
+    }
+
+    pub fn reload_clients(&self) -> Result<()> {
+        let cfg = self.config.read().unwrap().clone();
+        let secrets = self.secrets.read().unwrap().clone();
+
+        let jev_key = secrets
+            .get(&cfg.decision_engine.jev.api_key_env)
+            .or_else(|| secrets.get("JEV_API_KEY"));
+        let new_router = cfg.build_decision_router_with_key(jev_key)?;
+
+        let mut llm_cfg = cfg.llm.clone();
+        if llm_cfg.api_key_override.is_none() {
+            llm_cfg.api_key_override = secrets.get(&llm_cfg.api_key_env);
+        }
+        let new_llm = LlmClient::new(llm_cfg)?;
+
+        let nm_key = secrets.get(&cfg.nexusmind.api_key_env);
+        let new_nm = NexusMindClient::new(cfg.nexusmind.clone(), cfg.device_id.clone(), nm_key)?;
+
+        *self.router.write().unwrap() = new_router;
+        *self.llm.write().unwrap() = new_llm;
+        *self.nexusmind.write().unwrap() = new_nm;
+        Ok(())
     }
 
     pub fn set_visual_state(&self, next: MascotVisualState) {
@@ -190,6 +236,8 @@ async fn dispatch_rpc(req: RpcRequest, state: &Arc<DaemonState>) -> RpcResponse 
     let outcome = match req.method.as_str() {
         "ping" => Ok(json!({ "ok": true, "protocol": "mascot-ipc-v1" })),
         "get_status" => handle_get_status(state).await,
+        "get_settings" => handle_get_settings(state),
+        "save_settings" => handle_save_settings(state, &req.params),
         "set_privacy_shield" => handle_set_privacy_shield(state, &req.params),
         "set_autonomy_level" => handle_set_autonomy(state, &req.params),
         "set_decision_mode" => handle_set_decision_mode(state, &req.params),
@@ -281,13 +329,105 @@ async fn handle_get_status(state: &Arc<DaemonState>) -> Result<Value> {
         "privacy_shield": cfg.privacy.privacy_shield_enabled,
         "kill_switch": state.kill_switch.load(Ordering::SeqCst),
         "llm_provider": cfg.llm.provider,
-        "llm_configured": state.llm.configured(),
-        "nexusmind_configured": state.nexusmind.configured(),
+        "llm_configured": state.current_llm().configured(),
+        "nexusmind_configured": state.current_nexusmind().configured(),
         "pending_approvals": pending,
         "learned_skills": skills,
         "proactive_suggestions": suggestions,
         "mcp_tools": mcp_tools,
     }))
+}
+
+fn handle_get_settings(state: &DaemonState) -> Result<Value> {
+    let cfg = state.config.read().unwrap().clone();
+    let secrets = state.secrets.read().unwrap().clone();
+    Ok(json!({
+        "mascot_name": cfg.mascot_name,
+        "decision_mode": cfg.decision_engine.mode,
+        "laya_endpoint": cfg.decision_engine.laya.endpoint,
+        "llm_provider": cfg.llm.provider,
+        "llm_model": cfg.llm.model,
+        "nexusmind_enabled": cfg.nexusmind.enabled,
+        "nexusmind_base_url": cfg.nexusmind.base_url,
+        "nexusmind_project": cfg.nexusmind.project,
+        "has_anthropic_key": secrets.has("ANTHROPIC_API_KEY"),
+        "has_gemini_key": secrets.has("GEMINI_API_KEY"),
+        "has_openai_key": secrets.has("OPENAI_API_KEY"),
+        "has_jev_key": secrets.has("TYPESAFE_API_KEY") || secrets.has("JEV_API_KEY"),
+        "has_nexusmind_key": secrets.has("NEXUSMIND_API_KEY"),
+    }))
+}
+
+fn handle_save_settings(state: &DaemonState, params: &Value) -> Result<Value> {
+    {
+        let mut cfg = state.config.write().unwrap();
+        if let Some(name) = params.get("mascot_name").and_then(Value::as_str) {
+            if !name.trim().is_empty() {
+                cfg.mascot_name = name.trim().to_string();
+            }
+        }
+        if let Some(mode_val) = params.get("decision_mode") {
+            if let Ok(mode) = serde_json::from_value::<DecisionMode>(mode_val.clone()) {
+                cfg.decision_engine.mode = mode;
+            }
+        }
+        if let Some(laya_ep) = params.get("laya_endpoint").and_then(Value::as_str) {
+            if !laya_ep.trim().is_empty() {
+                cfg.decision_engine.laya.endpoint = laya_ep.trim().to_string();
+            }
+        }
+        if let Some(prov_val) = params.get("llm_provider") {
+            if let Ok(prov) = serde_json::from_value::<LlmProviderKind>(prov_val.clone()) {
+                cfg.llm.provider = prov;
+                cfg.llm.api_key_env = match prov {
+                    LlmProviderKind::Claude => "ANTHROPIC_API_KEY".into(),
+                    LlmProviderKind::Gemini => "GEMINI_API_KEY".into(),
+                    LlmProviderKind::OpenAi => "OPENAI_API_KEY".into(),
+                };
+            }
+        }
+        if let Some(model) = params.get("llm_model").and_then(Value::as_str) {
+            if !model.trim().is_empty() {
+                cfg.llm.model = model.trim().to_string();
+            }
+        }
+        if let Some(nm_en) = params.get("nexusmind_enabled").and_then(Value::as_bool) {
+            cfg.nexusmind.enabled = nm_en;
+        }
+        if let Some(nm_url) = params.get("nexusmind_base_url").and_then(Value::as_str) {
+            if !nm_url.trim().is_empty() {
+                cfg.nexusmind.base_url = nm_url.trim().to_string();
+            }
+        }
+        if let Some(nm_proj) = params.get("nexusmind_project").and_then(Value::as_str) {
+            if !nm_proj.trim().is_empty() {
+                cfg.nexusmind.project = nm_proj.trim().to_string();
+            }
+        }
+        let cfg_path = cfg.resolved_config_path();
+        cfg.write_to(&cfg_path)?;
+    }
+
+    {
+        let mut secrets = state.secrets.write().unwrap();
+        let key_fields = [
+            ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+            ("gemini_api_key", "GEMINI_API_KEY"),
+            ("openai_api_key", "OPENAI_API_KEY"),
+            ("jev_api_key", "TYPESAFE_API_KEY"),
+            ("nexusmind_api_key", "NEXUSMIND_API_KEY"),
+        ];
+        for (field, env_name) in key_fields {
+            if let Some(val) = params.get(field).and_then(Value::as_str) {
+                if !val.trim().is_empty() {
+                    secrets.set_and_persist(env_name, val)?;
+                }
+            }
+        }
+    }
+
+    state.reload_clients()?;
+    handle_get_settings(state)
 }
 
 fn handle_set_privacy_shield(state: &DaemonState, params: &Value) -> Result<Value> {
@@ -322,12 +462,11 @@ fn handle_set_decision_mode(state: &DaemonState, params: &Value) -> Result<Value
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing 'mode'"))?,
     )?;
-    let new_router = {
+    {
         let mut cfg = state.config.write().unwrap();
         cfg.decision_engine.mode = mode;
-        cfg.build_decision_router()?
-    };
-    *state.router.write().unwrap() = new_router;
+    }
+    state.reload_clients()?;
     Ok(json!({ "decision_mode": mode }))
 }
 
@@ -626,12 +765,13 @@ async fn handle_submit_prompt(state: &Arc<DaemonState>, params: &Value) -> Resul
     let active_app = params.get("active_app").and_then(Value::as_str);
 
     let run = start_agent_run(state, prompt, active_app).await?;
+    let llm = state.current_llm();
     Ok(json!({
         "run": run,
         "reply": {
             "text": run.reply,
-            "provider": state.llm.provider_name(),
-            "model": state.llm.model_name(),
+            "provider": llm.provider_name(),
+            "model": llm.model_name(),
         }
     }))
 }

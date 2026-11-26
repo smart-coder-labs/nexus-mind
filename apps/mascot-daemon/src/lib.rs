@@ -8,6 +8,7 @@ pub mod mcp;
 pub mod nexusmind;
 pub mod policy;
 pub mod redact;
+pub mod secrets;
 pub mod storage;
 pub mod triggers;
 
@@ -97,5 +98,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(blocked["result"]["verdict"]["verdict"], json!("block"));
+    }
+
+    #[tokio::test]
+    async fn save_settings_persists_secrets_0600_and_hot_reloads_clients() {
+        let dir = TempDir::new().unwrap();
+        let state = test_state(&dir);
+
+        let save_req = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "save_settings",
+            "params": {
+                "mascot_name": "Nexo",
+                "llm_provider": "claude",
+                "llm_model": "claude-sonnet-4-5",
+                "anthropic_api_key": "sk-ant-test-key-1234",
+                "jev_api_key": "ts_test_key_5678",
+                "nexusmind_api_key": "nm_test_key_9999"
+            }
+        })
+        .to_string();
+
+        let resp: Value = serde_json::from_str(&dispatch_rpc_json(&save_req, &state).await).unwrap();
+        assert_eq!(resp["result"]["mascot_name"], json!("Nexo"));
+        assert_eq!(resp["result"]["has_anthropic_key"], json!(true));
+        assert_eq!(resp["result"]["has_jev_key"], json!(true));
+        assert_eq!(resp["result"]["has_nexusmind_key"], json!(true));
+        assert!(state.current_llm().configured());
+        assert!(state.current_nexusmind().configured());
+        assert!(dir.path().join("secrets.env").exists());
+        assert!(dir.path().join("mascot.yaml").exists());
     }
 }

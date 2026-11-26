@@ -177,14 +177,30 @@ struct MenuBarPopoverView: View {
 
             Divider().overlay(NexusTokens.surfaceBorder)
 
-            // Emergency Kill Switch + Quit
-            HStack {
+            // Settings + Emergency Kill Switch + Quit
+            HStack(spacing: 8) {
+                Button {
+                    SettingsWindowController.shared.open()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "key.fill")
+                        Text("API Keys")
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.08))
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
                 Button {
                     Task { await viewModel.toggleKillSwitch() }
                 } label: {
-                    Text(viewModel.killSwitchActive ? "Reanudar mascota" : "Pausar todo (Kill Switch)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 12)
+                    Text(viewModel.killSwitchActive ? "Reanudar" : "Pausar")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(viewModel.killSwitchActive ? NexusTokens.accentLime : NexusTokens.statusRose.opacity(0.22))
                         .foregroundStyle(viewModel.killSwitchActive ? NexusTokens.accentLimeForeground : NexusTokens.statusRose)

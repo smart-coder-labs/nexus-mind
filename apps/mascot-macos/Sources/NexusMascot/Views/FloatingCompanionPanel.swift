@@ -83,6 +83,9 @@ struct FloatingCompanionRootView: View {
                         Button(viewModel.showQuickPrompt ? "Ocultar chat" : "Abrir chat (⌘⇧N)") {
                             viewModel.toggleQuickPrompt()
                         }
+                        Button("Configuración y API Keys…") {
+                            SettingsWindowController.shared.open()
+                        }
                         Button(viewModel.privacyShield ? "Desactivar Modo Privado" : "Activar Modo Privado (⌘⇧P)") {
                             Task { await viewModel.togglePrivacyShield() }
                         }

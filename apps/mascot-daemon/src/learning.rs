@@ -64,9 +64,9 @@ pub async fn persist_learned_skill(
     let yaml_path = skills_dir.join(format!("{safe_slug}.yaml"));
     std::fs::write(&yaml_path, serde_yaml::to_string(&doc)?)?;
 
-    if state.nexusmind.configured() {
-        let _ = state
-            .nexusmind
+    let nm = state.current_nexusmind();
+    if nm.configured() {
+        let _ = nm
             .store_memory(&MemoryPayload {
                 title: format!("Skill: {safe_title}"),
                 memory_type: "pattern".into(),
@@ -108,7 +108,8 @@ pub async fn run_idle_consolidation(state: &Arc<DaemonState>) -> Result<Consolid
             entry.0 += 1;
         }
 
-        if ev.importance >= 0.5 && state.nexusmind.configured() {
+        let nm = state.current_nexusmind();
+        if ev.importance >= 0.5 && nm.configured() {
             let mem_type = match ev.category.as_str() {
                 "preference" => "preference",
                 "procedural_skill" => "pattern",
@@ -141,7 +142,7 @@ pub async fn run_idle_consolidation(state: &Arc<DaemonState>) -> Result<Consolid
                 topic_key: slug,
                 scope: scope.into(),
             };
-            if state.nexusmind.store_memory(&payload).await.is_ok() {
+            if nm.store_memory(&payload).await.is_ok() {
                 synced += 1;
             }
         }

@@ -110,6 +110,20 @@ impl MascotConfig {
             .unwrap_or_else(|| default_config_dir().join("skills"))
     }
 
+    pub fn resolved_secrets_path(&self) -> PathBuf {
+        self.db_path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.join("secrets.env")))
+            .unwrap_or_else(|| default_config_dir().join("secrets.env"))
+    }
+
+    pub fn resolved_config_path(&self) -> PathBuf {
+        self.db_path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.join("mascot.yaml")))
+            .unwrap_or_else(|| default_config_dir().join("mascot.yaml"))
+    }
+
     pub fn load_or_default(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -131,8 +145,16 @@ impl MascotConfig {
     }
 
     pub fn build_decision_router(&self) -> Result<SystemOneRouter> {
-        let jev_key = std::env::var(&self.decision_engine.jev.api_key_env)
-            .ok()
+        self.build_decision_router_with_key(None)
+    }
+
+    pub fn build_decision_router_with_key(
+        &self,
+        key_override: Option<String>,
+    ) -> Result<SystemOneRouter> {
+        let jev_key = key_override
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| std::env::var(&self.decision_engine.jev.api_key_env).ok())
             .or_else(|| std::env::var("JEV_API_KEY").ok())
             .filter(|k| !k.trim().is_empty());
 

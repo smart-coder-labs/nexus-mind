@@ -78,8 +78,9 @@ pub async fn start_agent_run(
 
     // 2. Pull NexusMind context if configured
     let mut context_snippets = Vec::new();
-    if state.nexusmind.configured() {
-        if let Ok(found) = state.nexusmind.search_memory(&safe_objective, 4).await {
+    let nm = state.current_nexusmind();
+    if nm.configured() {
+        if let Ok(found) = nm.search_memory(&safe_objective, 4).await {
             let compact = serde_json::to_string(&found).unwrap_or_default();
             context_snippets.push(compact.chars().take(1200).collect::<String>());
         }
@@ -201,7 +202,7 @@ async fn drive_loop(
     mut record: AgentRunRecord,
     mut loop_state: PersistedLoopState,
 ) -> Result<AgentRunResult> {
-    if !state.llm.configured() {
+    if !state.current_llm().configured() {
         let key_env = state.config.read().unwrap().llm.api_key_env.clone();
         let reply = format!(
             "Recibido: \"{}\". Configura `{key_env}` para activar el bucle autónomo System 2 con herramientas.",
@@ -274,8 +275,8 @@ async fn drive_loop(
 
         state.set_visual_state(MascotVisualState::Thinking);
         let tools = build_tool_catalog(state).await;
-        let turn = state
-            .llm
+        let llm = state.current_llm();
+        let turn = llm
             .chat_turn(&loop_state.system_prompt, &loop_state.messages, &tools)
             .await?;
 
@@ -674,9 +675,9 @@ async fn execute_tool_unchecked(state: &Arc<DaemonState>, tc: &ToolCall) -> Resu
                 memory_type,
                 0.9,
             )?;
-            if state.nexusmind.configured() {
-                let _ = state
-                    .nexusmind
+            let nm = state.current_nexusmind();
+            if nm.configured() {
+                let _ = nm
                     .store_memory(&MemoryPayload {
                         title: title.into(),
                         memory_type: memory_type.into(),
@@ -694,8 +695,9 @@ async fn execute_tool_unchecked(state: &Arc<DaemonState>, tc: &ToolCall) -> Resu
                 .get("query")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            if state.nexusmind.configured() {
-                let res = state.nexusmind.search_memory(query, 5).await?;
+            let nm = state.current_nexusmind();
+            if nm.configured() {
+                let res = nm.search_memory(query, 5).await?;
                 Ok(serde_json::to_string_pretty(&res)?)
             } else {
                 let recent = state.store.recent_episodic_events(10)?;

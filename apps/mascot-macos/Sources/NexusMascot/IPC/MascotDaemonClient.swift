@@ -107,6 +107,16 @@ final class MascotDaemonClient: @unchecked Sendable {
         return try JSONDecoder().decode(Wrapper.self, from: data).suggestions
     }
 
+    func getSettings() async throws -> MascotSettings {
+        let data = try await call(method: "get_settings", params: [:])
+        return try JSONDecoder().decode(MascotSettings.self, from: data)
+    }
+
+    func saveSettings(params: [String: Any]) async throws -> MascotSettings {
+        let data = try await call(method: "save_settings", params: params)
+        return try JSONDecoder().decode(MascotSettings.self, from: data)
+    }
+
     private func call(method: String, params: [String: Any]) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
