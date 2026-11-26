@@ -69,9 +69,13 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 </dict>
 </plist>
 EOF
-    launchctl unload "$PLIST" 2>/dev/null || true
-    launchctl load "$PLIST"
-    echo "Installed and loaded launchd agent: $PLIST"
+    # Stop any stale daemon (both launchd-managed and manually started) so the new binary owns mascot.sock
+    launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+    pkill -x nexus-mascot-daemon 2>/dev/null || true
+    sleep 0.3
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load "$PLIST"
+    launchctl kickstart -k "gui/$(id -u)/com.smartcoderlabs.nexusmind.mascot" 2>/dev/null || true
+    echo "Installed and restarted launchd agent: $PLIST"
   fi
 fi
 
