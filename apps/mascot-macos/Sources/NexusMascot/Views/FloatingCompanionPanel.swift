@@ -77,6 +77,9 @@ struct FloatingCompanionRootView: View {
                         return true
                     }
                     .contextMenu {
+                        Button(viewModel.isListeningVoice ? "Detener micrófono (⌘⇧V)" : "Hablar por micrófono (⌘⇧V)") {
+                            viewModel.toggleVoiceInput()
+                        }
                         Button(viewModel.showQuickPrompt ? "Ocultar chat" : "Abrir chat (⌘⇧N)") {
                             viewModel.toggleQuickPrompt()
                         }
@@ -185,7 +188,26 @@ struct QuickCommandBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                TextField("Pídele algo a \(viewModel.mascotName)…", text: $viewModel.promptDraft)
+                Button {
+                    viewModel.toggleVoiceInput()
+                } label: {
+                    Image(systemName: viewModel.isListeningVoice ? "stop.circle.fill" : "mic.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(viewModel.isListeningVoice ? NexusTokens.statusRose : NexusTokens.accentLime)
+                        .frame(width: 26, height: 26)
+                        .background(
+                            (viewModel.isListeningVoice ? NexusTokens.statusRose : NexusTokens.accentLime)
+                                .opacity(0.16)
+                        )
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(viewModel.isListeningVoice ? "Detener dictado y enviar (⌘⇧V)" : "Hablar por micrófono (⌘⇧V)")
+
+                TextField(
+                    viewModel.isListeningVoice ? "Escuchando… habla ahora" : "Pídele algo a \(viewModel.mascotName)…",
+                    text: $viewModel.promptDraft
+                )
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .foregroundStyle(.white)
@@ -210,8 +232,18 @@ struct QuickCommandBarView: View {
             .clipShape(RoundedRectangle(cornerRadius: NexusTokens.radiusInput))
             .overlay(
                 RoundedRectangle(cornerRadius: NexusTokens.radiusInput)
-                    .stroke(NexusTokens.surfaceBorder, lineWidth: 1)
+                    .stroke(
+                        viewModel.isListeningVoice ? NexusTokens.accentLime.opacity(0.75) : NexusTokens.surfaceBorder,
+                        lineWidth: 1
+                    )
             )
+
+            if let voiceErr = viewModel.voiceError {
+                Text(voiceErr)
+                    .font(.system(size: 11))
+                    .foregroundStyle(NexusTokens.statusRose)
+                    .padding(.horizontal, 4)
+            }
 
             if let reply = viewModel.lastReply {
                 Text(reply)

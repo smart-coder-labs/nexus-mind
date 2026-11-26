@@ -107,22 +107,44 @@ struct MenuBarPopoverView: View {
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(.white.opacity(0.75))
 
-            // Quick open floating chat bar
-            Button {
-                viewModel.openQuickPrompt()
-            } label: {
-                HStack {
-                    Image(systemName: "bubble.left.and.text.bubble.right")
-                    Text("Hablar con \(viewModel.mascotName) (⌘⇧N)")
+            // Quick open floating chat bar + voice input
+            HStack(spacing: 8) {
+                Button {
+                    viewModel.openQuickPrompt()
+                } label: {
+                    HStack {
+                        Image(systemName: "bubble.left.and.text.bubble.right")
+                        Text("Escribir (⌘⇧N)")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(NexusTokens.accentLime)
+                    .foregroundStyle(NexusTokens.accentLimeForeground)
+                    .clipShape(Capsule())
                 }
-                .font(.system(size: 12, weight: .semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 7)
-                .background(NexusTokens.accentLime)
-                .foregroundStyle(NexusTokens.accentLimeForeground)
-                .clipShape(Capsule())
+                .buttonStyle(.plain)
+
+                Button {
+                    viewModel.toggleVoiceInput()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: viewModel.isListeningVoice ? "stop.circle.fill" : "mic.fill")
+                        Text(viewModel.isListeningVoice ? "Parar" : "Voz (⌘⇧V)")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(
+                        viewModel.isListeningVoice
+                            ? NexusTokens.statusRose.opacity(0.25)
+                            : Color.white.opacity(0.08)
+                    )
+                    .foregroundStyle(viewModel.isListeningVoice ? NexusTokens.statusRose : .white)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             // Permissions checklist shortcut
             if !viewModel.permissions.allCoreGranted {

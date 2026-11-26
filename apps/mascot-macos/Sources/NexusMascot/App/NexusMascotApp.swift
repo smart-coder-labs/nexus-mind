@@ -22,11 +22,14 @@ final class MascotViewModel: ObservableObject {
     @Published var showQuickPrompt: Bool = false
     @Published var promptDraft: String = ""
     @Published var lastReply: String?
+    @Published var isListeningVoice: Bool = false
+    @Published var voiceError: String?
 
     weak var floatingPanel: FloatingCompanionPanel?
 
     private let client = MascotDaemonClient()
     private let observer = ActiveContextObserver()
+    private let voice = VoiceInputBridge()
     private var statusPollTask: Task<Void, Never>?
     private var osJobPollTask: Task<Void, Never>?
     private var lastActiveApp: String?
@@ -36,9 +39,12 @@ final class MascotViewModel: ObservableObject {
         guard !started else { return }
         started = true
 
-        // Register global system-wide hotkeys (⌘⇧N, ⌘⇧P, ⌘⇧⎋)
+        // Register global system-wide hotkeys (⌘⇧N, ⌘⇧V, ⌘⇧P, ⌘⇧⎋)
         GlobalHotkeys.shared.onQuickCommand = { [weak self] in
             Task { @MainActor in self?.toggleQuickPrompt() }
+        }
+        GlobalHotkeys.shared.onVoiceToggle = { [weak self] in
+            Task { @MainActor in self?.toggleVoiceInput() }
         }
         GlobalHotkeys.shared.onPrivacyShield = { [weak self] in
             Task { @MainActor in await self?.togglePrivacyShield() }
@@ -91,6 +97,37 @@ final class MascotViewModel: ObservableObject {
         floatingPanel?.focusForTyping()
     }
 
+    func toggleVoiceInput() {
+        openQuickPrompt()
+        voiceError = nil
+        voice.toggleRecording(
+            onPartialTranscript: { [weak self] text in
+                guard let self else { return }
+                self.isListeningVoice = true
+                self.visualState = .listening
+                self.promptDraft = text
+                self.voiceError = self.voice.lastError
+            },
+            onFinalStop: { [weak self] finalText in
+                guard let self else { return }
+                self.isListeningVoice = false
+                self.promptDraft = finalText
+                Task { await self.sendPrompt() }
+            }
+        )
+        // Reflect immediate state transition after async permission check
+        Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            self.isListeningVoice = self.voice.isRecording
+            self.voiceError = self.voice.lastError
+            if self.voice.isRecording {
+                self.visualState = .listening
+            } else if self.visualState == .listening {
+                self.visualState = .idle
+            }
+        }
+    }
+
     func refresh() async {
         let newPerms = MacOSPermissions.snapshot()
         if newPerms.accessibilityGranted != permissions.accessibilityGranted
@@ -102,7 +139,9 @@ final class MascotViewModel: ObservableObject {
             let status = try await client.getStatus()
             if !daemonConnected { daemonConnected = true }
             if mascotName != status.mascotName { mascotName = status.mascotName }
-            if visualState != status.visualState { visualState = status.visualState }
+            if !isListeningVoice && visualState != status.visualState {
+                visualState = status.visualState
+            }
             if decisionMode != status.decisionMode { decisionMode = status.decisionMode }
             if autonomyLevel != status.autonomyLevel { autonomyLevel = status.autonomyLevel }
             if privacyShield != status.privacyShield { privacyShield = status.privacyShield }
