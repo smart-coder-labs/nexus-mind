@@ -25,6 +25,9 @@ enum MacOSPermissions {
     }
 
     static func openScreenRecordingSettings() {
+        // Must call CGRequestScreenCaptureAccess() first so macOS registers NexusMascot.app
+        // in System Settings -> Privacy & Security -> Screen & System Audio Recording.
+        _ = CGRequestScreenCaptureAccess()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
