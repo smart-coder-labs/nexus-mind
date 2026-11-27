@@ -265,6 +265,9 @@ async fn dispatch_rpc(req: RpcRequest, state: &Arc<DaemonState>) -> RpcResponse 
         "get_settings" => handle_get_settings(state),
         "save_settings" => handle_save_settings(state, &req.params).await,
         "test_nexusmind_connection" => handle_test_nexusmind(state).await,
+        "sync_history" => sync_history_to_nexusmind(state)
+            .await
+            .map(|r| serde_json::to_value(r).unwrap_or(Value::Null)),
         "list_conversations" => {
             let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
             state
@@ -538,6 +541,141 @@ fn os_version_string() -> String {
     String::new()
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistorySyncReport {
+    pub conversations_migrated: usize,
+    pub events_migrated: usize,
+    pub skills_migrated: usize,
+    pub already_synced_skipped: usize,
+}
+
+/// Migrates all prior local conversations (`agent_runs`), audit logs (`pet_logs` + legacy `action_audit`),
+/// and learned skills from SQLite to NexusMind. Safe & idempotent to run multiple times.
+pub async fn sync_history_to_nexusmind(state: &Arc<DaemonState>) -> Result<HistorySyncReport> {
+    verify_and_heartbeat(state).await?;
+    let nm = state.current_nexusmind();
+    let device_id = state.hostname();
+
+    let mut report = HistorySyncReport {
+        conversations_migrated: 0,
+        events_migrated: 0,
+        skills_migrated: 0,
+        already_synced_skipped: 0,
+    };
+
+    // 1. Migrate all local conversations (server upserts idempotently by org_id + pet_id + run_id)
+    let runs = state.store.list_agent_runs(500)?;
+    for run in runs.into_iter().rev() {
+        let marker = format!("conv:{}:{}", run.id, run.updated_at.to_rfc3339());
+        if state.store.is_synced(&marker)? {
+            report.already_synced_skipped += 1;
+            continue;
+        }
+        let mut redactor = LocalRedactor::new();
+        let payload = PetConversationPayload {
+            device_id: device_id.clone(),
+            run_id: run.id.clone(),
+            objective: redactor.redact(&run.objective),
+            status: run.status.clone(),
+            route: run.route.clone(),
+            steps_executed: run.steps_executed as i64,
+            tool_errors: run.tool_errors as i64,
+            transcript_json: redactor.redact(&run.state_json),
+            final_reply: run.final_reply.as_deref().map(|s| redactor.redact(s)),
+        };
+        if nm.push_conversation(&payload).await.is_ok() {
+            state.store.mark_synced(&marker)?;
+            report.conversations_migrated += 1;
+        }
+    }
+
+    // 2. Migrate pet_logs (idempotent via sync_markers)
+    let pet_logs = state.store.list_pet_logs(None, 500)?;
+    for log in pet_logs.into_iter().rev() {
+        let marker = format!("pet_log:{}", log.id);
+        if state.store.is_synced(&marker)? {
+            report.already_synced_skipped += 1;
+            continue;
+        }
+        let mut redactor = LocalRedactor::new();
+        let payload = PetEventPayload {
+            device_id: device_id.clone(),
+            run_id: log.run_id.clone(),
+            event_kind: log.event_kind.clone(),
+            action_kind: log.action_kind.clone(),
+            decision_source: log.decision_source.clone(),
+            risk: log.risk,
+            outcome: log.outcome.clone(),
+            summary: redactor.redact(&log.summary),
+            detail_json: redactor.redact(&log.detail_json),
+        };
+        if nm.push_event(&payload).await.is_ok() {
+            state.store.mark_synced(&marker)?;
+            report.events_migrated += 1;
+        }
+    }
+
+    // 3. Migrate older legacy `action_audit` rows recorded before `pet_logs` existed
+    let outcomes = state.store.outcome_tape(500)?;
+    for entry in outcomes.into_iter().rev() {
+        let marker = format!("audit:{}", entry.id);
+        if state.store.is_synced(&marker)? {
+            report.already_synced_skipped += 1;
+            continue;
+        }
+        let mut redactor = LocalRedactor::new();
+        let payload = PetEventPayload {
+            device_id: device_id.clone(),
+            run_id: None,
+            event_kind: if entry.outcome == "held" {
+                "approval".into()
+            } else {
+                "action".into()
+            },
+            action_kind: Some(entry.action_kind.clone()),
+            decision_source: Some(entry.decision_source.clone()),
+            risk: Some(entry.risk),
+            outcome: Some(entry.outcome.clone()),
+            summary: redactor.redact(&entry.summary),
+            detail_json: json!({
+                "migrated_from": "local_action_audit",
+                "original_timestamp": entry.timestamp.to_rfc3339(),
+            })
+            .to_string(),
+        };
+        if nm.push_event(&payload).await.is_ok() {
+            state.store.mark_synced(&marker)?;
+            report.events_migrated += 1;
+        }
+    }
+
+    // 4. Migrate learned skills to NexusMind shared memory
+    let skills = state.store.list_skills()?;
+    for skill in skills {
+        let marker = format!("skill:{}:{}", skill.slug, skill.updated_at.to_rfc3339());
+        if state.store.is_synced(&marker)? {
+            report.already_synced_skipped += 1;
+            continue;
+        }
+        let payload = crate::nexusmind::MemoryPayload {
+            title: format!("Skill: {}", skill.title),
+            memory_type: "pattern".into(),
+            content: format!(
+                "**Trigger:** {}\n\n```yaml\n{}\n```",
+                skill.trigger_hint, skill.steps_yaml
+            ),
+            topic_key: format!("skill/{}", skill.slug),
+            scope: skill.scope.clone(),
+        };
+        if nm.store_memory(&payload).await.is_ok() {
+            state.store.mark_synced(&marker)?;
+            report.skills_migrated += 1;
+        }
+    }
+
+    Ok(report)
+}
+
 async fn handle_test_nexusmind(state: &Arc<DaemonState>) -> Result<Value> {
     match verify_and_heartbeat(state).await {
         Ok(ack) => Ok(json!({ "connected": true, "ack": ack })),
@@ -635,6 +773,12 @@ async fn handle_save_settings(state: &Arc<DaemonState>, params: &Value) -> Resul
 
     state.reload_clients()?;
     let heartbeat_err = verify_and_heartbeat(state).await.err().map(|e| e.to_string());
+    if state.is_nexusmind_connected() {
+        let bg = Arc::clone(state);
+        tokio::spawn(async move {
+            let _ = sync_history_to_nexusmind(&bg).await;
+        });
+    }
     let mut settings = handle_get_settings(state)?;
     if let Some(obj) = settings.as_object_mut() {
         obj.insert(

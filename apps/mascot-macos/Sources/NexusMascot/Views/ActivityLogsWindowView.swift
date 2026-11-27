@@ -35,6 +35,8 @@ struct ActivityLogsWindowView: View {
     @State private var selectedConversationId: String?
     @State private var kindFilter: String = "all"
     @State private var errorMsg: String?
+    @State private var syncBanner: String?
+    @State private var isSyncing: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,6 +66,14 @@ struct ActivityLogsWindowView: View {
                     }
                 }
 
+                Button(isSyncing ? "Migrando…" : "Migrar a NexusMind") {
+                    Task { await runMigration() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(NexusTokens.accentLime)
+                .foregroundStyle(NexusTokens.accentLimeForeground)
+                .disabled(isSyncing)
+
                 Button {
                     Task { await reload() }
                 } label: {
@@ -75,6 +85,16 @@ struct ActivityLogsWindowView: View {
             .background(NexusTokens.surfaceElevated)
 
             Divider().overlay(NexusTokens.surfaceBorder)
+
+            if let banner = syncBanner {
+                Text(banner)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(NexusTokens.statusSuccess)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(NexusTokens.statusSuccess.opacity(0.12))
+            }
 
             if let err = errorMsg {
                 Text(err)
@@ -249,6 +269,20 @@ struct ActivityLogsWindowView: View {
                         .padding(24)
                 }
             }
+        }
+    }
+
+    private func runMigration() async {
+        isSyncing = true
+        syncBanner = nil
+        errorMsg = nil
+        defer { isSyncing = false }
+        do {
+            let r = try await client.syncHistoryToNexusMind()
+            syncBanner = "Migrado a NexusMind: \(r.conversations) conversaciones, \(r.events) logs/eventos y \(r.skills) skills."
+            await reload()
+        } catch {
+            errorMsg = "Error migrando a NexusMind: \(error.localizedDescription)"
         }
     }
 

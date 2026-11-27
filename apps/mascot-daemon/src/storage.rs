@@ -235,6 +235,11 @@ impl LocalStore {
                 detail_json TEXT NOT NULL DEFAULT '{}'
             );
             CREATE INDEX IF NOT EXISTS idx_pet_logs_ts ON pet_logs(timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS sync_markers (
+                item_key TEXT PRIMARY KEY,
+                synced_at TEXT NOT NULL
+            );
             ",
         )?;
         Ok(Self {
@@ -789,6 +794,25 @@ impl LocalStore {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
+    }
+
+    pub fn is_synced(&self, item_key: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_markers WHERE item_key = ?1)",
+            params![item_key],
+            |r| r.get(0),
+        )?;
+        Ok(exists)
+    }
+
+    pub fn mark_synced(&self, item_key: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_markers (item_key, synced_at) VALUES (?1, ?2)",
+            params![item_key, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
     }
 }
 

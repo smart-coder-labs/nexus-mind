@@ -494,4 +494,47 @@ async fn e2e_mandatory_nexusmind_gate_and_remote_audit_sync() {
     )
     .unwrap();
     assert!(!logs["result"]["logs"].as_array().unwrap().is_empty());
+
+    // 5. Seed legacy offline conversation + action_audit + skill and verify idempotent sync_history migration
+    let now = chrono::Utc::now();
+    state
+        .store
+        .save_agent_run(&nexus_mascot_daemon::storage::AgentRunRecord {
+            id: "legacy-run-before-nm".into(),
+            created_at: now,
+            updated_at: now,
+            objective: "Legacy offline chat with Nexi".into(),
+            status: "completed".into(),
+            route: Some("general_llm".into()),
+            steps_executed: 1,
+            tool_errors: 0,
+            state_json: r#"{"messages":[{"role":"user","text":"Legacy offline chat"}]}"#.into(),
+            final_reply: Some("Done offline!".into()),
+        })
+        .unwrap();
+    state
+        .store
+        .record_outcome("Legacy desktop action before NexusMind", "shell", "jev_cloud", 0.2, "success")
+        .unwrap();
+    state
+        .store
+        .upsert_skill("legacy-skill", "Legacy Skill", "manual", "steps: []", "global_user")
+        .unwrap();
+
+    let sync1: Value = serde_json::from_str(
+        &dispatch_rpc_json(r#"{"jsonrpc":"2.0","id":5,"method":"sync_history"}"#, &state).await,
+    )
+    .unwrap();
+    assert!(sync1["result"]["conversations_migrated"].as_u64().unwrap() >= 1);
+    assert!(sync1["result"]["events_migrated"].as_u64().unwrap() >= 1);
+    assert_eq!(sync1["result"]["skills_migrated"], json!(1));
+
+    // Re-running sync_history must be idempotent (0 duplicate uploads)
+    let sync2: Value = serde_json::from_str(
+        &dispatch_rpc_json(r#"{"jsonrpc":"2.0","id":6,"method":"sync_history"}"#, &state).await,
+    )
+    .unwrap();
+    assert_eq!(sync2["result"]["conversations_migrated"], json!(0));
+    assert_eq!(sync2["result"]["events_migrated"], json!(0));
+    assert_eq!(sync2["result"]["skills_migrated"], json!(0));
 }

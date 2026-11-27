@@ -132,6 +132,17 @@ final class MascotDaemonClient: @unchecked Sendable {
         return try JSONDecoder().decode(Wrapper.self, from: data).logs
     }
 
+    func syncHistoryToNexusMind() async throws -> (conversations: Int, events: Int, skills: Int) {
+        struct Report: Codable {
+            let conversations_migrated: Int
+            let events_migrated: Int
+            let skills_migrated: Int
+        }
+        let data = try await call(method: "sync_history", params: [:])
+        let r = try JSONDecoder().decode(Report.self, from: data)
+        return (r.conversations_migrated, r.events_migrated, r.skills_migrated)
+    }
+
     private func call(method: String, params: [String: Any]) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nexus_mascot_daemon::config::{default_config_dir, MascotConfig};
-use nexus_mascot_daemon::ipc::{serve_unix_socket, verify_and_heartbeat, DaemonState};
+use nexus_mascot_daemon::ipc::{
+    serve_unix_socket, sync_history_to_nexusmind, verify_and_heartbeat, DaemonState,
+};
 use nexus_mascot_daemon::triggers::spawn_background_scheduler;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +35,8 @@ enum Commands {
     },
     /// Probe the configured System 1 engine (Laya local / Jev cloud / Hybrid)
     CheckDecisionEngine,
+    /// Migrate all prior local conversations, audit logs, and learned skills to NexusMind
+    SyncHistory,
 }
 
 #[tokio::main]
@@ -89,12 +93,30 @@ async fn main() -> Result<()> {
             );
             Ok(())
         }
+        Commands::SyncHistory => {
+            let cfg = MascotConfig::load_or_default(&cfg_path)?;
+            let state = DaemonState::new(cfg)?;
+            let report = sync_history_to_nexusmind(&state).await?;
+            println!(
+                "Migración a NexusMind completada: {} conversaciones, {} eventos/logs, {} skills ({} ya sincronizados omitidos).",
+                report.conversations_migrated,
+                report.events_migrated,
+                report.skills_migrated,
+                report.already_synced_skipped
+            );
+            Ok(())
+        }
         Commands::Run => {
             let cfg = MascotConfig::load_or_default(&cfg_path)?;
             let socket = cfg.resolved_socket_path();
             let mcp_servers = cfg.mcp_servers.clone();
             let state = DaemonState::new(cfg)?;
-            let _ = verify_and_heartbeat(&state).await;
+            if verify_and_heartbeat(&state).await.is_ok() {
+                let bg = Arc::clone(&state);
+                tokio::spawn(async move {
+                    let _ = sync_history_to_nexusmind(&bg).await;
+                });
+            }
             state.mcp.connect_configured(&mcp_servers).await;
             spawn_background_scheduler(Arc::clone(&state));
             serve_unix_socket(&socket, state).await
