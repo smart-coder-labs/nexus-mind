@@ -139,8 +139,11 @@ impl MascotConfig {
         }
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config at {}", path.display()))?;
-        let parsed: Self = serde_yaml::from_str(&raw)
+        let mut parsed: Self = serde_yaml::from_str(&raw)
             .with_context(|| format!("failed to parse YAML config at {}", path.display()))?;
+        if parsed.llm.heavy_model.trim().is_empty() {
+            parsed.llm.heavy_model = parsed.llm.provider.default_heavy_model().to_string();
+        }
         Ok(parsed)
     }
 
@@ -322,12 +325,62 @@ pub enum LlmProviderKind {
     OpenAi,
 }
 
+impl LlmProviderKind {
+    pub fn default_fast_model(self) -> &'static str {
+        match self {
+            Self::Claude => "claude-haiku-4-5",
+            Self::Gemini => "gemini-2.5-flash",
+            Self::OpenAi => "gpt-4.1-mini",
+        }
+    }
+
+    pub fn default_heavy_model(self) -> &'static str {
+        match self {
+            Self::Claude => "claude-opus-4-5",
+            Self::Gemini => "gemini-2.5-pro",
+            Self::OpenAi => "gpt-4.1",
+        }
+    }
+
+    pub fn default_api_key_env(self) -> &'static str {
+        match self {
+            Self::Claude => "ANTHROPIC_API_KEY",
+            Self::Gemini => "GEMINI_API_KEY",
+            Self::OpenAi => "OPENAI_API_KEY",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTier {
+    #[default]
+    Fast,
+    Heavy,
+}
+
+impl ModelTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Heavy => "heavy",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LlmConfig {
     #[serde(default)]
     pub provider: LlmProviderKind,
+    /// Fast/daily model (Haiku, Gemini Flash, GPT-4.1 mini) used for conversation and commands.
     #[serde(default = "default_llm_model")]
     pub model: String,
+    /// Heavy reasoning model (Opus, Gemini Pro, GPT-4.1/o3) used automatically for apps, docs, designs, etc.
+    #[serde(default = "default_heavy_llm_model")]
+    pub heavy_model: String,
+    /// Automatically switch from fast model to heavy model on complex tasks across all providers.
+    #[serde(default = "default_true")]
+    pub auto_escalate_model: bool,
     #[serde(default = "default_llm_key_env")]
     pub api_key_env: String,
     #[serde(default)]
@@ -338,8 +391,26 @@ pub struct LlmConfig {
     pub max_tokens: u32,
 }
 
+impl LlmConfig {
+    pub fn model_for_tier(&self, tier: ModelTier) -> &str {
+        match tier {
+            ModelTier::Fast => &self.model,
+            ModelTier::Heavy => {
+                if self.heavy_model.trim().is_empty() {
+                    self.provider.default_heavy_model()
+                } else {
+                    &self.heavy_model
+                }
+            }
+        }
+    }
+}
+
 fn default_llm_model() -> String {
-    "claude-sonnet-4-5".into()
+    LlmProviderKind::Claude.default_fast_model().into()
+}
+fn default_heavy_llm_model() -> String {
+    LlmProviderKind::Claude.default_heavy_model().into()
 }
 fn default_llm_key_env() -> String {
     "ANTHROPIC_API_KEY".into()
@@ -353,6 +424,8 @@ impl Default for LlmConfig {
         Self {
             provider: LlmProviderKind::Claude,
             model: default_llm_model(),
+            heavy_model: default_heavy_llm_model(),
+            auto_escalate_model: true,
             api_key_env: default_llm_key_env(),
             base_url: None,
             api_key_override: None,

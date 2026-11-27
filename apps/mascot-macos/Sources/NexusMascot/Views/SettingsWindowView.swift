@@ -34,7 +34,9 @@ struct SettingsWindowView: View {
 
     @State private var mascotName = "Nexi"
     @State private var llmProvider: LlmProviderKind = .claude
-    @State private var llmModel = "claude-sonnet-4-5"
+    @State private var llmModel = "claude-haiku-4-5"
+    @State private var llmHeavyModel = "claude-opus-4-5"
+    @State private var autoEscalateModel = true
     @State private var decisionMode: DecisionMode = .hybrid
     @State private var layaEndpoint = "http://127.0.0.1:8787/v1/systemone"
     @State private var nexusmindEnabled = true
@@ -133,12 +135,20 @@ struct SettingsWindowView: View {
                 .labelsHidden()
                 .onChange(of: llmProvider) { _, next in
                     llmModel = next.defaultModel
+                    llmHeavyModel = next.defaultHeavyModel
                 }
             }
-            fieldRow("Modelo") {
-                TextField("claude-sonnet-4-5", text: $llmModel)
+            fieldRow("Modelo rápido (conversación y comandos)") {
+                TextField("claude-haiku-4-5", text: $llmModel)
                     .textFieldStyle(.roundedBorder)
             }
+            fieldRow("Modelo potente (apps, documentos, diseños)") {
+                TextField("claude-opus-4-5", text: $llmHeavyModel)
+                    .textFieldStyle(.roundedBorder)
+            }
+            Toggle("Escalar automáticamente al modelo potente en tareas complejas", isOn: $autoEscalateModel)
+                .font(.system(size: 12))
+                .foregroundStyle(.white)
             secretRow("Claude API Key (ANTHROPIC_API_KEY)", configured: hasAnthropicKey, text: $anthropicKey, placeholder: "sk-ant-…")
             secretRow("Gemini API Key (GEMINI_API_KEY)", configured: hasGeminiKey, text: $geminiKey, placeholder: "AIza…")
             secretRow("OpenAI API Key (OPENAI_API_KEY)", configured: hasOpenAiKey, text: $openAiKey, placeholder: "sk-…")
@@ -234,6 +244,8 @@ struct SettingsWindowView: View {
             layaEndpoint = s.layaEndpoint
             llmProvider = s.llmProvider
             llmModel = s.llmModel
+            llmHeavyModel = s.llmHeavyModel ?? s.llmProvider.defaultHeavyModel
+            autoEscalateModel = s.autoEscalateModel ?? true
             nexusmindEnabled = s.nexusmindEnabled
             nexusmindBaseUrl = s.nexusmindBaseUrl
             nexusmindProject = s.nexusmindProject
@@ -258,6 +270,8 @@ struct SettingsWindowView: View {
             "laya_endpoint": layaEndpoint,
             "llm_provider": llmProvider.rawValue,
             "llm_model": llmModel,
+            "llm_heavy_model": llmHeavyModel,
+            "auto_escalate_model": autoEscalateModel,
             "nexusmind_enabled": nexusmindEnabled,
             "nexusmind_base_url": nexusmindBaseUrl,
             "nexusmind_project": nexusmindProject

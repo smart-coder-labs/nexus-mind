@@ -650,3 +650,174 @@ async fn e2e_multi_turn_conversation_preserves_context_and_auto_stores_nexusmind
     let _ = dispatch_rpc_json(r#"{"jsonrpc":"2.0","id":4,"method":"new_conversation"}"#, &state).await;
     assert!(state.get_active_conversation_id().is_none());
 }
+
+#[tokio::test]
+async fn e2e_dual_tier_model_routing_across_providers() {
+    let dir = TempDir::new().unwrap();
+
+    // Minimal NexusMind mock (connected & healthy)
+    let nm_base = spawn_http_mock(|_req| {
+        json!({
+            "status": "ok",
+            "results": [],
+            "stored": 1
+        })
+    })
+    .await;
+
+    // Unified LLM mock recording every observed `model` field from JSON requests (Claude & OpenAI)
+    // and serving valid responses for Claude, Gemini, and OpenAI.
+    let seen_models = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let seen_clone = Arc::clone(&seen_models);
+    let llm_base = spawn_http_mock(move |req| {
+        if let Some(m) = req.get("model").and_then(Value::as_str) {
+            if let Ok(mut guard) = seen_clone.try_lock() {
+                guard.push(m.to_string());
+            }
+        }
+        if req.get("contents").is_some() {
+            // Gemini generateContent response
+            json!({
+                "candidates": [{
+                    "content": { "parts": [{ "text": "Respuesta Gemini OK" }] }
+                }]
+            })
+        } else if req.get("system").is_some() {
+            // Anthropic messages response
+            json!({
+                "content": [{ "type": "text", "text": "Respuesta Claude OK" }]
+            })
+        } else {
+            // OpenAI chat completions response
+            json!({
+                "choices": [{
+                    "message": { "role": "assistant", "content": "Respuesta OpenAI OK" }
+                }]
+            })
+        }
+    })
+    .await;
+
+    let mut cfg = MascotConfig {
+        db_path: Some(dir.path().join("mascot.db")),
+        ..Default::default()
+    };
+    cfg.decision_engine.mode = DecisionMode::DeterministicOnly;
+    cfg.nexusmind.base_url = nm_base.clone();
+    cfg.llm.provider = LlmProviderKind::Claude;
+    cfg.llm.base_url = Some(llm_base.clone());
+    cfg.llm.api_key_override = Some("test-api-key".into());
+    let state = DaemonState::new(cfg).unwrap();
+
+    let save_nm = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "save_settings",
+        "params": { "nexusmind_base_url": nm_base, "nexusmind_api_key": "nm_live_key_123" }
+    })
+    .to_string();
+    let _ = dispatch_rpc_json(&save_nm, &state).await;
+
+    // 1. Claude: default simple chat uses claude-haiku-4-5 ("fast"),
+    //    complex task ("trabaja sobre una app y crea un documento de arquitectura") escalates to claude-opus-4-5 ("heavy").
+    let r_claude_fast: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":2,"method":"submit_prompt","params":{"prompt":"hola, cómo estás?"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(r_claude_fast["result"]["reply"]["model_tier"], "fast");
+    assert_eq!(r_claude_fast["result"]["reply"]["model"], "claude-haiku-4-5");
+    assert_eq!(r_claude_fast["result"]["run"]["model_tier"], "fast");
+    assert_eq!(r_claude_fast["result"]["run"]["model_used"], "claude-haiku-4-5");
+
+    let r_claude_heavy: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":3,"method":"submit_prompt","params":{"prompt":"trabaja sobre una app nueva y crea un documento técnico con diseño"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(r_claude_heavy["result"]["reply"]["model_tier"], "heavy");
+    assert_eq!(r_claude_heavy["result"]["reply"]["model"], "claude-opus-4-5");
+
+    // 2. Switch provider to Gemini via save_settings -> defaults become gemini-2.5-flash / gemini-2.5-pro
+    let save_gemini = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "save_settings",
+        "params": { "llm_provider": "gemini", "llm_api_key": "test-gemini-key" }
+    })
+    .to_string();
+    let _ = dispatch_rpc_json(&save_gemini, &state).await;
+    let _ = dispatch_rpc_json(r#"{"jsonrpc":"2.0","id":5,"method":"new_conversation"}"#, &state).await;
+
+    let r_gemini_fast: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":6,"method":"submit_prompt","params":{"prompt":"hola gemini"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(r_gemini_fast["result"]["reply"]["model_tier"], "fast");
+    assert_eq!(r_gemini_fast["result"]["reply"]["model"], "gemini-2.5-flash");
+
+    let r_gemini_heavy: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":7,"method":"submit_prompt","params":{"prompt":"necesito crear una presentación de diseño y refactorizar una app"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(r_gemini_heavy["result"]["reply"]["model_tier"], "heavy");
+    assert_eq!(r_gemini_heavy["result"]["reply"]["model"], "gemini-2.5-pro");
+
+    // 3. Switch provider to OpenAI via save_settings -> defaults become gpt-4.1-mini / gpt-4.1
+    let save_openai = json!({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "save_settings",
+        "params": { "llm_provider": "open_ai", "llm_api_key": "test-openai-key" }
+    })
+    .to_string();
+    let _ = dispatch_rpc_json(&save_openai, &state).await;
+    let _ = dispatch_rpc_json(r#"{"jsonrpc":"2.0","id":9,"method":"new_conversation"}"#, &state).await;
+
+    let r_openai_fast: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":10,"method":"submit_prompt","params":{"prompt":"qué hora es?"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(r_openai_fast["result"]["reply"]["model_tier"], "fast");
+    assert_eq!(r_openai_fast["result"]["reply"]["model"], "gpt-4.1-mini");
+
+    let r_openai_heavy: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":11,"method":"submit_prompt","params":{"prompt":"crea una app web completa con arquitectura y diseño UI"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(r_openai_heavy["result"]["reply"]["model_tier"], "heavy");
+    assert_eq!(r_openai_heavy["result"]["reply"]["model"], "gpt-4.1");
+
+    let recorded = seen_models.lock().await.clone();
+    assert_eq!(
+        recorded,
+        vec![
+            "claude-haiku-4-5".to_string(),
+            "claude-opus-4-5".to_string(),
+            "gpt-4.1-mini".to_string(),
+            "gpt-4.1".to_string(),
+        ]
+    );
+}

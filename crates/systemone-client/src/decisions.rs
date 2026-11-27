@@ -191,6 +191,17 @@ pub const EXECUTOR_ROUTES: &[(&str, &str)] = &[
     ("general_llm", "Conversational answer, drafting, or multi-step reasoning"),
 ];
 
+pub const MODEL_TIER_CHOICES: &[(&str, &str)] = &[
+    (
+        "fast",
+        "Everyday conversation, quick Q&A, memory lookup, calendar checks, or simple single-step commands",
+    ),
+    (
+        "heavy",
+        "Complex tasks: building or editing an app/codebase, creating rich documents/presentations/reports, UI/architecture design, or deep multi-app workflows",
+    ),
+];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RouteTaskInput {
     pub user_request: String,
@@ -203,6 +214,8 @@ pub struct RouteTaskInput {
 pub struct RouteTaskAnswer {
     pub route: String,
     pub confidence: f64,
+    pub model_tier: String,
+    pub model_tier_confidence: f64,
 }
 
 pub fn build_route_task_request(model: &str, input: &RouteTaskInput) -> SystemOneRequest {
@@ -221,14 +234,27 @@ pub fn build_route_task_request(model: &str, input: &RouteTaskInput) -> SystemOn
         "Select the primary execution path best suited to fulfill the user request.",
         EXECUTOR_ROUTES,
     )
+    .with_choice(
+        "model_tier",
+        "Choose whether this request can be handled by the fast model or requires the heavy reasoning model.",
+        MODEL_TIER_CHOICES,
+    )
 }
 
 pub fn parse_route_task_response(resp: &SystemOneResponse) -> Result<RouteTaskAnswer> {
     let allowed: Vec<&str> = EXECUTOR_ROUTES.iter().map(|(k, _)| *k).collect();
     let c = parse_choice(resp, "route", &allowed)?;
+    let tier_allowed: Vec<&str> = MODEL_TIER_CHOICES.iter().map(|(k, _)| *k).collect();
+    let (model_tier, model_tier_confidence) =
+        match parse_choice(resp, "model_tier", &tier_allowed) {
+            Ok(t) => (t.choice, t.confidence),
+            Err(_) => ("fast".to_string(), 0.0),
+        };
     Ok(RouteTaskAnswer {
         route: c.choice,
         confidence: c.confidence,
+        model_tier,
+        model_tier_confidence,
     })
 }
 

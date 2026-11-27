@@ -1,5 +1,6 @@
 //! Autonomous multi-step ReAct Agent Loop (System 2 + System 1 gates + resumable approvals).
 
+use crate::config::ModelTier;
 use crate::executors::{
     fs_list_dir, fs_move_to_trash, fs_read_text, fs_write_text, run_applescript, run_shell_command,
 };
@@ -33,6 +34,8 @@ pub struct AgentRunResult {
     pub run_id: String,
     pub status: String, // "completed" | "waiting_approval" | "blocked" | "failed"
     pub route: Option<String>,
+    pub model_tier: String,
+    pub model_used: String,
     pub reply: String,
     pub steps_executed: u32,
     pub pending_approval: Option<PendingApproval>,
@@ -44,6 +47,8 @@ struct PersistedLoopState {
     system_prompt: String,
     messages: Vec<AgentMessage>,
     active_app: Option<String>,
+    #[serde(default)]
+    active_tier: ModelTier,
     pending_tool_call: Option<ToolCall>,
     remaining_tool_calls: Vec<ToolCall>,
     evidence: Vec<String>,
@@ -68,10 +73,10 @@ pub async fn start_agent_run(
         )
     };
 
-    // 1. System 1 routing (Laya/Jev)
+    // 1. System 1 routing (Laya/Jev): executor route + fast vs heavy model tier
     state.set_visual_state(MascotVisualState::Deciding);
     let skill_slugs: Vec<String> = skills.iter().map(|s| s.slug.clone()).collect();
-    let route = router
+    let routing = router
         .route_task(
             &RouteTaskInput {
                 user_request: safe_objective.clone(),
@@ -82,8 +87,19 @@ pub async fn start_agent_run(
             false,
         )
         .await
-        .ok()
-        .map(|env| env.answer.route);
+        .ok();
+    let route = routing.as_ref().map(|env| env.answer.route.clone());
+
+    let llm_snapshot = state.current_llm();
+    let (selected_tier, tier_reason) = select_model_tier(
+        &safe_objective,
+        route.as_deref(),
+        routing.as_ref().map(|e| e.answer.model_tier.as_str()),
+        routing.as_ref().map(|e| e.answer.model_tier_confidence),
+        llm_snapshot.auto_escalate_enabled(),
+    );
+    let selected_model = llm_snapshot.model_for_tier(selected_tier).to_string();
+    state.set_active_model(selected_tier, selected_model.clone());
 
     // 2. Pull org-wide NexusMind memories relevant to this message
     let mut context_snippets = Vec::new();
@@ -136,6 +152,7 @@ pub async fn start_agent_run(
                 system_prompt: system_prompt.clone(),
                 messages: Vec::new(),
                 active_app: active_app.map(str::to_string),
+                active_tier: selected_tier,
                 pending_tool_call: None,
                 remaining_tool_calls: Vec::new(),
                 evidence: Vec::new(),
@@ -146,6 +163,7 @@ pub async fn start_agent_run(
         prev_state.remaining_tool_calls.clear();
         prev_state.system_prompt = system_prompt;
         prev_state.active_app = active_app.map(str::to_string);
+        prev_state.active_tier = selected_tier;
         trim_history_window(&mut prev_state.messages, MAX_HISTORY_MESSAGES);
         // Never leave a dangling Assistant tool_use without a matching ToolResult before adding User text
         sanitize_dangling_tool_calls(&mut prev_state.messages);
@@ -168,6 +186,7 @@ pub async fn start_agent_run(
                 text: safe_objective.clone(),
             }],
             active_app: active_app.map(str::to_string),
+            active_tier: selected_tier,
             pending_tool_call: None,
             remaining_tool_calls: Vec::new(),
             evidence: Vec::new(),
@@ -198,9 +217,34 @@ pub async fn start_agent_run(
         None,
         None,
         Some("success"),
-        &format!("Prompt recibido: {}", preview(&safe_objective, 120)),
-        json!({ "active_app": active_app, "route": record.route, "messages_in_thread": loop_state.messages.len() }),
+        &format!(
+            "Prompt recibido [{} · {}]: {}",
+            selected_tier.as_str(),
+            selected_model,
+            preview(&safe_objective, 110)
+        ),
+        json!({
+            "active_app": active_app,
+            "route": record.route,
+            "model_tier": selected_tier,
+            "model_selected": selected_model,
+            "tier_reason": tier_reason,
+            "messages_in_thread": loop_state.messages.len(),
+        }),
     );
+    if selected_tier == ModelTier::Heavy {
+        audit_and_sync_event(
+            state,
+            Some(&record.id),
+            "decision",
+            Some("model_escalation"),
+            Some("system_router"),
+            None,
+            Some("success"),
+            &format!("Escalado a modelo potente ({selected_model}): {tier_reason}"),
+            json!({ "model": selected_model, "reason": tier_reason }),
+        );
+    }
 
     drive_loop(state, record, loop_state).await
 }
@@ -327,12 +371,14 @@ async fn drive_loop(
     mut record: AgentRunRecord,
     mut loop_state: PersistedLoopState,
 ) -> Result<AgentRunResult> {
-    if !state.current_llm().configured() {
+    let llm_client = state.current_llm();
+    if !llm_client.configured() {
         let key_env = state.config.read().unwrap().llm.api_key_env.clone();
         let reply = format!(
             "Recibido: \"{}\". Configura `{key_env}` para activar el bucle autónomo System 2 con herramientas.",
             record.objective
         );
+        let active_model = llm_client.model_for_tier(loop_state.active_tier).to_string();
         record.status = "completed".into();
         record.final_reply = Some(reply.clone());
         state.store.save_agent_run(&record)?;
@@ -341,6 +387,8 @@ async fn drive_loop(
             run_id: record.id,
             status: "completed".into(),
             route: record.route,
+            model_tier: loop_state.active_tier.as_str().into(),
+            model_used: active_model,
             reply,
             steps_executed: record.steps_executed,
             pending_approval: None,
@@ -349,10 +397,16 @@ async fn drive_loop(
     }
 
     let max_steps = state.config.read().unwrap().autonomy.max_steps_per_task;
-    let step_budget_limit = record.steps_executed.saturating_add(max_steps);
+    let initial_steps = record.steps_executed;
+    let initial_errors = record.tool_errors;
+    let step_budget_limit = initial_steps.saturating_add(max_steps);
 
     loop {
         if state.kill_switch.load(Ordering::SeqCst) {
+            let active_model = state
+                .current_llm()
+                .model_for_tier(loop_state.active_tier)
+                .to_string();
             record.status = "cancelled".into();
             record.updated_at = Utc::now();
             record.final_reply = Some("Detenido inmediatamente por Kill Switch.".into());
@@ -362,6 +416,8 @@ async fn drive_loop(
                 run_id: record.id,
                 status: "blocked".into(),
                 route: record.route,
+                model_tier: loop_state.active_tier.as_str().into(),
+                model_used: active_model,
                 reply: "Detenido inmediatamente por Kill Switch.".into(),
                 steps_executed: record.steps_executed,
                 pending_approval: None,
@@ -380,6 +436,36 @@ async fn drive_loop(
             continue;
         }
 
+        // Mid-loop automatic escalation: if a fast-tier task gets complex (>=4 steps or >=2 errors),
+        // upgrade the remaining reasoning steps to the provider's heavy model!
+        let turn_steps = record.steps_executed.saturating_sub(initial_steps);
+        let turn_errors = record.tool_errors.saturating_sub(initial_errors);
+        let llm = state.current_llm();
+        if loop_state.active_tier == ModelTier::Fast
+            && llm.auto_escalate_enabled()
+            && (turn_steps >= 4 || turn_errors >= 2)
+        {
+            loop_state.active_tier = ModelTier::Heavy;
+            let heavy_name = llm.model_for_tier(ModelTier::Heavy).to_string();
+            state.set_active_model(ModelTier::Heavy, heavy_name.clone());
+            audit_and_sync_event(
+                state,
+                Some(&record.id),
+                "decision",
+                Some("model_escalation"),
+                Some("mid_loop_complexity"),
+                None,
+                Some("success"),
+                &format!(
+                    "Auto-escalado a modelo potente ({heavy_name}) tras {turn_steps} pasos y {turn_errors} errores"
+                ),
+                json!({ "model": heavy_name, "turn_steps": turn_steps, "turn_errors": turn_errors }),
+            );
+        }
+
+        let active_model = llm.model_for_tier(loop_state.active_tier).to_string();
+        state.set_active_model(loop_state.active_tier, active_model.clone());
+
         if record.steps_executed >= step_budget_limit {
             let reply = format!(
                 "Alcancé el límite de seguridad de {max_steps} pasos en este turno. Revisa el estado o pídeme continuar."
@@ -395,6 +481,8 @@ async fn drive_loop(
                 run_id: record.id,
                 status: "completed".into(),
                 route: record.route,
+                model_tier: loop_state.active_tier.as_str().into(),
+                model_used: active_model,
                 reply,
                 steps_executed: record.steps_executed,
                 pending_approval: None,
@@ -404,9 +492,13 @@ async fn drive_loop(
 
         state.set_visual_state(MascotVisualState::Thinking);
         let tools = build_tool_catalog(state).await;
-        let llm = state.current_llm();
         let turn = match llm
-            .chat_turn(&loop_state.system_prompt, &loop_state.messages, &tools)
+            .chat_turn_with_model(
+                Some(&active_model),
+                &loop_state.system_prompt,
+                &loop_state.messages,
+                &tools,
+            )
             .await
         {
             Ok(t) => t,
@@ -424,8 +516,8 @@ async fn drive_loop(
                     None,
                     None,
                     Some("error"),
-                    &format!("Error en System 2: {err}"),
-                    json!({ "error": err.to_string() }),
+                    &format!("Error en System 2 ({active_model}): {err}"),
+                    json!({ "model": active_model, "error": err.to_string() }),
                 );
                 state.set_visual_state(MascotVisualState::Blocked);
                 return Err(err);
@@ -472,8 +564,19 @@ async fn drive_loop(
                 None,
                 None,
                 Some("success"),
-                &format!("Respuesta completada ({} pasos): {}", record.steps_executed, preview(&turn.text, 120)),
-                json!({ "steps": record.steps_executed, "completion_verdict": completion_verdict }),
+                &format!(
+                    "Respuesta completada [{} · {} · {} pasos]: {}",
+                    loop_state.active_tier.as_str(),
+                    turn.model,
+                    record.steps_executed,
+                    preview(&turn.text, 110)
+                ),
+                json!({
+                    "steps": record.steps_executed,
+                    "model": turn.model,
+                    "model_tier": loop_state.active_tier,
+                    "completion_verdict": completion_verdict,
+                }),
             );
             // Automatically distill and persist this conversation turn as a NexusMind Memory!
             auto_persist_turn_memory(state, &record, &loop_state, &turn.text).await;
@@ -483,6 +586,8 @@ async fn drive_loop(
                 run_id: record.id,
                 status: "completed".into(),
                 route: record.route,
+                model_tier: loop_state.active_tier.as_str().into(),
+                model_used: turn.model,
                 reply: turn.text,
                 steps_executed: record.steps_executed,
                 pending_approval: None,
@@ -635,10 +740,16 @@ async fn process_single_tool_call(
             sync_conversation_record(state, record);
             state.set_visual_state(MascotVisualState::Held);
 
+            let active_model = state
+                .current_llm()
+                .model_for_tier(loop_state.active_tier)
+                .to_string();
             Ok(Some(AgentRunResult {
                 run_id: record.id.clone(),
                 status: "waiting_approval".into(),
                 route: record.route.clone(),
+                model_tier: loop_state.active_tier.as_str().into(),
+                model_used: active_model,
                 reply: format!("Acción retenida para tu aprobación: {} ({reason})", proposed.summary),
                 steps_executed: record.steps_executed,
                 pending_approval: Some(approval),
@@ -1074,6 +1185,73 @@ fn source_label(src: DecisionSource) -> &'static str {
 
 fn preview(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
+}
+
+/// Decides between the fast daily model (Haiku / Flash / 4.1-mini) and the heavy reasoning
+/// model (Opus / Pro / 4.1) using System 1 (`Laya`/`Jev`) + deterministic complexity rules.
+fn select_model_tier(
+    objective: &str,
+    route: Option<&str>,
+    system1_tier: Option<&str>,
+    system1_conf: Option<f64>,
+    auto_escalate: bool,
+) -> (ModelTier, &'static str) {
+    if !auto_escalate {
+        return (ModelTier::Fast, "auto_escalate_disabled");
+    }
+    if system1_tier == Some("heavy") && system1_conf.unwrap_or(0.0) >= 0.70 {
+        return (ModelTier::Heavy, "system1_classified_heavy");
+    }
+    if matches!(route, Some("coding_nexus_cli" | "ui_computer_use")) {
+        return (ModelTier::Heavy, "complex_execution_route");
+    }
+
+    let low = objective.to_ascii_lowercase();
+    let heavy_cues = [
+        "powerpoint",
+        "presentación",
+        "presentacion",
+        "slides",
+        "deck",
+        "crear documento",
+        "crea un documento",
+        "genera un documento",
+        "redactar documento",
+        "informe completo",
+        "reporte completo",
+        "crear una app",
+        "crea una app",
+        "trabajar en la app",
+        "trabaja en la app",
+        "trabajar sobre una app",
+        "trabajar sobre un app",
+        "desarrollar",
+        "implementar",
+        "refactor",
+        "arquitectura",
+        "diseño",
+        "diseno",
+        "diseñar",
+        "disenar",
+        "mockup",
+        "figma",
+        "prototipo",
+        "ui/ux",
+        "spreadsheet",
+        "excel",
+        "contrato",
+        "propuesta comercial",
+        "build an app",
+        "create a document",
+        "create presentation",
+        "design system",
+        "codebase",
+    ];
+    if heavy_cues.iter().any(|cue| low.contains(cue)) {
+        return (ModelTier::Heavy, "heavy_task_keywords");
+    }
+
+    (ModelTier::Fast, "daily_conversation_or_command")
 }
 
 /// Automatically persists every meaningful conversation turn to NexusMind `/v1/memory/store`

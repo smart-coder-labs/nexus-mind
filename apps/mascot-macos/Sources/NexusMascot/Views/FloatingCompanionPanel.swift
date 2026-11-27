@@ -222,9 +222,19 @@ struct QuickCommandBarView: View {
                 .padding(6)
             } else {
             HStack {
-                Text("Hilo activo · contexto continuo")
+                Text("Hilo activo")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white.opacity(0.45))
+                Text(viewModel.activeModelName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        (viewModel.activeModelTier == "heavy" ? NexusTokens.statusBlue : Color.white.opacity(0.08))
+                            .opacity(viewModel.activeModelTier == "heavy" ? 0.22 : 1.0)
+                    )
+                    .foregroundStyle(viewModel.activeModelTier == "heavy" ? NexusTokens.statusBlue : .white.opacity(0.75))
+                    .clipShape(Capsule())
                 Spacer()
                 Button {
                     Task { await viewModel.startNewConversation() }

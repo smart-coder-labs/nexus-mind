@@ -4,7 +4,7 @@
 //! and `apps/mascot-daemon` (Rust).
 
 use crate::agent::{resume_agent_run_after_approval, start_agent_run};
-use crate::config::{AutonomyLevel, LlmProviderKind, MascotConfig};
+use crate::config::{AutonomyLevel, LlmProviderKind, MascotConfig, ModelTier};
 use crate::executors::run_shell_command;
 use crate::learning::run_idle_consolidation;
 use crate::llm::LlmClient;
@@ -54,6 +54,8 @@ pub struct DaemonState {
     pub nexusmind_connected: AtomicBool,
     pub nexusmind_last_error: RwLock<Option<String>>,
     pub active_conversation_id: RwLock<Option<String>>,
+    pub active_model_tier: RwLock<ModelTier>,
+    pub active_model_name: RwLock<String>,
     pub visual_state: RwLock<MascotVisualState>,
 }
 
@@ -70,6 +72,7 @@ impl DaemonState {
         if llm_cfg.api_key_override.is_none() {
             llm_cfg.api_key_override = secrets.get(&llm_cfg.api_key_env);
         }
+        let default_active_model = llm_cfg.model_for_tier(ModelTier::Fast).to_string();
         let llm = LlmClient::new(llm_cfg)?;
 
         let nm_key = secrets.get(&config.nexusmind.api_key_env);
@@ -91,8 +94,15 @@ impl DaemonState {
             nexusmind_connected: AtomicBool::new(false),
             nexusmind_last_error: RwLock::new(None),
             active_conversation_id: RwLock::new(None),
+            active_model_tier: RwLock::new(ModelTier::Fast),
+            active_model_name: RwLock::new(default_active_model),
             visual_state: RwLock::new(initial_state),
         }))
+    }
+
+    pub fn set_active_model(&self, tier: ModelTier, model_name: impl Into<String>) {
+        *self.active_model_tier.write().unwrap() = tier;
+        *self.active_model_name.write().unwrap() = model_name.into();
     }
 
     pub fn get_active_conversation_id(&self) -> Option<String> {
@@ -392,6 +402,11 @@ async fn handle_get_status(state: &Arc<DaemonState>) -> Result<Value> {
         "privacy_shield": cfg.privacy.privacy_shield_enabled,
         "kill_switch": state.kill_switch.load(Ordering::SeqCst),
         "llm_provider": cfg.llm.provider,
+        "llm_fast_model": cfg.llm.model,
+        "llm_heavy_model": cfg.llm.heavy_model,
+        "auto_escalate_model": cfg.llm.auto_escalate_model,
+        "active_model_tier": *state.active_model_tier.read().unwrap(),
+        "active_model": state.active_model_name.read().unwrap().clone(),
         "llm_configured": state.current_llm().configured(),
         "nexusmind_configured": state.current_nexusmind().configured(),
         "nexusmind_required": cfg.nexusmind.require_connection,
@@ -726,6 +741,8 @@ fn handle_get_settings(state: &DaemonState) -> Result<Value> {
         "laya_endpoint": cfg.decision_engine.laya.endpoint,
         "llm_provider": cfg.llm.provider,
         "llm_model": cfg.llm.model,
+        "llm_heavy_model": cfg.llm.heavy_model,
+        "auto_escalate_model": cfg.llm.auto_escalate_model,
         "nexusmind_enabled": cfg.nexusmind.enabled,
         "nexusmind_base_url": cfg.nexusmind.base_url,
         "nexusmind_project": cfg.nexusmind.project,
@@ -757,18 +774,27 @@ async fn handle_save_settings(state: &Arc<DaemonState>, params: &Value) -> Resul
         }
         if let Some(prov_val) = params.get("llm_provider") {
             if let Ok(prov) = serde_json::from_value::<LlmProviderKind>(prov_val.clone()) {
+                let provider_changed = cfg.llm.provider != prov;
                 cfg.llm.provider = prov;
-                cfg.llm.api_key_env = match prov {
-                    LlmProviderKind::Claude => "ANTHROPIC_API_KEY".into(),
-                    LlmProviderKind::Gemini => "GEMINI_API_KEY".into(),
-                    LlmProviderKind::OpenAi => "OPENAI_API_KEY".into(),
-                };
+                cfg.llm.api_key_env = prov.default_api_key_env().into();
+                if provider_changed {
+                    cfg.llm.model = prov.default_fast_model().into();
+                    cfg.llm.heavy_model = prov.default_heavy_model().into();
+                }
             }
         }
         if let Some(model) = params.get("llm_model").and_then(Value::as_str) {
             if !model.trim().is_empty() {
                 cfg.llm.model = model.trim().to_string();
             }
+        }
+        if let Some(heavy) = params.get("llm_heavy_model").and_then(Value::as_str) {
+            if !heavy.trim().is_empty() {
+                cfg.llm.heavy_model = heavy.trim().to_string();
+            }
+        }
+        if let Some(auto_esc) = params.get("auto_escalate_model").and_then(Value::as_bool) {
+            cfg.llm.auto_escalate_model = auto_esc;
         }
         if let Some(nm_en) = params.get("nexusmind_enabled").and_then(Value::as_bool) {
             cfg.nexusmind.enabled = nm_en;
@@ -806,6 +832,8 @@ async fn handle_save_settings(state: &Arc<DaemonState>, params: &Value) -> Resul
     }
 
     state.reload_clients()?;
+    let active_fast = state.current_llm().model_for_tier(ModelTier::Fast).to_string();
+    state.set_active_model(ModelTier::Fast, active_fast);
     let heartbeat_err = verify_and_heartbeat(state).await.err().map(|e| e.to_string());
     if state.is_nexusmind_connected() {
         let bg = Arc::clone(state);
@@ -1180,7 +1208,8 @@ async fn handle_submit_prompt(state: &Arc<DaemonState>, params: &Value) -> Resul
         "reply": {
             "text": run.reply,
             "provider": llm.provider_name(),
-            "model": llm.model_name(),
+            "model": run.model_used,
+            "model_tier": run.model_tier,
         }
     }))
 }

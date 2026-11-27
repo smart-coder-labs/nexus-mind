@@ -1,7 +1,7 @@
 //! Direct API System 2 client supporting multi-turn **tool calling** across
 //! Claude (Anthropic), Gemini (Google), and OpenAI (plus configurable base_url for testing/proxies).
 
-use crate::config::{LlmConfig, LlmProviderKind};
+use crate::config::{LlmConfig, LlmProviderKind, ModelTier};
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -83,6 +83,14 @@ impl LlmClient {
         &self.config.model
     }
 
+    pub fn model_for_tier(&self, tier: ModelTier) -> &str {
+        self.config.model_for_tier(tier)
+    }
+
+    pub fn auto_escalate_enabled(&self) -> bool {
+        self.config.auto_escalate_model
+    }
+
     fn api_key(&self) -> Option<String> {
         if let Some(inline) = self
             .config
@@ -121,23 +129,47 @@ impl LlmClient {
         messages: &[AgentMessage],
         tools: &[ToolSpec],
     ) -> Result<LlmTurnResponse> {
+        self.chat_turn_with_model(None, system_prompt, messages, tools)
+            .await
+    }
+
+    pub async fn chat_turn_with_model(
+        &self,
+        model_override: Option<&str>,
+        system_prompt: &str,
+        messages: &[AgentMessage],
+        tools: &[ToolSpec],
+    ) -> Result<LlmTurnResponse> {
         let key = self.api_key().ok_or_else(|| {
             anyhow!(
                 "System 2 API key missing; set environment variable {}",
                 self.config.api_key_env
             )
         })?;
+        let model = model_override
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or(&self.config.model);
 
         match self.config.provider {
-            LlmProviderKind::Claude => self.call_claude(&key, system_prompt, messages, tools).await,
-            LlmProviderKind::Gemini => self.call_gemini(&key, system_prompt, messages, tools).await,
-            LlmProviderKind::OpenAi => self.call_openai(&key, system_prompt, messages, tools).await,
+            LlmProviderKind::Claude => {
+                self.call_claude(&key, model, system_prompt, messages, tools)
+                    .await
+            }
+            LlmProviderKind::Gemini => {
+                self.call_gemini(&key, model, system_prompt, messages, tools)
+                    .await
+            }
+            LlmProviderKind::OpenAi => {
+                self.call_openai(&key, model, system_prompt, messages, tools)
+                    .await
+            }
         }
     }
 
     async fn call_claude(
         &self,
         api_key: &str,
+        model: &str,
         system_prompt: &str,
         messages: &[AgentMessage],
         tools: &[ToolSpec],
@@ -189,7 +221,7 @@ impl LlmClient {
         }
 
         let mut body = json!({
-            "model": self.config.model,
+            "model": model,
             "max_tokens": self.config.max_tokens,
             "system": system_prompt,
             "messages": wire_messages
@@ -261,21 +293,21 @@ impl LlmClient {
             text: text_parts.join("\n"),
             tool_calls: calls,
             provider: "claude".into(),
-            model: self.config.model.clone(),
+            model: model.to_string(),
         })
     }
 
     async fn call_gemini(
         &self,
         api_key: &str,
+        model: &str,
         system_prompt: &str,
         messages: &[AgentMessage],
         tools: &[ToolSpec],
     ) -> Result<LlmTurnResponse> {
         let url = self.config.base_url.clone().unwrap_or_else(|| {
             format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                self.config.model, api_key
+                "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             )
         });
 
@@ -373,13 +405,14 @@ impl LlmClient {
             text: text_parts.join("\n"),
             tool_calls: calls,
             provider: "gemini".into(),
-            model: self.config.model.clone(),
+            model: model.to_string(),
         })
     }
 
     async fn call_openai(
         &self,
         api_key: &str,
+        model: &str,
         system_prompt: &str,
         messages: &[AgentMessage],
         tools: &[ToolSpec],
@@ -431,7 +464,7 @@ impl LlmClient {
         }
 
         let mut body = json!({
-            "model": self.config.model,
+            "model": model,
             "max_tokens": self.config.max_tokens,
             "messages": wire_messages
         });
@@ -503,7 +536,7 @@ impl LlmClient {
             text,
             tool_calls: calls,
             provider: "openai".into(),
-            model: self.config.model.clone(),
+            model: model.to_string(),
         })
     }
 }

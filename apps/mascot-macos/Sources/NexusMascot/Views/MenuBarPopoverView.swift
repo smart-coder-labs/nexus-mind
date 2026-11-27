@@ -88,6 +88,16 @@ struct MenuBarPopoverView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.75))
                         .lineLimit(1)
+                    Spacer()
+                    Text(viewModel.activeModelName)
+                        .font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(
+                            (viewModel.activeModelTier == "heavy" ? NexusTokens.statusBlue.opacity(0.22) : Color.white.opacity(0.08))
+                        )
+                        .foregroundStyle(viewModel.activeModelTier == "heavy" ? NexusTokens.statusBlue : .white.opacity(0.75))
+                        .clipShape(Capsule())
                 }
             }
 

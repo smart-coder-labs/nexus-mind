@@ -78,6 +78,11 @@ struct DaemonStatus: Codable {
     let privacyShield: Bool
     let killSwitch: Bool
     let llmProvider: String
+    let llmFastModel: String?
+    let llmHeavyModel: String?
+    let autoEscalateModel: Bool?
+    let activeModelTier: String?
+    let activeModel: String?
     let llmConfigured: Bool
     let nexusmindConfigured: Bool
     let nexusmindRequired: Bool?
@@ -101,6 +106,11 @@ struct DaemonStatus: Codable {
         case privacyShield = "privacy_shield"
         case killSwitch = "kill_switch"
         case llmProvider = "llm_provider"
+        case llmFastModel = "llm_fast_model"
+        case llmHeavyModel = "llm_heavy_model"
+        case autoEscalateModel = "auto_escalate_model"
+        case activeModelTier = "active_model_tier"
+        case activeModel = "active_model"
         case llmConfigured = "llm_configured"
         case nexusmindConfigured = "nexusmind_configured"
         case nexusmindRequired = "nexusmind_required"
@@ -202,7 +212,15 @@ enum LlmProviderKind: String, Codable, CaseIterable, Identifiable {
 
     var defaultModel: String {
         switch self {
-        case .claude: return "claude-sonnet-4-5"
+        case .claude: return "claude-haiku-4-5"
+        case .gemini: return "gemini-2.5-flash"
+        case .openAi: return "gpt-4.1-mini"
+        }
+    }
+
+    var defaultHeavyModel: String {
+        switch self {
+        case .claude: return "claude-opus-4-5"
         case .gemini: return "gemini-2.5-pro"
         case .openAi: return "gpt-4.1"
         }
@@ -215,6 +233,8 @@ struct MascotSettings: Codable {
     var layaEndpoint: String
     var llmProvider: LlmProviderKind
     var llmModel: String
+    var llmHeavyModel: String?
+    var autoEscalateModel: Bool?
     var nexusmindEnabled: Bool
     var nexusmindBaseUrl: String
     var nexusmindProject: String
@@ -232,6 +252,8 @@ struct MascotSettings: Codable {
         case layaEndpoint = "laya_endpoint"
         case llmProvider = "llm_provider"
         case llmModel = "llm_model"
+        case llmHeavyModel = "llm_heavy_model"
+        case autoEscalateModel = "auto_escalate_model"
         case nexusmindEnabled = "nexusmind_enabled"
         case nexusmindBaseUrl = "nexusmind_base_url"
         case nexusmindProject = "nexusmind_project"

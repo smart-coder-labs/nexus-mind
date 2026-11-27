@@ -16,6 +16,8 @@ final class MascotViewModel: ObservableObject {
     @Published var nexusmindConnected: Bool = false
     @Published var nexusmindError: String?
     @Published var deviceHostname: String = ""
+    @Published var activeModelName: String = "claude-haiku-4-5"
+    @Published var activeModelTier: String = "fast"
     @Published var pendingApprovals: [PendingApproval] = []
     @Published var outcomeTape: [OutcomeEntry] = []
     @Published var suggestions: [ProactiveSuggestion] = []
@@ -178,6 +180,10 @@ final class MascotViewModel: ObservableObject {
             if nexusmindError != status.nexusmindError { nexusmindError = status.nexusmindError }
             let host = status.hostname ?? status.deviceId
             if deviceHostname != host { deviceHostname = host }
+            let modelName = status.activeModel ?? status.llmFastModel ?? "claude-haiku-4-5"
+            if activeModelName != modelName { activeModelName = modelName }
+            let tier = status.activeModelTier ?? "fast"
+            if activeModelTier != tier { activeModelTier = tier }
             let skillsCount = status.learnedSkills ?? 0
             if learnedSkillsCount != skillsCount { learnedSkillsCount = skillsCount }
             let mcpCount = status.mcpTools ?? 0
