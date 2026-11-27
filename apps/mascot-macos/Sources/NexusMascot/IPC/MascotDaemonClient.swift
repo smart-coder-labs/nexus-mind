@@ -88,6 +88,10 @@ final class MascotDaemonClient: @unchecked Sendable {
         return try JSONDecoder().decode(ReplyWrapper.self, from: data).reply.text
     }
 
+    func startNewConversation() async throws {
+        _ = try await call(method: "new_conversation", params: [:])
+    }
+
     func pollOsJobs() async throws -> [OsBridgeJob] {
         struct Wrapper: Codable { let jobs: [OsBridgeJob] }
         let data = try await call(method: "poll_os_jobs", params: [:])

@@ -1,5 +1,6 @@
 //! NexusMind REST API client for mandatory connection verification,
-//! multi-PC memory sync, live pet heartbeats, full conversation logging, and audit events.
+//! multi-PC memory sync, org-wide memory search, live pet heartbeats,
+//! full conversation logging, and audit events.
 
 use crate::config::NexusMindSyncConfig;
 use anyhow::{bail, Context, Result};
@@ -72,7 +73,7 @@ impl NexusMindClient {
         device_id: String,
         api_key_override: Option<String>,
     ) -> Result<Self> {
-        let http = Client::builder().timeout(Duration::from_secs(10)).build()?;
+        let http = Client::builder().timeout(Duration::from_secs(12)).build()?;
         Ok(Self {
             http,
             config,
@@ -208,13 +209,20 @@ impl NexusMindClient {
             .send()
             .await
             .context("NexusMind store_memory failed")?;
-        if !resp.status().is_success() {
-            bail!("NexusMind returned HTTP {}", resp.status().as_u16());
+        let status = resp.status();
+        if !status.is_success() {
+            let err_body = resp.text().await.unwrap_or_default();
+            bail!(
+                "NexusMind /v1/memory/store HTTP {}: {}",
+                status.as_u16(),
+                err_body.chars().take(240).collect::<String>()
+            );
         }
         Ok(resp.json().await?)
     }
 
-    /// Semantic search over NexusMind memories (`POST /v1/memory/search`).
+    /// Organization-wide semantic/hybrid search over NexusMind memories (`POST /v1/memory/search`).
+    /// Does NOT restrict to a single project so the mascot can recall memories across all your projects.
     pub async fn search_memory(&self, query: &str, limit: usize) -> Result<Value> {
         let key = self
             .api_key()
@@ -229,8 +237,8 @@ impl NexusMindClient {
             .bearer_auth(key)
             .json(&json!({
                 "query": query,
-                "project": self.config.project,
                 "limit": limit,
+                "mode": "hybrid",
             }))
             .send()
             .await
@@ -239,5 +247,43 @@ impl NexusMindClient {
             bail!("NexusMind search returned HTTP {}", resp.status().as_u16());
         }
         Ok(resp.json().await?)
+    }
+}
+
+/// Formats NexusMind `/v1/memory/search` response into readable context bullets for the LLM prompt.
+pub fn format_memories_for_prompt(val: &Value, max_chars: usize) -> Option<String> {
+    let list = val
+        .get("memories")
+        .or_else(|| val.get("items"))
+        .or_else(|| val.get("results"))
+        .and_then(Value::as_array)
+        .or_else(|| val.as_array())?;
+
+    if list.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    for item in list.iter().take(6) {
+        let project = item.get("project").and_then(Value::as_str).unwrap_or("org");
+        let kind = item.get("type").and_then(Value::as_str).unwrap_or("memory");
+        let title = item.get("title").and_then(Value::as_str).unwrap_or("Nota");
+        let content = item
+            .get("content")
+            .or_else(|| item.get("preview"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let snippet: String = content.chars().take(280).collect();
+        let line = format!("- [{project} · {kind}] {title}: {snippet}\n");
+        if out.len() + line.len() > max_chars {
+            break;
+        }
+        out.push_str(&line);
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }

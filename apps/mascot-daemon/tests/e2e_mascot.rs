@@ -538,3 +538,115 @@ async fn e2e_mandatory_nexusmind_gate_and_remote_audit_sync() {
     assert_eq!(sync2["result"]["events_migrated"], json!(0));
     assert_eq!(sync2["result"]["skills_migrated"], json!(0));
 }
+
+#[tokio::test]
+async fn e2e_multi_turn_conversation_preserves_context_and_auto_stores_nexusmind_memory() {
+    let dir = TempDir::new().unwrap();
+    let memories_stored = Arc::new(AtomicUsize::new(0));
+    let mem_c = Arc::clone(&memories_stored);
+
+    // Mock NexusMind backend handling heartbeat, org-wide memory search, store_memory, events, conversations
+    let nm_base = spawn_http_mock(move |body| {
+        if body.get("pet_name").is_some() {
+            json!({ "connected": true, "org_id": "org-1", "user_id": "u-1" })
+        } else if body.get("query").is_some() {
+            // Verify search is org-wide (no forced `project` filter!)
+            assert!(
+                body.get("project").is_none(),
+                "search_memory must search org-wide, not restricted to personal-mascot"
+            );
+            json!({
+                "memories": [{
+                    "project": "clients",
+                    "type": "project",
+                    "title": "Perfil de Yuliana",
+                    "content": "Yuliana es la directora comercial de PadelClub."
+                }]
+            })
+        } else if body.get("topic_key").is_some() {
+            mem_c.fetch_add(1, Ordering::SeqCst);
+            json!({ "id": "mem-1" })
+        } else {
+            json!({ "ok": true })
+        }
+    })
+    .await;
+
+    // Mock Claude server that inspects received messages to verify Turn 2 carries Turn 1 context + NexusMind memory!
+    let turn_idx = Arc::new(AtomicUsize::new(0));
+    let ti = Arc::clone(&turn_idx);
+    let claude_base = spawn_http_mock(move |req| {
+        let idx = ti.fetch_add(1, Ordering::SeqCst);
+        let msgs = req["messages"].as_array().unwrap();
+        let system = req["system"].as_str().unwrap_or("");
+        if idx == 0 {
+            assert!(
+                system.contains("Perfil de Yuliana"),
+                "System prompt must include org-wide NexusMind memory"
+            );
+            assert_eq!(msgs.len(), 1);
+            json!({ "content": [{ "type": "text", "text": "Perfecto, creé la presentación de PadelClub para Yuliana." }] })
+        } else {
+            // Turn 2 MUST receive Turn 1 user + Turn 1 assistant + Turn 2 user (>= 3 messages in the SAME conversation!)
+            assert!(
+                msgs.len() >= 3,
+                "Follow-up turn lost conversation history! Only got {} messages",
+                msgs.len()
+            );
+            json!({ "content": [{ "type": "text", "text": "Sí, ya subí la presentación de PadelClub a Drive." }] })
+        }
+    })
+    .await;
+
+    let mut cfg = MascotConfig {
+        db_path: Some(dir.path().join("mascot.db")),
+        ..Default::default()
+    };
+    cfg.decision_engine.mode = DecisionMode::DeterministicOnly;
+    cfg.nexusmind.base_url = nm_base.clone();
+    cfg.llm.provider = LlmProviderKind::Claude;
+    cfg.llm.base_url = Some(format!("{claude_base}/v1/messages"));
+    cfg.llm.api_key_override = Some("test-claude-key".into());
+    let state = DaemonState::new(cfg).unwrap();
+
+    // Connect NexusMind
+    let save_req = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "save_settings",
+        "params": { "nexusmind_base_url": nm_base, "nexusmind_api_key": "nm_live_key_123" }
+    })
+    .to_string();
+    let _ = dispatch_rpc_json(&save_req, &state).await;
+
+    // Turn 1
+    let r1: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":2,"method":"submit_prompt","params":{"prompt":"Prepara las propuestas para Yuliana de PadelClub"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    let run_id_1 = r1["result"]["run"]["run_id"].as_str().unwrap().to_string();
+
+    // Turn 2 (follow-up without repeating context!) -> MUST reuse the SAME run_id and pass prior history!
+    let r2: Value = serde_json::from_str(
+        &dispatch_rpc_json(
+            r#"{"jsonrpc":"2.0","id":3,"method":"submit_prompt","params":{"prompt":"lo pudiste subir?"}}"#,
+            &state,
+        )
+        .await,
+    )
+    .unwrap();
+    let run_id_2 = r2["result"]["run"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(run_id_1, run_id_2, "Follow-up prompt must stay in the same conversation thread");
+    assert!(
+        memories_stored.load(Ordering::SeqCst) >= 2,
+        "Each completed turn must automatically persist memory to NexusMind /v1/memory/store"
+    );
+
+    // Explicit `new_conversation` -> next turn starts a brand new conversation id!
+    let _ = dispatch_rpc_json(r#"{"jsonrpc":"2.0","id":4,"method":"new_conversation"}"#, &state).await;
+    assert!(state.get_active_conversation_id().is_none());
+}

@@ -53,6 +53,7 @@ pub struct DaemonState {
     pub kill_switch: AtomicBool,
     pub nexusmind_connected: AtomicBool,
     pub nexusmind_last_error: RwLock<Option<String>>,
+    pub active_conversation_id: RwLock<Option<String>>,
     pub visual_state: RwLock<MascotVisualState>,
 }
 
@@ -89,8 +90,17 @@ impl DaemonState {
             kill_switch: AtomicBool::new(false),
             nexusmind_connected: AtomicBool::new(false),
             nexusmind_last_error: RwLock::new(None),
+            active_conversation_id: RwLock::new(None),
             visual_state: RwLock::new(initial_state),
         }))
+    }
+
+    pub fn get_active_conversation_id(&self) -> Option<String> {
+        self.active_conversation_id.read().unwrap().clone()
+    }
+
+    pub fn set_active_conversation_id(&self, id: Option<String>) {
+        *self.active_conversation_id.write().unwrap() = id;
     }
 
     pub fn is_nexusmind_connected(&self) -> bool {
@@ -265,6 +275,10 @@ async fn dispatch_rpc(req: RpcRequest, state: &Arc<DaemonState>) -> RpcResponse 
         "get_settings" => handle_get_settings(state),
         "save_settings" => handle_save_settings(state, &req.params).await,
         "test_nexusmind_connection" => handle_test_nexusmind(state).await,
+        "new_conversation" => {
+            state.set_active_conversation_id(None);
+            Ok(json!({ "ok": true }))
+        }
         "sync_history" => sync_history_to_nexusmind(state)
             .await
             .map(|r| serde_json::to_value(r).unwrap_or(Value::Null)),
@@ -584,6 +598,26 @@ pub async fn sync_history_to_nexusmind(state: &Arc<DaemonState>) -> Result<Histo
             final_reply: run.final_reply.as_deref().map(|s| redactor.redact(s)),
         };
         if nm.push_conversation(&payload).await.is_ok() {
+            // Also persist each historical conversation as a searchable NexusMind memory!
+            let mem_content = format!(
+                "## Objetivo\n{}\n\n## Respuesta final\n{}\n\n## Pasos ejecutados\n{}",
+                payload.objective,
+                payload.final_reply.as_deref().unwrap_or("(en curso)"),
+                payload.steps_executed
+            );
+            let _ = nm
+                .store_memory(&crate::nexusmind::MemoryPayload {
+                    title: format!(
+                        "Conversación {}: {}",
+                        state.config.read().unwrap().mascot_name,
+                        payload.objective.chars().take(64).collect::<String>()
+                    ),
+                    memory_type: "session_summary".into(),
+                    content: mem_content,
+                    topic_key: format!("conv/{}", run.id),
+                    scope: "global_user".into(),
+                })
+                .await;
             state.store.mark_synced(&marker)?;
             report.conversations_migrated += 1;
         }
@@ -1133,8 +1167,13 @@ async fn handle_submit_prompt(state: &Arc<DaemonState>, params: &Value) -> Resul
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing 'prompt'"))?;
     let active_app = params.get("active_app").and_then(Value::as_str);
+    let conversation_id = params.get("conversation_id").and_then(Value::as_str);
+    let force_new = params
+        .get("new_conversation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
-    let run = start_agent_run(state, prompt, active_app).await?;
+    let run = start_agent_run(state, prompt, active_app, conversation_id, force_new).await?;
     let llm = state.current_llm();
     Ok(json!({
         "run": run,

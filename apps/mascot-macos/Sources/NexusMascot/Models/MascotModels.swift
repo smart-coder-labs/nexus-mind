@@ -1,5 +1,11 @@
 import Foundation
 
+struct ChatBubble: Identifiable {
+    let id = UUID()
+    let isUser: Bool
+    let text: String
+}
+
 enum MascotVisualState: String, Codable, CaseIterable {
     case idle
     case listening

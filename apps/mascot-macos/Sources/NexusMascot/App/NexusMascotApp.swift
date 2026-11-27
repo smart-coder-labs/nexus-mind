@@ -26,6 +26,7 @@ final class MascotViewModel: ObservableObject {
     @Published var showQuickPrompt: Bool = false
     @Published var promptDraft: String = ""
     @Published var lastReply: String?
+    @Published var chatTurns: [ChatBubble] = []
     @Published var isListeningVoice: Bool = false
     @Published var isSpeakingVoice: Bool = false
     @Published var voiceReplyEnabled: Bool = {
@@ -290,20 +291,33 @@ final class MascotViewModel: ObservableObject {
         await refresh()
     }
 
+    func startNewConversation() async {
+        speaker.stop()
+        try? await client.startNewConversation()
+        chatTurns.removeAll()
+        lastReply = nil
+    }
+
     func sendPrompt() async {
         let text = promptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         promptDraft = ""
         speaker.stop()
+        chatTurns.append(ChatBubble(isUser: true, text: text))
         visualState = .thinking
         do {
             let reply = try await client.submitPrompt(text, activeApp: lastActiveApp)
             lastReply = reply
+            chatTurns.append(ChatBubble(isUser: false, text: reply))
             speakIfAllowed(reply)
         } catch {
             let errText = "Error: \(error.localizedDescription)"
             lastReply = errText
+            chatTurns.append(ChatBubble(isUser: false, text: errText))
             speakIfAllowed(error.localizedDescription)
+        }
+        if chatTurns.count > 20 {
+            chatTurns.removeFirst(chatTurns.count - 20)
         }
         await refresh()
     }

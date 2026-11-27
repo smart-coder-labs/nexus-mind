@@ -8,7 +8,7 @@ use crate::ipc::{
 };
 use crate::learning::persist_learned_skill;
 use crate::llm::{AgentMessage, ToolCall, ToolSpec};
-use crate::nexusmind::MemoryPayload;
+use crate::nexusmind::{format_memories_for_prompt, MemoryPayload};
 use crate::policy::{evaluate_action, PolicyVerdict, ProposedAction};
 use crate::redact::LocalRedactor;
 use crate::storage::{AgentRunRecord, NewApproval, PendingApproval};
@@ -19,9 +19,14 @@ use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use systemone_client::decisions::{CompletionJudgeInput, RouteTaskInput};
+use systemone_client::decisions::{CompletionJudgeInput, MemoryEventInput, RouteTaskInput};
 use systemone_client::DecisionSource;
 use uuid::Uuid;
+
+/// Automatically resume the most recent conversation if updated within this window.
+const AUTO_RESUME_WINDOW_SECS: i64 = 4 * 60 * 60;
+/// Maximum recent conversation messages kept in active LLM context window.
+const MAX_HISTORY_MESSAGES: usize = 24;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRunResult {
@@ -48,6 +53,8 @@ pub async fn start_agent_run(
     state: &Arc<DaemonState>,
     objective: &str,
     active_app: Option<&str>,
+    explicit_conversation_id: Option<&str>,
+    force_new: bool,
 ) -> Result<AgentRunResult> {
     let mut redactor = LocalRedactor::new();
     let safe_objective = redactor.redact(objective);
@@ -78,13 +85,14 @@ pub async fn start_agent_run(
         .ok()
         .map(|env| env.answer.route);
 
-    // 2. Pull NexusMind context if configured
+    // 2. Pull org-wide NexusMind memories relevant to this message
     let mut context_snippets = Vec::new();
     let nm = state.current_nexusmind();
     if nm.configured() {
-        if let Ok(found) = nm.search_memory(&safe_objective, 4).await {
-            let compact = serde_json::to_string(&found).unwrap_or_default();
-            context_snippets.push(compact.chars().take(1200).collect::<String>());
+        if let Ok(found) = nm.search_memory(&safe_objective, 6).await {
+            if let Some(formatted) = format_memories_for_prompt(&found, 2400) {
+                context_snippets.push(format!("NexusMind memories:\n{formatted}"));
+            }
         }
     }
     if !skills.is_empty() {
@@ -99,8 +107,9 @@ pub async fn start_agent_run(
 
     let system_prompt = format!(
         "You are {mascot_name}, the autonomous desktop mascot for NexusMind on macOS.\n\
+         You maintain continuous multi-turn conversations with the user and have access to NexusMind shared memory across all projects.\n\
          You can use tools to inspect and act on the computer safely. Always prefer structured Tier 1/2 tools (fs, shell, applescript, mcp) before visual UI actions.\n\
-         When you complete a repeatable workflow or learn a durable user preference, call `skill_save` or `memory_store`.\n\
+         When you need prior facts, contacts, or project details, call `memory_search`. When you learn a durable user preference, contact, or workflow, call `memory_store` or `skill_save`.\n\
          Active app: {}.\n\
          Suggested System 1 route: {}.\n\
          {}",
@@ -113,31 +122,72 @@ pub async fn start_agent_run(
         }
     );
 
-    let run_id = Uuid::new_v4().to_string();
-    let loop_state = PersistedLoopState {
-        system_prompt,
-        messages: vec![AgentMessage::User {
-            text: safe_objective.clone(),
-        }],
-        active_app: active_app.map(str::to_string),
-        pending_tool_call: None,
-        remaining_tool_calls: Vec::new(),
-        evidence: Vec::new(),
+    // 3. Resolve existing active conversation thread unless `force_new` is set
+    let existing = if force_new {
+        None
+    } else {
+        resolve_continuable_conversation(state, explicit_conversation_id)?
     };
 
     let now = Utc::now();
-    let record = AgentRunRecord {
-        id: run_id.clone(),
-        created_at: now,
-        updated_at: now,
-        objective: safe_objective,
-        status: "running".into(),
-        route,
-        steps_executed: 0,
-        tool_errors: 0,
-        state_json: serde_json::to_string(&loop_state)?,
-        final_reply: None,
+    let (record, loop_state) = if let Some(mut prev_record) = existing {
+        let mut prev_state: PersistedLoopState = serde_json::from_str(&prev_record.state_json)
+            .unwrap_or_else(|_| PersistedLoopState {
+                system_prompt: system_prompt.clone(),
+                messages: Vec::new(),
+                active_app: active_app.map(str::to_string),
+                pending_tool_call: None,
+                remaining_tool_calls: Vec::new(),
+                evidence: Vec::new(),
+            });
+
+        // Recover cleanly if a previous turn had an unresolved tool call before this follow-up
+        prev_state.pending_tool_call = None;
+        prev_state.remaining_tool_calls.clear();
+        prev_state.system_prompt = system_prompt;
+        prev_state.active_app = active_app.map(str::to_string);
+        trim_history_window(&mut prev_state.messages, MAX_HISTORY_MESSAGES);
+        // Never leave a dangling Assistant tool_use without a matching ToolResult before adding User text
+        sanitize_dangling_tool_calls(&mut prev_state.messages);
+        prev_state.messages.push(AgentMessage::User {
+            text: safe_objective.clone(),
+        });
+
+        prev_record.updated_at = now;
+        prev_record.status = "running".into();
+        if route.is_some() {
+            prev_record.route = route;
+        }
+        prev_record.state_json = serde_json::to_string(&prev_state)?;
+        (prev_record, prev_state)
+    } else {
+        let run_id = Uuid::new_v4().to_string();
+        let loop_state = PersistedLoopState {
+            system_prompt,
+            messages: vec![AgentMessage::User {
+                text: safe_objective.clone(),
+            }],
+            active_app: active_app.map(str::to_string),
+            pending_tool_call: None,
+            remaining_tool_calls: Vec::new(),
+            evidence: Vec::new(),
+        };
+        let record = AgentRunRecord {
+            id: run_id,
+            created_at: now,
+            updated_at: now,
+            objective: safe_objective.clone(),
+            status: "running".into(),
+            route,
+            steps_executed: 0,
+            tool_errors: 0,
+            state_json: serde_json::to_string(&loop_state)?,
+            final_reply: None,
+        };
+        (record, loop_state)
     };
+
+    state.set_active_conversation_id(Some(record.id.clone()));
     state.store.save_agent_run(&record)?;
     sync_conversation_record(state, &record);
     audit_and_sync_event(
@@ -148,11 +198,56 @@ pub async fn start_agent_run(
         None,
         None,
         Some("success"),
-        &format!("Prompt recibido: {}", preview(&record.objective, 120)),
-        json!({ "active_app": active_app, "route": record.route }),
+        &format!("Prompt recibido: {}", preview(&safe_objective, 120)),
+        json!({ "active_app": active_app, "route": record.route, "messages_in_thread": loop_state.messages.len() }),
     );
 
     drive_loop(state, record, loop_state).await
+}
+
+fn resolve_continuable_conversation(
+    state: &Arc<DaemonState>,
+    explicit_id: Option<&str>,
+) -> Result<Option<AgentRunRecord>> {
+    if let Some(id) = explicit_id {
+        return state.store.get_agent_run(id);
+    }
+    if let Some(active_id) = state.get_active_conversation_id() {
+        if let Some(rec) = state.store.get_agent_run(&active_id)? {
+            return Ok(Some(rec));
+        }
+    }
+    // Auto-resume most recent conversation after daemon restart if within AUTO_RESUME_WINDOW_SECS
+    if let Some(latest) = state.store.list_agent_runs(1)?.into_iter().next() {
+        let age_secs = (Utc::now() - latest.updated_at).num_seconds();
+        if age_secs <= AUTO_RESUME_WINDOW_SECS {
+            return Ok(Some(latest));
+        }
+    }
+    Ok(None)
+}
+
+fn trim_history_window(messages: &mut Vec<AgentMessage>, max_len: usize) {
+    if messages.len() <= max_len {
+        return;
+    }
+    let start = messages.len() - max_len;
+    // Advance to the first User message so we never slice in the middle of a ToolCall/ToolResult pair
+    let aligned = messages[start..]
+        .iter()
+        .position(|m| matches!(m, AgentMessage::User { .. }))
+        .map(|offset| start + offset)
+        .unwrap_or(start);
+    messages.drain(0..aligned);
+}
+
+fn sanitize_dangling_tool_calls(messages: &mut Vec<AgentMessage>) {
+    while let Some(AgentMessage::Assistant { tool_calls, .. }) = messages.last() {
+        if tool_calls.is_empty() {
+            break;
+        }
+        messages.pop();
+    }
 }
 
 pub async fn resume_agent_run_after_approval(
@@ -254,6 +349,7 @@ async fn drive_loop(
     }
 
     let max_steps = state.config.read().unwrap().autonomy.max_steps_per_task;
+    let step_budget_limit = record.steps_executed.saturating_add(max_steps);
 
     loop {
         if state.kill_switch.load(Ordering::SeqCst) {
@@ -284,13 +380,16 @@ async fn drive_loop(
             continue;
         }
 
-        if record.steps_executed >= max_steps {
+        if record.steps_executed >= step_budget_limit {
             let reply = format!(
-                "Alcancé el límite de seguridad de {max_steps} pasos. Revisa el estado o pídeme continuar."
+                "Alcancé el límite de seguridad de {max_steps} pasos en este turno. Revisa el estado o pídeme continuar."
             );
             record.status = "completed".into();
+            record.updated_at = Utc::now();
             record.final_reply = Some(reply.clone());
+            record.state_json = serde_json::to_string(&loop_state)?;
             state.store.save_agent_run(&record)?;
+            sync_conversation_record(state, &record);
             state.set_visual_state(MascotVisualState::Idle);
             return Ok(AgentRunResult {
                 run_id: record.id,
@@ -306,9 +405,32 @@ async fn drive_loop(
         state.set_visual_state(MascotVisualState::Thinking);
         let tools = build_tool_catalog(state).await;
         let llm = state.current_llm();
-        let turn = llm
+        let turn = match llm
             .chat_turn(&loop_state.system_prompt, &loop_state.messages, &tools)
-            .await?;
+            .await
+        {
+            Ok(t) => t,
+            Err(err) => {
+                record.status = "failed".into();
+                record.updated_at = Utc::now();
+                record.final_reply = Some(format!("Error LLM: {err}"));
+                let _ = state.store.save_agent_run(&record);
+                sync_conversation_record(state, &record);
+                audit_and_sync_event(
+                    state,
+                    Some(&record.id),
+                    "error",
+                    Some("llm"),
+                    None,
+                    None,
+                    Some("error"),
+                    &format!("Error en System 2: {err}"),
+                    json!({ "error": err.to_string() }),
+                );
+                state.set_visual_state(MascotVisualState::Blocked);
+                return Err(err);
+            }
+        };
 
         loop_state.messages.push(AgentMessage::Assistant {
             text: turn.text.clone(),
@@ -353,6 +475,8 @@ async fn drive_loop(
                 &format!("Respuesta completada ({} pasos): {}", record.steps_executed, preview(&turn.text, 120)),
                 json!({ "steps": record.steps_executed, "completion_verdict": completion_verdict }),
             );
+            // Automatically distill and persist this conversation turn as a NexusMind Memory!
+            auto_persist_turn_memory(state, &record, &loop_state, &turn.text).await;
             state.set_visual_state(MascotVisualState::Idle);
 
             return Ok(AgentRunResult {
@@ -950,4 +1074,119 @@ fn source_label(src: DecisionSource) -> &'static str {
 
 fn preview(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
+}
+
+/// Automatically persists every meaningful conversation turn to NexusMind `/v1/memory/store`
+/// using an evolving `topic_key` (`conv/<run_id>`) so multi-turn threads stay cleanly updated
+/// as searchable NexusMind memories instead of disappearing.
+async fn auto_persist_turn_memory(
+    state: &Arc<DaemonState>,
+    record: &AgentRunRecord,
+    loop_state: &PersistedLoopState,
+    latest_reply: &str,
+) {
+    let nm = state.current_nexusmind();
+    if !nm.configured() {
+        return;
+    }
+
+    let last_user_msg = loop_state
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            AgentMessage::User { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .unwrap_or(&record.objective);
+
+    // Ask System 1 (Laya/Jev) what kind of memory this turn represents
+    let router = state.router.read().unwrap().clone();
+    let mem_type = match router
+        .evaluate_memory_worthiness(
+            &MemoryEventInput {
+                source: "conversation".into(),
+                app_name: loop_state.active_app.clone(),
+                redacted_summary: format!("User: {} | Assistant: {}", preview(last_user_msg, 300), preview(latest_reply, 300)),
+                repeat_count: 1,
+            },
+            false,
+        )
+        .await
+    {
+        Ok(env) => match env.answer.category.as_str() {
+            "preference" => "preference",
+            "project_knowledge" => "discovery",
+            "procedural_skill" => "pattern",
+            _ => "session_summary",
+        },
+        Err(_) => "session_summary",
+    };
+
+    let mut transcript_digest = String::new();
+    for msg in loop_state.messages.iter().rev().take(8).rev() {
+        match msg {
+            AgentMessage::User { text } => {
+                transcript_digest.push_str(&format!("**Usuario:** {}\n", preview(text, 400)));
+            }
+            AgentMessage::Assistant { text, .. } if !text.trim().is_empty() => {
+                transcript_digest.push_str(&format!("**Mascota:** {}\n", preview(text, 500)));
+            }
+            _ => {}
+        }
+    }
+
+    let mut redactor = LocalRedactor::new();
+    let safe_title = redactor.redact(&format!(
+        "{}: {}",
+        state.config.read().unwrap().mascot_name,
+        preview(&record.objective, 68)
+    ));
+    let safe_content = redactor.redact(&format!(
+        "## Conversación ({})\n{}\n## Evidencia / Acciones\n{}",
+        state.hostname(),
+        transcript_digest,
+        if loop_state.evidence.is_empty() {
+            "Sin herramientas ejecutadas.".into()
+        } else {
+            loop_state.evidence.join("\n- ")
+        }
+    ));
+
+    let payload = MemoryPayload {
+        title: safe_title.clone(),
+        memory_type: mem_type.into(),
+        content: safe_content,
+        topic_key: format!("conv/{}", record.id),
+        scope: "global_user".into(),
+    };
+
+    match nm.store_memory(&payload).await {
+        Ok(_) => {
+            audit_and_sync_event(
+                state,
+                Some(&record.id),
+                "learning",
+                Some("memory_store"),
+                None,
+                None,
+                Some("success"),
+                &format!("Memoria guardada en NexusMind ({mem_type}): {safe_title}"),
+                json!({ "topic_key": payload.topic_key, "memory_type": mem_type }),
+            );
+        }
+        Err(err) => {
+            audit_and_sync_event(
+                state,
+                Some(&record.id),
+                "error",
+                Some("memory_store"),
+                None,
+                None,
+                Some("error"),
+                &format!("Error guardando memoria en NexusMind: {err}"),
+                json!({ "topic_key": payload.topic_key, "error": err.to_string() }),
+            );
+        }
+    }
 }

@@ -72,7 +72,10 @@ pub fn spawn_background_scheduler(state: Arc<DaemonState>) {
                 if due {
                     last_routine_run.insert(routine.id.clone(), Instant::now());
                     info!(routine = %routine.id, title = %routine.title, "running scheduled routine");
-                    if let Err(err) = start_agent_run(&state, &routine.prompt, Some("scheduler")).await {
+                    if let Err(err) =
+                        start_agent_run(&state, &routine.prompt, Some("scheduler"), None, true)
+                            .await
+                    {
                         warn!(routine = %routine.id, error = %err, "scheduled routine failed");
                     }
                 }

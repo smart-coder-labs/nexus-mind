@@ -221,6 +221,57 @@ struct QuickCommandBarView: View {
                 }
                 .padding(6)
             } else {
+            HStack {
+                Text("Hilo activo · contexto continuo")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                Spacer()
+                Button {
+                    Task { await viewModel.startNewConversation() }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "plus.bubble")
+                        Text("Nuevo chat")
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.08))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if !viewModel.chatTurns.isEmpty {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(viewModel.chatTurns) { msg in
+                                HStack {
+                                    if msg.isUser { Spacer(minLength: 24) }
+                                    Text(msg.text)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(msg.isUser ? NexusTokens.accentLimeForeground : .white.opacity(0.92))
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 6)
+                                        .background(msg.isUser ? NexusTokens.accentLime.opacity(0.92) : NexusTokens.surfaceElevated)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    if !msg.isUser { Spacer(minLength: 24) }
+                                }
+                                .id(msg.id)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 150)
+                    .onChange(of: viewModel.chatTurns.count) { _, _ in
+                        if let last = viewModel.chatTurns.last {
+                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                        }
+                    }
+                }
+            }
+
             HStack(spacing: 8) {
                 Button {
                     viewModel.toggleVoiceInput()
@@ -292,7 +343,7 @@ struct QuickCommandBarView: View {
                     .padding(.horizontal, 4)
             }
 
-            if let reply = viewModel.lastReply {
+            if viewModel.chatTurns.isEmpty, let reply = viewModel.lastReply {
                 Text(reply)
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.88))
