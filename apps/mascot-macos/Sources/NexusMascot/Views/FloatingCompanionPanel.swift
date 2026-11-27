@@ -80,6 +80,9 @@ struct FloatingCompanionRootView: View {
                         Button(viewModel.isListeningVoice ? "Detener micrófono (⌘⇧V)" : "Hablar por micrófono (⌘⇧V)") {
                             viewModel.toggleVoiceInput()
                         }
+                        Button(viewModel.voiceReplyEnabled ? "Silenciar respuestas por voz" : "Activar respuestas por voz") {
+                            viewModel.voiceReplyEnabled.toggle()
+                        }
                         Button(viewModel.showQuickPrompt ? "Ocultar chat" : "Abrir chat (⌘⇧N)") {
                             viewModel.toggleQuickPrompt()
                         }
@@ -246,6 +249,19 @@ struct QuickCommandBarView: View {
                     .onSubmit {
                         Task { await viewModel.sendPrompt() }
                     }
+
+                Button {
+                    viewModel.toggleVoiceReply()
+                } label: {
+                    Image(systemName: viewModel.isSpeakingVoice ? "speaker.wave.3.fill" : (viewModel.voiceReplyEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(viewModel.isSpeakingVoice ? NexusTokens.accentLime : (viewModel.voiceReplyEnabled ? .white.opacity(0.75) : NexusTokens.statusSlate))
+                        .frame(width: 24, height: 24)
+                        .background(viewModel.isSpeakingVoice ? NexusTokens.accentLime.opacity(0.18) : Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(viewModel.isSpeakingVoice ? "Detener voz de \(viewModel.mascotName)" : (viewModel.voiceReplyEnabled ? "Respuestas por voz activadas (clic para silenciar)" : "Respuestas por voz silenciadas (clic para activar)"))
 
                 Button("Enviar") {
                     Task { await viewModel.sendPrompt() }

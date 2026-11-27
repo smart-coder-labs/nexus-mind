@@ -27,6 +27,20 @@ final class MascotViewModel: ObservableObject {
     @Published var promptDraft: String = ""
     @Published var lastReply: String?
     @Published var isListeningVoice: Bool = false
+    @Published var isSpeakingVoice: Bool = false
+    @Published var voiceReplyEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: "nexi_voice_reply_enabled") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "nexi_voice_reply_enabled")
+    }() {
+        didSet {
+            UserDefaults.standard.set(voiceReplyEnabled, forKey: "nexi_voice_reply_enabled")
+            if !voiceReplyEnabled {
+                speaker.stop()
+            }
+        }
+    }
     @Published var voiceError: String?
 
     weak var floatingPanel: FloatingCompanionPanel?
@@ -34,6 +48,7 @@ final class MascotViewModel: ObservableObject {
     private let client = MascotDaemonClient()
     private let observer = ActiveContextObserver()
     private let voice = VoiceInputBridge()
+    private let speaker = VoiceOutputBridge()
     private var statusPollTask: Task<Void, Never>?
     private var osJobPollTask: Task<Void, Never>?
     private var lastActiveApp: String?
@@ -42,6 +57,10 @@ final class MascotViewModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+
+        speaker.onSpeakingChanged = { [weak self] speaking in
+            self?.isSpeakingVoice = speaking
+        }
 
         // Register global system-wide hotkeys (⌘⇧N, ⌘⇧V, ⌘⇧P, ⌘⇧⎋)
         GlobalHotkeys.shared.onQuickCommand = { [weak self] in
@@ -102,6 +121,7 @@ final class MascotViewModel: ObservableObject {
     }
 
     func toggleVoiceInput() {
+        speaker.stop()
         openQuickPrompt()
         voiceError = nil
         voice.toggleRecording(
@@ -164,7 +184,11 @@ final class MascotViewModel: ObservableObject {
 
             let newApprovals = (try? await client.listPendingApprovals()) ?? []
             if newApprovals.map(\.id) != pendingApprovals.map(\.id) {
+                let prevIds = Set(pendingApprovals.map(\.id))
                 pendingApprovals = newApprovals
+                if let newest = newApprovals.first(where: { !prevIds.contains($0.id) }) {
+                    speakIfAllowed("Necesito tu aprobación para: \(newest.summary)")
+                }
             }
             let newTape = (try? await client.getOutcomeTape(limit: 14)) ?? []
             if newTape.map(\.id) != outcomeTape.map(\.id) {
@@ -215,8 +239,26 @@ final class MascotViewModel: ObservableObject {
         }
     }
 
+    func toggleVoiceReply() {
+        if isSpeakingVoice {
+            speaker.stop()
+        } else {
+            voiceReplyEnabled.toggle()
+        }
+    }
+
+    func stopSpeaking() {
+        speaker.stop()
+    }
+
+    func speakIfAllowed(_ text: String) {
+        guard voiceReplyEnabled, !privacyShield, !killSwitchActive else { return }
+        speaker.speak(text)
+    }
+
     func togglePrivacyShield() async {
         let next = !privacyShield
+        if next { speaker.stop() }
         try? await client.setPrivacyShield(enabled: next)
         await refresh()
     }
@@ -232,11 +274,13 @@ final class MascotViewModel: ObservableObject {
     }
 
     func triggerKillSwitch() async {
+        speaker.stop()
         try? await client.setKillSwitch(active: true)
         await refresh()
     }
 
     func toggleKillSwitch() async {
+        if !killSwitchActive { speaker.stop() }
         try? await client.setKillSwitch(active: !killSwitchActive)
         await refresh()
     }
@@ -250,11 +294,16 @@ final class MascotViewModel: ObservableObject {
         let text = promptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         promptDraft = ""
+        speaker.stop()
         visualState = .thinking
         do {
-            lastReply = try await client.submitPrompt(text, activeApp: lastActiveApp)
+            let reply = try await client.submitPrompt(text, activeApp: lastActiveApp)
+            lastReply = reply
+            speakIfAllowed(reply)
         } catch {
-            lastReply = "Error: \(error.localizedDescription)"
+            let errText = "Error: \(error.localizedDescription)"
+            lastReply = errText
+            speakIfAllowed(error.localizedDescription)
         }
         await refresh()
     }

@@ -20,7 +20,21 @@ struct MenuBarPopoverView: View {
                         .foregroundStyle(.white.opacity(0.65))
                         .lineLimit(1)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: 6)
+                Button {
+                    viewModel.toggleVoiceReply()
+                } label: {
+                    Image(systemName: viewModel.isSpeakingVoice ? "speaker.wave.3.fill" : (viewModel.voiceReplyEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill"))
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(viewModel.isSpeakingVoice ? NexusTokens.accentLime.opacity(0.22) : Color.white.opacity(0.08))
+                        .clipShape(Capsule())
+                        .foregroundStyle(viewModel.isSpeakingVoice ? NexusTokens.accentLime : (viewModel.voiceReplyEnabled ? .white : NexusTokens.statusSlate))
+                }
+                .buttonStyle(.plain)
+                .help(viewModel.isSpeakingVoice ? "Detener voz" : (viewModel.voiceReplyEnabled ? "Voz de Nexi activada" : "Voz de Nexi silenciada"))
+
                 Button {
                     Task { await viewModel.togglePrivacyShield() }
                 } label: {
